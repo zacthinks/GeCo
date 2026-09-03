@@ -1,0 +1,101 @@
+[project]
+name = "geometric-coder"
+version = "0.7.0"
+description = "GeCo: explicit geometric coding for qualitative inquiry"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+keywords = [
+  "qualitative-research",
+  "text-analysis",
+  "active-learning",
+  "embeddings",
+  "geometric-coding",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+  "joblib>=1.4",
+  "numpy>=2.0",
+  "pandas>=2.2",
+  "scikit-learn>=1.5",
+  "scipy>=1.13",
+  "spacy>=3.8",
+]
+
+[project.optional-dependencies]
+embeddings = [
+  "sentence-transformers>=3.4",
+  "umap-learn>=0.5.12,<0.6",
+  "pynndescent>=0.6.0",
+  "numba>=0.61.0",
+  "llvmlite>=0.44.0",
+]
+projections = [
+  "umap-learn>=0.5.12,<0.6",
+  "pynndescent>=0.6.0",
+  "numba>=0.61.0",
+  "llvmlite>=0.44.0",
+]
+ui = [
+  "dash>=4.0",
+  "dash-ag-grid>=35.3,<36",
+  "plotly>=6.0",
+]
+all = [
+  "sentence-transformers>=3.4",
+  "umap-learn>=0.5.12,<0.6",
+  "pynndescent>=0.6.0",
+  "numba>=0.61.0",
+  "llvmlite>=0.44.0",
+  "dash>=4.0",
+  "dash-ag-grid>=35.3,<36",
+  "plotly>=6.0",
+]
+
+[project.scripts]
+geco = "geometric_coder.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.15",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.11",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["geometric_coder"]
+
+[tool.coverage.run]
+source = ["geometric_coder"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

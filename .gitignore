@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+.env
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# GeCo projects and numerical/model sidecars
+*.sqlite
+*.sqlite3
+*.db
+*.npy
+*.npz
+*.joblib
+*.geco/
+
+# Local-only development material
+_internal/
+examples/
+notes/
+scratch/
+handoffs/
