@@ -154,8 +154,6 @@ geco.register_external_view(
 )
 ```
 
-The seam is intentionally generic: GeCo does not import TeAL, inspect external catalogs, or interpret external artifact identifiers. See [`docs/teal-integration.md`](docs/teal-integration.md) for the provider protocol and export APIs.
-
 ## Design principles
 
 GeCo's implementation follows a few strong rules:
@@ -181,16 +179,10 @@ uv run mypy
 uv build
 ```
 
-Pull requests should preserve the architectural invariants described in [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
 ## Citation
 
-Citation metadata is provided in [`CITATION.cff`](CITATION.cff).
+Publication forthcoming.
 
 ## License
 
 GeCo is released under the [MIT License](LICENSE).
-
-## Security
-
-GeCo is early-stage research software. Please read [`SECURITY.md`](SECURITY.md) before using it with sensitive data.
