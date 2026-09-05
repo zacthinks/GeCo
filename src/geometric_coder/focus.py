@@ -56,7 +56,7 @@ def fit_focus_model(
     geometry_id: int,
     geometry_name: str,
 ) -> FittedFocusModel:
-    """Fit the single GeCo Develop classifier family: L2 logistic regression."""
+    """Fit the legacy standalone L2 focus helper. Project training uses classifiers.py."""
     if regularization <= 0:
         raise ValueError("regularization lambda must be greater than zero")
     y = np.asarray(labels, dtype=int)

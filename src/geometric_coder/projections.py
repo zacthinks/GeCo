@@ -9,7 +9,7 @@ import numpy as np
 from scipy import sparse
 from sklearn.decomposition import PCA, TruncatedSVD
 
-from geometric_coder.exceptions import MissingOptionalDependencyError
+from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.geometry.base import Matrix, ViewSpec
 
 
@@ -92,10 +92,11 @@ def _pca_view(matrix: Matrix, parameters: dict[str, Any]) -> ViewFit:
 def _umap_view(matrix: Matrix, parameters: dict[str, Any]) -> ViewFit:
     try:
         from umap import UMAP
-    except ImportError:
-        raise MissingOptionalDependencyError(
-            "UMAP views require the 'projections' extra: uv sync --extra projections"
-        ) from None
+    except ImportError as error:
+        raise ConfigurationError(
+            "UMAP is part of the standard GeCo installation but could not be imported. "
+            "Reinstall geometric-coder with its default dependencies."
+        ) from error
     if matrix.shape[0] < 4:
         return _pca_view(matrix, {"n_components": 2})
     reducer = UMAP(**parameters)

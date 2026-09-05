@@ -21,9 +21,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import StratifiedKFold
 
 from geometric_coder.classifiers import (
+    effective_hyperparameters,
     fit_classifier,
     normalize_hyperparameters,
     score_classifier,
+    tuning_candidates,
 )
 from geometric_coder.external import ExternalDataProvider
 from geometric_coder.exceptions import (
@@ -478,12 +480,36 @@ class GeometricCoder:
 
 
     def geometries(self, *, public_only: bool = True) -> list[dict[str, Any]]:
-        """Return persisted geometry registry entries."""
+        """Return stable persisted geometry records for public inspection.
+
+        Each record includes the project-local ``geometry_id``, stable registry
+        ``name``, ``storage_kind`` (``local`` or ``external``), and
+        ``supports_query`` capability flag. Hidden dependency geometries are
+        excluded by default.
+        """
         return self.database.list_geometries(public_only=public_only)
 
+    def has_geometry(self, name: str) -> bool:
+        """Return whether a geometry with ``name`` is registered."""
+        clean_name = str(name).strip()
+        if not clean_name:
+            return False
+        try:
+            self.database.get_geometry_by_name(clean_name)
+        except KeyError:
+            return False
+        return True
+
     def views(self, geometry_id: int | None = None) -> list[dict[str, Any]]:
-        """Return persisted two-dimensional views."""
+        """Return stable persisted two-dimensional view records."""
         return self.database.list_views(geometry_id=geometry_id)
+
+    def has_view(self, name: str) -> bool:
+        """Return whether a two-dimensional view with ``name`` is registered."""
+        clean_name = str(name).strip()
+        if not clean_name:
+            return False
+        return any(str(record["name"]) == clean_name for record in self.views())
 
     def sessions(self) -> list[dict[str, Any]]:
         """Return all named resumable sessions."""
@@ -541,8 +567,14 @@ class GeometricCoder:
         external_ref: Any,
         supports_query: bool = False,
         public: bool = True,
+        if_exists: str = "error",
     ) -> int:
-        """Register a provider-backed geometry over the complete document universe."""
+        """Register a provider-backed geometry over the complete document universe.
+
+        ``if_exists="reuse"`` makes restartable notebooks idempotent when an
+        existing external geometry has the same opaque reference and declared
+        capabilities. Conflicting registrations still fail explicitly.
+        """
         if not self.is_external_backed:
             raise ConfigurationError(
                 "External geometries may only be registered on a project created "
@@ -551,15 +583,33 @@ class GeometricCoder:
         clean_name = str(name).strip()
         if not clean_name:
             raise ValueError("Geometry name may not be empty.")
+        if if_exists not in {"error", "reuse"}:
+            raise ValueError("if_exists must be 'error' or 'reuse'")
+        ref = self._json_roundtrip_external_ref(external_ref)
+        if self.has_geometry(clean_name):
+            existing = self.database.get_geometry_by_name(clean_name)
+            if if_exists == "reuse":
+                compatible = (
+                    str(existing.get("storage_kind", "local")) == "external"
+                    and existing.get("external_ref") == ref
+                    and bool(existing.get("supports_query")) == bool(supports_query)
+                    and bool(existing.get("public")) == bool(public)
+                )
+                if compatible:
+                    return int(existing["geometry_id"])
+                raise ConfigurationError(
+                    f"Geometry {clean_name!r} already exists but does not match the "
+                    "requested external registration."
+                )
+            raise ConfigurationError(f"Geometry {clean_name!r} is already registered.")
         provider = self._require_external_provider()
         derived = self.database.list_observations(kinds=["span", "teaching_example"])
         if derived:
             raise ConfigurationError(
                 "Additional external geometries must be registered before creating "
-                "spans or teaching examples. GeCo 0.7.0 does not backfill geometry "
+                "spans or teaching examples. GeCo does not backfill geometry "
                 "vectors for already-created derived observations."
             )
-        ref = self._json_roundtrip_external_ref(external_ref)
         if supports_query and not callable(getattr(provider, "transform_query", None)):
             raise ConfigurationError(
                 f"External geometry {clean_name!r} was declared queryable, but the "
@@ -591,8 +641,12 @@ class GeometricCoder:
         geometry_id: int,
         name: str,
         external_ref: Any,
+        if_exists: str = "error",
     ) -> int:
-        """Register provider-backed 2D coordinates for one parent geometry."""
+        """Register provider-backed 2D coordinates for one parent geometry.
+
+        ``if_exists="reuse"`` returns an existing matching external view.
+        """
         if not self.is_external_backed:
             raise ConfigurationError(
                 "External views may only be registered on an externally backed project."
@@ -601,8 +655,28 @@ class GeometricCoder:
         clean_name = str(name).strip()
         if not clean_name:
             raise ValueError("View name may not be empty.")
-        provider = self._require_external_provider()
+        if if_exists not in {"error", "reuse"}:
+            raise ValueError("if_exists must be 'error' or 'reuse'")
         ref = self._json_roundtrip_external_ref(external_ref)
+        existing = next(
+            (record for record in self.views() if str(record["name"]) == clean_name),
+            None,
+        )
+        if existing is not None:
+            if if_exists == "reuse":
+                compatible = (
+                    str(existing.get("storage_kind", "local")) == "external"
+                    and int(existing["geometry_id"]) == int(geometry_id)
+                    and existing.get("external_ref") == ref
+                )
+                if compatible:
+                    return int(existing["view_id"])
+                raise ConfigurationError(
+                    f"View {clean_name!r} already exists but does not match the "
+                    "requested external registration."
+                )
+            raise ConfigurationError(f"View {clean_name!r} is already registered.")
+        provider = self._require_external_provider()
         coordinates = np.asarray(
             provider.view_coordinates(ref, self._ordered_user_keys()), dtype=np.float32
         )
@@ -934,6 +1008,55 @@ class GeometricCoder:
         self._runtime_geometries = restored
         return dict(restored)
 
+    def transform_query(self, geometry: int | str, query: str) -> Matrix:
+        """Transform one semantic query through a registered geometry.
+
+        The caller names the GeCo geometry; GeCo decides whether to use the
+        local frozen pipeline or delegate through the runtime external provider.
+        Opaque external references never leave this boundary.
+        """
+        clean_query = str(query).strip()
+        if not clean_query:
+            raise ValueError("Query may not be empty.")
+        record = (
+            self.database.get_geometry(geometry)
+            if isinstance(geometry, int)
+            else self.database.get_geometry_by_name(str(geometry))
+        )
+        name = str(record["name"])
+        if not bool(record.get("supports_query")):
+            raise ConfigurationError(
+                f"Geometry {name!r} does not support semantic query transformation."
+            )
+        if str(record.get("storage_kind", "local")) == "external":
+            provider = self._require_external_provider()
+            transform = getattr(provider, "transform_query", None)
+            if not callable(transform):
+                raise ConfigurationError(
+                    f"External geometry {name!r} supports semantic queries, but the "
+                    "connected provider does not implement transform_query()."
+                )
+            query_vector = transform(record["external_ref"], clean_query)
+        else:
+            runtime = self.runtime_geometries()
+            query_vector = runtime[name].transform_query(clean_query)
+        if sparse.issparse(query_vector):
+            normalized: Matrix = sparse.csr_matrix(query_vector)
+        else:
+            normalized = np.asarray(query_vector)
+        if normalized.ndim != 2 or normalized.shape[0] != 1:
+            raise ValueError(
+                f"Query transform for geometry {name!r} must return shape (1, m), "
+                f"got {normalized.shape}."
+            )
+        matrix = self.geometry_matrix(int(record["geometry_id"]))
+        if matrix.shape[1] != normalized.shape[1]:
+            raise ValueError(
+                f"Query transform for geometry {name!r} returned "
+                f"{normalized.shape[1]} features, expected {matrix.shape[1]}."
+            )
+        return normalized
+
     def semantic_search(
         self,
         query: str,
@@ -944,7 +1067,6 @@ class GeometricCoder:
         clean_query = query.strip()
         if not clean_query:
             return {}
-        runtime = self.runtime_geometries()
         public_records = self.database.list_geometries(public_only=True)
         selected = set(geometry_names) if geometry_names is not None else None
         results: dict[str, list[float]] = {}
@@ -954,31 +1076,8 @@ class GeometricCoder:
                 continue
             if not record["supports_query"]:
                 continue
-            if str(record.get("storage_kind", "local")) == "external":
-                provider = self._require_external_provider()
-                transform = getattr(provider, "transform_query", None)
-                if not callable(transform):
-                    continue
-                matrix = self.geometry_matrix(int(record["geometry_id"]))
-                query_vector = transform(record["external_ref"], clean_query)
-            else:
-                geometry = runtime[name]
-                matrix = geometry.matrix
-                query_vector = geometry.transform_query(clean_query)
-            if sparse.issparse(query_vector):
-                normalized_query: Matrix = sparse.csr_matrix(query_vector)
-            else:
-                normalized_query = np.asarray(query_vector)
-            if normalized_query.ndim != 2 or normalized_query.shape[0] != 1:
-                raise ValueError(
-                    f"Query transform for geometry {name!r} must return shape (1, m), "
-                    f"got {normalized_query.shape}."
-                )
-            if matrix.shape[1] != normalized_query.shape[1]:
-                raise ValueError(
-                    f"Query transform for geometry {name!r} returned "
-                    f"{normalized_query.shape[1]} features, expected {matrix.shape[1]}."
-                )
+            matrix = self.geometry_matrix(int(record["geometry_id"]))
+            normalized_query = self.transform_query(int(record["geometry_id"]), clean_query)
             scores = cosine_similarity(matrix, normalized_query).reshape(-1)
             results[name] = np.asarray(scores, dtype=float).tolist()
         return results
@@ -1586,16 +1685,10 @@ class GeometricCoder:
             [np.asarray(corpus_matrix), *[np.asarray(row) for row in derived_rows]]
         )
 
-    def train_classifier(
-        self, *, code_id: int, classifier_spec_id: int
-    ) -> dict[str, Any]:
-        """Fit one code-owned classifier against current labels."""
-        spec = self.database.get_classifier_spec(int(classifier_spec_id))
-        if int(spec["code_id"]) != int(code_id):
-            raise ValueError(
-                f"Classifier {spec['name']!r} belongs to code {spec['code_id']}, "
-                f"not code {code_id}."
-            )
+    def _classifier_training_matrix(
+        self, *, code_id: int, geometry_id: int
+    ) -> tuple[list[dict[str, Any]], Matrix, np.ndarray, dict[str, Any]]:
+        """Return eligible evidence, vectors, labels, and the exact training snapshot."""
         annotations = self.database.current_annotations(int(code_id))
         labeled = self._eligible_training_annotations(int(code_id), annotations)
         if not any(row["value"] == "positive" for row in labeled) or not any(
@@ -1604,7 +1697,182 @@ class GeometricCoder:
             raise ValueError(
                 "At least one active positive and one active negative example are required."
             )
+        training_rows = [
+            self.observation_vector(int(row["observation_id"]), int(geometry_id))
+            for row in labeled
+        ]
+        if sparse.issparse(training_rows[0]):
+            training_matrix: Matrix = sparse.vstack(training_rows, format="csr")
+        else:
+            training_matrix = np.vstack([np.asarray(row) for row in training_rows])
+        labels = np.asarray(
+            [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
+        )
         snapshot = self._classifier_training_snapshot(int(code_id), annotations)
+        return labeled, training_matrix, labels, snapshot
+
+    def _select_classifier_hyperparameters(
+        self,
+        *,
+        code_id: int,
+        spec: Mapping[str, Any],
+        training_matrix: Matrix,
+        labels: np.ndarray,
+        folds: int = 5,
+        metric: str = "log_loss",
+        persist_legacy_l2_run: bool = True,
+    ) -> dict[str, Any]:
+        """Select family-specific hyperparameters by compact stratified CV when feasible."""
+        if metric not in {"log_loss", "brier", "accuracy"}:
+            raise ValueError("metric must be log_loss, brier, or accuracy")
+        class_counts = np.bincount(labels, minlength=2)
+        base = effective_hyperparameters(
+            str(spec["algorithm"]),
+            dict(spec["hyperparameters"]),
+            training_rows=int(labels.size),
+        )
+        actual_folds = min(int(folds), int(class_counts.min()))
+        if actual_folds < 2:
+            return {
+                "tuned": False,
+                "reason": "insufficient_cv_data",
+                "folds": 0,
+                "metric": metric,
+                "selected_hyperparameters": base,
+                "results": [],
+            }
+
+        splitter = StratifiedKFold(
+            n_splits=actual_folds, shuffle=True, random_state=0
+        )
+        splits = list(splitter.split(training_matrix, labels))
+        min_train_rows = min(len(train_positions) for train_positions, _ in splits)
+        candidates = tuning_candidates(
+            str(spec["algorithm"]),
+            base,
+            max_neighbors=int(min_train_rows),
+        )
+        results: list[dict[str, Any]] = []
+        for candidate in candidates:
+            fold_scores: list[float] = []
+            for train_positions, validation_positions in splits:
+                fitted = fit_classifier(
+                    algorithm=str(spec["algorithm"]),
+                    hyperparameters=candidate,
+                    training_matrix=training_matrix[train_positions],
+                    labels=labels[train_positions],
+                    scoring_matrix=training_matrix[validation_positions],
+                )
+                validation_labels = labels[validation_positions]
+                if metric == "log_loss":
+                    probabilities = fitted.outputs.probabilities
+                    if probabilities is None:
+                        raise ValueError(
+                            "Automatic CV with log loss requires classifier probabilities."
+                        )
+                    score = float(
+                        log_loss(validation_labels, probabilities, labels=[0, 1])
+                    )
+                elif metric == "brier":
+                    probabilities = fitted.outputs.probabilities
+                    if probabilities is None:
+                        raise ValueError(
+                            "Automatic CV with Brier score requires classifier probabilities."
+                        )
+                    score = float(brier_score_loss(validation_labels, probabilities))
+                else:
+                    score = float(
+                        accuracy_score(
+                            validation_labels, fitted.outputs.predicted_labels
+                        )
+                    )
+                fold_scores.append(score)
+            results.append(
+                {
+                    "hyperparameters": dict(candidate),
+                    "score": float(np.mean(fold_scores)),
+                    "fold_scores": fold_scores,
+                }
+            )
+
+        # Candidate order is deliberate and acts as the stable tie-breaker,
+        # preferring the earlier/simpler search-grid choice when CV scores tie.
+        if metric == "accuracy":
+            selected = max(results, key=lambda row: float(row["score"]))
+        else:
+            selected = min(results, key=lambda row: float(row["score"]))
+        selected_parameters = effective_hyperparameters(
+            str(spec["algorithm"]),
+            dict(selected["hyperparameters"]),
+            training_rows=int(labels.size),
+        )
+
+        # Preserve the schema-12 lambda-tuning audit trail for the existing L2
+        # family. Other families retain their selected parameters in the classifier
+        # configuration and fit-time snapshot without introducing a schema change.
+        tuning_run_id: int | None = None
+        if str(spec["algorithm"]) == "logistic_l2" and persist_legacy_l2_run:
+            tuning_run_id = self.database.register_classifier_tuning_run(
+                code_id=int(code_id),
+                classifier_spec_id=int(spec["classifier_spec_id"]),
+                metric=metric,
+                folds=actual_folds,
+                candidate_lambdas=[
+                    float(row["hyperparameters"]["regularization"]) for row in results
+                ],
+                results=[
+                    {
+                        "regularization": float(
+                            row["hyperparameters"]["regularization"]
+                        ),
+                        "score": float(row["score"]),
+                        "fold_scores": list(row["fold_scores"]),
+                    }
+                    for row in results
+                ],
+                selected_lambda=float(selected_parameters["regularization"]),
+            )
+
+        return {
+            "tuned": True,
+            "reason": None,
+            "folds": actual_folds,
+            "metric": metric,
+            "selected_hyperparameters": selected_parameters,
+            "results": results,
+            "tuning_run_id": tuning_run_id,
+        }
+
+    def train_classifier(
+        self,
+        *,
+        code_id: int,
+        classifier_spec_id: int,
+        tune: bool = True,
+        folds: int = 5,
+        metric: str = "log_loss",
+    ) -> dict[str, Any]:
+        """Produce the best current fitted state for one code-owned classifier.
+
+        When enough evidence exists for stratified cross-validation, Train selects
+        family-specific hyperparameters and then refits on all eligible current
+        evidence. With too little evidence for CV, it fits the family's current/default
+        parameters instead. A fit that is already current is reused without rerunning CV.
+        """
+        spec = self.database.get_classifier_spec(int(classifier_spec_id))
+        if int(spec["code_id"]) != int(code_id):
+            raise ValueError(
+                f"Classifier {spec['name']!r} belongs to code {spec['code_id']}, "
+                f"not code {code_id}."
+            )
+
+        labeled, training_matrix, labels, snapshot = self._classifier_training_matrix(
+            code_id=int(code_id), geometry_id=int(spec["geometry_id"])
+        )
+        del labeled
+
+        # Fast path: ordinary recommendation requests should not rerun CV when the
+        # retained fit already matches both the evidence and current configuration.
         existing = self.database.find_classifier_fit(
             code_id=int(code_id),
             classifier_spec_id=int(classifier_spec_id),
@@ -1615,21 +1883,65 @@ class GeometricCoder:
         )
         if existing is not None:
             self._extend_classifier_fit_predictions(existing)
-            return existing
-        geometry_id = int(spec["geometry_id"])
-        training_rows = [
-            self.observation_vector(int(row["observation_id"]), geometry_id)
-            for row in labeled
-        ]
-        if sparse.issparse(training_rows[0]):
-            training_matrix: Matrix = sparse.vstack(training_rows, format="csr")
+            result = dict(existing)
+            result["training_selection"] = {
+                "tuned": False, "reason": "current_fit_reused", "folds": 0
+            }
+            return result
+
+        if tune:
+            selection = self._select_classifier_hyperparameters(
+                code_id=int(code_id),
+                spec=spec,
+                training_matrix=training_matrix,
+                labels=labels,
+                folds=int(folds),
+                metric=str(metric),
+            )
+            selected_parameters = dict(selection["selected_hyperparameters"])
         else:
-            training_matrix = np.vstack([np.asarray(row) for row in training_rows])
-        labels = [1 if row["value"] == "positive" else 0 for row in labeled]
+            selected_parameters = effective_hyperparameters(
+                str(spec["algorithm"]),
+                dict(spec["hyperparameters"]),
+                training_rows=int(labels.size),
+            )
+            selection = {
+                "tuned": False,
+                "reason": "tuning_disabled",
+                "folds": 0,
+                "metric": metric,
+                "selected_hyperparameters": selected_parameters,
+                "results": [],
+            }
+
+        if selected_parameters != dict(spec["hyperparameters"]):
+            self.update_classifier_spec(
+                int(classifier_spec_id),
+                name=str(spec["name"]),
+                hyperparameters=selected_parameters,
+            )
+            spec = self.database.get_classifier_spec(int(classifier_spec_id))
+
+        # A previously retained state may already match the CV-selected parameters.
+        existing = self.database.find_classifier_fit(
+            code_id=int(code_id),
+            classifier_spec_id=int(classifier_spec_id),
+            geometry_id=int(spec["geometry_id"]),
+            algorithm=str(spec["algorithm"]),
+            hyperparameters=selected_parameters,
+            training_snapshot=snapshot,
+        )
+        if existing is not None:
+            self._extend_classifier_fit_predictions(existing)
+            result = dict(existing)
+            result["training_selection"] = selection
+            return result
+
+        geometry_id = int(spec["geometry_id"])
         observation_ids, scoring_matrix = self._classifier_scoring_matrix(geometry_id)
         fitted = fit_classifier(
             algorithm=str(spec["algorithm"]),
-            hyperparameters=dict(spec["hyperparameters"]),
+            hyperparameters=selected_parameters,
             training_matrix=training_matrix,
             labels=labels,
             scoring_matrix=scoring_matrix,
@@ -1640,7 +1952,7 @@ class GeometricCoder:
                     "code_id": int(code_id),
                     "classifier_spec_id": int(classifier_spec_id),
                     "algorithm": spec["algorithm"],
-                    "hyperparameters": spec["hyperparameters"],
+                    "hyperparameters": selected_parameters,
                     "snapshot": snapshot,
                 },
                 sort_keys=True,
@@ -1655,7 +1967,9 @@ class GeometricCoder:
             {
                 "observation_id": observation_id,
                 "predicted_label": (
-                    "positive" if int(outputs.predicted_labels[position]) == 1 else "negative"
+                    "positive"
+                    if int(outputs.predicted_labels[position]) == 1
+                    else "negative"
                 ),
                 "probability": (
                     float(outputs.probabilities[position])
@@ -1677,7 +1991,7 @@ class GeometricCoder:
             classifier_name=str(spec["name"]),
             geometry_id=geometry_id,
             algorithm=str(spec["algorithm"]),
-            hyperparameters=dict(spec["hyperparameters"]),
+            hyperparameters=selected_parameters,
             training_snapshot=snapshot,
             artifact_path=artifact_path,
             score_kind=outputs.score_kind,
@@ -1691,7 +2005,9 @@ class GeometricCoder:
                 (self.project_dir / relative_path).unlink(missing_ok=True)
             except OSError:
                 pass
-        return self.database.get_classifier_fit(classifier_fit_id)
+        result = self.database.get_classifier_fit(classifier_fit_id)
+        result["training_selection"] = selection
+        return result
 
     def _extend_classifier_fit_predictions(self, fit: Mapping[str, Any]) -> None:
         """Score observations added after the classifier's retained fit was created."""
@@ -1746,12 +2062,22 @@ class GeometricCoder:
         self.database.append_classifier_predictions(fit_id, predictions)
 
     def train_classifiers(
-        self, *, code_id: int, classifier_spec_ids: Sequence[int]
+        self,
+        *,
+        code_id: int,
+        classifier_spec_ids: Sequence[int],
+        tune: bool = True,
+        folds: int = 5,
+        metric: str = "log_loss",
     ) -> dict[int, dict[str, Any]]:
-        """Manually fit a batch of classifier specifications."""
+        """Fit a batch of classifiers, selecting family hyperparameters when feasible."""
         return {
             int(classifier_spec_id): self.train_classifier(
-                code_id=int(code_id), classifier_spec_id=int(classifier_spec_id)
+                code_id=int(code_id),
+                classifier_spec_id=int(classifier_spec_id),
+                tune=bool(tune),
+                folds=int(folds),
+                metric=str(metric),
             )
             for classifier_spec_id in dict.fromkeys(classifier_spec_ids)
         }
@@ -1759,7 +2085,7 @@ class GeometricCoder:
     def classifier_status(
         self, *, code_id: int, classifier_spec_ids: Sequence[int] | None = None
     ) -> dict[str, Any]:
-        """Report not-trained, current, or stale status for classifier specs."""
+        """Report not-trained, current, or stale status for classifiers."""
         annotations = self.database.current_annotations(int(code_id))
         snapshot = self._classifier_training_snapshot(int(code_id), annotations)
         selected = (
@@ -1770,29 +2096,26 @@ class GeometricCoder:
                 for classifier_spec_id in classifier_spec_ids
             ]
         )
-        wrong_code = [
-            str(row["name"]) for row in selected if int(row["code_id"]) != int(code_id)
-        ]
-        if wrong_code:
-            raise ValueError(
-                "These classifiers belong to another code: " + ", ".join(wrong_code)
-            )
-        rows = []
-        observation_count = len(self.database.list_observations())
+        rows: list[dict[str, Any]] = []
         for spec in selected:
+            if int(spec["code_id"]) != int(code_id):
+                raise ValueError("A selected classifier belongs to another code.")
             latest = self.database.latest_classifier_fit(
                 code_id=int(code_id),
                 classifier_spec_id=int(spec["classifier_spec_id"]),
             )
-            prediction_complete = (
-                latest is not None
-                and len(
-                    self.database.classifier_predictions(
+            prediction_complete = False
+            if latest is not None:
+                prediction_ids = {
+                    int(row["observation_id"])
+                    for row in self.database.classifier_predictions(
                         int(latest["classifier_fit_id"])
                     )
+                }
+                prediction_complete = all(
+                    int(row["observation_id"]) in prediction_ids
+                    for row in self.database.list_observations()
                 )
-                == observation_count
-            )
             rows.append(
                 {
                     **spec,
@@ -1825,167 +2148,51 @@ class GeometricCoder:
         classifier_spec_id: int,
         folds: int = 5,
         metric: str = "log_loss",
-        initial_log10_bounds: tuple[float, float] = (-3.0, 3.0),
-        initial_points: int = 7,
-        refine_points: int = 9,
-        max_expansions: int = 3,
+        **_: Any,
     ) -> dict[str, Any]:
-        """Tune logistic L2 regularization with adaptive log-space CV search.
-
-        The search begins on a broad logarithmic range, expands outward when the
-        best value lies on a boundary, then refines between the nearest evaluated
-        neighbors around the best candidate. This avoids asking researchers to
-        invent a grid while making fewer assumptions than gradient optimization of
-        a noisy cross-validation objective.
-        """
+        """Legacy programmatic L2 selector; ordinary Develop training tunes automatically."""
         spec = self.database.get_classifier_spec(int(classifier_spec_id))
         if int(spec["code_id"]) != int(code_id):
             raise ValueError("The selected classifier belongs to a different code.")
         if str(spec["algorithm"]) != "logistic_l2":
-            raise ValueError(
-                "Automatic tuning currently supports L2 logistic regression only."
-            )
-        if metric not in {"log_loss", "brier", "accuracy"}:
-            raise ValueError("metric must be log_loss, brier, or accuracy")
-        if int(initial_points) < 3 or int(refine_points) < 3:
-            raise ValueError("Adaptive tuning requires at least three search points.")
-
-        annotations = self.database.current_annotations(int(code_id))
-        labeled = self._eligible_training_annotations(int(code_id), annotations)
-        labels = np.asarray(
-            [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
+            raise ValueError("This legacy helper supports L2 logistic regression only.")
+        _, matrix, labels, _ = self._classifier_training_matrix(
+            code_id=int(code_id), geometry_id=int(spec["geometry_id"])
         )
-        if labels.size < 4 or set(labels.tolist()) != {0, 1}:
+        selection = self._select_classifier_hyperparameters(
+            code_id=int(code_id),
+            spec=spec,
+            training_matrix=matrix,
+            labels=labels,
+            folds=int(folds),
+            metric=str(metric),
+        )
+        if not selection["tuned"]:
             raise ValueError(
                 "Tuning requires at least two active Present and two active Absent examples."
             )
-        class_counts = np.bincount(labels, minlength=2)
-        actual_folds = min(int(folds), int(class_counts.min()))
-        if actual_folds < 2:
-            raise ValueError(
-                "Tuning requires at least two active Present and two active Absent examples."
-            )
-
-        geometry_id = int(spec["geometry_id"])
-        training_rows = [
-            self.observation_vector(int(row["observation_id"]), geometry_id)
-            for row in labeled
-        ]
-        if sparse.issparse(training_rows[0]):
-            matrix: Matrix = sparse.vstack(training_rows, format="csr")
-        else:
-            matrix = np.vstack([np.asarray(row) for row in training_rows])
-
-        splitter = StratifiedKFold(
-            n_splits=actual_folds, shuffle=True, random_state=0
-        )
-        base_parameters = dict(spec["hyperparameters"])
-        score_cache: dict[float, dict[str, Any]] = {}
-
-        def evaluate(regularization: float) -> dict[str, Any]:
-            key = float(regularization)
-            cached = score_cache.get(key)
-            if cached is not None:
-                return cached
-            fold_scores: list[float] = []
-            for train_positions, validation_positions in splitter.split(matrix, labels):
-                parameters = {**base_parameters, "regularization": key}
-                fitted = fit_classifier(
-                    algorithm="logistic_l2",
-                    hyperparameters=parameters,
-                    training_matrix=matrix[train_positions],
-                    labels=labels[train_positions],
-                    scoring_matrix=matrix[validation_positions],
-                )
-                validation_labels = labels[validation_positions]
-                if metric == "log_loss":
-                    probabilities = fitted.outputs.probabilities
-                    if probabilities is None:
-                        raise RuntimeError("Logistic regression returned no probabilities.")
-                    score = float(log_loss(validation_labels, probabilities, labels=[0, 1]))
-                elif metric == "brier":
-                    probabilities = fitted.outputs.probabilities
-                    if probabilities is None:
-                        raise RuntimeError("Logistic regression returned no probabilities.")
-                    score = float(brier_score_loss(validation_labels, probabilities))
-                else:
-                    score = float(
-                        accuracy_score(validation_labels, fitted.outputs.predicted_labels)
-                    )
-                fold_scores.append(score)
-            row = {
-                "regularization": key,
-                "score": float(np.mean(fold_scores)),
-                "fold_scores": fold_scores,
-            }
-            score_cache[key] = row
-            return row
-
-        def best_row(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-            if metric == "accuracy":
-                return max(rows, key=lambda row: (row["score"], -row["regularization"]))
-            return min(rows, key=lambda row: (row["score"], row["regularization"]))
-
-        lower_log, upper_log = map(float, initial_log10_bounds)
-        if lower_log >= upper_log:
-            raise ValueError("initial_log10_bounds must be increasing.")
-        initial = np.logspace(lower_log, upper_log, int(initial_points))
-        for value in initial:
-            evaluate(float(value))
-
-        expansion_width = max(1.0, (upper_log - lower_log) / max(1, int(initial_points) - 1))
-        for _ in range(max(0, int(max_expansions))):
-            ordered = sorted(score_cache)
-            current_best = float(best_row([score_cache[v] for v in ordered])["regularization"])
-            best_index = ordered.index(current_best)
-            if best_index == 0:
-                old_lower = np.log10(ordered[0])
-                new_logs = np.linspace(old_lower - 3 * expansion_width, old_lower, 4)[:-1]
-                for value in np.power(10.0, new_logs):
-                    evaluate(float(value))
-                continue
-            if best_index == len(ordered) - 1:
-                old_upper = np.log10(ordered[-1])
-                new_logs = np.linspace(old_upper, old_upper + 3 * expansion_width, 4)[1:]
-                for value in np.power(10.0, new_logs):
-                    evaluate(float(value))
-                continue
-            break
-
-        ordered = sorted(score_cache)
-        selected_pre = float(best_row([score_cache[v] for v in ordered])["regularization"])
-        best_index = ordered.index(selected_pre)
-        if 0 < best_index < len(ordered) - 1:
-            left = np.log10(ordered[best_index - 1])
-            right = np.log10(ordered[best_index + 1])
-            for value in np.logspace(left, right, int(refine_points)):
-                evaluate(float(value))
-
-        results = [score_cache[value] for value in sorted(score_cache)]
-        selected = best_row(results)
-        selected_lambda = float(selected["regularization"])
+        selected_parameters = dict(selection["selected_hyperparameters"])
         self.update_classifier_spec(
             int(classifier_spec_id),
             name=str(spec["name"]),
-            hyperparameters={**base_parameters, "regularization": selected_lambda},
+            hyperparameters=selected_parameters,
         )
-        tuning_run_id = self.database.register_classifier_tuning_run(
-            code_id=int(code_id),
-            classifier_spec_id=int(classifier_spec_id),
-            metric=metric,
-            folds=actual_folds,
-            candidate_lambdas=[float(row["regularization"]) for row in results],
-            results=results,
-            selected_lambda=selected_lambda,
-        )
+        results = [
+            {
+                "regularization": float(row["hyperparameters"]["regularization"]),
+                "score": float(row["score"]),
+                "fold_scores": list(row["fold_scores"]),
+            }
+            for row in selection["results"]
+        ]
         return {
-            "tuning_run_id": tuning_run_id,
+            "tuning_run_id": selection.get("tuning_run_id"),
             "classifier_spec_id": int(classifier_spec_id),
-            "metric": metric,
-            "folds": actual_folds,
+            "metric": str(selection["metric"]),
+            "folds": int(selection["folds"]),
             "results": results,
-            "selected_lambda": selected_lambda,
-            "search_method": "adaptive_log_grid",
+            "selected_lambda": float(selected_parameters["regularization"]),
+            "search_method": "training_grid",
         }
 
     def classifier_tuning_runs(
@@ -2333,6 +2540,7 @@ class GeometricCoder:
         recommendation_source: str = "classifier",
         random_seed: int | None = None,
         auto_retrain: bool = False,
+        auto_train_all: bool = True,
     ) -> dict[str, Any] | None:
         """Generate one session-aware recommendation from explicit classifiers."""
         self.database.get_code(int(code_id))
@@ -2410,7 +2618,17 @@ class GeometricCoder:
                 int(member["classifier_spec_id"]) for member in committee["members"]
             ]
             if auto_retrain:
-                self.train_classifiers(code_id=int(code_id), classifier_spec_ids=spec_ids)
+                auto_spec_ids = (
+                    [
+                        int(row["classifier_spec_id"])
+                        for row in self.classifier_specs(code_id=int(code_id))
+                    ]
+                    if auto_train_all
+                    else spec_ids
+                )
+                self.train_classifiers(
+                    code_id=int(code_id), classifier_spec_ids=auto_spec_ids
+                )
             results, committee = self._resolve_committee_scores(
                 code_id=int(code_id), committee_id=int(committee_id)
             )
@@ -2433,10 +2651,19 @@ class GeometricCoder:
             if active_classifier_spec_id is None:
                 raise ValueError("Select an active classifier first.")
             if auto_retrain:
-                self.train_classifier(
-                    code_id=int(code_id),
-                    classifier_spec_id=int(active_classifier_spec_id),
-                )
+                if auto_train_all:
+                    self.train_classifiers(
+                        code_id=int(code_id),
+                        classifier_spec_ids=[
+                            int(row["classifier_spec_id"])
+                            for row in self.classifier_specs(code_id=int(code_id))
+                        ],
+                    )
+                else:
+                    self.train_classifier(
+                        code_id=int(code_id),
+                        classifier_spec_id=int(active_classifier_spec_id),
+                    )
             result = self._latest_classifier_scores(
                 code_id=int(code_id),
                 classifier_spec_id=int(active_classifier_spec_id),

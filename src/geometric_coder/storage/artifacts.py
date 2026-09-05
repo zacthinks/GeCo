@@ -126,3 +126,4 @@ class ArtifactStore:
     def load_model(self, project_root: Path, relative_path: str) -> Any:
         """Load one persisted fitted model."""
         return joblib.load(project_root / relative_path)
+

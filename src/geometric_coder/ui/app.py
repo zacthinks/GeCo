@@ -13,7 +13,12 @@ from urllib.parse import parse_qs, quote, unquote
 import numpy as np
 import plotly.graph_objects as go
 
-from geometric_coder.exceptions import MissingOptionalDependencyError
+from geometric_coder.classifiers import (
+    SUPPORTED_CLASSIFIER_ALGORITHMS,
+    classifier_algorithm_label,
+    hyperparameter_summary,
+)
+from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
@@ -100,10 +105,12 @@ def create_app(project: GeometricCoder) -> Any:
             ALL, Dash, Input, Output, Patch, State, callback_context, dash_table, dcc, html, no_update,
         )
         import dash_ag_grid as dag
-    except ImportError:
-        raise MissingOptionalDependencyError(
-            "The GeCo web interface requires the 'ui' extra: uv sync --extra ui"
-        ) from None
+    except ImportError as error:
+        raise ConfigurationError(
+            "The GeCo web interface is part of the standard installation, but a core "
+            "UI dependency could not be imported. Reinstall geometric-coder with its "
+            "default dependencies."
+        ) from error
 
     metadata = project.metadata
     units = project.units()
@@ -392,9 +399,6 @@ def create_app(project: GeometricCoder) -> Any:
                     ),
                     _classifier_manager_modal(
                         html=html, dash_table=dash_table
-                    ),
-                    _classifier_tuning_modal(
-                        dcc=dcc, html=html, dash_table=dash_table
                     ),
                     _committee_modal(
                         dcc=dcc, html=html, dash_table=dash_table
@@ -3357,7 +3361,6 @@ def create_app(project: GeometricCoder) -> Any:
         State("classifier-spec-name", "value"),
         State("classifier-spec-geometry", "value"),
         State("classifier-spec-algorithm", "value"),
-        State("classifier-spec-regularization", "value"),
         State("focus-code-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -3368,7 +3371,6 @@ def create_app(project: GeometricCoder) -> Any:
         name: str | None,
         geometry_id: int | None,
         algorithm: str | None,
-        regularization: float | None,
         code_id: int | None,
     ) -> tuple[dict[str, str], str]:
         del open_clicks, close_clicks, save_clicks
@@ -3382,22 +3384,21 @@ def create_app(project: GeometricCoder) -> Any:
         if geometry_id is None:
             return {"display": "flex"}, "Select a parent geometry."
         try:
-            value = float(regularization if regularization is not None else 1.0)
-            if value <= 0:
-                raise ValueError("Regularization must be positive.")
+            selected_algorithm = str(algorithm or "logistic_l2")
             clean_name = (name or "").strip()
             if not clean_name:
                 geometry = geometry_by_id[int(geometry_id)]
                 code = project.code(int(code_id))
                 clean_name = (
-                    f"{code['name']} · {geometry['name']} logistic λ={value:g}"
+                    f"{code['name']} · {geometry['name']} · "
+                    f"{classifier_algorithm_label(selected_algorithm)}"
                 )
             project.create_classifier_spec(
                 code_id=int(code_id),
                 name=clean_name,
                 geometry_id=int(geometry_id),
-                algorithm=str(algorithm or "logistic_l2"),
-                hyperparameters={"regularization": value},
+                algorithm=selected_algorithm,
+                hyperparameters=None,
             )
         except (KeyError, ValueError) as error:
             return {"display": "flex"}, str(error)
@@ -3469,8 +3470,10 @@ def create_app(project: GeometricCoder) -> Any:
                 "classifier_spec_id": int(row["classifier_spec_id"]),
                 "name": str(row["name"]),
                 "geometry": str(row["geometry_name"]),
-                "algorithm": str(row["algorithm"]).replace("_", " "),
-                "regularization": row["hyperparameters"].get("regularization", ""),
+                "algorithm": classifier_algorithm_label(str(row["algorithm"])),
+                "settings": hyperparameter_summary(
+                    str(row["algorithm"]), dict(row["hyperparameters"])
+                ),
             }
             for row in (
                 project.classifier_specs(code_id=int(code_id))
@@ -3478,65 +3481,6 @@ def create_app(project: GeometricCoder) -> Any:
             )
         ]
         return {"display": "flex"}, rows, message, next_spec_refresh, next_committee_refresh
-
-    @app.callback(
-        Output("classifier-tuning-modal", "style"),
-        Output("classifier-tuning-status", "children"),
-        Output("classifier-tuning-results", "data"),
-        Output("classifier-spec-refresh-store", "data", allow_duplicate=True),
-        Input("focus-tune-classifier", "n_clicks"),
-        Input("classifier-tuning-close", "n_clicks"),
-        Input("classifier-tuning-run", "n_clicks"),
-        State("focus-code-dropdown", "value"),
-        State("focus-active-classifier-dropdown", "value"),
-        State("classifier-tuning-folds", "value"),
-        State("classifier-tuning-metric", "value"),
-        State("classifier-spec-refresh-store", "data"),
-        prevent_initial_call=True,
-    )
-    def manage_classifier_tuning_modal(
-        open_clicks: int,
-        close_clicks: int,
-        run_clicks: int,
-        code_id: int | None,
-        classifier_spec_id: int | None,
-        folds: int | None,
-        metric: str | None,
-        spec_refresh: int | None,
-    ) -> tuple[dict[str, str], str, list[dict[str, Any]], int]:
-        del open_clicks, close_clicks, run_clicks
-        triggered = str(callback_context.triggered_id)
-        refresh = int(spec_refresh or 0)
-        if triggered == "classifier-tuning-close":
-            return {"display": "none"}, "", [], refresh
-        if triggered == "focus-tune-classifier":
-            if code_id is None or classifier_spec_id is None:
-                return {"display": "none"}, "Select a code and classifier first.", [], refresh
-            return {"display": "flex"}, "", [], refresh
-        if code_id is None or classifier_spec_id is None:
-            return {"display": "flex"}, "Select a code and classifier first.", [], refresh
-        try:
-            result = project.tune_classifier_regularization(
-                code_id=int(code_id),
-                classifier_spec_id=int(classifier_spec_id),
-                folds=int(folds or 5),
-                metric=str(metric or "log_loss"),
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            return {"display": "flex"}, str(error), [], refresh
-        rows = [
-            {
-                "regularization": f"{float(row['regularization']):g}",
-                "score": f"{float(row['score']):.6f}",
-            }
-            for row in result["results"]
-        ]
-        label = str(result["metric"]).replace("_", " ")
-        message = (
-            f"Selected λ={float(result['selected_lambda']):g} using "
-            f"{int(result['folds'])}-fold {label}. Click Train to fit it."
-        )
-        return {"display": "flex"}, message, rows, refresh + 1
 
     @app.callback(
         Output("committee-modal", "style"),
@@ -3786,10 +3730,11 @@ def create_app(project: GeometricCoder) -> Any:
             "stale": "Stale",
             "not_trained": "Not trained",
         }[status]
-        regularization = row["hyperparameters"].get("regularization")
-        detail = f"{row['geometry_name']} · logistic L2"
-        if regularization is not None:
-            detail += f" · λ={float(regularization):g}"
+        algorithm = str(row["algorithm"])
+        parameter_detail = hyperparameter_summary(algorithm, dict(row["hyperparameters"]))
+        detail = f"{row['geometry_name']} · {classifier_algorithm_label(algorithm)}"
+        if parameter_detail:
+            detail += f" · {parameter_detail}"
         return label, f"classifier-status-badge status-{status.replace('_', '-')}", detail
 
     @app.callback(
@@ -3868,10 +3813,38 @@ def create_app(project: GeometricCoder) -> Any:
             )
         except (KeyError, ValueError) as error:
             return str(error), int(refresh or 0)
+        selections = [dict(fit.get("training_selection", {})) for fit in fits.values()]
+        tuned_count = sum(bool(selection.get("tuned")) for selection in selections)
+        reused_count = sum(
+            selection.get("reason") == "current_fit_reused" for selection in selections
+        )
+        default_count = sum(
+            selection.get("reason") == "insufficient_cv_data" for selection in selections
+        )
         if train_all:
-            message = f"Trained {len(fits):,} classifiers."
+            parts = [f"Updated {len(fits):,} classifiers"]
+            if tuned_count:
+                parts.append(f"CV-tuned {tuned_count:,}")
+            if default_count:
+                parts.append(f"used defaults for {default_count:,} with too little CV data")
+            if reused_count:
+                parts.append(f"reused {reused_count:,} current fits")
+            message = ". ".join(parts) + "."
         else:
-            message = f"Trained {next(iter(fits.values()))['classifier_name']}."
+            fit = next(iter(fits.values()))
+            selection = dict(fit.get("training_selection", {}))
+            name = str(fit["classifier_name"])
+            if selection.get("tuned"):
+                message = (
+                    f"Trained {name} after {int(selection['folds'])}-fold "
+                    f"cross-validation."
+                )
+            elif selection.get("reason") == "insufficient_cv_data":
+                message = f"Trained {name} with current defaults; more labels are needed for CV."
+            elif selection.get("reason") == "current_fit_reused":
+                message = f"{name} is already current."
+            else:
+                message = f"Trained {name}."
         return message, int(refresh or 0) + 1
 
     @app.callback(
@@ -3946,6 +3919,7 @@ def create_app(project: GeometricCoder) -> Any:
         State("active-session-store", "data"),
         State("focus-active-classifier-dropdown", "value"),
         State("focus-committee-dropdown", "value"),
+        State("focus-train-scope", "value"),
         State("focus-auto-retrain", "value"),
         State("focal-unit-store", "data"),
         State("navigation-history-store", "data"),
@@ -3963,6 +3937,7 @@ def create_app(project: GeometricCoder) -> Any:
         session_id: int,
         active_classifier_spec_id: int | None,
         committee_id: int | None,
+        train_scope_values: list[str] | None,
         auto_retrain_values: list[str] | None,
         focal_unit_id: int | None,
         history: dict[str, Any] | None,
@@ -4004,6 +3979,7 @@ def create_app(project: GeometricCoder) -> Any:
                 committee_id=(int(committee_id) if committee_id is not None else None),
                 recommendation_source=source,
                 auto_retrain="auto" in set(auto_retrain_values or []),
+                auto_train_all="all" in set(train_scope_values or []),
             )
         except (KeyError, ValueError) as error:
             return no_update, no_update, str(error), {}
@@ -5065,6 +5041,7 @@ def create_app(project: GeometricCoder) -> Any:
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
+        Input("focus-train-scope", "value"),
         Input("focus-auto-retrain", "value"),
         Input("focus-context-level", "value"),
         Input("focus-context-window", "value"),
@@ -5092,6 +5069,7 @@ def create_app(project: GeometricCoder) -> Any:
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
+        focus_train_scope_values: list[str] | None,
         focus_auto_retrain_values: list[str] | None,
         focus_context_level: int,
         focus_context_window: int,
@@ -5134,6 +5112,7 @@ def create_app(project: GeometricCoder) -> Any:
                 "focus_code_id": focus_code_id,
                 "focus_classifier_spec_id": focus_classifier_spec_id,
                 "focus_committee_id": focus_committee_id,
+                "focus_train_all": "all" in set(focus_train_scope_values or []),
                 "focus_auto_retrain": "auto" in set(focus_auto_retrain_values or []),
                 "focus_context_level": int(focus_context_level),
                 "focus_context_window": max(1, int(focus_context_window or 1)),
@@ -6446,7 +6425,7 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         id="classifier-spec-name",
                         type="text",
                         className="text-input",
-                        placeholder="e.g., MiniLM logistic λ=.25",
+                        placeholder="Optional; GeCo will generate a descriptive name",
                     ),
                     html.Label("Parent geometry"),
                     dcc.Dropdown(
@@ -6466,20 +6445,18 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         id="classifier-spec-algorithm",
                         options=[
                             {
-                                "label": "L2 logistic regression",
-                                "value": "logistic_l2",
+                                "label": classifier_algorithm_label(algorithm),
+                                "value": algorithm,
                             }
+                            for algorithm in SUPPORTED_CLASSIFIER_ALGORITHMS
                         ],
                         value="logistic_l2",
                         clearable=False,
                     ),
-                    html.Label("Regularization λ"),
-                    dcc.Input(
-                        id="classifier-spec-regularization",
-                        type="number",
-                        min=0.000001,
-                        step="any",
-                        value=1.0,
+                    html.Small(
+                        "Train automatically selects family-specific hyperparameters by "
+                        "cross-validation once enough Present and Absent examples exist.",
+                        className="focus-help",
                     ),
                     html.Div(id="classifier-spec-status", className="control-status"),
                     html.Button(
@@ -6528,7 +6505,7 @@ def _classifier_manager_modal(*, html: Any, dash_table: Any) -> Any:
                             {"name": "Name", "id": "name"},
                             {"name": "Geometry", "id": "geometry"},
                             {"name": "Algorithm", "id": "algorithm"},
-                            {"name": "Regularization", "id": "regularization"},
+                            {"name": "Selected settings", "id": "settings"},
                         ],
                         data=[],
                         row_selectable="single",
@@ -6561,93 +6538,6 @@ def _classifier_manager_modal(*, html: Any, dash_table: Any) -> Any:
             )
         ],
         id="classifier-manager-modal",
-        className="modal-overlay",
-        style={"display": "none"},
-    )
-
-
-def _classifier_tuning_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
-    """Return the heuristic lambda-tuning modal for the active classifier."""
-    return html.Div(
-        [
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            html.H3("Tune classifier lambda"),
-                            html.Button(
-                                "×",
-                                id="classifier-tuning-close",
-                                n_clicks=0,
-                                className="modal-close-icon",
-                                title="Close",
-                                **{"aria-label": "Close"},
-                            ),
-                        ],
-                        className="modal-heading-row",
-                    ),
-                    html.P(
-                        "GeCo searches lambda automatically with stratified cross-validation. "
-                        "It begins on a broad log scale (10^-3 through 10^3), expands the "
-                        "range if the best value is on an edge, then refines around the best "
-                        "region. The selected lambda updates the classifier specification; "
-                        "click Train afterward to fit it on all current labels.",
-                        className="focus-help",
-                    ),
-                    html.Div(
-                        [
-                            html.Div(
-                                [
-                                    html.Label("Maximum folds"),
-                                    dcc.Input(
-                                        id="classifier-tuning-folds",
-                                        type="number",
-                                        min=2,
-                                        step=1,
-                                        value=5,
-                                    ),
-                                ]
-                            ),
-                            html.Div(
-                                [
-                                    html.Label("Selection metric"),
-                                    dcc.Dropdown(
-                                        id="classifier-tuning-metric",
-                                        options=[
-                                            {"label": "Log loss", "value": "log_loss"},
-                                            {"label": "Brier score", "value": "brier"},
-                                            {"label": "Accuracy", "value": "accuracy"},
-                                        ],
-                                        value="log_loss",
-                                        clearable=False,
-                                    ),
-                                ]
-                            ),
-                        ],
-                        className="classifier-tuning-fields",
-                    ),
-                    html.Button(
-                        "Run tuning",
-                        id="classifier-tuning-run",
-                        n_clicks=0,
-                        className="primary-action",
-                    ),
-                    html.Div(id="classifier-tuning-status", className="control-status"),
-                    dash_table.DataTable(
-                        id="classifier-tuning-results",
-                        columns=[
-                            {"name": "Lambda", "id": "regularization"},
-                            {"name": "Mean score", "id": "score"},
-                        ],
-                        data=[],
-                        page_size=12,
-                        style_cell={"textAlign": "left"},
-                    ),
-                ],
-                className="modal-card classifier-tuning-modal-card",
-            )
-        ],
-        id="classifier-tuning-modal",
         className="modal-overlay",
         style={"display": "none"},
     )
@@ -7230,14 +7120,14 @@ def _focus_layout(
                                         clearable=False,
                                         placeholder="Create a classifier",
                                     ),
+                                    html.Button(
+                                        "Train",
+                                        id="focus-train-active",
+                                        n_clicks=0,
+                                        className="primary-action classifier-train-button",
+                                    ),
                                     html.Div(
                                         [
-                                            html.Button(
-                                                "Train",
-                                                id="focus-train-active",
-                                                n_clicks=0,
-                                                className="primary-action classifier-train-button",
-                                            ),
                                             dcc.Checklist(
                                                 id="focus-train-scope",
                                                 options=[
@@ -7246,32 +7136,43 @@ def _focus_layout(
                                                         "value": "all",
                                                     }
                                                 ],
-                                                value=["all"],
+                                                value=(
+                                                    ["all"]
+                                                    if bool(
+                                                        initial_state.get(
+                                                            "focus_train_all", True
+                                                        )
+                                                    )
+                                                    else []
+                                                ),
                                                 className="classifier-train-scope",
                                             ),
+                                            dcc.Checklist(
+                                                id="focus-auto-retrain",
+                                                options=[
+                                                    {
+                                                        "label": "Automatically train before recommendations",
+                                                        "value": "auto",
+                                                    }
+                                                ],
+                                                value=(
+                                                    ["auto"]
+                                                    if bool(
+                                                        initial_state.get(
+                                                            "focus_auto_retrain", True
+                                                        )
+                                                    )
+                                                    else []
+                                                ),
+                                            ),
                                         ],
-                                        className="classifier-train-row",
-                                    ),
-                                    dcc.Checklist(
-                                        id="focus-auto-retrain",
-                                        options=[
-                                            {
-                                                "label": "Automatically retrain before recommendations",
-                                                "value": "auto",
-                                            }
-                                        ],
-                                        value=(
-                                            ["auto"]
-                                            if bool(
-                                                initial_state.get(
-                                                    "focus_auto_retrain", False
-                                                )
-                                            )
-                                            else []
-                                        ),
+                                        className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "Off by default so you can label a batch before fitting again.",
+                                        "Train tunes the selected family by cross-validation when "
+                                        "there are enough labels, then refits on all current evidence. "
+                                        "Leave automatic training on while fits are fast; turn it off "
+                                        "later to label in larger batches.",
                                         className="focus-help",
                                     ),
                                     html.Div(
@@ -7288,12 +7189,6 @@ def _focus_layout(
                                             ),
                                         ],
                                         className="classifier-management-row",
-                                    ),
-                                    html.Button(
-                                        "Tune lambda",
-                                        id="focus-tune-classifier",
-                                        n_clicks=0,
-                                        className="classifier-tune-button",
                                     ),
                                     html.Div(
                                         id="focus-active-classifier-detail",

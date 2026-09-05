@@ -1,6 +1,6 @@
 [project]
 name = "geometric-coder"
-version = "0.7.0"
+version = "0.8.1"
 description = "GeCo: explicit geometric coding for qualitative inquiry"
 readme = "README.md"
 license = "MIT"
@@ -22,42 +22,24 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 dependencies = [
+  "dash>=4.0",
+  "dash-ag-grid>=35.3,<36",
   "joblib>=1.4",
   "numpy>=2.0",
   "pandas>=2.2",
+  "plotly>=6.0",
   "scikit-learn>=1.5",
   "scipy>=1.13",
   "spacy>=3.8",
+  "umap-learn>=0.5.12,<0.6",
 ]
 
 [project.optional-dependencies]
 embeddings = [
   "sentence-transformers>=3.4",
-  "umap-learn>=0.5.12,<0.6",
-  "pynndescent>=0.6.0",
-  "numba>=0.61.0",
-  "llvmlite>=0.44.0",
-]
-projections = [
-  "umap-learn>=0.5.12,<0.6",
-  "pynndescent>=0.6.0",
-  "numba>=0.61.0",
-  "llvmlite>=0.44.0",
-]
-ui = [
-  "dash>=4.0",
-  "dash-ag-grid>=35.3,<36",
-  "plotly>=6.0",
 ]
 all = [
   "sentence-transformers>=3.4",
-  "umap-learn>=0.5.12,<0.6",
-  "pynndescent>=0.6.0",
-  "numba>=0.61.0",
-  "llvmlite>=0.44.0",
-  "dash>=4.0",
-  "dash-ag-grid>=35.3,<36",
-  "plotly>=6.0",
 ]
 
 [project.scripts]

@@ -805,15 +805,19 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   color: var(--geco-text-muted, #607067);
   background: #f1f3f2;
 }
-.classifier-train-row {
-  display: grid;
-  grid-template-columns: minmax(100px, 0.42fr) minmax(180px, 1fr);
-  align-items: center;
-  gap: 0.65rem;
+.classifier-train-button {
+  width: 100%;
   margin-top: 0.65rem;
 }
-.classifier-train-button { width: 100%; }
-.classifier-train-scope label { margin: 0; }
+.classifier-training-options {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+}
+.classifier-training-options label,
+.classifier-train-scope label {
+  margin: 0;
+}
 .classifier-management-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -821,10 +825,6 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   margin-top: 0.8rem;
 }
 .classifier-management-row > button { width: 100%; }
-.classifier-tune-button {
-  width: 100%;
-  margin-top: 0.55rem;
-}
 .focus-model-detail {
   margin-top: 0.45rem;
   color: var(--geco-text-muted, #607067);
@@ -848,25 +848,8 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   margin: 0;
   justify-content: flex-start;
 }
-.classifier-tuning-modal-card {
-  width: min(720px, calc(100vw - 2rem));
-  max-height: calc(100vh - 3rem);
-  overflow-y: auto;
-}
-.classifier-tuning-fields {
-  display: grid;
-  grid-template-columns: minmax(130px, 0.45fr) minmax(220px, 1fr);
-  gap: 0.75rem;
-  margin: 0.65rem 0;
-}
-.classifier-tuning-fields > div {
-  display: grid;
-  gap: 0.25rem;
-}
 @media (max-width: 760px) {
-  .classifier-train-row,
-  .focus-recommendation-panel,
-  .classifier-tuning-fields {
+  .focus-recommendation-panel {
     grid-template-columns: 1fr;
   }
 }
