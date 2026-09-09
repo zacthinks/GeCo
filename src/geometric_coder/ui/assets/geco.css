@@ -171,7 +171,17 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 
 .code-selector-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.48rem; align-items: stretch; }
 .code-selector-row button { white-space: nowrap; }
-.explore-code-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.45rem; margin-top: 0.85rem; }
+.coding-panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.85rem; }
+.coding-panel-heading h3 { margin-bottom: 0; }
+.explore-code-palette { max-height: 360px; overflow-y: auto; padding-right: 0.18rem; }
+.explore-code-entry { padding: 0.65rem 0; border-bottom: 1px solid #ecefed; }
+.explore-code-entry:first-child { padding-top: 0; }
+.explore-code-entry:last-child { border-bottom: 0; }
+.explore-code-selector-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.4rem; align-items: stretch; }
+.explore-code-remove { min-width: 34px; padding: 0 0.55rem; font-size: 1.05rem; line-height: 1; color: #69726c; }
+.explore-code-remove:hover { color: #7f2e2e; border-color: #c99a9a; }
+.explore-code-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.45rem; margin-top: 0.5rem; }
+.explore-add-code-row { width: 100%; margin-top: 0.65rem; border-style: dashed; }
 .judgment-button { transition: background 120ms ease, color 120ms ease, border-color 120ms ease; }
 .positive-button.judgment-selected { background: var(--geco-green); border-color: var(--geco-green-dark); color: #fff; }
 .negative-button.judgment-selected { background: #a83f3f; border-color: #7f2e2e; color: #fff; }
@@ -767,6 +777,13 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .committee-modal-card h4 { margin: 1.15rem 0 0.55rem; }
 .committee-modal-card .danger-action { margin-top: 0.75rem; }
 .classifier-manager-modal-card { width: min(920px, calc(100vw - 2rem)); }
+.classifier-manager-rename-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  margin-top: 0.8rem;
+}
+.classifier-manager-rename-row .text-input { flex: 1 1 18rem; }
 .classifier-manager-actions { align-items: center; justify-content: space-between; }
 .classifier-manager-actions .control-status { margin: 0; }
 

@@ -9,6 +9,18 @@ import numpy as np
 import plotly.graph_objects as go
 
 
+EXPLORE_FILTERED_TRACE_INDEX = 0
+EXPLORE_ELIGIBLE_TRACE_INDEX = 1
+EXPLORE_VISITED_TRACE_INDEX = 2
+EXPLORE_FOCAL_TRACE_INDEX = 3
+EXPLORE_TRACE_NAMES = (
+    "Filtered",
+    "Eligible",
+    "Visited overlay",
+    "Focal overlay",
+)
+
+
 def build_geometry_figure(
     *,
     coordinates: np.ndarray,
@@ -22,12 +34,13 @@ def build_geometry_figure(
     page_label: str | None = None,
     uirevision: str | None = None,
 ) -> go.Figure:
-    """Build a click-responsive Explore map with stable visual semantics.
+    """Build a click-responsive Explore map with stable trace structure.
 
-    Point fill is reserved for filtering and semantic similarity. A red outline
-    marks units visited in the current session, and a green ring marks the
-    current focal unit. Hover text is deliberately minimal: only the user key is
-    shown, never the underlying text.
+    The base geometry is deliberately independent of navigation state. Point fill
+    is reserved for filtering and semantic similarity. Two fixed overlay traces
+    carry visited and focal outlines. Keeping those overlay traces present even
+    when empty lets Dash update navigation highlighting with a tiny partial
+    figure update instead of rebuilding and retransmitting the full map.
     """
     coordinates = np.asarray(coordinates, dtype=float)
     if coordinates.ndim != 2 or coordinates.shape[1] != 2:
@@ -56,7 +69,7 @@ def build_geometry_figure(
 
     figure = go.Figure()
 
-    def add_points(
+    def add_base_points(
         positions: np.ndarray,
         *,
         name: str,
@@ -65,8 +78,6 @@ def build_geometry_figure(
         outline: str,
         outline_width: float,
     ) -> None:
-        if positions.size == 0:
-            return
         marker: dict[str, Any] = {
             "size": 8,
             "opacity": opacity,
@@ -87,112 +98,104 @@ def build_geometry_figure(
             )
         )
 
-    filtered_unseen = np.flatnonzero(~eligible_array & ~seen & ~focal_mask)
-    filtered_seen = np.flatnonzero(~eligible_array & seen & ~focal_mask)
-    add_points(
-        filtered_unseen,
-        name="Filtered",
+    filtered_positions = np.flatnonzero(~eligible_array)
+    active_positions = np.flatnonzero(eligible_array)
+    add_base_points(
+        filtered_positions,
+        name=EXPLORE_TRACE_NAMES[EXPLORE_FILTERED_TRACE_INDEX],
         fill="#d5d8dc",
         opacity=0.38,
         outline="#aeb6bf",
         outline_width=0.7,
     )
-    add_points(
-        filtered_seen,
-        name="Filtered and visited",
-        fill="#d5d8dc",
-        opacity=0.52,
-        outline="#d62728",
-        outline_width=2.2,
-    )
-
-    active_unseen = np.flatnonzero(eligible_array & ~seen & ~focal_mask)
-    active_seen = np.flatnonzero(eligible_array & seen & ~focal_mask)
+    active_fill: str | np.ndarray
     if semantic is None:
-        unseen_fill: str | np.ndarray = "#111111"
-        seen_fill: str | np.ndarray = "#111111"
+        active_fill = "#111111"
     else:
-        unseen_fill = semantic[active_unseen]
-        seen_fill = semantic[active_seen]
-
-    add_points(
-        active_unseen,
-        name="Eligible",
-        fill=unseen_fill,
+        active_fill = semantic[active_positions]
+    add_base_points(
+        active_positions,
+        name=EXPLORE_TRACE_NAMES[EXPLORE_ELIGIBLE_TRACE_INDEX],
+        fill=active_fill,
         opacity=0.9,
         outline="#111111",
         outline_width=0.55,
     )
-    add_points(
-        active_seen,
-        name="Eligible and visited",
-        fill=seen_fill,
-        opacity=0.96,
+
+    def add_outline_overlay(
+        positions: np.ndarray,
+        *,
+        name: str,
+        outline: str,
+        outline_width: float,
+        size: float,
+    ) -> None:
+        figure.add_trace(
+            go.Scattergl(
+                x=coordinates[positions, 0].tolist(),
+                y=coordinates[positions, 1].tolist(),
+                mode="markers",
+                name=name,
+                customdata=unit_ids[positions].tolist(),
+                hovertext=[hover[int(index)] for index in positions],
+                hovertemplate="%{hovertext}<extra></extra>",
+                marker={
+                    "size": size,
+                    "opacity": 1.0,
+                    "symbol": "circle",
+                    "color": "rgba(0,0,0,0)",
+                    "line": {"width": outline_width, "color": outline},
+                },
+            )
+        )
+
+    add_outline_overlay(
+        np.flatnonzero(seen),
+        name=EXPLORE_TRACE_NAMES[EXPLORE_VISITED_TRACE_INDEX],
         outline="#d62728",
         outline_width=2.2,
+        size=9.5,
+    )
+    add_outline_overlay(
+        np.flatnonzero(focal_mask),
+        name=EXPLORE_TRACE_NAMES[EXPLORE_FOCAL_TRACE_INDEX],
+        outline="#178547",
+        outline_width=2.5,
+        size=11.5,
     )
 
-    if focal_unit_id is not None:
-        focal_positions = np.flatnonzero(focal_mask)
-        if focal_positions.size == 1:
-            index = int(focal_positions[0])
-            if not eligible_array[index]:
-                focal_fill: str | np.ndarray = "#d5d8dc"
-                focal_opacity = 0.72
-            elif semantic is None:
-                focal_fill = "#111111"
-                focal_opacity = 1.0
-            else:
-                focal_fill = np.asarray([semantic[index]], dtype=float)
-                focal_opacity = 1.0
-            add_points(
-                focal_positions,
-                name="Focal unit",
-                fill=focal_fill,
-                opacity=focal_opacity,
-                outline="#178547",
-                outline_width=2.2,
-            )
-
-
     # Apply one shared semantic colorscale and show one conventional Plotly
-    # colorbar on the map. The range slider is only a filter control.
+    # colorbar on the base eligible trace. Navigation overlays stay colorless.
     if semantic is not None:
         finite = semantic[np.isfinite(semantic)]
         color_min = float(np.min(finite)) if finite.size else 0.0
         color_max = float(np.max(finite)) if finite.size else 1.0
         if np.isclose(color_min, color_max):
             color_max = color_min + 1e-9
-        semantic_traces = [
-            trace
-            for trace in figure.data
-            if trace.name in {"Eligible", "Eligible and visited", "Focal unit"}
-            and not isinstance(trace.marker.color, str)
+        trace = figure.data[EXPLORE_ELIGIBLE_TRACE_INDEX]
+        trace.marker.colorscale = [
+            [0.0, "#2457c5"],
+            [1.0, "#f2b134"],
         ]
-        for index, trace in enumerate(semantic_traces):
-            trace.marker.colorscale = [
-                [0.0, "#2457c5"],
-                [1.0, "#f2b134"],
-            ]
-            trace.marker.cmin = color_min
-            trace.marker.cmax = color_max
-            trace.marker.showscale = index == 0
-            if index == 0:
-                color_mid = (color_min + color_max) / 2.0
-                trace.marker.colorbar = {
-                    "title": {"text": "Cosine similarity", "side": "right"},
-                    "tickmode": "array",
-                    "tickvals": [color_min, color_mid, color_max],
-                    "ticktext": [
-                        f"{color_min:.3f}",
-                        f"{color_mid:.3f}",
-                        f"{color_max:.3f}",
-                    ],
-                    "thickness": 14,
-                    "len": 0.72,
-                    "x": 1.015,
-                    "xpad": 8,
-                }
+        trace.marker.cmin = color_min
+        trace.marker.cmax = color_max
+        trace.marker.showscale = bool(active_positions.size)
+        if active_positions.size:
+            color_mid = (color_min + color_max) / 2.0
+            trace.marker.colorbar = {
+                "title": {"text": "Cosine similarity", "side": "right"},
+                "tickmode": "array",
+                "tickvals": [color_min, color_mid, color_max],
+                "ticktext": [
+                    f"{color_min:.3f}",
+                    f"{color_mid:.3f}",
+                    f"{color_max:.3f}",
+                ],
+                "thickness": 14,
+                "len": 0.72,
+                "x": 1.015,
+                "xpad": 8,
+            }
 
     title = f"{geometry_name} · {view_name}"
     if page_label:
@@ -204,8 +207,6 @@ def build_geometry_figure(
         hovermode="closest",
         hoverdistance=8,
         clickmode="event",
-        # Match Plotly's conventional click-versus-drag behavior. A short click
-        # emits clickData; dragging zooms the view.
         dragmode="zoom",
         uirevision=uirevision or f"{geometry_name}:{view_name}:{page_label or ''}",
         showlegend=False,

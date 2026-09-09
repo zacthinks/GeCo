@@ -39,8 +39,16 @@ from geometric_coder.focus import recommend_focus_unit
 from geometric_coder.geometry.base import Geometry, Matrix, ViewSpec
 from geometric_coder.projections import fit_view, transform_view
 from geometric_coder.progress import ProgressCallback, emit_progress
+from geometric_coder.predictors import (
+    FrozenPredictorExport,
+    FrozenPredictorMember,
+    GeCoPredictorRef,
+    PredictorSourceSpec,
+    estimator_feature_width,
+)
 from geometric_coder.registry import GeometryRegistry
 from geometric_coder.storage import ArtifactStore, ProjectDatabase, SCHEMA_VERSION
+from geometric_coder._version import __version__
 from geometric_coder.storage.database import (
     FIXED_COMMITTEE_AGGREGATIONS,
     TRAINABLE_COMMITTEE_AGGREGATIONS,
@@ -278,9 +286,9 @@ class GeometricCoder:
         if observed_schema != SCHEMA_VERSION:
             raise RuntimeError(
                 f"This GeCo build requires project schema {SCHEMA_VERSION}, but the "
-                f"project uses schema {observed_schema}. GeCo does not migrate projects "
-                "automatically. Run the matching one-step script in scripts/ manually "
-                "or rebuild a disposable project from source."
+                f"project uses schema {observed_schema}. Pre-1.0 GeCo does not carry "
+                "backward-compatibility or migration architecture. Recreate the workspace "
+                "from its source data and external-resource registrations."
             )
         if bool(metadata.get("external_backed")) and external_provider is None:
             raise ConfigurationError(
@@ -442,6 +450,7 @@ class GeometricCoder:
                 matrix_sparse=is_sparse,
                 state_path=state_path,
                 supports_query=geometry.supports_query,
+                supports_text_transform=geometry.supports_text_transform,
             )
             if registration.public:
                 view_spec = geometry.default_view
@@ -484,8 +493,8 @@ class GeometricCoder:
 
         Each record includes the project-local ``geometry_id``, stable registry
         ``name``, ``storage_kind`` (``local`` or ``external``), and
-        ``supports_query`` capability flag. Hidden dependency geometries are
-        excluded by default.
+        ``supports_query`` and ``supports_text_transform`` capability flags.
+        Hidden dependency geometries are excluded by default.
         """
         return self.database.list_geometries(public_only=public_only)
 
@@ -518,6 +527,10 @@ class GeometricCoder:
     def update_session_state(self, session_id: int, state: dict[str, Any]) -> None:
         """Persist the current resumable interface state."""
         self.database.update_session_state(session_id, state)
+
+    def patch_session_state(self, session_id: int, patch: dict[str, Any]) -> None:
+        """Merge a small resumable-interface state patch."""
+        self.database.patch_session_state(int(session_id), dict(patch))
 
     def _ordered_user_keys(self) -> list[dict[str, Any]]:
         """Return stable user keys in canonical atomic-row order."""
@@ -566,6 +579,7 @@ class GeometricCoder:
         name: str,
         external_ref: Any,
         supports_query: bool = False,
+        supports_text_transform: bool = False,
         public: bool = True,
         if_exists: str = "error",
     ) -> int:
@@ -593,6 +607,8 @@ class GeometricCoder:
                     str(existing.get("storage_kind", "local")) == "external"
                     and existing.get("external_ref") == ref
                     and bool(existing.get("supports_query")) == bool(supports_query)
+                    and bool(existing.get("supports_text_transform"))
+                    == bool(supports_text_transform)
                     and bool(existing.get("public")) == bool(public)
                 )
                 if compatible:
@@ -615,6 +631,13 @@ class GeometricCoder:
                 f"External geometry {clean_name!r} was declared queryable, but the "
                 "provider does not implement transform_query()."
             )
+        if supports_text_transform and not callable(
+            getattr(provider, "transform_texts", None)
+        ):
+            raise ConfigurationError(
+                f"External geometry {clean_name!r} was declared capable of transforming "
+                "new text, but the provider does not implement transform_texts()."
+            )
         matrix = self._validate_external_geometry_matrix(
             provider.geometry_matrix(ref, self._ordered_user_keys()), name=clean_name
         )
@@ -629,6 +652,7 @@ class GeometricCoder:
             matrix_sparse=bool(sparse.issparse(matrix)),
             state_path=None,
             supports_query=bool(supports_query),
+            supports_text_transform=bool(supports_text_transform),
             storage_kind="external",
             external_ref=ref,
         )
@@ -1143,20 +1167,19 @@ class GeometricCoder:
         return transform_view(vector, state)
 
     def can_transform_new_observations(self) -> bool:
-        """Whether every registered geometry can vectorize newly authored text."""
-        if self.is_external_backed:
-            if not self.database.list_geometries(public_only=False):
-                return False
-            provider = self.external_provider
-            return provider is not None and callable(
-                getattr(provider, "transform_texts", None)
-            )
+        """Whether all registered geometries can represent newly authored text."""
+        geometries = self.database.list_geometries(public_only=False)
+        if not geometries:
+            return False if self.is_external_backed else True
         external = [
-            row for row in self.database.list_geometries(public_only=False)
+            row
+            for row in geometries
             if str(row.get("storage_kind", "local")) == "external"
         ]
         if not external:
             return True
+        if not all(bool(row.get("supports_text_transform")) for row in external):
+            return False
         provider = self.external_provider
         return provider is not None and callable(getattr(provider, "transform_texts", None))
 
@@ -1166,14 +1189,19 @@ class GeometricCoder:
         """Transform and persist a new observation through every compatible geometry."""
         if not self.can_transform_new_observations():
             raise ConfigurationError(
-                "This externally backed project cannot create spans or teaching examples "
-                "because its provider does not implement transform_texts()."
+                "This project cannot create spans or teaching examples because one or "
+                "more required external geometries do not support new-text transformation, "
+                "or the connected provider does not implement transform_texts()."
             )
         runtime = self.runtime_geometries()
         vectors: dict[int, tuple[str, bool]] = {}
         for record in self.database.list_geometries(public_only=False):
             name = str(record["name"])
             if str(record.get("storage_kind", "local")) == "external":
+                if not bool(record.get("supports_text_transform")):
+                    raise ConfigurationError(
+                        f"External geometry {name!r} does not support new-text transformation."
+                    )
                 provider = self._require_external_provider()
                 transform = getattr(provider, "transform_texts")
                 vector = transform(record["external_ref"], [text])
@@ -1408,6 +1436,12 @@ class GeometricCoder:
             observation_id=int(observation_id), code_id=int(code_id)
         )
 
+    def current_annotations_for_observation(
+        self, observation_id: int
+    ) -> list[dict[str, Any]]:
+        """Return all current code assignments for one observation."""
+        return self.database.current_annotations_for_observation(int(observation_id))
+
     def current_annotations(self, code_id: int | None = None) -> list[dict[str, Any]]:
         """Return current annotation states."""
         return self.database.current_annotations(code_id)
@@ -1440,16 +1474,339 @@ class GeometricCoder:
             rows.append(record)
         return pd.DataFrame(rows, columns=[*key_columns, "label"])
 
-    def export_classifier(self, name: str) -> Any:
-        """Return the current fitted estimator for one uniquely named active classifier."""
-        spec = self.database.get_classifier_spec_by_name(str(name).strip())
-        fit = self.database.latest_classifier_fit(
-            code_id=int(spec["code_id"]),
-            classifier_spec_id=int(spec["classifier_spec_id"]),
+    def predictors(self, code_id: int | None = None) -> list[GeCoPredictorRef]:
+        """Return active exportable predictor references.
+
+        Classifiers and committees remain distinct GeCo objects internally, but the
+        external prediction boundary intentionally presents them through one stable
+        reference type.  A future scaler can join the same discovery surface without
+        changing downstream execution semantics.
+        """
+        if code_id is not None:
+            self.database.get_code(int(code_id))
+
+        # Validate the project-wide active predictor namespace against the complete
+        # project, even when the caller asks to list predictors for only one code.
+        # This catches old developmental workspaces created before the namespace was
+        # unified without silently choosing one of two same-named live predictors.
+        all_refs = [
+            GeCoPredictorRef(
+                kind="classifier",
+                id=int(spec["classifier_spec_id"]),
+                code_id=int(spec["code_id"]),
+                name=str(spec["name"]),
+            )
+            for spec in self.database.list_classifier_specs(include_deleted=False)
+        ]
+        all_refs.extend(
+            GeCoPredictorRef(
+                kind="committee",
+                id=int(committee["committee_id"]),
+                code_id=int(committee["code_id"]),
+                name=str(committee["name"]),
+            )
+            for committee in self.database.list_classifier_committees(include_deleted=False)
         )
-        if fit is None or not str(fit.get("artifact_path") or ""):
-            raise ValueError(f"Classifier {spec['name']!r} has not been trained.")
-        return self.artifacts.load_model(self.project_dir, str(fit["artifact_path"]))
+
+        by_name: dict[str, GeCoPredictorRef] = {}
+        for ref in all_refs:
+            existing = by_name.get(ref.name)
+            if existing is not None:
+                raise ValueError(
+                    "Active predictor names must be unique project-wide; "
+                    f"{ref.name!r} is used by both "
+                    f"{existing.kind} {existing.id} and {ref.kind} {ref.id}. "
+                    "Rename one predictor before exporting."
+                )
+            by_name[ref.name] = ref
+
+        if code_id is None:
+            return all_refs
+        return [ref for ref in all_refs if int(ref.code_id) == int(code_id)]
+
+    def _predictor_source_specs_and_members(
+        self,
+        *,
+        member_specs: Sequence[Mapping[str, Any]],
+        member_fits: Sequence[Mapping[str, Any]],
+    ) -> tuple[tuple[PredictorSourceSpec, ...], tuple[FrozenPredictorMember, ...]]:
+        """Freeze fitted members while deduplicating their fitted geometry sources."""
+        if len(member_specs) != len(member_fits):
+            raise ValueError("Predictor member specifications and fits must be parallel.")
+
+        source_index_by_geometry: dict[int, int] = {}
+        source_rows: list[dict[str, Any]] = []
+        frozen_members: list[FrozenPredictorMember] = []
+
+        for spec, fit in zip(member_specs, member_fits, strict=True):
+            artifact_path = str(fit.get("artifact_path") or "")
+            if not artifact_path:
+                raise ValueError(
+                    f"The retained estimator for classifier {spec['name']!r} is no longer "
+                    "available, so this exact frozen predictor cannot be exported."
+                )
+            estimator = self.artifacts.load_model(self.project_dir, artifact_path)
+            geometry_id = int(fit["geometry_id"])
+            source_index = source_index_by_geometry.get(geometry_id)
+            width = estimator_feature_width(estimator)
+            if source_index is None:
+                geometry = self.database.get_geometry(geometry_id)
+                source_index = len(source_rows)
+                source_index_by_geometry[geometry_id] = source_index
+                source_rows.append(
+                    {
+                        "source_index": source_index,
+                        "geometry_id": geometry_id,
+                        "geometry_name": str(fit["geometry_name"]),
+                        "n_features": width,
+                        "storage_kind": str(geometry.get("storage_kind", "local")),
+                        "external_ref": geometry.get("external_ref"),
+                    }
+                )
+            else:
+                existing_width = source_rows[source_index]["n_features"]
+                if existing_width is not None and width is not None and int(existing_width) != int(width):
+                    raise RuntimeError(
+                        "Fitted classifiers sharing one geometry disagree about its feature width."
+                    )
+                if existing_width is None and width is not None:
+                    source_rows[source_index]["n_features"] = width
+
+            frozen_members.append(
+                FrozenPredictorMember(
+                    classifier_spec_id=int(fit["classifier_spec_id"]),
+                    classifier_fit_id=int(fit["classifier_fit_id"]),
+                    classifier_name=str(spec["name"]),
+                    fit_classifier_name=str(fit["classifier_name"]),
+                    source_index=int(source_index),
+                    algorithm=str(fit["algorithm"]),
+                    hyperparameters=dict(fit["hyperparameters"]),
+                    score_kind=str(fit["score_kind"]),
+                    positive_class=1,
+                    estimator=estimator,
+                )
+            )
+
+        return (
+            tuple(PredictorSourceSpec(**row) for row in source_rows),
+            tuple(frozen_members),
+        )
+
+    def _classifier_fit_stale(
+        self, *, spec: Mapping[str, Any], fit: Mapping[str, Any], snapshot: Mapping[str, Any]
+    ) -> bool:
+        """Return fit staleness without considering the disposable prediction cache."""
+        return bool(
+            fit["training_snapshot"] != snapshot
+            or int(fit["geometry_id"]) != int(spec["geometry_id"])
+            or str(fit["algorithm"]) != str(spec["algorithm"])
+            or fit["hyperparameters"] != spec["hyperparameters"]
+        )
+
+    def export_predictor(
+        self, ref: GeCoPredictorRef, *, allow_stale: bool = False
+    ) -> FrozenPredictorExport:
+        """Freeze one fitted classifier or committee as a neutral prediction procedure.
+
+        Export never trains or mutates fitted state.  By default a stale retained
+        procedure is rejected; ``allow_stale=True`` makes that choice explicit and
+        records it in export provenance.
+        """
+        if not isinstance(ref, GeCoPredictorRef):
+            raise TypeError("export_predictor() requires a GeCoPredictorRef from predictors().")
+
+        code = self.database.get_code(int(ref.code_id))
+        snapshot = self._classifier_training_snapshot(
+            int(ref.code_id), self.database.current_annotations(int(ref.code_id))
+        )
+
+        if ref.kind == "classifier":
+            spec = self.database.get_classifier_spec(int(ref.id))
+            if str(spec["status"]) != "active" or int(spec["code_id"]) != int(ref.code_id):
+                raise KeyError(f"Unknown active classifier predictor reference: {ref!r}")
+            if str(spec["name"]) != str(ref.name):
+                raise ValueError(
+                    "Predictor reference name no longer matches the active classifier; "
+                    "refresh predictors() and export the current reference."
+                )
+            fit = self.database.latest_classifier_fit(
+                code_id=int(ref.code_id), classifier_spec_id=int(ref.id)
+            )
+            if fit is None:
+                raise ValueError(f"Classifier {spec['name']!r} has not been trained.")
+            stale = self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot)
+            if stale and not allow_stale:
+                raise ValueError(
+                    f"Classifier {spec['name']!r} has a stale retained fit. "
+                    "Retrain it or pass allow_stale=True to freeze that exact retained procedure."
+                )
+            sources, members = self._predictor_source_specs_and_members(
+                member_specs=[spec], member_fits=[fit]
+            )
+            threshold = float(dict(fit["hyperparameters"]).get("threshold", 0.5))
+            output_fields = (
+                ("prediction", "probability")
+                if str(fit["score_kind"]) == "probability"
+                else ("prediction",)
+            )
+            return FrozenPredictorExport(
+                format_version=1,
+                ref=ref,
+                code_name=str(code["name"]),
+                sources=sources,
+                members=members,
+                aggregation=None,
+                stacker=None,
+                stacker_fit_id=None,
+                positive_class=1,
+                threshold=threshold,
+                output_fields=output_fields,
+                stale_at_export=stale,
+                provenance={
+                    "geco_version": __version__,
+                    "predictor_kind": "classifier",
+                    "classifier_spec_id": int(ref.id),
+                    "classifier_fit_id": int(fit["classifier_fit_id"]),
+                    "fit_created_at": str(fit["created_at"]),
+                    "training_snapshot": fit["training_snapshot"],
+                },
+            )
+
+        if ref.kind != "committee":
+            raise ValueError(f"Unsupported GeCo predictor kind: {ref.kind!r}")
+
+        committee = self.database.get_classifier_committee(int(ref.id))
+        if str(committee["status"]) != "active" or int(committee["code_id"]) != int(ref.code_id):
+            raise KeyError(f"Unknown active committee predictor reference: {ref!r}")
+        if str(committee["name"]) != str(ref.name):
+            raise ValueError(
+                "Predictor reference name no longer matches the active committee; "
+                "refresh predictors() and export the current reference."
+            )
+        aggregation = str(committee["aggregation"])
+
+        stacker = None
+        stacker_fit_id: int | None = None
+        stale_reasons: list[str] = []
+
+        if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
+            committee_fit = self.database.latest_classifier_committee_fit(
+                committee_id=int(ref.id), code_id=int(ref.code_id)
+            )
+            if committee_fit is None or not str(committee_fit.get("artifact_path") or ""):
+                raise ValueError(f"Committee {committee['name']!r} has not been trained.")
+            member_fit_ids = [int(value) for value in committee_fit["member_fit_ids"]]
+            if len(member_fit_ids) != len(committee["members"]):
+                stale_reasons.append("committee membership changed")
+
+            member_fits = [self.database.get_classifier_fit(fit_id) for fit_id in member_fit_ids]
+            member_specs = [
+                self.database.get_classifier_spec(int(fit["classifier_spec_id"]))
+                for fit in member_fits
+            ]
+            current_member_fit_ids: list[int] = []
+            for member in committee["members"]:
+                latest = self.database.latest_classifier_fit(
+                    code_id=int(ref.code_id),
+                    classifier_spec_id=int(member["classifier_spec_id"]),
+                )
+                if latest is not None:
+                    current_member_fit_ids.append(int(latest["classifier_fit_id"]))
+            expected_snapshot = (
+                self._committee_training_snapshot(
+                    code_id=int(ref.code_id),
+                    committee=committee,
+                    member_fit_ids=current_member_fit_ids,
+                )
+                if len(current_member_fit_ids) == len(committee["members"])
+                else None
+            )
+            if expected_snapshot is None or committee_fit["training_snapshot"] != expected_snapshot:
+                stale_reasons.append("learned committee fit no longer matches the current committee/training state")
+            for spec, fit in zip(member_specs, member_fits, strict=True):
+                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                    stale_reasons.append(f"member {spec['name']!r} is stale")
+            stacker = self.artifacts.load_model(
+                self.project_dir, str(committee_fit["artifact_path"])
+            )
+            stacker_fit_id = int(committee_fit["committee_fit_id"])
+        else:
+            member_specs = [
+                self.database.get_classifier_spec(int(member["classifier_spec_id"]))
+                for member in committee["members"]
+            ]
+            member_fits = []
+            for spec in member_specs:
+                fit = self.database.latest_classifier_fit(
+                    code_id=int(ref.code_id),
+                    classifier_spec_id=int(spec["classifier_spec_id"]),
+                )
+                if fit is None:
+                    raise ValueError(
+                        f"Train {spec['name']!r} before exporting committee {committee['name']!r}."
+                    )
+                member_fits.append(fit)
+                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                    stale_reasons.append(f"member {spec['name']!r} is stale")
+
+        stale = bool(stale_reasons)
+        if stale and not allow_stale:
+            raise ValueError(
+                f"Committee {committee['name']!r} is stale: "
+                + "; ".join(dict.fromkeys(stale_reasons))
+                + ". Retrain it or pass allow_stale=True to freeze the exact retained procedure."
+            )
+
+        sources, members = self._predictor_source_specs_and_members(
+            member_specs=member_specs, member_fits=member_fits
+        )
+        if aggregation in FIXED_COMMITTEE_AGGREGATIONS and any(
+            member.score_kind != "probability" for member in members
+        ):
+            raise ValueError(
+                "Fixed committee export requires probability-output member fits; "
+                "decision-score aggregation is not exported as a probability."
+            )
+        return FrozenPredictorExport(
+            format_version=1,
+            ref=ref,
+            code_name=str(code["name"]),
+            sources=sources,
+            members=members,
+            aggregation=aggregation,
+            stacker=stacker,
+            stacker_fit_id=stacker_fit_id,
+            positive_class=1,
+            threshold=0.5,
+            output_fields=("prediction", "probability"),
+            stale_at_export=stale,
+            provenance={
+                "geco_version": __version__,
+                "predictor_kind": "committee",
+                "committee_id": int(ref.id),
+                "committee_aggregation": aggregation,
+                "committee_updated_at": str(committee["updated_at"]),
+                "member_fit_ids": [int(fit["classifier_fit_id"]) for fit in member_fits],
+                "committee_fit_id": stacker_fit_id,
+                "stale_reasons": list(dict.fromkeys(stale_reasons)),
+            },
+        )
+
+    def export_classifier(self, name: str) -> FrozenPredictorExport:
+        """Export one active classifier through the unified frozen-predictor contract.
+
+        This convenience resolves the active classifier by name, but external systems
+        should prefer ``predictors()`` + ``export_predictor(ref)`` so classifier and
+        committee selection uses one unambiguous interface.
+        """
+        spec = self.database.get_classifier_spec_by_name(str(name).strip())
+        ref = GeCoPredictorRef(
+            kind="classifier",
+            id=int(spec["classifier_spec_id"]),
+            code_id=int(spec["code_id"]),
+            name=str(spec["name"]),
+        )
+        return self.export_predictor(ref)
 
     def training_label_counts(self, code_id: int) -> dict[str, int]:
         """Count positive and negative labels currently eligible for training."""
@@ -1511,6 +1868,10 @@ class GeometricCoder:
             algorithm=algorithm,
             hyperparameters=parameters,
         )
+
+    def rename_classifier_spec(self, classifier_spec_id: int, *, name: str) -> None:
+        """Rename an active classifier while preserving its stable ID and retained fit."""
+        self.database.rename_classifier_spec(int(classifier_spec_id), name=name)
 
     def update_classifier_spec(
         self,
@@ -1606,6 +1967,10 @@ class GeometricCoder:
             aggregation=aggregation,
         )
 
+    def rename_classifier_committee(self, committee_id: int, *, name: str) -> None:
+        """Rename an active committee while preserving its stable ID and learned fit."""
+        self.database.rename_classifier_committee(int(committee_id), name=name)
+
     def update_classifier_committee(
         self,
         committee_id: int,
@@ -1658,9 +2023,15 @@ class GeometricCoder:
         }
 
     def _classifier_scoring_matrix(
-        self, geometry_id: int
+        self, geometry_id: int, *, atomic_matrix: Matrix | None = None
     ) -> tuple[list[int], Matrix]:
-        """Return all current observations and their vectors for one geometry."""
+        """Return all current observations and their vectors for one geometry.
+
+        ``atomic_matrix`` lets training reuse a geometry matrix that was already loaded
+        while assembling labeled evidence.  This matters for large persisted geometries:
+        one stale fit should read the corpus matrix once, not once for training and again
+        for whole-corpus scoring.
+        """
         observations = self.database.list_observations()
         atomic = [row for row in observations if row["kind"] == "atomic"]
         derived = [row for row in observations if row["kind"] != "atomic"]
@@ -1668,7 +2039,11 @@ class GeometricCoder:
             *[int(row["observation_id"]) for row in atomic],
             *[int(row["observation_id"]) for row in derived],
         ]
-        corpus_matrix = self.geometry_matrix(int(geometry_id))
+        corpus_matrix = (
+            atomic_matrix
+            if atomic_matrix is not None
+            else self.geometry_matrix(int(geometry_id))
+        )
         if len(atomic) != corpus_matrix.shape[0]:
             raise RuntimeError("Atomic observation order no longer matches geometry rows.")
         if not derived:
@@ -1685,10 +2060,10 @@ class GeometricCoder:
             [np.asarray(corpus_matrix), *[np.asarray(row) for row in derived_rows]]
         )
 
-    def _classifier_training_matrix(
-        self, *, code_id: int, geometry_id: int
-    ) -> tuple[list[dict[str, Any]], Matrix, np.ndarray, dict[str, Any]]:
-        """Return eligible evidence, vectors, labels, and the exact training snapshot."""
+    def _classifier_training_evidence(
+        self, *, code_id: int
+    ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
+        """Return eligible labels and snapshot without touching geometry artifacts."""
         annotations = self.database.current_annotations(int(code_id))
         labeled = self._eligible_training_annotations(int(code_id), annotations)
         if not any(row["value"] == "positive" for row in labeled) or not any(
@@ -1697,18 +2072,66 @@ class GeometricCoder:
             raise ValueError(
                 "At least one active positive and one active negative example are required."
             )
-        training_rows = [
-            self.observation_vector(int(row["observation_id"]), int(geometry_id))
-            for row in labeled
-        ]
-        if sparse.issparse(training_rows[0]):
-            training_matrix: Matrix = sparse.vstack(training_rows, format="csr")
-        else:
-            training_matrix = np.vstack([np.asarray(row) for row in training_rows])
         labels = np.asarray(
             [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
         )
         snapshot = self._classifier_training_snapshot(int(code_id), annotations)
+        return labeled, labels, snapshot
+
+    def _classifier_training_rows(
+        self, *, labeled: Sequence[Mapping[str, Any]], geometry_id: int
+    ) -> tuple[Matrix, Matrix | None]:
+        """Assemble labeled vectors with at most one full atomic-geometry read.
+
+        Atomic observations are rows of the persisted corpus matrix.  The old path called
+        ``observation_vector`` once per label, causing that entire matrix to be reloaded
+        from disk for every labeled example.  Load it once here and slice all atomic rows
+        from the shared matrix.  Spans/teaching examples remain separate artifacts and are
+        loaded individually.
+        """
+        observations = {
+            int(row["observation_id"]): row
+            for row in self.database.list_observations()
+        }
+        atomic_matrix: Matrix | None = None
+        if any(
+            observations[int(row["observation_id"])]["kind"] == "atomic"
+            for row in labeled
+        ):
+            atomic_matrix = self.geometry_matrix(int(geometry_id))
+
+        training_rows: list[Matrix] = []
+        for label_row in labeled:
+            observation_id = int(label_row["observation_id"])
+            observation = observations[observation_id]
+            if observation["kind"] == "atomic":
+                if atomic_matrix is None:
+                    raise RuntimeError("Atomic geometry matrix was not loaded.")
+                row_position = int(observation["row_position"])
+                training_rows.append(
+                    atomic_matrix[row_position : row_position + 1]
+                )
+            else:
+                training_rows.append(
+                    self.observation_vector(observation_id, int(geometry_id))
+                )
+
+        if not training_rows:
+            raise ValueError("No eligible labeled examples are available for training.")
+        if sparse.issparse(training_rows[0]):
+            training_matrix: Matrix = sparse.vstack(training_rows, format="csr")
+        else:
+            training_matrix = np.vstack([np.asarray(row) for row in training_rows])
+        return training_matrix, atomic_matrix
+
+    def _classifier_training_matrix(
+        self, *, code_id: int, geometry_id: int
+    ) -> tuple[list[dict[str, Any]], Matrix, np.ndarray, dict[str, Any]]:
+        """Return eligible evidence, vectors, labels, and the exact training snapshot."""
+        labeled, labels, snapshot = self._classifier_training_evidence(code_id=int(code_id))
+        training_matrix, _ = self._classifier_training_rows(
+            labeled=labeled, geometry_id=int(geometry_id)
+        )
         return labeled, training_matrix, labels, snapshot
 
     def _select_classifier_hyperparameters(
@@ -1848,17 +2271,22 @@ class GeometricCoder:
         *,
         code_id: int,
         classifier_spec_id: int,
-        tune: bool = True,
+        tune: bool = False,
+        retune_current: bool = False,
         folds: int = 5,
         metric: str = "log_loss",
     ) -> dict[str, Any]:
-        """Produce the best current fitted state for one code-owned classifier.
+        """Train one code-owned classifier from the current labeled evidence.
 
-        When enough evidence exists for stratified cross-validation, Train selects
-        family-specific hyperparameters and then refits on all eligible current
-        evidence. With too little evidence for CV, it fits the family's current/default
-        parameters instead. A fit that is already current is reused without rerunning CV.
+        Ordinary training uses the classifier spec's currently stored hyperparameters.
+        When ``tune=True``, Train first performs the family's compact stratified
+        cross-validation search when enough evidence exists, persists the selected
+        hyperparameters on the classifier spec, and then fits that configuration on all
+        eligible evidence. An already-current fit is reused unless
+        ``retune_current=True`` is explicitly paired with ``tune=True``.
         """
+        if retune_current and not tune:
+            raise ValueError("retune_current=True requires tune=True")
         spec = self.database.get_classifier_spec(int(classifier_spec_id))
         if int(spec["code_id"]) != int(code_id):
             raise ValueError(
@@ -1866,13 +2294,15 @@ class GeometricCoder:
                 f"not code {code_id}."
             )
 
-        labeled, training_matrix, labels, snapshot = self._classifier_training_matrix(
-            code_id=int(code_id), geometry_id=int(spec["geometry_id"])
+        # Build the cheap evidence snapshot first.  Do not touch geometry artifacts until
+        # we know a new fit is actually required.  This keeps the common active-learning
+        # path -- Train on an already-current classifier -- effectively metadata-only.
+        labeled, labels, snapshot = self._classifier_training_evidence(
+            code_id=int(code_id)
         )
-        del labeled
 
-        # Fast path: ordinary recommendation requests should not rerun CV when the
-        # retained fit already matches both the evidence and current configuration.
+        # Fast path: ordinary recommendation requests should not rerun CV or reload a
+        # geometry when the retained fit already matches the evidence/configuration.
         existing = self.database.find_classifier_fit(
             code_id=int(code_id),
             classifier_spec_id=int(classifier_spec_id),
@@ -1881,13 +2311,18 @@ class GeometricCoder:
             hyperparameters=dict(spec["hyperparameters"]),
             training_snapshot=snapshot,
         )
-        if existing is not None:
+        if existing is not None and not (tune and retune_current):
             self._extend_classifier_fit_predictions(existing)
             result = dict(existing)
+            result["classifier_name"] = str(spec["name"])
             result["training_selection"] = {
                 "tuned": False, "reason": "current_fit_reused", "folds": 0
             }
             return result
+
+        training_matrix, atomic_matrix = self._classifier_training_rows(
+            labeled=labeled, geometry_id=int(spec["geometry_id"])
+        )
 
         if tune:
             selection = self._select_classifier_hyperparameters(
@@ -1934,11 +2369,16 @@ class GeometricCoder:
         if existing is not None:
             self._extend_classifier_fit_predictions(existing)
             result = dict(existing)
+            result["classifier_name"] = str(spec["name"])
+            selection = dict(selection)
+            selection["fit_reused"] = True
             result["training_selection"] = selection
             return result
 
         geometry_id = int(spec["geometry_id"])
-        observation_ids, scoring_matrix = self._classifier_scoring_matrix(geometry_id)
+        observation_ids, scoring_matrix = self._classifier_scoring_matrix(
+            geometry_id, atomic_matrix=atomic_matrix
+        )
         fitted = fit_classifier(
             algorithm=str(spec["algorithm"]),
             hyperparameters=selected_parameters,
@@ -2010,22 +2450,24 @@ class GeometricCoder:
         return result
 
     def _extend_classifier_fit_predictions(self, fit: Mapping[str, Any]) -> None:
-        """Score observations added after the classifier's retained fit was created."""
+        """Score observations added after the classifier's retained fit was created.
+
+        Check IDs before loading the scoring geometry.  A current fit in an unchanged
+        project should return without any numerical artifact I/O.
+        """
         fit_id = int(fit["classifier_fit_id"])
-        existing_ids = {
-            int(row["observation_id"])
-            for row in self.database.classifier_predictions(fit_id)
-        }
-        observation_ids, scoring_matrix = self._classifier_scoring_matrix(
+        missing_ids = self.database.missing_classifier_prediction_observation_ids(fit_id)
+        if not missing_ids:
+            return
+        observations = self.database.list_observations()
+        observation_ids = [int(row["observation_id"]) for row in observations]
+        position_by_id = {observation_id: position for position, observation_id in enumerate(observation_ids)}
+        missing_positions = [position_by_id[observation_id] for observation_id in missing_ids]
+        scored_ids, scoring_matrix = self._classifier_scoring_matrix(
             int(fit["geometry_id"])
         )
-        missing_positions = [
-            position
-            for position, observation_id in enumerate(observation_ids)
-            if observation_id not in existing_ids
-        ]
-        if not missing_positions:
-            return
+        if scored_ids != observation_ids:
+            raise RuntimeError("Classifier scoring observation order changed unexpectedly.")
         estimator = self.artifacts.load_model(
             self.project_dir, str(fit["artifact_path"])
         )
@@ -2066,16 +2508,18 @@ class GeometricCoder:
         *,
         code_id: int,
         classifier_spec_ids: Sequence[int],
-        tune: bool = True,
+        tune: bool = False,
+        retune_current: bool = False,
         folds: int = 5,
         metric: str = "log_loss",
     ) -> dict[int, dict[str, Any]]:
-        """Fit a batch of classifiers, selecting family hyperparameters when feasible."""
+        """Fit a batch of classifiers, optionally tuning family hyperparameters."""
         return {
             int(classifier_spec_id): self.train_classifier(
                 code_id=int(code_id),
                 classifier_spec_id=int(classifier_spec_id),
                 tune=bool(tune),
+                retune_current=bool(retune_current),
                 folds=int(folds),
                 metric=str(metric),
             )
@@ -2106,15 +2550,8 @@ class GeometricCoder:
             )
             prediction_complete = False
             if latest is not None:
-                prediction_ids = {
-                    int(row["observation_id"])
-                    for row in self.database.classifier_predictions(
-                        int(latest["classifier_fit_id"])
-                    )
-                }
-                prediction_complete = all(
-                    int(row["observation_id"]) in prediction_ids
-                    for row in self.database.list_observations()
+                prediction_complete = not self.database.missing_classifier_prediction_observation_ids(
+                    int(latest["classifier_fit_id"])
                 )
             rows.append(
                 {
@@ -2150,7 +2587,7 @@ class GeometricCoder:
         metric: str = "log_loss",
         **_: Any,
     ) -> dict[str, Any]:
-        """Legacy programmatic L2 selector; ordinary Develop training tunes automatically."""
+        """Legacy programmatic L2 selector for explicit regularization tuning."""
         spec = self.database.get_classifier_spec(int(classifier_spec_id))
         if int(spec["code_id"]) != int(code_id):
             raise ValueError("The selected classifier belongs to a different code.")
@@ -2225,7 +2662,12 @@ class GeometricCoder:
     def train_classifier_committee(
         self, *, code_id: int, committee_id: int
     ) -> dict[str, Any]:
-        """Fit a trainable committee on the latest member-classifier scores."""
+        """Fit a trainable committee on the latest member-classifier scores.
+
+        Freshness is checked before loading any member prediction vectors.  A current
+        learned committee therefore returns through a metadata-only path; member score
+        matrices are materialized only when the stacker genuinely needs refitting.
+        """
         committee = self.database.get_classifier_committee(int(committee_id))
         if int(committee["code_id"]) != int(code_id):
             raise ValueError("The selected committee belongs to another code.")
@@ -2234,7 +2676,6 @@ class GeometricCoder:
             raise ValueError("This committee aggregation does not require training.")
 
         member_fits: list[dict[str, Any]] = []
-        member_score_maps: list[dict[int, float]] = []
         for member in committee["members"]:
             fit = self.database.latest_classifier_fit(
                 code_id=int(code_id),
@@ -2244,15 +2685,22 @@ class GeometricCoder:
                 raise ValueError(
                     f"Train {member['classifier_name']} before training this committee."
                 )
-            scores: dict[int, float] = {}
-            for row in self.database.classifier_predictions(int(fit["classifier_fit_id"])):
-                score = row["probability"]
-                if score is None:
-                    score = row["decision_score"]
-                if score is not None:
-                    scores[int(row["observation_id"])] = float(score)
             member_fits.append(fit)
-            member_score_maps.append(scores)
+
+        member_fit_ids = [int(fit["classifier_fit_id"]) for fit in member_fits]
+        snapshot = self._committee_training_snapshot(
+            code_id=int(code_id), committee=committee, member_fit_ids=member_fit_ids
+        )
+        latest = self.database.latest_classifier_committee_fit(
+            committee_id=int(committee_id), code_id=int(code_id)
+        )
+        if latest is not None and latest["training_snapshot"] == snapshot:
+            self._extend_classifier_committee_fit_predictions(latest)
+            return latest
+
+        # Only a stale/missing committee fit needs the full member prediction maps.
+        member_score_lookup = self.database.classifier_score_maps(member_fit_ids)
+        member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
 
         annotations = self.database.current_annotations(int(code_id))
         labeled = self._eligible_training_annotations(int(code_id), annotations)
@@ -2266,7 +2714,9 @@ class GeometricCoder:
         training_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in training_ids] for scores in member_score_maps]
         )
-        labels = np.asarray([1 if row["value"] == "positive" else 0 for row in labeled], dtype=int)
+        labels = np.asarray(
+            [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
+        )
 
         observations = self.database.list_observations()
         scoring_ids = [int(row["observation_id"]) for row in observations]
@@ -2275,16 +2725,6 @@ class GeometricCoder:
         scoring_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in scoring_ids] for scores in member_score_maps]
         )
-        member_fit_ids = [int(fit["classifier_fit_id"]) for fit in member_fits]
-        snapshot = self._committee_training_snapshot(
-            code_id=int(code_id), committee=committee, member_fit_ids=member_fit_ids
-        )
-        latest = self.database.latest_classifier_committee_fit(
-            committee_id=int(committee_id), code_id=int(code_id)
-        )
-        if latest is not None and latest["training_snapshot"] == snapshot:
-            self._extend_classifier_committee_fit_predictions(latest)
-            return latest
 
         fitted = fit_classifier(
             algorithm="logistic_l2",
@@ -2308,9 +2748,13 @@ class GeometricCoder:
                 "observation_id": observation_id,
                 "predicted_label": "positive" if probability >= 0.5 else "negative",
                 "probability": float(probability),
-                "uncertainty": float(1.0 - min(1.0, abs(float(probability) - 0.5) * 2.0)),
+                "uncertainty": float(
+                    1.0 - min(1.0, abs(float(probability) - 0.5) * 2.0)
+                ),
             }
-            for observation_id, probability in zip(scoring_ids, probabilities, strict=True)
+            for observation_id, probability in zip(
+                scoring_ids, probabilities, strict=True
+            )
         ]
         committee_fit_id = self.database.register_classifier_committee_fit(
             committee_id=int(committee_id),
@@ -2328,32 +2772,23 @@ class GeometricCoder:
     ) -> None:
         """Score observations added after a trainable committee fit was created."""
         committee_fit_id = int(fit["committee_fit_id"])
-        existing_ids = {
-            int(row["observation_id"])
-            for row in self.database.classifier_committee_predictions(committee_fit_id)
-        }
-        observations = self.database.list_observations()
-        observation_ids = [int(row["observation_id"]) for row in observations]
-        missing_ids = [value for value in observation_ids if value not in existing_ids]
+        missing_ids = self.database.missing_classifier_committee_prediction_observation_ids(
+            committee_fit_id
+        )
         if not missing_ids:
             return
 
-        member_score_maps: list[dict[int, float]] = []
-        for member_fit_id in fit["member_fit_ids"]:
-            member_fit = self.database.get_classifier_fit(int(member_fit_id))
+        member_fit_ids = [int(value) for value in fit["member_fit_ids"]]
+        for member_fit_id in member_fit_ids:
+            member_fit = self.database.get_classifier_fit(member_fit_id)
             self._extend_classifier_fit_predictions(member_fit)
-            scores: dict[int, float] = {}
-            for row in self.database.classifier_predictions(int(member_fit_id)):
-                score = row["probability"]
-                if score is None:
-                    score = row["decision_score"]
-                if score is not None:
-                    scores[int(row["observation_id"])] = float(score)
+        member_score_lookup = self.database.classifier_score_maps(member_fit_ids)
+        member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
+        for scores in member_score_maps:
             if any(observation_id not in scores for observation_id in missing_ids):
                 raise ValueError(
                     "A member classifier is missing scores for newly ingested observations."
                 )
-            member_score_maps.append(scores)
 
         scoring_matrix = np.column_stack(
             [
@@ -2418,13 +2853,8 @@ class GeometricCoder:
                 snapshot = self._committee_training_snapshot(
                     code_id=int(code_id), committee=committee, member_fit_ids=member_fit_ids
                 )
-                prediction_complete = (
-                    len(
-                        self.database.classifier_committee_predictions(
-                            int(latest["committee_fit_id"])
-                        )
-                    )
-                    == len(self.database.list_observations())
+                prediction_complete = not self.database.missing_classifier_committee_prediction_observation_ids(
+                    int(latest["committee_fit_id"])
                 )
                 status = (
                     "current"
@@ -2438,95 +2868,167 @@ class GeometricCoder:
             "latest_fit": latest,
         }
 
+    def _committee_member_states(
+        self, *, code_id: int, committee: Mapping[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Return latest member-fit metadata using one shared training snapshot."""
+        snapshot = self._classifier_training_snapshot(
+            int(code_id), self.database.current_annotations(int(code_id))
+        )
+        states: list[dict[str, Any]] = []
+        for member in committee["members"]:
+            spec_id = int(member["classifier_spec_id"])
+            spec = self.database.get_classifier_spec(spec_id)
+            fit = self.database.latest_classifier_fit(
+                code_id=int(code_id), classifier_spec_id=spec_id
+            )
+            stale = True
+            if fit is not None:
+                stale = (
+                    fit["training_snapshot"] != snapshot
+                    or int(fit["geometry_id"]) != int(spec["geometry_id"])
+                    or str(fit["algorithm"]) != str(spec["algorithm"])
+                    or fit["hyperparameters"] != spec["hyperparameters"]
+                    or bool(
+                        self.database.missing_classifier_prediction_observation_ids(
+                            int(fit["classifier_fit_id"])
+                        )
+                    )
+                )
+            states.append(
+                {
+                    "member": member,
+                    "spec": spec,
+                    "fit": fit,
+                    "classifier_name": str(spec["name"]),
+                    "stale": stale,
+                }
+            )
+        return states, snapshot
+
     def _latest_trainable_committee_scores(
         self, *, code_id: int, committee_id: int
     ) -> dict[str, Any]:
-        status = self.classifier_committee_status(
-            code_id=int(code_id), committee_id=int(committee_id)
+        """Load learned committee scores without materializing member score vectors."""
+        committee = self.database.get_classifier_committee(int(committee_id))
+        if int(committee["code_id"]) != int(code_id):
+            raise ValueError("The selected committee belongs to another code.")
+        fit = self.database.latest_classifier_committee_fit(
+            committee_id=int(committee_id), code_id=int(code_id)
         )
-        fit = status["latest_fit"]
         if fit is None:
             raise ValueError("Train this committee before using its learned aggregation.")
-        rows = self.database.classifier_committee_predictions(int(fit["committee_fit_id"]))
-        by_unit = {
-            int(row["unit_id"]): float(row["probability"])
-            for row in rows if row["unit_id"] is not None
-        }
+
+        member_states, _ = self._committee_member_states(
+            code_id=int(code_id), committee=committee
+        )
+        current_member_fit_ids = [
+            int(state["fit"]["classifier_fit_id"])
+            for state in member_states
+            if state["fit"] is not None
+        ]
+        stale = len(current_member_fit_ids) != len(member_states)
+        if not stale:
+            current_snapshot = self._committee_training_snapshot(
+                code_id=int(code_id),
+                committee=committee,
+                member_fit_ids=current_member_fit_ids,
+            )
+            stale = (
+                fit["training_snapshot"] != current_snapshot
+                or any(bool(state["stale"]) for state in member_states)
+                or bool(
+                    self.database.missing_classifier_committee_prediction_observation_ids(
+                        int(fit["committee_fit_id"])
+                    )
+                )
+            )
+
+        by_unit = self.database.classifier_committee_atomic_probabilities(
+            int(fit["committee_fit_id"])
+        )
         unit_ids = [int(unit["unit_id"]) for unit in self.units()]
         if any(unit_id not in by_unit for unit_id in unit_ids):
             raise ValueError("The committee fit is missing atomic observation scores.")
         return {
             "fit": fit,
             "probabilities": [by_unit[unit_id] for unit_id in unit_ids],
-            "stale": status["status"] == "stale",
+            "stale": stale,
+            "member_states": member_states,
         }
 
     def _latest_classifier_scores(
         self, *, code_id: int, classifier_spec_id: int
     ) -> dict[str, Any] | None:
-        """Load the newest fit and atomic probability-like scores without refitting."""
+        """Load the newest atomic score vector using a lean prediction query."""
+        spec = self.database.get_classifier_spec(int(classifier_spec_id))
         fit = self.database.latest_classifier_fit(
             code_id=int(code_id), classifier_spec_id=int(classifier_spec_id)
         )
         if fit is None:
             return None
-        predictions = self.database.classifier_predictions(
-            int(fit["classifier_fit_id"]), atomic_only=True
-        )
-        score_by_unit: dict[int, float] = {}
-        for row in predictions:
-            if row["unit_id"] is None:
-                continue
-            score = row["probability"]
-            if score is None:
-                score = row["decision_score"]
-            if score is None:
-                raise ValueError(
-                    f"Classifier {fit['classifier_name']} exposes no usable score."
-                )
-            score_by_unit[int(row["unit_id"])] = float(score)
+        score_by_unit = self.database.classifier_atomic_score_vectors(
+            [int(fit["classifier_fit_id"])]
+        )[int(fit["classifier_fit_id"])]
         unit_ids = [int(unit["unit_id"]) for unit in self.units()]
         if any(unit_id not in score_by_unit for unit_id in unit_ids):
             return None
         snapshot = self._classifier_training_snapshot(
             int(code_id), self.database.current_annotations(int(code_id))
         )
-        spec = self.database.get_classifier_spec(int(classifier_spec_id))
         return {
             "fit": fit,
+            "classifier_name": str(spec["name"]),
             "probabilities": [score_by_unit[unit_id] for unit_id in unit_ids],
             "stale": (
                 fit["training_snapshot"] != snapshot
                 or int(fit["geometry_id"]) != int(spec["geometry_id"])
                 or str(fit["algorithm"]) != str(spec["algorithm"])
                 or fit["hyperparameters"] != spec["hyperparameters"]
+                or bool(
+                    self.database.missing_classifier_prediction_observation_ids(
+                        int(fit["classifier_fit_id"])
+                    )
+                )
             ),
         }
 
     def _resolve_committee_scores(
         self, *, code_id: int, committee_id: int
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-        """Resolve a committee definition to its latest code-specific fits."""
+        """Resolve member score vectors in one lean batched prediction query."""
         committee = self.database.get_classifier_committee(int(committee_id))
         if int(committee["code_id"]) != int(code_id):
             raise ValueError("The selected committee belongs to another code.")
-        results: dict[str, dict[str, Any]] = {}
-        missing: list[str] = []
-        for member in committee["members"]:
-            result = self._latest_classifier_scores(
-                code_id=int(code_id),
-                classifier_spec_id=int(member["classifier_spec_id"]),
-            )
-            if result is None:
-                missing.append(str(member["classifier_name"]))
-            else:
-                results[str(member["classifier_name"])] = result
+        member_states, _ = self._committee_member_states(
+            code_id=int(code_id), committee=committee
+        )
+        missing = [
+            str(state["classifier_name"])
+            for state in member_states
+            if state["fit"] is None
+        ]
         if missing:
             raise ValueError(
                 "Train all committee classifiers before using it. Missing: "
                 + ", ".join(missing)
                 + "."
             )
+        fit_ids = [int(state["fit"]["classifier_fit_id"]) for state in member_states]
+        score_lookup = self.database.classifier_atomic_score_vectors(fit_ids)
+        unit_ids = [int(unit["unit_id"]) for unit in self.units()]
+        results: dict[str, dict[str, Any]] = {}
+        for state, fit_id in zip(member_states, fit_ids, strict=True):
+            scores = score_lookup[fit_id]
+            name = str(state["classifier_name"])
+            if any(unit_id not in scores for unit_id in unit_ids):
+                raise ValueError(f"Classifier {name} is missing atomic scores.")
+            results[name] = {
+                "fit": state["fit"],
+                "classifier_name": name,
+                "probabilities": [scores[unit_id] for unit_id in unit_ids],
+                "stale": bool(state["stale"]),
+            }
         return results, committee
 
     def focus_recommendation(
@@ -2541,11 +3043,13 @@ class GeometricCoder:
         random_seed: int | None = None,
         auto_retrain: bool = False,
         auto_train_all: bool = True,
+        tune_hyperparameters: bool = False,
     ) -> dict[str, Any] | None:
         """Generate one session-aware recommendation from explicit classifiers."""
         self.database.get_code(int(code_id))
         units = self.units()
         unit_ids = [int(unit["unit_id"]) for unit in units]
+        unit_position = {unit_id: position for position, unit_id in enumerate(unit_ids)}
         annotations = self.database.current_annotations(int(code_id))
         annotated_ids = {
             int(row["unit_id"])
@@ -2575,6 +3079,7 @@ class GeometricCoder:
                 "strategy": "review_unsure",
                 "score": None,
                 "probabilities": {},
+                "committee_probability": None,
                 "classifier_fit_ids": {},
                 "fallback": False,
             }
@@ -2597,6 +3102,7 @@ class GeometricCoder:
                 "strategy": "random",
                 "score": None,
                 "probabilities": {},
+                "committee_probability": None,
                 "classifier_fit_ids": {},
                 "fallback": strategy != "random",
             }
@@ -2609,7 +3115,12 @@ class GeometricCoder:
         use_committee = (
             strategy in committee_strategies or recommendation_source == "committee"
         )
+        committee: dict[str, Any] | None = None
+        learned: dict[str, Any] | None = None
+        member_states: list[dict[str, Any]] = []
+        results: dict[str, dict[str, Any]] = {}
         committee_aggregation = "mean"
+
         if use_committee:
             if committee_id is None:
                 raise ValueError("Select a classifier committee first.")
@@ -2627,16 +3138,17 @@ class GeometricCoder:
                     else spec_ids
                 )
                 self.train_classifiers(
-                    code_id=int(code_id), classifier_spec_ids=auto_spec_ids
+                    code_id=int(code_id),
+                    classifier_spec_ids=auto_spec_ids,
+                    tune=bool(tune_hyperparameters),
                 )
-            results, committee = self._resolve_committee_scores(
-                code_id=int(code_id), committee_id=int(committee_id)
-            )
+
             committee_aggregation = str(committee["aggregation"])
             if auto_retrain and committee_aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
                 self.train_classifier_committee(
                     code_id=int(code_id), committee_id=int(committee_id)
                 )
+
             recommendation_strategy = (
                 "classifier_disagreement"
                 if strategy in {"classifier_disagreement", "geometry_disagreement"}
@@ -2647,6 +3159,26 @@ class GeometricCoder:
                 )
             )
             selected_name = None
+
+            if (
+                committee_aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS
+                and recommendation_strategy != "classifier_disagreement"
+            ):
+                learned = self._latest_trainable_committee_scores(
+                    code_id=int(code_id), committee_id=int(committee_id)
+                )
+                member_states = list(learned["member_states"])
+                recommendation_probabilities = {"committee": learned["probabilities"]}
+                recommendation_aggregation = "mean"
+            else:
+                results, committee = self._resolve_committee_scores(
+                    code_id=int(code_id), committee_id=int(committee_id)
+                )
+                recommendation_probabilities = {
+                    name: result["probabilities"]
+                    for name, result in results.items()
+                }
+                recommendation_aggregation = committee_aggregation
         else:
             if active_classifier_spec_id is None:
                 raise ValueError("Select an active classifier first.")
@@ -2658,11 +3190,13 @@ class GeometricCoder:
                             int(row["classifier_spec_id"])
                             for row in self.classifier_specs(code_id=int(code_id))
                         ],
+                        tune=bool(tune_hyperparameters),
                     )
                 else:
                     self.train_classifier(
                         code_id=int(code_id),
                         classifier_spec_id=int(active_classifier_spec_id),
+                        tune=bool(tune_hyperparameters),
                     )
             result = self._latest_classifier_scores(
                 code_id=int(code_id),
@@ -2673,7 +3207,7 @@ class GeometricCoder:
                 raise ValueError(
                     f"Train {spec['name']} before using model recommendations."
                 )
-            name = str(result["fit"]["classifier_name"])
+            name = str(result["classifier_name"])
             results = {name: result}
             recommendation_strategy = (
                 "classifier_uncertainty"
@@ -2681,20 +3215,7 @@ class GeometricCoder:
                 else strategy
             )
             selected_name = name
-
-        recommendation_probabilities = {
-            name: result["probabilities"] for name, result in results.items()
-        }
-        recommendation_aggregation = committee_aggregation
-        if (
-            use_committee
-            and committee_aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS
-            and recommendation_strategy != "classifier_disagreement"
-        ):
-            learned = self._latest_trainable_committee_scores(
-                code_id=int(code_id), committee_id=int(committee_id)
-            )
-            recommendation_probabilities = {"committee": learned["probabilities"]}
+            recommendation_probabilities = {name: result["probabilities"]}
             recommendation_aggregation = "mean"
 
         recommendation = recommend_focus_unit(
@@ -2709,18 +3230,83 @@ class GeometricCoder:
         )
         if recommendation is None:
             return None
+
+        display_probabilities = dict(recommendation.probabilities)
+        committee_probability: float | None = None
+        classifier_fit_ids: dict[str, int] = {}
+        stale_classifiers: list[str] = []
+
+        if use_committee:
+            assert committee is not None and committee_id is not None
+            position = unit_position[int(recommendation.unit_id)]
+            if results:
+                display_probabilities = {
+                    name: float(result["probabilities"][position])
+                    for name, result in results.items()
+                }
+                classifier_fit_ids = {
+                    name: int(result["fit"]["classifier_fit_id"])
+                    for name, result in results.items()
+                }
+                stale_classifiers = [
+                    name for name, result in results.items() if result.get("stale")
+                ]
+            else:
+                display_probabilities = {}
+                fitted_states = [state for state in member_states if state["fit"] is not None]
+                selected_fit_ids = [
+                    int(state["fit"]["classifier_fit_id"]) for state in fitted_states
+                ]
+                selected_scores = self.database.classifier_scores_for_unit(
+                    selected_fit_ids, int(recommendation.unit_id)
+                )
+                for state, fit_id in zip(fitted_states, selected_fit_ids, strict=True):
+                    name = str(state["classifier_name"])
+                    if fit_id in selected_scores:
+                        display_probabilities[name] = float(selected_scores[fit_id])
+                    classifier_fit_ids[name] = fit_id
+                    if state.get("stale"):
+                        stale_classifiers.append(name)
+
+            if committee_aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
+                if learned is not None:
+                    committee_probability = float(learned["probabilities"][position])
+                else:
+                    latest_committee_fit = self.database.latest_classifier_committee_fit(
+                        committee_id=int(committee_id), code_id=int(code_id)
+                    )
+                    if latest_committee_fit is not None:
+                        committee_probability = (
+                            self.database.classifier_committee_probability_for_unit(
+                                int(latest_committee_fit["committee_fit_id"]),
+                                int(recommendation.unit_id),
+                            )
+                        )
+            elif display_probabilities:
+                committee_probability = float(
+                    aggregate_probabilities(
+                        {name: [value] for name, value in display_probabilities.items()},
+                        aggregation=committee_aggregation,
+                    )[0]
+                )
+        else:
+            classifier_fit_ids = {
+                name: int(result["fit"]["classifier_fit_id"])
+                for name, result in results.items()
+            }
+            stale_classifiers = [
+                name for name, result in results.items() if result.get("stale")
+            ]
+
         return {
             "unit_id": recommendation.unit_id,
             "strategy": recommendation.strategy,
             "score": recommendation.score,
-            "probabilities": recommendation.probabilities,
-            "classifier_fit_ids": {
-                name: int(result["fit"]["classifier_fit_id"])
-                for name, result in results.items()
-            },
-            "stale_classifiers": [
-                name for name, result in results.items() if result.get("stale")
-            ],
+            "probabilities": display_probabilities,
+            "committee_probability": committee_probability,
+            "classifier_fit_ids": classifier_fit_ids,
+            "stale_classifiers": stale_classifiers,
+            "stale_committee": bool(learned and learned.get("stale")),
             "fallback": False,
         }
 
@@ -2782,7 +3368,8 @@ class GeometricCoder:
                     continue
                 scores[int(row["observation_id"])] = float(raw_score)
             score_maps.append(scores)
-            names.append(str(fit["classifier_name"]))
+            spec = self.database.get_classifier_spec(int(fit["classifier_spec_id"]))
+            names.append(str(spec["name"]))
         common_observation_ids = {
             int(observation["observation_id"]) for observation in observations
         }
@@ -2935,7 +3522,7 @@ class GeometricCoder:
             if result is None:
                 spec = self.database.get_classifier_spec(int(source_id))
                 raise ValueError(f"Train {spec['name']} before generating proposals.")
-            results = {str(result["fit"]["classifier_name"]): result}
+            results = {str(result["classifier_name"]): result}
             aggregation = "mean"
         else:
             results, committee = self._resolve_committee_scores(
@@ -3187,11 +3774,25 @@ class GeometricCoder:
         host: str = "127.0.0.1",
         port: int = 8050,
         debug: bool = False,
+        use_reloader: bool = False,
     ) -> None:
-        """Launch the local Dash interface."""
+        """Launch the local Dash interface.
+
+        ``debug=True`` enables Dash/Flask debug validation and developer tools.
+        GeCo deliberately keeps the auto-reloader off by default because the
+        reloader starts a second process and can rerun heavyweight project setup
+        or duplicate runtime-only external-provider state. Advanced callers may
+        opt in explicitly with ``use_reloader=True`` when that lifecycle is safe.
+        """
         from geometric_coder.ui import launch_app
 
-        launch_app(self, host=host, port=port, debug=debug)
+        launch_app(
+            self,
+            host=host,
+            port=port,
+            debug=debug,
+            use_reloader=use_reloader,
+        )
 
 
 __all__ = ["GeometricCoder", "Geometry"]

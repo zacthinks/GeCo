@@ -26,7 +26,14 @@ from geometric_coder.explore import (
     deterministic_page_with_inclusions,
     recommend_page_unit,
 )
-from geometric_coder.ui.figures import build_geometry_figure
+from geometric_coder.ui.figures import (
+    EXPLORE_ELIGIBLE_TRACE_INDEX,
+    EXPLORE_FILTERED_TRACE_INDEX,
+    EXPLORE_FOCAL_TRACE_INDEX,
+    EXPLORE_TRACE_NAMES,
+    EXPLORE_VISITED_TRACE_INDEX,
+    build_geometry_figure,
+)
 
 if TYPE_CHECKING:
     from geometric_coder.project import GeometricCoder
@@ -102,7 +109,7 @@ def create_app(project: GeometricCoder) -> Any:
     """Create the local GeCo Dash application."""
     try:
         from dash import (
-            ALL, Dash, Input, Output, Patch, State, callback_context, dash_table, dcc, html, no_update,
+            ALL, Dash, Input, Output, Patch, State, callback_context, dash_table, dcc, html, no_update, set_props,
         )
         import dash_ag_grid as dag
     except ImportError as error:
@@ -153,11 +160,21 @@ def create_app(project: GeometricCoder) -> Any:
         initial_state.get("navigation_history"),
         focal_unit_id=initial_state.get("focal_unit_id"),
     )
+    initial_explore_code_palette = _normalize_explore_code_palette(
+        initial_state.get("explore_code_palette"),
+        {int(code["code_id"]) for code in codes},
+    )
+    initial_seen_count = len(
+        project.database.seen_unit_ids(int(initial_session["session_id"]))
+    )
+    initial_workspace = str(initial_state.get("workspace", "explore"))
+    initial_focal_unit_id = initial_state.get("focal_unit_id")
 
     assets_folder = Path(__file__).parent / "assets"
     app = Dash(
         __name__,
         title="GeCo",
+        update_title=None,
         assets_folder=str(assets_folder),
         suppress_callback_exceptions=True,
     )
@@ -215,7 +232,16 @@ def create_app(project: GeometricCoder) -> Any:
                     },
                 ),
                 children=[
-                dcc.Store(id="focal-unit-store", data=initial_state.get("focal_unit_id")),
+                dcc.Store(id="focal-unit-store", data=initial_focal_unit_id),
+                dcc.Store(
+                    id="explore-focal-unit-store",
+                    data=initial_focal_unit_id if initial_workspace == "explore" else None,
+                ),
+                dcc.Store(
+                    id="focus-focal-unit-store",
+                    data=initial_focal_unit_id if initial_workspace == "focus" else None,
+                ),
+                dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -243,7 +269,16 @@ def create_app(project: GeometricCoder) -> Any:
                 dcc.Store(id="memo-refresh-store", data=0),
                 dcc.Store(id="active-memo-store", data=None),
                 dcc.Store(id="explore-code-refresh-store", data=0),
+                dcc.Store(
+                    id="explore-code-palette-store",
+                    data=initial_explore_code_palette,
+                ),
+                dcc.Store(
+                    id="explore-code-row-count-store",
+                    data=len(initial_explore_code_palette),
+                ),
                 dcc.Store(id="explore-annotation-refresh-store", data=0),
+                dcc.Store(id="explore-map-filter-refresh-store", data=0),
                 dcc.Store(
                     id="explore-span-selection-store",
                     data=(
@@ -324,6 +359,7 @@ def create_app(project: GeometricCoder) -> Any:
                         total_units=len(units),
                         sessions=sessions,
                         initial_session_id=int(initial_session["session_id"]),
+                        initial_seen_count=initial_seen_count,
                         metadata_profiles=metadata_profiles,
                         allow_create_view=not project.is_external_backed,
                     )),
@@ -398,7 +434,7 @@ def create_app(project: GeometricCoder) -> Any:
                         dcc=dcc, html=html, geometries=geometries
                     ),
                     _classifier_manager_modal(
-                        html=html, dash_table=dash_table
+                        dcc=dcc, html=html, dash_table=dash_table
                     ),
                     _committee_modal(
                         dcc=dcc, html=html, dash_table=dash_table
@@ -417,6 +453,43 @@ def create_app(project: GeometricCoder) -> Any:
         ],
         className="app-shell",
         style=GECO_DASH_THEME,
+    )
+
+    # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
+    # wake their server-side reading/model callbacks every time the global focal
+    # unit changes in another workspace. Switching tabs copies the current focal
+    # unit into that workspace exactly once.
+    app.clientside_callback(
+        """
+        function(workspace, focalUnitId) {
+            const noUpdate = window.dash_clientside.no_update;
+            return [
+                workspace === "explore" ? focalUnitId : noUpdate,
+                workspace === "focus" ? focalUnitId : noUpdate
+            ];
+        }
+        """,
+        Output("explore-focal-unit-store", "data"),
+        Output("focus-focal-unit-store", "data"),
+        Input("workspace-tabs", "value"),
+        Input("focal-unit-store", "data"),
+    )
+
+    app.clientside_callback(
+        """
+        function(annotationRefresh, uncodedValues, currentRefresh) {
+            const enabled = Array.isArray(uncodedValues) && uncodedValues.includes("uncoded_only");
+            if (!enabled) {
+                return window.dash_clientside.no_update;
+            }
+            return (Number(currentRefresh) || 0) + 1;
+        }
+        """,
+        Output("explore-map-filter-refresh-store", "data"),
+        Input("explore-annotation-refresh-store", "data"),
+        State("explore-uncoded-only", "value"),
+        State("explore-map-filter-refresh-store", "data"),
+        prevent_initial_call=True,
     )
 
     @app.callback(
@@ -452,6 +525,8 @@ def create_app(project: GeometricCoder) -> Any:
         Output("page-number", "value"),
         Output("navigation-new-only", "value"),
         Output("workspace-tabs", "value"),
+        Output("explore-code-palette-store", "data"),
+        Output("explore-code-row-count-store", "data"),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-active-classifier-dropdown", "value", allow_duplicate=True),
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
@@ -506,6 +581,9 @@ def create_app(project: GeometricCoder) -> Any:
             state.get("navigation_history"),
             focal_unit_id=state.get("focal_unit_id"),
         )
+        explore_palette = _normalize_explore_code_palette(
+            state.get("explore_code_palette"), current_code_ids
+        )
         return (
             int(session_id),
             geometry_id,
@@ -529,6 +607,8 @@ def create_app(project: GeometricCoder) -> Any:
             max(1, int(state.get("page_number", 1))),
             (["new_only"] if state.get("navigation_new_only", True) else []),
             str(state.get("workspace", "explore")),
+            explore_palette,
+            len(explore_palette),
             focus_code_id,
             focus_classifier,
             focus_committee,
@@ -1181,9 +1261,9 @@ def create_app(project: GeometricCoder) -> Any:
         Output("geometry-map", "figure"),
         Output("literal-search-status", "children"),
         Output("page-status", "children"),
+        Output("geometry-map-base-revision-store", "data"),
         Input("view-dropdown", "value"),
         Input("geometry-dropdown", "value"),
-        Input("focal-unit-store", "data"),
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-scores-store", "data"),
@@ -1191,16 +1271,17 @@ def create_app(project: GeometricCoder) -> Any:
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
         Input("explore-uncoded-only", "value"),
-        Input("explore-annotation-refresh-store", "data"),
+        Input("explore-map-filter-refresh-store", "data"),
         Input("session-dropdown", "value"),
         Input("page-size", "value"),
         Input("page-number", "value"),
         State("geometry-map", "relayoutData"),
+        State("explore-focal-unit-store", "data"),
+        State("geometry-map-base-revision-store", "data"),
     )
     def update_map(
         view_id: int | None,
         geometry_id: int | None,
-        focal_unit_id: int | None,
         literal_query: str | None,
         literal_options: list[str] | None,
         all_semantic_scores: dict[str, list[float]] | None,
@@ -1208,15 +1289,18 @@ def create_app(project: GeometricCoder) -> Any:
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
         uncoded_only_values: list[str] | None,
-        annotation_refresh: int | None,
+        map_filter_refresh: int | None,
         session_id: int,
         page_size: Any,
         page_number: Any,
         relayout_data: dict[str, Any] | None,
-    ) -> tuple[Any, str, str]:
-        del annotation_refresh
+        focal_unit_id: int | None,
+        base_revision: int | None,
+    ) -> tuple[Any, str, str, int]:
+        del map_filter_refresh
+        next_revision = int(base_revision or 0) + 1
         if view_id is None or geometry_id is None:
-            return _empty_figure("No computed geometry view is available."), "", ""
+            return _empty_figure("No computed geometry view is available."), "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
         semantic_scores = (all_semantic_scores or {}).get(str(geometry_record["name"]))
@@ -1259,9 +1343,6 @@ def create_app(project: GeometricCoder) -> Any:
         )
         coordinates = project.view_coordinates(int(view_id))[positions]
         page_units = [units[int(position)] for position in positions]
-        # Metadata filters define which observations are on the map. Literal and
-        # semantic search continue to distinguish eligible from filtered points
-        # within that metadata-defined subset.
         page_eligible = filters.eligible[positions]
         page_semantic = (
             np.asarray(semantic_scores, dtype=float)[positions]
@@ -1295,7 +1376,42 @@ def create_app(project: GeometricCoder) -> Any:
             f"{len(positions):,} points shown · "
             f"{filter_match_count:,} points match filters"
         )
-        return figure, literal_status, page_status
+        return figure, literal_status, page_status, next_revision
+
+    @app.callback(
+        Output("geometry-map", "figure", allow_duplicate=True),
+        Output("session-progress", "children", allow_duplicate=True),
+        Input("explore-focal-unit-store", "data"),
+        Input("geometry-map-base-revision-store", "data"),
+        Input("session-dropdown", "value"),
+        State("geometry-map", "figure"),
+        prevent_initial_call=True,
+    )
+    def update_map_navigation_overlays(
+        focal_unit_id: int | None,
+        base_revision: int | None,
+        session_id: int,
+        current_figure: dict[str, Any] | None,
+    ) -> tuple[Any, str]:
+        del base_revision
+        seen = project.database.seen_unit_ids(int(session_id))
+        progress = f"Visited {len(seen):,} of {len(units):,}"
+        if callback_context.triggered_id == "session-dropdown":
+            # The base-map callback will rebuild for the new session and then
+            # advance geometry-map-base-revision-store. Patch only after that.
+            return no_update, progress
+        payload = _geometry_overlay_payload(
+            current_figure,
+            seen_unit_ids=seen,
+            focal_unit_id=focal_unit_id,
+        )
+        if payload is None:
+            return no_update, progress
+        patch = Patch()
+        for trace_index, values in payload.items():
+            for property_name, property_value in values.items():
+                patch["data"][int(trace_index)][property_name] = property_value
+        return patch, progress
 
     @app.callback(
         Output("page-number", "max"),
@@ -1306,7 +1422,7 @@ def create_app(project: GeometricCoder) -> Any:
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
         Input("explore-uncoded-only", "value"),
-        Input("explore-annotation-refresh-store", "data"),
+        Input("explore-map-filter-refresh-store", "data"),
         State("page-number", "value"),
         prevent_initial_call=True,
     )
@@ -1317,10 +1433,10 @@ def create_app(project: GeometricCoder) -> Any:
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
         uncoded_only_values: list[str] | None,
-        annotation_refresh: int | None,
+        map_filter_refresh: int | None,
         page_number: Any,
     ) -> tuple[int, int]:
-        del previous_clicks, next_clicks, annotation_refresh
+        del previous_clicks, next_clicks, map_filter_refresh
         size = _coerce_positive_int(page_size, default=5000)
         metadata_mask, _errors = _evaluate_metadata_filters(
             units, metadata_filters or [], operator=metadata_filter_operator
@@ -1341,7 +1457,7 @@ def create_app(project: GeometricCoder) -> Any:
             "metadata-filters-store",
             "metadata-filter-operator",
             "explore-uncoded-only",
-            "explore-annotation-refresh-store",
+            "explore-map-filter-refresh-store",
         }:
             current = 1
         elif triggered == "page-previous":
@@ -1593,16 +1709,14 @@ def create_app(project: GeometricCoder) -> Any:
         Output("focal-key", "children"),
         Output("context-content", "children"),
         Output("metadata-content", "children"),
-        Input("focal-unit-store", "data"),
+        Input("explore-focal-unit-store", "data"),
         Input("context-level", "value"),
         Input("context-window", "value"),
-        Input("explore-span-selection-store", "data"),
     )
     def update_reading_panel(
         focal_unit_id: int | None,
         level_index: int,
         window: int,
-        selected_unit_ids: list[int] | None,
     ) -> tuple[Any, Any, Any]:
         if focal_unit_id is None:
             placeholder = "Select a point or use a navigation command to begin reading."
@@ -1616,7 +1730,7 @@ def create_app(project: GeometricCoder) -> Any:
             context,
             focal_unit_id=int(focal_unit_id),
             key_columns=list(metadata["key_columns"]),
-            selected_unit_ids=selected_unit_ids,
+            selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="explore-span-checkbox",
             span_selection_enabled=project.can_transform_new_observations(),
         )
@@ -1625,7 +1739,7 @@ def create_app(project: GeometricCoder) -> Any:
 
     @app.callback(
         Output("explore-span-selection-store", "data"),
-        Input("focal-unit-store", "data"),
+        Input("explore-focal-unit-store", "data"),
         Input("context-level", "value"),
         Input("context-window", "value"),
     )
@@ -1694,16 +1808,6 @@ def create_app(project: GeometricCoder) -> Any:
         if triggered == "context-window-plus":
             return current + 1
         return current
-
-    @app.callback(
-        Output("session-progress", "children"),
-        Input("session-dropdown", "value"),
-        Input("focal-unit-store", "data"),
-    )
-    def update_session_progress(session_id: int, focal_unit_id: int | None) -> str:
-        del focal_unit_id
-        seen_count = len(project.database.seen_unit_ids(int(session_id)))
-        return f"Visited {seen_count:,} of {len(units):,}"
 
     @app.callback(
         Output("memo-dropdown", "options"),
@@ -2724,17 +2828,21 @@ def create_app(project: GeometricCoder) -> Any:
     @app.callback(
         Output("code-center-units-table", "data"),
         Input("code-center-selected-store", "data"),
+        Input("workspace-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
     )
     def load_code_center_units(
         code_id: int | None,
+        workspace: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
-    ) -> list[dict[str, Any]]:
+    ) -> Any:
         del explore_refresh, focus_refresh, teaching_refresh
+        if workspace != "codes":
+            return no_update
         if code_id is None:
             return []
         return [
@@ -2767,6 +2875,7 @@ def create_app(project: GeometricCoder) -> Any:
         Input("code-center-page-size", "value"),
         Input("code-center-page-number", "value"),
         Input("code-center-include-positives", "value"),
+        Input("workspace-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
@@ -2780,6 +2889,7 @@ def create_app(project: GeometricCoder) -> Any:
         page_size: Any,
         page_number: Any,
         include_positive_values: list[str] | None,
+        workspace: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
@@ -2787,6 +2897,8 @@ def create_app(project: GeometricCoder) -> Any:
         relayout_data: dict[str, Any] | None,
     ) -> tuple[Any, str]:
         del explore_refresh, focus_refresh, teaching_refresh
+        if workspace != "codes":
+            return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
         positive_observations = (
@@ -2956,12 +3068,21 @@ def create_app(project: GeometricCoder) -> Any:
         Output("code-center-map", "figure", allow_duplicate=True),
         Input("code-center-focal-store", "data"),
         State("code-center-view", "value"),
+        State("code-center-map", "figure"),
         prevent_initial_call=True,
     )
     def update_code_center_focal_marker(
-        observation_id: int | None, view_id: int | None
+        observation_id: int | None,
+        view_id: int | None,
+        current_figure: dict[str, Any] | None,
     ) -> Any:
         if view_id is None:
+            return no_update
+        # Dash Patch updates require the target property and nested path to
+        # already exist in the browser. code-center-map is initialized with a
+        # stable focal-marker trace at data[0], and this guard also protects
+        # transient/dynamic-layout states before that structure is available.
+        if not current_figure or not current_figure.get("data"):
             return no_update
         patch = Patch()
         if observation_id is None:
@@ -3060,16 +3181,20 @@ def create_app(project: GeometricCoder) -> Any:
         Output("code-center-assignment-unsure", "className"),
         Input("code-center-selected-store", "data"),
         Input("code-center-focal-store", "data"),
+        Input("workspace-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
     )
     def style_code_center_assignment_buttons(
         code_id: int | None,
         observation_id: int | None,
+        workspace: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
-    ) -> tuple[bool, bool, bool, str, str, str]:
+    ) -> tuple[Any, Any, Any, Any, Any, Any]:
         del explore_refresh, focus_refresh
+        if workspace != "codes":
+            return (no_update,) * 6
         current = None
         disabled = code_id is None or observation_id is None
         if not disabled:
@@ -3146,27 +3271,25 @@ def create_app(project: GeometricCoder) -> Any:
         )
 
     @app.callback(
-        Output("explore-code-dropdown", "options"),
         Output("focus-code-dropdown", "options"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
     )
     def refresh_code_options(
         explore_refresh: int | None, focus_refresh: int | None
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         del explore_refresh, focus_refresh
-        options = _code_options(project.codes())
-        return options, options
+        return _code_options(project.codes())
 
     @app.callback(
         Output("code-modal", "style"),
         Output("code-modal-target-store", "data"),
         Output("explore-code-refresh-store", "data", allow_duplicate=True),
         Output("focus-refresh-store", "data", allow_duplicate=True),
-        Output("explore-code-dropdown", "options", allow_duplicate=True),
         Output("focus-code-dropdown", "options", allow_duplicate=True),
-        Output("explore-code-dropdown", "value", allow_duplicate=True),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
+        Output("explore-code-palette-store", "data", allow_duplicate=True),
+        Output("explore-code-row-count-store", "data", allow_duplicate=True),
         Output("code-modal-name", "value"),
         Output("code-modal-definition", "value"),
         Output("code-modal-status", "children"),
@@ -3180,6 +3303,7 @@ def create_app(project: GeometricCoder) -> Any:
         State("code-modal-definition", "value"),
         State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"),
+        State("explore-code-palette-store", "data"),
         prevent_initial_call=True,
     )
     def manage_code_modal(
@@ -3193,6 +3317,7 @@ def create_app(project: GeometricCoder) -> Any:
         definition: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
+        explore_palette: list[int | None] | None,
     ) -> tuple[Any, ...]:
         del explore_open, focus_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
@@ -3227,110 +3352,338 @@ def create_app(project: GeometricCoder) -> Any:
             code_id = existing[clean_name.casefold()]
         else:
             code_id = project.create_code(clean_name, (definition or "").strip())
-        explore_value = code_id if target == "explore" else no_update
+        current_codes = project.codes()
+        options = _code_options(current_codes)
         focus_value = code_id if target == "focus" else no_update
-        options = _code_options(project.codes())
+        palette_value: Any = no_update
+        row_count_value: Any = no_update
+        if target == "explore":
+            palette_value = _place_code_in_explore_palette(
+                explore_palette,
+                code_id,
+                {int(code["code_id"]) for code in current_codes},
+            )
+            row_count_value = len(palette_value)
         return (
             {"display": "none"},
             None,
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
             options,
-            options,
-            explore_value,
             focus_value,
+            palette_value,
+            row_count_value,
             "",
             "",
             "",
+        )
+
+    @app.callback(
+        Output("explore-code-palette-store", "data", allow_duplicate=True),
+        Output("explore-code-row-count-store", "data", allow_duplicate=True),
+        Input("explore-add-code-row", "n_clicks"),
+        Input({"type": "explore-code-remove", "index": ALL}, "n_clicks"),
+        State("explore-code-palette-store", "data"),
+        prevent_initial_call=True,
+    )
+    def change_explore_code_palette_rows(
+        add_clicks: int | None,
+        remove_clicks: list[int] | None,
+        palette: list[int | None] | None,
+    ) -> tuple[Any, Any]:
+        del remove_clicks
+        valid_ids = {int(code["code_id"]) for code in project.codes()}
+        current = _normalize_explore_code_palette(palette, valid_ids)
+        triggered = callback_context.triggered_id
+        triggered_value = (
+            callback_context.triggered[0].get("value")
+            if callback_context.triggered
+            else None
+        )
+        if triggered == "explore-add-code-row":
+            if int(add_clicks or 0) < 1:
+                return no_update, no_update
+            updated = [*current, None]
+            return updated, len(updated)
+        if isinstance(triggered, dict) and triggered.get("type") == "explore-code-remove":
+            # Pattern-matched buttons fire when Dash mounts them. A newly mounted
+            # remove button has n_clicks=0 and is not a user request to remove a row.
+            if int(triggered_value or 0) < 1:
+                return no_update, no_update
+            index = int(triggered.get("index", -1))
+            if index <= 0 or index >= len(current):
+                return no_update, no_update
+            updated = [value for position, value in enumerate(current) if position != index]
+            return updated, len(updated)
+        return no_update, no_update
+
+    @app.callback(
+        Output("explore-code-palette-store", "data", allow_duplicate=True),
+        Input({"type": "explore-code-dropdown", "index": ALL}, "value"),
+        State({"type": "explore-code-dropdown", "index": ALL}, "id"),
+        State("explore-code-palette-store", "data"),
+        prevent_initial_call=True,
+    )
+    def select_explore_palette_code(
+        values: list[int | None],
+        ids: list[dict[str, Any]],
+        palette: list[int | None] | None,
+    ) -> Any:
+        del values, ids
+        triggered = callback_context.triggered_id
+        if not isinstance(triggered, dict):
+            return no_update
+        row_index = int(triggered.get("index", -1))
+        triggered_value = (
+            callback_context.triggered[0].get("value")
+            if callback_context.triggered
+            else None
+        )
+        valid_ids = {int(code["code_id"]) for code in project.codes()}
+        current = _normalize_explore_code_palette(palette, valid_ids)
+        if not 0 <= row_index < len(current):
+            return no_update
+        new_value = int(triggered_value) if triggered_value is not None else None
+        if new_value is not None:
+            selected_elsewhere = {
+                int(value)
+                for index, value in enumerate(current)
+                if index != row_index and value is not None
+            }
+            if new_value in selected_elsewhere:
+                # Keep one code per palette row without rerendering the whole
+                # palette. Reset only the dropdown the user just changed.
+                set_props(triggered, {"value": current[row_index]})
+                return no_update
+        if current[row_index] == new_value:
+            return no_update
+        updated = list(current)
+        updated[row_index] = new_value
+        return updated
+
+    @app.callback(
+        Output("explore-code-palette", "children"),
+        Input("explore-code-row-count-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+        State("explore-code-palette-store", "data"),
+    )
+    def render_explore_code_palette(
+        row_count: int | None,
+        code_refresh: int | None,
+        palette: list[int | None] | None,
+    ) -> list[Any]:
+        del code_refresh
+        current_codes = project.codes()
+        valid_ids = {int(code["code_id"]) for code in current_codes}
+        normalized = _explore_palette_for_row_count(palette, valid_ids, row_count)
+        selected_codes = {int(value) for value in normalized if value is not None}
+        rows: list[Any] = []
+        for index, code_id in enumerate(normalized):
+            options = [
+                {"label": code["name"], "value": int(code["code_id"])}
+                for code in current_codes
+                if int(code["code_id"]) == code_id
+                or int(code["code_id"]) not in selected_codes
+            ]
+            selector_children: list[Any] = [
+                dcc.Dropdown(
+                    id={"type": "explore-code-dropdown", "index": index},
+                    options=options,
+                    value=code_id,
+                    placeholder="Select a code",
+                    clearable=True,
+                )
+            ]
+            if index > 0:
+                selector_children.append(
+                    html.Button(
+                        "×",
+                        id={"type": "explore-code-remove", "index": index},
+                        n_clicks=0,
+                        className="explore-code-remove",
+                        title="Remove this coding row",
+                        **{"aria-label": "Remove this coding row"},
+                    )
+                )
+            rows.append(
+                html.Div(
+                    [
+                        html.Div(selector_children, className="explore-code-selector-row"),
+                        html.Div(
+                            [
+                                html.Button(
+                                    "Present",
+                                    id={"type": "explore-code-positive", "index": index},
+                                    n_clicks=0,
+                                    className="judgment-button positive-button",
+                                    disabled=True,
+                                ),
+                                html.Button(
+                                    "Absent",
+                                    id={"type": "explore-code-negative", "index": index},
+                                    n_clicks=0,
+                                    className="judgment-button negative-button",
+                                    disabled=True,
+                                ),
+                                html.Button(
+                                    "Unsure",
+                                    id={"type": "explore-code-unsure", "index": index},
+                                    n_clicks=0,
+                                    className="judgment-button unsure-button",
+                                    disabled=True,
+                                ),
+                            ],
+                            className="explore-code-buttons",
+                        ),
+                    ],
+                    className="explore-code-entry",
+                )
+            )
+        return rows
+
+    @app.callback(
+        Output({"type": "explore-code-dropdown", "index": ALL}, "options"),
+        Input("explore-code-palette-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+        Input({"type": "explore-code-dropdown", "index": ALL}, "id"),
+    )
+    def sync_explore_palette_dropdown_options(
+        palette: list[int | None] | None,
+        code_refresh: int | None,
+        ids: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        del code_refresh
+        current_codes = project.codes()
+        valid_ids = {int(code["code_id"]) for code in current_codes}
+        normalized = _normalize_explore_code_palette(palette, valid_ids)
+        selected = {int(value) for value in normalized if value is not None}
+        options_by_row: list[list[dict[str, Any]]] = []
+        for component_id in ids or []:
+            index = int(component_id.get("index", -1))
+            value = normalized[index] if 0 <= index < len(normalized) else None
+            options_by_row.append(
+                [
+                    {"label": code["name"], "value": int(code["code_id"])}
+                    for code in current_codes
+                    if int(code["code_id"]) == value
+                    or int(code["code_id"]) not in selected
+                ]
+            )
+        return options_by_row
+
+    @app.callback(
+        Output({"type": "explore-code-positive", "index": ALL}, "disabled"),
+        Output({"type": "explore-code-negative", "index": ALL}, "disabled"),
+        Output({"type": "explore-code-unsure", "index": ALL}, "disabled"),
+        Output({"type": "explore-code-positive", "index": ALL}, "className"),
+        Output({"type": "explore-code-negative", "index": ALL}, "className"),
+        Output({"type": "explore-code-unsure", "index": ALL}, "className"),
+        Input("explore-span-selection-store", "data"),
+        Input("explore-annotation-refresh-store", "data"),
+        Input("explore-code-palette-store", "data"),
+        Input({"type": "explore-code-positive", "index": ALL}, "id"),
+        State("explore-focal-unit-store", "data"),
+    )
+    def style_explore_palette_buttons(
+        selected_unit_ids: list[int] | None,
+        annotation_refresh: int | None,
+        palette: list[int | None] | None,
+        ids: list[dict[str, Any]],
+        focal_unit_id: int | None,
+    ) -> tuple[list[bool], list[bool], list[bool], list[str], list[str], list[str]]:
+        del annotation_refresh
+        valid_ids = {int(code["code_id"]) for code in project.codes()}
+        normalized = _normalize_explore_code_palette(palette, valid_ids)
+        values_by_code: dict[int, str] = {}
+        if focal_unit_id is not None:
+            observation_id = _selection_observation_id(
+                project, int(focal_unit_id), selected_unit_ids
+            )
+            if observation_id is not None:
+                values_by_code = {
+                    int(row["code_id"]): str(row["value"])
+                    for row in project.current_annotations_for_observation(observation_id)
+                }
+        disabled_values: list[bool] = []
+        positive_classes: list[str] = []
+        negative_classes: list[str] = []
+        unsure_classes: list[str] = []
+        for component_id in ids or []:
+            index = int(component_id.get("index", -1))
+            code_id = normalized[index] if 0 <= index < len(normalized) else None
+            disabled = focal_unit_id is None or code_id is None
+            disabled_values.append(disabled)
+            current = values_by_code.get(int(code_id)) if code_id is not None else None
+            positive, negative, unsure = _judgment_button_classes(
+                current, prefix="explore-code"
+            )
+            positive_classes.append(positive)
+            negative_classes.append(negative)
+            unsure_classes.append(unsure)
+        return (
+            disabled_values,
+            list(disabled_values),
+            list(disabled_values),
+            positive_classes,
+            negative_classes,
+            unsure_classes,
         )
 
     @app.callback(
         Output("explore-annotation-refresh-store", "data", allow_duplicate=True),
         Output("explore-code-status", "children", allow_duplicate=True),
-        Input("explore-code-positive", "n_clicks"),
-        Input("explore-code-negative", "n_clicks"),
-        Input("explore-code-unsure", "n_clicks"),
-        State("focal-unit-store", "data"),
-        State("explore-code-dropdown", "value"),
+        Input({"type": "explore-code-positive", "index": ALL}, "n_clicks"),
+        Input({"type": "explore-code-negative", "index": ALL}, "n_clicks"),
+        Input({"type": "explore-code-unsure", "index": ALL}, "n_clicks"),
+        State("explore-focal-unit-store", "data"),
+        State("explore-code-palette-store", "data"),
         State("explore-span-selection-store", "data"),
         State("explore-annotation-refresh-store", "data"),
         prevent_initial_call=True,
     )
-    def annotate_from_explore(
-        positive_clicks: int,
-        negative_clicks: int,
-        unsure_clicks: int,
+    def annotate_from_explore_palette(
+        positive_clicks: list[int] | None,
+        negative_clicks: list[int] | None,
+        unsure_clicks: list[int] | None,
         focal_unit_id: int | None,
-        code_id: int | None,
+        palette: list[int | None] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
-    ) -> tuple[int, str]:
+    ) -> tuple[Any, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
+        triggered = callback_context.triggered_id
+        triggered_value = (
+            callback_context.triggered[0].get("value")
+            if callback_context.triggered
+            else None
+        )
+        # Pattern-matched buttons can fire when a dynamic row is mounted. Only a
+        # positive click count is an actual coding judgment.
+        if not isinstance(triggered, dict) or int(triggered_value or 0) < 1:
+            return no_update, no_update
         if focal_unit_id is None:
-            return int(refresh or 0), "Select a focal unit first."
+            return no_update, "Select a focal unit first."
+        valid_ids = {int(code["code_id"]) for code in project.codes()}
+        normalized = _normalize_explore_code_palette(palette, valid_ids)
+        row_index = int(triggered.get("index", -1))
+        code_id = normalized[row_index] if 0 <= row_index < len(normalized) else None
         if code_id is None:
-            return int(refresh or 0), "Select or create a code first."
+            return no_update, "Select or create a code first."
         values = {
             "explore-code-positive": "positive",
             "explore-code-negative": "negative",
             "explore-code-unsure": "unsure",
         }
-        value = values[str(callback_context.triggered_id)]
+        value = values.get(str(triggered.get("type")))
+        if value is None:
+            return no_update, no_update
         selected = [int(item) for item in (selected_unit_ids or [focal_unit_id])]
-        observation_id = _selection_observation_id(
-            project, int(focal_unit_id), selected
-        )
+        observation_id = _selection_observation_id(project, int(focal_unit_id), selected)
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
-            return int(refresh or 0), ""
-        project.annotate_span(
-            selected, int(code_id), value, origin="human_direct"
-        )
+            return no_update, no_update
+        project.annotate_span(selected, int(code_id), value, origin="human_direct")
         return int(refresh or 0) + 1, ""
-
-    @app.callback(
-        Output("explore-code-current-label", "children"),
-        Input("focal-unit-store", "data"),
-        Input("explore-code-dropdown", "value"),
-        Input("explore-span-selection-store", "data"),
-        Input("explore-annotation-refresh-store", "data"),
-    )
-    def show_explore_annotation(
-        focal_unit_id: int | None,
-        code_id: int | None,
-        selected_unit_ids: list[int] | None,
-        refresh: int | None,
-    ) -> str:
-        del selected_unit_ids, refresh
-        if focal_unit_id is None or code_id is None:
-            return ""
-        return ""
-
-    @app.callback(
-        Output("explore-code-positive", "className"),
-        Output("explore-code-negative", "className"),
-        Output("explore-code-unsure", "className"),
-        Input("focal-unit-store", "data"),
-        Input("explore-code-dropdown", "value"),
-        Input("explore-span-selection-store", "data"),
-        Input("explore-annotation-refresh-store", "data"),
-    )
-    def style_explore_judgment_buttons(
-        focal_unit_id: int | None,
-        code_id: int | None,
-        selected_unit_ids: list[int] | None,
-        refresh: int | None,
-    ) -> tuple[str, str, str]:
-        del refresh
-        current = None
-        if focal_unit_id is not None and code_id is not None:
-            observation_id = _selection_observation_id(
-                project, int(focal_unit_id), selected_unit_ids
-            )
-            current = _current_annotation_value(
-                project, observation_id, int(code_id)
-            )
-        return _judgment_button_classes(current, prefix="explore-code")
 
     @app.callback(
         Output("focus-active-area", "className"),
@@ -3339,18 +3692,6 @@ def create_app(project: GeometricCoder) -> Any:
     def set_focus_active_state(code_id: int | None) -> str:
         return "focus-active-area" if code_id is not None else "focus-active-area focus-disabled"
 
-    @app.callback(
-        Output("explore-code-positive", "disabled"),
-        Output("explore-code-negative", "disabled"),
-        Output("explore-code-unsure", "disabled"),
-        Input("focal-unit-store", "data"),
-        Input("explore-code-dropdown", "value"),
-    )
-    def set_explore_coding_enabled(
-        focal_unit_id: int | None, code_id: int | None
-    ) -> tuple[bool, bool, bool]:
-        disabled = focal_unit_id is None or code_id is None
-        return disabled, disabled, disabled
 
     @app.callback(
         Output("classifier-spec-modal", "style"),
@@ -3424,9 +3765,11 @@ def create_app(project: GeometricCoder) -> Any:
         Output("committee-refresh-store", "data", allow_duplicate=True),
         Input("focus-manage-classifiers", "n_clicks"),
         Input("classifier-manager-close", "n_clicks"),
+        Input("classifier-manager-rename", "n_clicks"),
         Input("classifier-manager-delete", "n_clicks"),
         State("classifier-manager-table", "selected_rows"),
         State("classifier-manager-table", "data"),
+        State("classifier-manager-rename-name", "value"),
         State("focus-code-dropdown", "value"),
         State("classifier-spec-refresh-store", "data"),
         State("committee-refresh-store", "data"),
@@ -3435,20 +3778,39 @@ def create_app(project: GeometricCoder) -> Any:
     def manage_classifier_manager_modal(
         open_clicks: int,
         close_clicks: int,
+        rename_clicks: int,
         delete_clicks: int,
         selected_rows: list[int] | None,
         table_data: list[dict[str, Any]] | None,
+        rename_name: str | None,
         code_id: int | None,
         spec_refresh: int | None,
         committee_refresh: int | None,
     ) -> tuple[dict[str, str], list[dict[str, Any]], str, int, int]:
-        del open_clicks, close_clicks, delete_clicks
+        del open_clicks, close_clicks, rename_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         next_spec_refresh = int(spec_refresh or 0)
         next_committee_refresh = int(committee_refresh or 0)
         if triggered == "classifier-manager-close":
             return {"display": "none"}, [], "", next_spec_refresh, next_committee_refresh
         message = ""
+        if triggered == "classifier-manager-rename":
+            rows = table_data or []
+            selection = selected_rows or []
+            if not selection:
+                message = "Select a classifier to rename."
+            else:
+                try:
+                    row = rows[int(selection[0])]
+                    project.rename_classifier_spec(
+                        int(row["classifier_spec_id"]), name=str(rename_name or "")
+                    )
+                except (IndexError, KeyError, ValueError) as error:
+                    message = str(error)
+                else:
+                    next_spec_refresh += 1
+                    next_committee_refresh += 1
+                    message = f"Classifier renamed to {str(rename_name).strip()!r}."
         if triggered == "classifier-manager-delete":
             rows = table_data or []
             selection = selected_rows or []
@@ -3483,6 +3845,25 @@ def create_app(project: GeometricCoder) -> Any:
         return {"display": "flex"}, rows, message, next_spec_refresh, next_committee_refresh
 
     @app.callback(
+        Output("classifier-manager-rename-name", "value"),
+        Input("classifier-manager-table", "selected_rows"),
+        Input("classifier-manager-table", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_classifier_rename_name(
+        selected_rows: list[int] | None,
+        table_data: list[dict[str, Any]] | None,
+    ) -> str:
+        rows = table_data or []
+        selection = selected_rows or []
+        if not selection:
+            return ""
+        try:
+            return str(rows[int(selection[0])]["name"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            return ""
+
+    @app.callback(
         Output("committee-modal", "style"),
         Output("committee-members", "options"),
         Output("committee-table", "data"),
@@ -3491,6 +3872,7 @@ def create_app(project: GeometricCoder) -> Any:
         Input("focus-manage-committees", "n_clicks"),
         Input("committee-close", "n_clicks"),
         Input("committee-save", "n_clicks"),
+        Input("committee-rename", "n_clicks"),
         Input("committee-delete", "n_clicks"),
         State("focus-code-dropdown", "value"),
         State("committee-name", "value"),
@@ -3498,6 +3880,7 @@ def create_app(project: GeometricCoder) -> Any:
         State("committee-aggregation", "value"),
         State("committee-table", "selected_rows"),
         State("committee-table", "data"),
+        State("committee-manager-rename-name", "value"),
         State("committee-refresh-store", "data"),
         prevent_initial_call=True,
     )
@@ -3505,6 +3888,7 @@ def create_app(project: GeometricCoder) -> Any:
         open_clicks: int,
         close_clicks: int,
         save_clicks: int,
+        rename_clicks: int,
         delete_clicks: int,
         code_id: int | None,
         name: str | None,
@@ -3512,9 +3896,10 @@ def create_app(project: GeometricCoder) -> Any:
         aggregation: str | None,
         selected_rows: list[int] | None,
         table_data: list[dict[str, Any]] | None,
+        rename_name: str | None,
         refresh: int | None,
     ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]], str, int]:
-        del open_clicks, close_clicks, save_clicks, delete_clicks
+        del open_clicks, close_clicks, save_clicks, rename_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         if triggered == "committee-close":
             return {"display": "none"}, [], [], "", int(refresh or 0)
@@ -3538,6 +3923,17 @@ def create_app(project: GeometricCoder) -> Any:
                 )
                 next_refresh += 1
                 message = "Committee saved."
+            elif triggered == "committee-rename":
+                rows = table_data or []
+                selection = selected_rows or []
+                if not selection:
+                    raise ValueError("Select a committee to rename.")
+                project.rename_classifier_committee(
+                    int(rows[int(selection[0])]["committee_id"]),
+                    name=str(rename_name or ""),
+                )
+                next_refresh += 1
+                message = f"Committee renamed to {str(rename_name or '').strip()!r}."
             elif triggered == "committee-delete":
                 rows = table_data or []
                 selection = selected_rows or []
@@ -3573,6 +3969,25 @@ def create_app(project: GeometricCoder) -> Any:
             for row in committees
         ]
         return {"display": "flex"}, member_options, rows, message, next_refresh
+
+    @app.callback(
+        Output("committee-manager-rename-name", "value"),
+        Input("committee-table", "selected_rows"),
+        Input("committee-table", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_committee_rename_name(
+        selected_rows: list[int] | None,
+        table_data: list[dict[str, Any]] | None,
+    ) -> str:
+        rows = table_data or []
+        selection = selected_rows or []
+        if not selection:
+            return ""
+        try:
+            return str(rows[int(selection[0])]["name"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            return ""
 
     @app.callback(
         Output("testing-center-modal", "style"),
@@ -3785,6 +4200,7 @@ def create_app(project: GeometricCoder) -> Any:
         State("focus-code-dropdown", "value"),
         State("focus-active-classifier-dropdown", "value"),
         State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
     )
@@ -3793,12 +4209,14 @@ def create_app(project: GeometricCoder) -> Any:
         code_id: int | None,
         classifier_spec_id: int | None,
         train_scope: list[str] | None,
+        tune_values: list[str] | None,
         refresh: int | None,
     ) -> tuple[str, int]:
         del clicks
         if code_id is None or classifier_spec_id is None:
             return "Select a code and classifier first.", int(refresh or 0)
         train_all = "all" in set(train_scope or [])
+        tune_hyperparameters = "tune" in set(tune_values or [])
         spec_ids = (
             [
                 int(row["classifier_spec_id"])
@@ -3809,7 +4227,10 @@ def create_app(project: GeometricCoder) -> Any:
         )
         try:
             fits = project.train_classifiers(
-                code_id=int(code_id), classifier_spec_ids=spec_ids
+                code_id=int(code_id),
+                classifier_spec_ids=spec_ids,
+                tune=tune_hyperparameters,
+                retune_current=tune_hyperparameters,
             )
         except (KeyError, ValueError) as error:
             return str(error), int(refresh or 0)
@@ -3818,15 +4239,22 @@ def create_app(project: GeometricCoder) -> Any:
         reused_count = sum(
             selection.get("reason") == "current_fit_reused" for selection in selections
         )
-        default_count = sum(
+        fast_fit_count = sum(
+            selection.get("reason") == "tuning_disabled" for selection in selections
+        )
+        insufficient_count = sum(
             selection.get("reason") == "insufficient_cv_data" for selection in selections
         )
         if train_all:
             parts = [f"Updated {len(fits):,} classifiers"]
             if tuned_count:
                 parts.append(f"CV-tuned {tuned_count:,}")
-            if default_count:
-                parts.append(f"used defaults for {default_count:,} with too little CV data")
+            if fast_fit_count:
+                parts.append(f"fit {fast_fit_count:,} with current hyperparameters")
+            if insufficient_count:
+                parts.append(
+                    f"could not CV-tune {insufficient_count:,} with too little labeled data"
+                )
             if reused_count:
                 parts.append(f"reused {reused_count:,} current fits")
             message = ". ".join(parts) + "."
@@ -3836,13 +4264,20 @@ def create_app(project: GeometricCoder) -> Any:
             name = str(fit["classifier_name"])
             if selection.get("tuned"):
                 message = (
-                    f"Trained {name} after {int(selection['folds'])}-fold "
+                    f"CV-tuned {name} with {int(selection['folds'])}-fold "
                     f"cross-validation."
                 )
+                if selection.get("fit_reused"):
+                    message += " The selected configuration was already fitted."
             elif selection.get("reason") == "insufficient_cv_data":
-                message = f"Trained {name} with current defaults; more labels are needed for CV."
+                message = (
+                    f"CV tuning requested for {name}, but more labeled examples are "
+                    "needed; using the current hyperparameters."
+                )
             elif selection.get("reason") == "current_fit_reused":
                 message = f"{name} is already current."
+            elif selection.get("reason") == "tuning_disabled":
+                message = f"Trained {name} with current hyperparameters."
             else:
                 message = f"Trained {name}."
         return message, int(refresh or 0) + 1
@@ -3921,6 +4356,7 @@ def create_app(project: GeometricCoder) -> Any:
         State("focus-committee-dropdown", "value"),
         State("focus-train-scope", "value"),
         State("focus-auto-retrain", "value"),
+        State("focus-tune-hyperparameters", "value"),
         State("focal-unit-store", "data"),
         State("navigation-history-store", "data"),
         prevent_initial_call=True,
@@ -3939,6 +4375,7 @@ def create_app(project: GeometricCoder) -> Any:
         committee_id: int | None,
         train_scope_values: list[str] | None,
         auto_retrain_values: list[str] | None,
+        tune_hyperparameter_values: list[str] | None,
         focal_unit_id: int | None,
         history: dict[str, Any] | None,
     ) -> tuple[Any, Any, str, dict[str, Any]]:
@@ -3980,6 +4417,7 @@ def create_app(project: GeometricCoder) -> Any:
                 recommendation_source=source,
                 auto_retrain="auto" in set(auto_retrain_values or []),
                 auto_train_all="all" in set(train_scope_values or []),
+                tune_hyperparameters="tune" in set(tune_hyperparameter_values or []),
             )
         except (KeyError, ValueError) as error:
             return no_update, no_update, str(error), {}
@@ -4107,7 +4545,7 @@ def create_app(project: GeometricCoder) -> Any:
         Input("focus-code-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
-        Input("focal-unit-store", "data"),
+        Input("focus-focal-unit-store", "data"),
     )
     def update_focus_code_summary(
         code_id: int | None,
@@ -4147,7 +4585,7 @@ def create_app(project: GeometricCoder) -> Any:
         Output("focus-label-negative", "className"),
         Output("focus-label-unsure", "className"),
         Input("focus-code-dropdown", "value"),
-        Input("focal-unit-store", "data"),
+        Input("focus-focal-unit-store", "data"),
         Input("focus-span-selection-store", "data"),
         Input("focus-refresh-store", "data"),
     )
@@ -4174,16 +4612,14 @@ def create_app(project: GeometricCoder) -> Any:
         Output("focus-focal-key", "children"),
         Output("focus-context-content", "children"),
         Output("focus-metadata-content", "children"),
-        Input("focal-unit-store", "data"),
+        Input("focus-focal-unit-store", "data"),
         Input("focus-context-level", "value"),
         Input("focus-context-window", "value"),
-        Input("focus-span-selection-store", "data"),
     )
     def update_focus_reading_panel(
         focal_unit_id: int | None,
         level_index: int,
         window: int,
-        selected_unit_ids: list[int] | None,
     ) -> tuple[Any, Any, Any]:
         if focal_unit_id is None:
             return (
@@ -4200,7 +4636,7 @@ def create_app(project: GeometricCoder) -> Any:
             context,
             focal_unit_id=int(focal_unit_id),
             key_columns=list(metadata["key_columns"]),
-            selected_unit_ids=selected_unit_ids,
+            selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="focus-span-checkbox",
             span_selection_enabled=project.can_transform_new_observations(),
         )
@@ -4208,7 +4644,7 @@ def create_app(project: GeometricCoder) -> Any:
 
     @app.callback(
         Output("focus-span-selection-store", "data"),
-        Input("focal-unit-store", "data"),
+        Input("focus-focal-unit-store", "data"),
         Input("focus-context-level", "value"),
         Input("focus-context-window", "value"),
     )
@@ -4281,7 +4717,7 @@ def create_app(project: GeometricCoder) -> Any:
     @app.callback(
         Output("focus-probabilities", "children"),
         Input("focus-recommendation-store", "data"),
-        Input("focal-unit-store", "data"),
+        Input("focus-focal-unit-store", "data"),
     )
     def update_focus_probabilities(
         recommendation: dict[str, Any] | None,
@@ -4291,13 +4727,26 @@ def create_app(project: GeometricCoder) -> Any:
         if focal_unit_id is None or int(data.get("unit_id", -1)) != int(focal_unit_id):
             return ""
         probabilities = dict(data.get("probabilities", {}))
-        if not probabilities:
+        committee_probability = data.get("committee_probability")
+        if not probabilities and committee_probability is None:
             return html.P("No model probabilities were used for this recommendation.")
-        rows = [
-            html.Tr([html.Th(name), html.Td(f"{float(probability):.3f}")])
-            for name, probability in probabilities.items()
-        ]
-        return [html.H4("Model probabilities"), html.Table(html.Tbody(rows))]
+        content: list[Any] = []
+        if probabilities:
+            rows = [
+                html.Tr([html.Th(name), html.Td(f"{float(probability):.3f}")])
+                for name, probability in probabilities.items()
+            ]
+            content.extend(
+                [html.H4("Model probabilities"), html.Table(html.Tbody(rows))]
+            )
+        if committee_probability is not None:
+            content.extend(
+                [
+                    html.H4("Committee probability"),
+                    html.P(f"{float(committee_probability):.3f}"),
+                ]
+            )
+        return content
 
     @app.callback(
         Output("focus-prediction-fits", "options"),
@@ -5019,6 +5468,31 @@ def create_app(project: GeometricCoder) -> Any:
         return f"Discarded draft {int(draft_id)} without changing annotations.", int(refresh or 0) + 1
 
     @app.callback(
+        Output("session-state-status", "children", allow_duplicate=True),
+        Input("explore-code-palette-store", "data"),
+        State("active-session-store", "data"),
+        State("memo-presentation-location", "search"),
+        prevent_initial_call=True,
+    )
+    def persist_explore_code_palette(
+        palette: list[int | None] | None,
+        session_id: int,
+        presentation_search: str | None,
+    ) -> Any:
+        presentation_values = parse_qs((presentation_search or "").lstrip("?"))
+        if presentation_values.get("presentation", [None])[0] == "memo":
+            return no_update
+        project.patch_session_state(
+            int(session_id),
+            {
+                "explore_code_palette": _normalize_explore_code_palette(
+                    palette, {int(code["code_id"]) for code in project.codes()}
+                )
+            },
+        )
+        return "saved"
+
+    @app.callback(
         Output("session-state-status", "children"),
         Input("active-session-store", "data"),
         Input("geometry-dropdown", "value"),
@@ -5043,8 +5517,10 @@ def create_app(project: GeometricCoder) -> Any:
         Input("focus-committee-dropdown", "value"),
         Input("focus-train-scope", "value"),
         Input("focus-auto-retrain", "value"),
+        Input("focus-tune-hyperparameters", "value"),
         Input("focus-context-level", "value"),
         Input("focus-context-window", "value"),
+        State("explore-code-palette-store", "data"),
         State("memo-presentation-location", "search"),
     )
     def persist_session_state(
@@ -5071,8 +5547,10 @@ def create_app(project: GeometricCoder) -> Any:
         focus_committee_id: int | None,
         focus_train_scope_values: list[str] | None,
         focus_auto_retrain_values: list[str] | None,
+        focus_tune_hyperparameter_values: list[str] | None,
         focus_context_level: int,
         focus_context_window: int,
+        explore_code_palette: list[int | None] | None,
         presentation_search: str | None,
     ) -> str:
         presentation_values = parse_qs((presentation_search or "").lstrip("?"))
@@ -5103,6 +5581,10 @@ def create_app(project: GeometricCoder) -> Any:
                 "explore_uncoded_only": (
                     "uncoded_only" in set(explore_uncoded_values or [])
                 ),
+                "explore_code_palette": _normalize_explore_code_palette(
+                    explore_code_palette,
+                    {int(code["code_id"]) for code in project.codes()},
+                ),
                 "context_level": int(context_level),
                 "context_window": max(1, int(context_window or 1)),
                 "page_size": _coerce_positive_int(page_size, default=5000),
@@ -5114,6 +5596,9 @@ def create_app(project: GeometricCoder) -> Any:
                 "focus_committee_id": focus_committee_id,
                 "focus_train_all": "all" in set(focus_train_scope_values or []),
                 "focus_auto_retrain": "auto" in set(focus_auto_retrain_values or []),
+                "focus_tune_hyperparameters": (
+                    "tune" in set(focus_tune_hyperparameter_values or [])
+                ),
                 "focus_context_level": int(focus_context_level),
                 "focus_context_window": max(1, int(focus_context_window or 1)),
             },
@@ -5138,6 +5623,7 @@ def _explore_layout(
     total_units: int,
     sessions: list[dict[str, Any]],
     initial_session_id: int,
+    initial_seen_count: int,
     metadata_profiles: dict[str, dict[str, Any]],
     allow_create_view: bool,
 ) -> Any:
@@ -5199,7 +5685,11 @@ def _explore_layout(
                                 ],
                                 className="session-create-row",
                             ),
-                            html.Div(id="session-progress", className="session-progress"),
+                            html.Div(
+                                f"Visited {int(initial_seen_count):,} of {int(total_units):,}",
+                                id="session-progress",
+                                className="session-progress",
+                            ),
                         ],
                         className="control-block session-control-block",
                     ),
@@ -5685,50 +6175,26 @@ def _explore_layout(
                     ),
                     html.Section(
                         [
-                            html.H3("Coding"),
                             html.Div(
                                 [
-                                    dcc.Dropdown(
-                                        id="explore-code-dropdown",
-                                        options=_code_options([]),
-                                        value=None,
-                                        placeholder="Select a code",
-                                        clearable=True,
-                                    ),
+                                    html.H3("Coding"),
                                     html.Button(
                                         "New Code",
                                         id="explore-new-code-button",
                                         n_clicks=0,
                                     ),
                                 ],
-                                className="code-selector-row",
+                                className="coding-panel-heading",
                             ),
                             html.Div(
-                                [
-                                    html.Button(
-                                        "Present",
-                                        id="explore-code-positive",
-                                        n_clicks=0,
-                                        className="judgment-button positive-button",
-                                    ),
-                                    html.Button(
-                                        "Absent",
-                                        id="explore-code-negative",
-                                        n_clicks=0,
-                                        className="judgment-button negative-button",
-                                    ),
-                                    html.Button(
-                                        "Unsure",
-                                        id="explore-code-unsure",
-                                        n_clicks=0,
-                                        className="judgment-button unsure-button",
-                                    ),
-                                ],
-                                className="explore-code-buttons",
+                                id="explore-code-palette",
+                                className="explore-code-palette",
                             ),
-                            html.Div(
-                                id="explore-code-current-label",
-                                className="sr-only",
+                            html.Button(
+                                "+ Add code",
+                                id="explore-add-code-row",
+                                n_clicks=0,
+                                className="explore-add-code-row",
                             ),
                             html.Div(id="explore-code-status", className="sr-only"),
                         ],
@@ -6162,6 +6628,7 @@ def _code_center_layout(
                                         ),
                                         dcc.Graph(
                                             id="code-center-map",
+                                            figure=_code_center_placeholder_figure(),
                                             config={
                                                 "displaylogo": False,
                                                 "scrollZoom": True,
@@ -6454,8 +6921,9 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         clearable=False,
                     ),
                     html.Small(
-                        "Train automatically selects family-specific hyperparameters by "
-                        "cross-validation once enough Present and Absent examples exist.",
+                        "New classifiers start with family defaults. In Develop, optionally "
+                        "enable Tune hyperparameters with cross-validation before Train when "
+                        "you want a slower hyperparameter search.",
                         className="focus-help",
                     ),
                     html.Div(id="classifier-spec-status", className="control-status"),
@@ -6475,7 +6943,7 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
     )
 
 
-def _classifier_manager_modal(*, html: Any, dash_table: Any) -> Any:
+def _classifier_manager_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     """Return the active-classifier manager."""
     return html.Div(
         [
@@ -6496,7 +6964,7 @@ def _classifier_manager_modal(*, html: Any, dash_table: Any) -> Any:
                         className="modal-heading-row",
                     ),
                     html.P(
-                        "Deleting a classifier removes it from active use and from live committees. Historical fitted models and drafts remain intact.",
+                        "Rename a classifier without changing its fitted state, or delete it from active use. Classifier and committee names share one project-wide active predictor namespace. Historical fitted models and drafts retain the name recorded when they were created.",
                         className="focus-help",
                     ),
                     dash_table.DataTable(
@@ -6517,6 +6985,22 @@ def _classifier_manager_modal(*, html: Any, dash_table: Any) -> Any:
                             "textAlign": "left",
                         },
                         style_table={"overflowX": "auto"},
+                    ),
+                    html.Div(
+                        [
+                            dcc.Input(
+                                id="classifier-manager-rename-name",
+                                type="text",
+                                className="text-input",
+                                placeholder="Classifier name",
+                            ),
+                            html.Button(
+                                "Rename selected classifier",
+                                id="classifier-manager-rename",
+                                n_clicks=0,
+                            ),
+                        ],
+                        className="classifier-manager-rename-row",
                     ),
                     html.Div(
                         [
@@ -6564,7 +7048,7 @@ def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         className="modal-heading-row",
                     ),
                     html.P(
-                        "A committee is an intentional named set of classifier specifications for the active code.",
+                        "A committee is an intentional named set of classifier specifications for the active code. Rename an existing committee without changing its members, aggregation, or learned fitted state; classifier and committee names share one project-wide active predictor namespace.",
                         className="focus-help",
                     ),
                     html.Label("Committee name"),
@@ -6617,6 +7101,22 @@ def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                             "height": "auto",
                             "textAlign": "left",
                         },
+                    ),
+                    html.Div(
+                        [
+                            dcc.Input(
+                                id="committee-manager-rename-name",
+                                type="text",
+                                className="text-input",
+                                placeholder="Committee name",
+                            ),
+                            html.Button(
+                                "Rename selected committee",
+                                id="committee-rename",
+                                n_clicks=0,
+                            ),
+                        ],
+                        className="classifier-manager-rename-row",
                     ),
                     html.Button(
                         "Delete selected committee",
@@ -6982,7 +7482,6 @@ def _number_field(
             dcc.Input(
                 id=component_id,
                 type="text",
-                inputMode="decimal",
                 value=str(value),
                 className="projection-number-input",
             ),
@@ -7148,6 +7647,24 @@ def _focus_layout(
                                                 className="classifier-train-scope",
                                             ),
                                             dcc.Checklist(
+                                                id="focus-tune-hyperparameters",
+                                                options=[
+                                                    {
+                                                        "label": "Tune hyperparameters with cross-validation",
+                                                        "value": "tune",
+                                                    }
+                                                ],
+                                                value=(
+                                                    ["tune"]
+                                                    if bool(
+                                                        initial_state.get(
+                                                            "focus_tune_hyperparameters", False
+                                                        )
+                                                    )
+                                                    else []
+                                                ),
+                                            ),
+                                            dcc.Checklist(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
@@ -7169,10 +7686,10 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "Train tunes the selected family by cross-validation when "
-                                        "there are enough labels, then refits on all current evidence. "
-                                        "Leave automatic training on while fits are fast; turn it off "
-                                        "later to label in larger batches.",
+                                        "Train uses each classifier's current hyperparameters by default. "
+                                        "Check Tune hyperparameters with cross-validation when you want the "
+                                        "slower family-specific search before fitting. Automatic training uses "
+                                        "the same tuning choice.",
                                         className="focus-help",
                                     ),
                                     html.Div(
@@ -8827,6 +9344,63 @@ def _move_navigation_history(
     return int(items[target]), updated
 
 
+def _normalize_explore_code_palette(
+    raw: Any,
+    valid_code_ids: set[int],
+) -> list[int | None]:
+    """Return a duplicate-free Explore coding palette with one permanent row."""
+    values = raw if isinstance(raw, list) else []
+    normalized: list[int | None] = []
+    seen: set[int] = set()
+    for value in values:
+        if value is None:
+            normalized.append(None)
+            continue
+        try:
+            code_id = int(value)
+        except (TypeError, ValueError):
+            normalized.append(None)
+            continue
+        if code_id not in valid_code_ids or code_id in seen:
+            normalized.append(None)
+            continue
+        normalized.append(code_id)
+        seen.add(code_id)
+    return normalized or [None]
+
+
+def _explore_palette_for_row_count(
+    raw: Any,
+    valid_code_ids: set[int],
+    row_count: int | None,
+) -> list[int | None]:
+    """Return normalized palette values padded/truncated to the visible row count."""
+    palette = _normalize_explore_code_palette(raw, valid_code_ids)
+    target = max(1, int(row_count or len(palette) or 1))
+    if len(palette) < target:
+        return [*palette, *([None] * (target - len(palette)))]
+    return palette[:target]
+
+
+def _place_code_in_explore_palette(
+    raw: Any,
+    code_id: int,
+    valid_code_ids: set[int],
+) -> list[int | None]:
+    """Place a code into the first empty Explore row, appending when needed."""
+    palette = _normalize_explore_code_palette(raw, valid_code_ids)
+    selected = {int(value) for value in palette if value is not None}
+    code_id = int(code_id)
+    if code_id in selected:
+        return palette
+    for index, value in enumerate(palette):
+        if value is None:
+            updated = list(palette)
+            updated[index] = code_id
+            return updated
+    return [*palette, code_id]
+
+
 def _judgment_button_classes(
     current: str | None,
     *,
@@ -9094,6 +9668,61 @@ def _current_annotation_value(
     return str(annotation["value"]) if annotation is not None else None
 
 
+def _geometry_overlay_payload(
+    figure: dict[str, Any] | None,
+    *,
+    seen_unit_ids: set[int],
+    focal_unit_id: int | None,
+) -> dict[int, dict[str, list[Any]]] | None:
+    """Build lightweight visited/focal overlay arrays from the current base map."""
+    if not figure or not isinstance(figure.get("data"), list):
+        return None
+    data = figure["data"]
+    if len(data) <= EXPLORE_FOCAL_TRACE_INDEX:
+        return None
+    names = tuple(str(data[index].get("name", "")) for index in range(4))
+    if names != EXPLORE_TRACE_NAMES:
+        return None
+
+    visible: list[tuple[int, Any, Any, Any]] = []
+    for trace_index in (EXPLORE_FILTERED_TRACE_INDEX, EXPLORE_ELIGIBLE_TRACE_INDEX):
+        trace = data[trace_index]
+        xs = list(trace.get("x") or [])
+        ys = list(trace.get("y") or [])
+        ids = list(trace.get("customdata") or [])
+        hover = list(trace.get("hovertext") or [])
+        for position, raw_unit_id in enumerate(ids):
+            try:
+                unit_id = int(raw_unit_id)
+            except (TypeError, ValueError):
+                continue
+            if position >= len(xs) or position >= len(ys):
+                continue
+            hover_value = hover[position] if position < len(hover) else ""
+            visible.append((unit_id, xs[position], ys[position], hover_value))
+
+    seen = {int(value) for value in seen_unit_ids}
+    visited_points = [point for point in visible if point[0] in seen]
+    focal_points = (
+        [point for point in visible if point[0] == int(focal_unit_id)]
+        if focal_unit_id is not None
+        else []
+    )
+
+    def columns(points: list[tuple[int, Any, Any, Any]]) -> dict[str, list[Any]]:
+        return {
+            "x": [point[1] for point in points],
+            "y": [point[2] for point in points],
+            "customdata": [point[0] for point in points],
+            "hovertext": [point[3] for point in points],
+        }
+
+    return {
+        EXPLORE_VISITED_TRACE_INDEX: columns(visited_points),
+        EXPLORE_FOCAL_TRACE_INDEX: columns(focal_points),
+    }
+
+
 def _apply_relayout_ranges(
     figure: Any, relayout_data: dict[str, Any] | None
 ) -> None:
@@ -9294,6 +9923,41 @@ def _metadata_table(html: Any, metadata: dict[str, Any]) -> Any:
     return html.Table([html.Tbody(rows)], className="metadata-table")
 
 
+def _code_center_placeholder_figure() -> Any:
+    """Return a Patch-safe initial Code Center figure.
+
+    The focal-marker callback partially updates ``data[0]``. Dash 4.x raises
+    ``Cannot patch undefined`` if either ``figure`` or that trace is absent
+    when the partial update arrives, so the layout must provide the exact
+    nested structure that callback patches.
+    """
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scattergl(
+            x=[],
+            y=[],
+            mode="markers",
+            name="Focal observation",
+            customdata=[],
+            hovertext=[],
+            hovertemplate="%{hovertext}<extra></extra>",
+            marker={
+                "size": 13,
+                "color": "rgba(0, 0, 0, 0)",
+                "line": {"color": "#178547", "width": 2.6},
+            },
+            showlegend=False,
+        )
+    )
+    figure.update_layout(
+        template="plotly_white",
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+    )
+    return figure
+
+
 def _empty_figure(message: str) -> Any:
     import plotly.graph_objects as go
 
@@ -9314,7 +9978,13 @@ def launch_app(
     host: str,
     port: int,
     debug: bool,
+    use_reloader: bool = False,
 ) -> None:
-    """Create and run the local Dash app."""
+    """Create and run the local Dash app with a single-process default."""
     app = create_app(project)
-    app.run(host=host, port=port, debug=debug)
+    app.run(
+        host=host,
+        port=port,
+        debug=debug,
+        use_reloader=use_reloader,
+    )

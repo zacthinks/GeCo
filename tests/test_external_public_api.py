@@ -121,3 +121,84 @@ def test_transform_query_reports_capability_errors(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigurationError, match="does not support semantic query"):
         project.transform_query("no_query", "qualitative interview methods")
+
+
+class TransformingProvider(Provider):
+    def transform_texts(self, external_ref: Any, texts: list[str]) -> np.ndarray:
+        assert external_ref == {"artifact": "minilm"}
+        rows = []
+        for text in texts:
+            value = float(len(str(text)))
+            rows.append([value, 1.0])
+        return np.asarray(rows, dtype=np.float32)
+
+
+def _transforming_external_project(tmp_path: Path) -> GeometricCoder:
+    data = pd.DataFrame(
+        {"row_id": [0, 1, 2], "text": ["alpha", "beta", "gamma"]}
+    )
+    return GeometricCoder.create_external(
+        project_dir=tmp_path / "transforming-external.geco",
+        data=data,
+        keys=["row_id"],
+        text="text",
+        metadata=[],
+        external_provider=TransformingProvider(),
+    )
+
+
+def test_external_text_transform_capability_is_per_geometry(tmp_path: Path) -> None:
+    project = _transforming_external_project(tmp_path)
+    replayable_id = project.register_external_geometry(
+        name="replayable",
+        external_ref={"artifact": "minilm"},
+        supports_query=True,
+        supports_text_transform=True,
+    )
+    record = project.database.get_geometry(replayable_id)
+    assert record["supports_text_transform"] is True
+    assert project.geometries()[0]["supports_text_transform"] is True
+    assert project.can_transform_new_observations() is True
+
+    project.register_external_geometry(
+        name="not_replayable",
+        external_ref={"artifact": "minilm"},
+        supports_query=False,
+        supports_text_transform=False,
+    )
+    assert project.can_transform_new_observations() is False
+
+
+def test_external_text_transform_declaration_requires_provider_method(tmp_path: Path) -> None:
+    project = _external_project(tmp_path)
+    with pytest.raises(ConfigurationError, match="does not implement transform_texts"):
+        project.register_external_geometry(
+            name="replayable",
+            external_ref={"artifact": "minilm"},
+            supports_text_transform=True,
+        )
+
+
+def test_external_registration_reuse_checks_text_transform_capability(tmp_path: Path) -> None:
+    project = _transforming_external_project(tmp_path)
+    geometry_id = project.register_external_geometry(
+        name="minilm",
+        external_ref={"artifact": "minilm"},
+        supports_query=True,
+        supports_text_transform=True,
+    )
+    assert project.register_external_geometry(
+        name="minilm",
+        external_ref={"artifact": "minilm"},
+        supports_query=True,
+        supports_text_transform=True,
+        if_exists="reuse",
+    ) == geometry_id
+    with pytest.raises(ConfigurationError, match="does not match"):
+        project.register_external_geometry(
+            name="minilm",
+            external_ref={"artifact": "minilm"},
+            supports_query=True,
+            supports_text_transform=False,
+            if_exists="reuse",
+        )

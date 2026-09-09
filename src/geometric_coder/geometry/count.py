@@ -53,6 +53,10 @@ class CountGeometry(Geometry):
     def supports_query(self) -> bool:
         return self._vectorizer is not None
 
+    @property
+    def supports_text_transform(self) -> bool:
+        return self._vectorizer is not None
+
     def validate_runtime(self) -> None:
         """Load the configured spaCy pipeline before expensive project work.
 

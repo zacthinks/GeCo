@@ -9,6 +9,13 @@ from geometric_coder.geometry import (
 )
 from geometric_coder.external import ExternalDataProvider
 from geometric_coder.project import GeometricCoder
+from geometric_coder.predictors import (
+    FrozenPredictorExport,
+    GeCoPredictorRef,
+    PredictorBatchOutput,
+    PredictorSourceSpec,
+)
+from geometric_coder._version import __version__
 
 __all__ = [
     "CountGeometry",
@@ -18,6 +25,9 @@ __all__ = [
     "SVDGeometry",
     "SentenceTransformerGeometry",
     "ViewSpec",
+    "FrozenPredictorExport",
+    "GeCoPredictorRef",
+    "PredictorBatchOutput",
+    "PredictorSourceSpec",
 ]
 
-__version__ = "0.8.1"

@@ -38,6 +38,10 @@ class SVDGeometry(Geometry):
     def supports_query(self) -> bool:
         return self._reducer is not None and self.source.supports_query
 
+    @property
+    def supports_text_transform(self) -> bool:
+        return self._reducer is not None and self.source.supports_text_transform
+
     def _fit_transform(self, texts: list[str]) -> Matrix:
         del texts
         source_matrix = self.source.matrix

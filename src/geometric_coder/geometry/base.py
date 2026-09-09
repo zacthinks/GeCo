@@ -63,6 +63,11 @@ class Geometry(ABC):
         """Whether new text queries can be transformed into this space."""
         return False
 
+    @property
+    def supports_text_transform(self) -> bool:
+        """Whether new observation text can be transformed into this space."""
+        return False
+
     def validate_modality(self, modality: str) -> None:
         """Validate that the geometry can operate on the project modality."""
         if modality != self.modality:

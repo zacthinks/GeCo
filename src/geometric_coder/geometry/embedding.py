@@ -45,6 +45,10 @@ class SentenceTransformerGeometry(Geometry):
     def supports_query(self) -> bool:
         return self._model is not None
 
+    @property
+    def supports_text_transform(self) -> bool:
+        return self._model is not None
+
     def _load_model(self) -> Any:
         if self._model is not None:
             return self._model

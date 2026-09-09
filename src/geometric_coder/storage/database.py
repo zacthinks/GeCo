@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -133,6 +133,7 @@ CREATE TABLE geometries (
     matrix_sparse INTEGER NOT NULL CHECK (matrix_sparse IN (0, 1)),
     state_path TEXT,
     supports_query INTEGER NOT NULL CHECK (supports_query IN (0, 1)),
+    supports_text_transform INTEGER NOT NULL CHECK (supports_text_transform IN (0, 1)),
     storage_kind TEXT NOT NULL DEFAULT 'local' CHECK (storage_kind IN ('local', 'external')),
     external_ref_json TEXT,
     created_at TEXT NOT NULL
@@ -782,6 +783,7 @@ class ProjectDatabase:
         matrix_sparse: bool,
         state_path: str | None,
         supports_query: bool,
+        supports_text_transform: bool,
         storage_kind: str = "local",
         external_ref: Any | None = None,
     ) -> int:
@@ -794,8 +796,8 @@ class ProjectDatabase:
                 INSERT INTO geometries(
                     name, class_name, modality, public, config_json,
                     dependency_names_json, matrix_path, matrix_sparse,
-                    state_path, supports_query, storage_kind, external_ref_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    state_path, supports_query, supports_text_transform, storage_kind, external_ref_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -808,6 +810,7 @@ class ProjectDatabase:
                     int(matrix_sparse),
                     state_path,
                     int(supports_query),
+                    int(supports_text_transform),
                     storage_kind,
                     (json.dumps(external_ref) if external_ref is not None else None),
                     utc_now(),
@@ -1415,6 +1418,26 @@ class ProjectDatabase:
             if cursor.rowcount != 1:
                 raise KeyError(f"Unknown session_id: {session_id}")
 
+    def patch_session_state(self, session_id: int, patch: dict[str, Any]) -> None:
+        """Merge a small interface-state patch without replacing unrelated state."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT state_json FROM sessions WHERE session_id = ?",
+                (int(session_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown session_id: {session_id}")
+            state = json.loads(row["state_json"])
+            state.update(dict(patch))
+            connection.execute(
+                """
+                UPDATE sessions
+                SET state_json = ?, last_active_at = ?
+                WHERE session_id = ?
+                """,
+                (json.dumps(state), utc_now(), int(session_id)),
+            )
+
     def record_visit(
         self,
         *,
@@ -1729,6 +1752,38 @@ class ProjectDatabase:
             ),
         }
 
+    def current_annotations_for_observation(
+        self, observation_id: int
+    ) -> list[dict[str, Any]]:
+        """Return all current code assignments for one observation in one query."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM current_annotations
+                WHERE observation_id = ?
+                ORDER BY code_id
+                """,
+                (int(observation_id),),
+            ).fetchall()
+        return [
+            {
+                "annotation_event_id": int(row["annotation_event_id"]),
+                "observation_id": int(row["observation_id"]),
+                "unit_id": int(row["unit_id"]) if row["unit_id"] is not None else None,
+                "code_id": int(row["code_id"]),
+                "value": str(row["value"]),
+                "origin": str(row["origin"]),
+                "created_at": str(row["created_at"]),
+                "classifier_fit_id": (
+                    int(row["classifier_fit_id"])
+                    if row["classifier_fit_id"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        ]
+
     def current_annotations(self, code_id: int | None = None) -> list[dict[str, Any]]:
         """Return current assignment states, optionally for one code."""
         query = "SELECT * FROM current_annotations"
@@ -1781,7 +1836,7 @@ class ProjectDatabase:
         algorithm: str,
         hyperparameters: Mapping[str, Any],
     ) -> int:
-        """Create one code-owned classifier with a project-wide unique active name."""
+        """Create one code-owned classifier in the project-wide active predictor namespace."""
         clean_name = str(name).strip()
         if not clean_name:
             raise ValueError("Classifier name may not be empty.")
@@ -1873,6 +1928,28 @@ class ProjectDatabase:
         if row is None:
             raise KeyError(f"Unknown active classifier name: {name!r}")
         return _classifier_spec_row(row)
+
+    def rename_classifier_spec(self, classifier_spec_id: int, *, name: str) -> None:
+        """Rename one active classifier without changing its fitted/configured state."""
+        clean_name = str(name).strip()
+        if not clean_name:
+            raise ValueError("Classifier name may not be empty.")
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT status FROM classifier_specs WHERE classifier_spec_id = ?",
+                (int(classifier_spec_id),),
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"Unknown classifier_spec_id: {classifier_spec_id}")
+            if str(current["status"]) != "active":
+                raise ValueError("Deleted classifiers cannot be renamed.")
+            _free_classifier_name(
+                connection, clean_name, exclude_classifier_spec_id=int(classifier_spec_id)
+            )
+            connection.execute(
+                "UPDATE classifier_specs SET name = ? WHERE classifier_spec_id = ?",
+                (clean_name, int(classifier_spec_id)),
+            )
 
     def update_classifier_spec(
         self,
@@ -2141,6 +2218,139 @@ class ProjectDatabase:
             ).fetchall()
         return [_classifier_prediction_row(row) for row in rows]
 
+    def classifier_prediction_count(self, classifier_fit_id: int) -> int:
+        """Return the number of persisted predictions for one classifier fit."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS n FROM classifier_predictions WHERE classifier_fit_id = ?",
+                (int(classifier_fit_id),),
+            ).fetchone()
+        return int(row["n"]) if row is not None else 0
+
+    def missing_classifier_prediction_observation_ids(
+        self, classifier_fit_id: int
+    ) -> list[int]:
+        """Return active observations lacking a prediction for one classifier fit."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id
+                FROM observations AS o
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                LEFT JOIN classifier_predictions AS cp
+                  ON cp.observation_id = o.observation_id
+                 AND cp.classifier_fit_id = ?
+                WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND cp.observation_id IS NULL
+                ORDER BY o.observation_id
+                """,
+                (int(classifier_fit_id),),
+            ).fetchall()
+        return [int(row["observation_id"]) for row in rows]
+
+    def classifier_score_maps(
+        self, classifier_fit_ids: Sequence[int]
+    ) -> dict[int, dict[int, float]]:
+        """Return lean observation->score maps for several fits in one SQLite query."""
+        fit_ids = list(dict.fromkeys(int(value) for value in classifier_fit_ids))
+        if not fit_ids:
+            return {}
+        placeholders = ",".join("?" for _ in fit_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT classifier_fit_id, observation_id, probability, decision_score
+                FROM classifier_predictions
+                WHERE classifier_fit_id IN ({placeholders})
+                ORDER BY observation_id, classifier_fit_id
+                """,
+                fit_ids,
+            ).fetchall()
+        result: dict[int, dict[int, float]] = {fit_id: {} for fit_id in fit_ids}
+        for row in rows:
+            score = row["probability"]
+            if score is None:
+                score = row["decision_score"]
+            if score is not None:
+                result[int(row["classifier_fit_id"])][int(row["observation_id"])] = float(score)
+        return result
+
+    def classifier_atomic_score_vectors(
+        self, classifier_fit_ids: Sequence[int]
+    ) -> dict[int, dict[int, float]]:
+        """Return lean unit->score maps for several fits in one SQLite query."""
+        fit_ids = list(dict.fromkeys(int(value) for value in classifier_fit_ids))
+        if not fit_ids:
+            return {}
+        placeholders = ",".join("?" for _ in fit_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT cp.classifier_fit_id, u.unit_id, cp.probability, cp.decision_score
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id IN ({placeholders})
+                ORDER BY u.row_position, cp.classifier_fit_id
+                """,
+                fit_ids,
+            ).fetchall()
+        result: dict[int, dict[int, float]] = {fit_id: {} for fit_id in fit_ids}
+        for row in rows:
+            score = row["probability"]
+            if score is None:
+                score = row["decision_score"]
+            if score is not None:
+                result[int(row["classifier_fit_id"])][int(row["unit_id"])] = float(score)
+        return result
+
+    def classifier_scores_for_unit(
+        self, classifier_fit_ids: Sequence[int], unit_id: int
+    ) -> dict[int, float]:
+        """Return probability-like scores for several classifier fits at one unit."""
+        fit_ids = list(dict.fromkeys(int(value) for value in classifier_fit_ids))
+        if not fit_ids:
+            return {}
+        placeholders = ",".join("?" for _ in fit_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT cp.classifier_fit_id, cp.probability, cp.decision_score
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id IN ({placeholders}) AND u.unit_id = ?
+                """,
+                [*fit_ids, int(unit_id)],
+            ).fetchall()
+        result: dict[int, float] = {}
+        for row in rows:
+            score = row["probability"]
+            if score is None:
+                score = row["decision_score"]
+            if score is not None:
+                result[int(row["classifier_fit_id"])] = float(score)
+        return result
+
+    def classifier_score_for_unit(
+        self, classifier_fit_id: int, unit_id: int
+    ) -> float | None:
+        """Return one classifier probability-like score for one atomic unit."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT cp.probability, cp.decision_score
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id = ? AND u.unit_id = ?
+                """,
+                (int(classifier_fit_id), int(unit_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        score = row["probability"]
+        if score is None:
+            score = row["decision_score"]
+        return float(score) if score is not None else None
+
     def append_classifier_predictions(
         self,
         classifier_fit_id: int,
@@ -2218,7 +2428,7 @@ class ProjectDatabase:
         classifier_spec_ids: Sequence[int],
         aggregation: str = "mean",
     ) -> int:
-        """Create a named, intentional classifier committee."""
+        """Create a named classifier committee in the shared active predictor namespace."""
         clean_name = str(name).strip()
         members = list(dict.fromkeys(int(value) for value in classifier_spec_ids))
         if not clean_name:
@@ -2229,6 +2439,7 @@ class ProjectDatabase:
             raise ValueError("Unknown classifier-committee aggregation.")
         now = utc_now()
         with self.connect() as connection:
+            _free_committee_name(connection, int(code_id), clean_name)
             cursor = connection.execute(
                 """
                 INSERT INTO classifier_committees(
@@ -2261,7 +2472,7 @@ class ProjectDatabase:
         classifier_spec_ids: Sequence[int],
         aggregation: str,
     ) -> None:
-        """Replace a committee's label, aggregation, and ordered membership."""
+        """Replace a committee's name, aggregation, and ordered membership."""
         clean_name = str(name).strip()
         members = list(dict.fromkeys(int(value) for value in classifier_spec_ids))
         if not clean_name:
@@ -2271,6 +2482,18 @@ class ProjectDatabase:
         if aggregation not in COMMITTEE_AGGREGATIONS:
             raise ValueError("Unknown classifier-committee aggregation.")
         with self.connect() as connection:
+            current = connection.execute(
+                "SELECT code_id, status FROM classifier_committees WHERE committee_id = ?",
+                (int(committee_id),),
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"Unknown committee_id: {committee_id}")
+            if str(current["status"]) != "active":
+                raise ValueError("Deleted committees cannot be edited.")
+            _free_committee_name(
+                connection, int(current["code_id"]), clean_name,
+                exclude_committee_id=int(committee_id),
+            )
             cursor = connection.execute(
                 """
                 UPDATE classifier_committees
@@ -2295,6 +2518,32 @@ class ProjectDatabase:
                     (int(committee_id), classifier_spec_id, position)
                     for position, classifier_spec_id in enumerate(members)
                 ),
+            )
+
+    def rename_classifier_committee(self, committee_id: int, *, name: str) -> None:
+        """Rename one active committee without changing its definition or fitted state."""
+        clean_name = str(name).strip()
+        if not clean_name:
+            raise ValueError("Committee name may not be empty.")
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT code_id, status FROM classifier_committees WHERE committee_id = ?",
+                (int(committee_id),),
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"Unknown committee_id: {committee_id}")
+            if str(current["status"]) != "active":
+                raise ValueError("Deleted committees cannot be renamed.")
+            _free_committee_name(
+                connection, int(current["code_id"]), clean_name,
+                exclude_committee_id=int(committee_id),
+            )
+            # Deliberately do not touch updated_at: that timestamp is part of the
+            # learned-committee training snapshot and a cosmetic rename must not
+            # invalidate a fitted stacker.
+            connection.execute(
+                "UPDATE classifier_committees SET name = ? WHERE committee_id = ?",
+                (clean_name, int(committee_id)),
             )
 
     def list_classifier_committees(
@@ -2355,15 +2604,26 @@ class ProjectDatabase:
         return committees[0]
 
     def delete_classifier_committee(self, committee_id: int) -> None:
-        """Soft-delete one committee while preserving historical provenance."""
+        """Soft-delete one committee and archive its name for active reuse."""
         with self.connect() as connection:
-            cursor = connection.execute(
-                "UPDATE classifier_committees SET status = 'deleted', updated_at = ? "
-                "WHERE committee_id = ? AND status = 'active'",
-                (utc_now(), int(committee_id)),
-            )
-            if cursor.rowcount != 1:
+            row = connection.execute(
+                "SELECT code_id, name, status FROM classifier_committees WHERE committee_id = ?",
+                (int(committee_id),),
+            ).fetchone()
+            if row is None or str(row["status"]) != "active":
                 raise KeyError(f"Unknown active committee_id: {committee_id}")
+            archived_name = _next_committee_deleted_name(
+                connection, int(row["code_id"]), str(row["name"]),
+                exclude_committee_id=int(committee_id),
+            )
+            connection.execute(
+                """
+                UPDATE classifier_committees
+                SET name = ?, status = 'deleted', updated_at = ?
+                WHERE committee_id = ?
+                """,
+                (archived_name, utc_now(), int(committee_id)),
+            )
 
     def register_classifier_committee_fit(
         self,
@@ -2475,6 +2735,60 @@ class ProjectDatabase:
             }
             for row in rows
         ]
+
+    def missing_classifier_committee_prediction_observation_ids(
+        self, committee_fit_id: int
+    ) -> list[int]:
+        """Return active observations lacking a learned-committee prediction."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id
+                FROM observations AS o
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                LEFT JOIN classifier_committee_predictions AS ccp
+                  ON ccp.observation_id = o.observation_id
+                 AND ccp.committee_fit_id = ?
+                WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND ccp.observation_id IS NULL
+                ORDER BY o.observation_id
+                """,
+                (int(committee_fit_id),),
+            ).fetchall()
+        return [int(row["observation_id"]) for row in rows]
+
+    def classifier_committee_atomic_probabilities(
+        self, committee_fit_id: int
+    ) -> dict[int, float]:
+        """Return a lean unit->probability map for one learned committee fit."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT u.unit_id, ccp.probability
+                FROM classifier_committee_predictions AS ccp
+                JOIN units AS u ON u.observation_id = ccp.observation_id
+                WHERE ccp.committee_fit_id = ?
+                ORDER BY u.row_position
+                """,
+                (int(committee_fit_id),),
+            ).fetchall()
+        return {int(row["unit_id"]): float(row["probability"]) for row in rows}
+
+    def classifier_committee_probability_for_unit(
+        self, committee_fit_id: int, unit_id: int
+    ) -> float | None:
+        """Return one learned committee probability for one atomic unit."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT ccp.probability
+                FROM classifier_committee_predictions AS ccp
+                JOIN units AS u ON u.observation_id = ccp.observation_id
+                WHERE ccp.committee_fit_id = ? AND u.unit_id = ?
+                """,
+                (int(committee_fit_id), int(unit_id)),
+            ).fetchone()
+        return float(row["probability"]) if row is not None else None
 
     def append_classifier_committee_predictions(
         self,
@@ -3561,6 +3875,134 @@ class ProjectDatabase:
 
 
 
+def _next_committee_deleted_name(
+    connection: sqlite3.Connection,
+    code_id: int,
+    original_name: str,
+    *,
+    exclude_committee_id: int | None = None,
+) -> str:
+    """Return the first available archival committee name within one code."""
+    index = 0
+    while True:
+        candidate = (
+            f"{original_name}_deleted" if index == 0 else f"{original_name}_deleted_{index}"
+        )
+        query = "SELECT committee_id FROM classifier_committees WHERE code_id = ? AND name = ?"
+        params: list[Any] = [int(code_id), candidate]
+        if exclude_committee_id is not None:
+            query += " AND committee_id != ?"
+            params.append(int(exclude_committee_id))
+        if connection.execute(query, params).fetchone() is None:
+            return candidate
+        index += 1
+
+
+def _bump_archived_committee_name(
+    connection: sqlite3.Connection,
+    code_id: int,
+    archived_name: str,
+    *,
+    exclude_committee_id: int | None = None,
+) -> str:
+    """Move a deleted committee-name collision farther into its archival namespace."""
+    import re
+
+    match = re.match(r"^(.*_deleted)(?:_(\d+))?$", archived_name)
+    if match is None:
+        return _next_committee_deleted_name(
+            connection, code_id, archived_name, exclude_committee_id=exclude_committee_id
+        )
+    prefix = str(match.group(1))
+    index = int(match.group(2) or 0) + 1
+    while True:
+        candidate = f"{prefix}_{index}"
+        query = "SELECT committee_id FROM classifier_committees WHERE code_id = ? AND name = ?"
+        params: list[Any] = [int(code_id), candidate]
+        if exclude_committee_id is not None:
+            query += " AND committee_id != ?"
+            params.append(int(exclude_committee_id))
+        if connection.execute(query, params).fetchone() is None:
+            return candidate
+        index += 1
+
+
+def _assert_active_predictor_name_available(
+    connection: sqlite3.Connection,
+    requested_name: str,
+    *,
+    exclude_classifier_spec_id: int | None = None,
+    exclude_committee_id: int | None = None,
+) -> None:
+    """Require one project-wide active namespace across classifiers and committees."""
+    classifier_query = (
+        "SELECT classifier_spec_id FROM classifier_specs "
+        "WHERE status = 'active' AND name = ?"
+    )
+    classifier_params: list[Any] = [requested_name]
+    if exclude_classifier_spec_id is not None:
+        classifier_query += " AND classifier_spec_id != ?"
+        classifier_params.append(int(exclude_classifier_spec_id))
+    classifier = connection.execute(classifier_query, classifier_params).fetchone()
+    if classifier is not None:
+        raise ValueError(
+            f"An active predictor named {requested_name!r} already exists (classifier)."
+        )
+
+    committee_query = (
+        "SELECT committee_id FROM classifier_committees "
+        "WHERE status = 'active' AND name = ?"
+    )
+    committee_params: list[Any] = [requested_name]
+    if exclude_committee_id is not None:
+        committee_query += " AND committee_id != ?"
+        committee_params.append(int(exclude_committee_id))
+    committee = connection.execute(committee_query, committee_params).fetchone()
+    if committee is not None:
+        raise ValueError(
+            f"An active predictor named {requested_name!r} already exists (committee)."
+        )
+
+
+def _free_committee_name(
+    connection: sqlite3.Connection,
+    code_id: int,
+    requested_name: str,
+    *,
+    exclude_committee_id: int | None = None,
+) -> None:
+    """Free a committee name while enforcing the shared active predictor namespace."""
+    _assert_active_predictor_name_available(
+        connection,
+        requested_name,
+        exclude_committee_id=exclude_committee_id,
+    )
+
+    # The table's physical uniqueness constraint is code-local and includes deleted
+    # rows, so a same-code archival collision must be moved out of the way even
+    # though archival names do not participate in the active predictor namespace.
+    query = "SELECT committee_id, status FROM classifier_committees WHERE code_id = ? AND name = ?"
+    params: list[Any] = [int(code_id), requested_name]
+    if exclude_committee_id is not None:
+        query += " AND committee_id != ?"
+        params.append(int(exclude_committee_id))
+    row = connection.execute(query, params).fetchone()
+    if row is None:
+        return
+    if str(row["status"]) == "active":
+        raise RuntimeError(
+            "Active committee name collision escaped shared predictor validation."
+        )
+    archived_id = int(row["committee_id"])
+    replacement = _bump_archived_committee_name(
+        connection, int(code_id), requested_name, exclude_committee_id=archived_id
+    )
+    connection.execute(
+        "UPDATE classifier_committees SET name = ? WHERE committee_id = ?",
+        (replacement, archived_id),
+    )
+
+
 def _next_classifier_deleted_name(
     connection: sqlite3.Connection,
     original_name: str,
@@ -3618,7 +4060,15 @@ def _free_classifier_name(
     *,
     exclude_classifier_spec_id: int | None = None,
 ) -> None:
-    """Free an exact name by bumping a deleted collision or reject an active one."""
+    """Free a classifier name while enforcing the shared active predictor namespace."""
+    _assert_active_predictor_name_available(
+        connection,
+        requested_name,
+        exclude_classifier_spec_id=exclude_classifier_spec_id,
+    )
+
+    # classifier_specs has a table-wide UNIQUE(name) constraint that includes deleted
+    # rows, so an archival collision must be bumped before the active name can be used.
     query = "SELECT classifier_spec_id, status FROM classifier_specs WHERE name = ?"
     params: list[Any] = [requested_name]
     if exclude_classifier_spec_id is not None:
@@ -3628,7 +4078,9 @@ def _free_classifier_name(
     if row is None:
         return
     if str(row["status"]) == "active":
-        raise ValueError(f"An active classifier named {requested_name!r} already exists.")
+        raise RuntimeError(
+            "Active classifier name collision escaped shared predictor validation."
+        )
     archived_id = int(row["classifier_spec_id"])
     replacement = _bump_archived_classifier_name(
         connection, requested_name, exclude_classifier_spec_id=archived_id
@@ -3823,6 +4275,7 @@ def _geometry_row(row: sqlite3.Row) -> dict[str, Any]:
         "matrix_sparse": bool(row["matrix_sparse"]),
         "state_path": row["state_path"],
         "supports_query": bool(row["supports_query"]),
+        "supports_text_transform": bool(row["supports_text_transform"]),
         "storage_kind": str(row["storage_kind"]),
         "external_ref": (json.loads(row["external_ref_json"]) if row["external_ref_json"] is not None else None),
         "created_at": str(row["created_at"]),

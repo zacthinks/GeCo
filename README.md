@@ -17,13 +17,16 @@ errors, audit-sample correction, or claims that machine-assisted measurements
 are population-valid. Confirmatory workflows should freeze and consume GeCo
 artifacts through an external system such as Text Analysis Lab.
 
-> Status: pre-alpha. GeCo 0.8.1 implements generalized observations,
+> Status: pre-alpha. GeCo 0.8.14 implements generalized observations,
 > observation-based assignments, contiguous span coding, teaching examples,
-> code-owned classifiers with project-wide unique active names and one retained
+> code-owned classifiers and committees sharing one project-wide active predictor-name namespace, with one retained
 > fitted state per classifier, seven geometry-based classifier families,
-> training-integrated cross-validation and full-evidence refitting, fixed and
-> trainable classifier committees, optional automatic training before
-> recommendations, TeAL-style externally backed numerical representations, a
+> opt-in training-integrated cross-validation and full-evidence refitting with
+> single-read geometry assembly for fast iterative retraining, fixed and trainable
+> classifier committees with fit-preserving rename, optimized learned logistic
+> stacking recommendations, optional automatic training before recommendations,
+> neutral frozen predictor export for single classifiers and committees,
+> TeAL-style externally backed numerical representations, a
 > prediction-geometry view in Develop, auditable/undoable Apply and Review bulk
 > commits, and the five functional development workspaces.
 
@@ -202,13 +205,11 @@ in efficient sidecar formats. Externally backed projects may instead persist opa
 JSON references and obtain geometry matrices or 2D coordinates from a runtime
 provider without copying those numerical artifacts into GeCo.
 
-During private pre-1.0 development, GeCo does not maintain runtime backward
-compatibility. Once a project contains substantive analytic work, each
-schema-changing checkpoint should instead provide a narrowly scoped standalone
-script for the immediately previous schema. These migrations are **never run
-automatically by GeCo**. Run the matching script explicitly, inspect the backup,
-and then open the migrated project normally. Disposable example/test projects may
-still be rebuilt from source when no analytic work needs preservation.
+During private pre-1.0 development, GeCo intentionally carries **no backward-
+compatibility or migration architecture**. Schema/API changes optimize for the
+clean target design. A workspace whose schema does not match the running build
+must be recreated from its source data and external-resource registrations. Do not
+add compatibility shims or one-step migrators for developmental schemas.
 
 ## Interface
 
@@ -233,30 +234,42 @@ unit count, and each parent hierarchy level with its group count.
   leaving the map. Context rows include a focal-anchored contiguous span
   selector: expanding an endpoint fills intervening rows, and a multi-row span
   is persisted only when first assigned.
+  Explore interaction performance is partitioned deliberately: focal/visited navigation
+  updates use small Plotly overlay patches rather than rebuilding the geometry map;
+  multi-code palette structure is rebuilt only when rows/codes change; hidden workspaces
+  short-circuit annotation refreshes; and ordinary coding refreshes the map only when
+  the **Show only uncoded points** filter is active.
 - **Develop**: a classifier-first, code-specific active-learning workspace.
-  Every classifier belongs to exactly one code, and active classifier names are
-  unique project-wide. Users select or create a classifier for the active code.
+  Every classifier belongs to exactly one code. Active classifier and committee names
+  share one project-wide predictor namespace. Users select or create a classifier for the active code.
   GeCo currently supports L2, L1, and elastic-net logistic regression,
   Complement Naive Bayes, a linear-kernel SVM with probability estimation, a
   decision tree, and k-nearest neighbors. The selector carries a Current, Stale,
   or Not trained badge, while geometry, family, and selected hyperparameters
   appear as ordinary descriptive detail rather than internal fit identifiers.
-  **Train** owns model selection: once at least two Present and two Absent
-  examples exist, GeCo performs compact family-specific stratified
-  cross-validation and then refits the selected configuration on all current
-  evidence; earlier than that it trains immediately from the current/default
-  settings. Train all classifiers and Automatically train before recommendations
-  are stacked beneath Train and enabled by default for new Develop state. Train all
-  scopes both manual and automatic refreshes, so early active-learning loops can
-  stay smooth; either can be disabled later for larger manual batches. Each classifier retains one current fitted estimator plus
-  prediction cache, and already-current fits are reused without rerunning CV.
+  **Train** uses the classifier's currently stored hyperparameters by default,
+  keeping ordinary active-learning refreshes fast. An opt-in **Tune hyperparameters
+  with cross-validation** checkbox runs the compact family-specific stratified CV
+  search before fitting; explicit tuning runs even when the retained fit is already
+  current. Train all classifiers and Automatically train before recommendations
+  remain stacked beneath Train and enabled by default for new Develop state, while
+  hyperparameter tuning defaults off. Train all scopes both manual and automatic
+  refreshes, and automatic training follows the same tuning checkbox. Each classifier
+  retains one current fitted estimator plus prediction cache; with tuning off,
+  already-current fits are reused immediately.
   Replacing a fit retires the prior heavy state while lightweight historical
   metadata and workflow snapshots preserve provenance needed by old Apply drafts
   and evaluation events. A source selector applies Most likely, Least likely,
   and Most uncertain either to the active classifier or a selected committee;
   Greatest disagreement appears only for committees, while Random and review of
   unsure judgments remain generally available. Committees support mean, median,
-  minimum, maximum, harmonic-mean, and geometric-mean aggregation. Training may
+  minimum, maximum, harmonic-mean, geometric-mean aggregation, and learned logistic
+  stacking. Manage committees can rename an active committee without changing its
+  stable ID, members, aggregation, or learned fit; active committee names share the
+  same project-wide predictor namespace as classifiers. Current learned-committee recommendations use the persisted committee score
+  vector directly and fetch member scores only for the selected observation; Greatest
+  disagreement batches member score vectors once. The coding panel displays member
+  model probabilities and the resulting committee probability separately. Training may
   include atomic observations, persistent spans, and active teaching examples.
   The Teaching Examples panel supports status and label changes plus optional
   assessment against existing fits before a new example joins later training. A
@@ -364,13 +377,19 @@ second_spec_id = coder.create_classifier_spec(
     algorithm="logistic_l1",
 )
 
-# Train owns model selection. If there are at least two Present and two Absent
-# examples, GeCo performs family-specific stratified CV, selects hyperparameters,
-# and then refits on all current evidence. Earlier than that it trains from the
-# current/default settings. Each classifier still retains only one live fitted state.
+# Ordinary training is fast: it uses each classifier's currently stored
+# hyperparameters. Opt into the slower CV search when you deliberately want to
+# retune them. Each classifier still retains only one live fitted state.
 fits = coder.train_classifiers(
     code_id=code_id,
     classifier_spec_ids=[active_spec_id, second_spec_id],
+    tune=False,
+)
+
+tuned_fits = coder.train_classifiers(
+    code_id=code_id,
+    classifier_spec_ids=[active_spec_id, second_spec_id],
+    tune=True,
 )
 
 committee_id = coder.create_classifier_committee(
@@ -446,9 +465,9 @@ The example eagerly creates three public geometries: lemmatized TF-IDF, its
 100-dimensional SVD/LSA derivative, and MiniLM embeddings. MPNet is omitted from
 the default development example so first-time setup and rebuilding are faster.
 It reopens a current-schema project without refitting. The disposable AERA
-example may rebuild an outdated example project from source data, but GeCo itself
-never migrates substantive projects automatically. Use `--overwrite` to force a
-rebuild even when the schema is current.
+example may rebuild an outdated example project from source data. During pre-1.0
+development, any schema-mismatched workspace should likewise be recreated rather
+than migrated. Use `--overwrite` to force a rebuild even when the schema is current.
 The first run therefore downloads the selected embedding models and computes
 all matrices and default views before opening the interface. The resulting
 project is cached at `examples/aera_2026.geco/`. Launch it again without
@@ -460,17 +479,8 @@ uv run geco launch examples/aera_2026.geco
 
 This opens the frozen project in place without recomputing representations or views.
 
-When a substantive project is exactly one schema version behind, run the matching
-standalone migration explicitly. For example:
-
-```bash
-uv run python scripts/migrate_schema_11_to_12.py path/to/project.geco
-```
-
-The script validates the source schema, creates a timestamped pre-migration SQLite
-backup, performs the one-step migration, and runs integrity checks. `geco launch`
-and `GeometricCoder.open(...)` deliberately reject mismatched schemas; they never
-migrate projects automatically.
+Pre-1.0 schema mismatches are deliberate hard boundaries. Recreate the workspace
+from source rather than migrating it or adding runtime compatibility logic.
 
 For externally backed numerical representations (including the intended TeAL
 integration seam), see [docs/teal-integration.md](docs/teal-integration.md).
@@ -482,7 +492,7 @@ without reaching into GeCo internals or interpreting opaque `external_ref` value
 
 ```python
 for geometry in coder.geometries():
-    print(geometry["geometry_id"], geometry["name"], geometry["storage_kind"], geometry["supports_query"])
+    print(geometry["geometry_id"], geometry["name"], geometry["storage_kind"], geometry["supports_query"], geometry["supports_text_transform"])
 
 for view in coder.views():
     print(view["view_id"], view["name"], view["storage_kind"])
@@ -492,6 +502,7 @@ if not coder.has_geometry("minilm"):
         name="minilm",
         external_ref={"artifact": "..."},
         supports_query=True,
+        supports_text_transform=True,
     )
 
 # Equivalent idempotent notebook style:
@@ -499,6 +510,7 @@ coder.register_external_geometry(
     name="minilm",
     external_ref={"artifact": "..."},
     supports_query=True,
+    supports_text_transform=True,
     if_exists="reuse",
 )
 
@@ -507,6 +519,58 @@ query_vector = coder.transform_query("minilm", "qualitative interview methods")
 
 `if_exists="reuse"` only reuses an existing external resource when its persisted
 identity and declared capabilities match. Conflicting registrations still fail.
+
+External providers may be invoked from Dash callback threads. Provider implementations
+must therefore avoid reusing thread-affine database connections across calls; open and
+close any such state inside the calling thread.
+
+### Frozen predictor export
+
+GeCo 0.8.14 exposes one neutral prediction handoff for both individual classifiers
+and classifier committees. External systems should discover stable predictor references
+and export the selected fitted procedure without asking whether it is internally a
+classifier or committee:
+
+```python
+refs = coder.predictors(code_id)
+predictor = coder.export_predictor(refs[0])
+
+print(predictor.sources)
+print(predictor.manifest())
+```
+
+Active classifiers and committees share one project-wide predictor-name namespace, so
+every live predictor has an unambiguous name regardless of its internal GeCo kind.
+Archived `_deleted...` names are outside that active namespace, and historical fit-time
+names remain unchanged for provenance.
+
+The frozen predictor declares an ordered list of unique required geometries. Batch
+inference always accepts an equally ordered list of matrices, so sparse and dense
+representations remain separate rather than being concatenated and split again:
+
+```python
+inputs = [coder.geometry_matrix(source.geometry_id) for source in predictor.sources]
+probabilities = predictor.predict_proba(inputs)
+```
+
+If two committee members use the same geometry, that source appears only once and the
+frozen member routing sends it to both estimators. Learned logistic-stacking committees
+carry the exact fitted member estimators, member order, and fitted stacker. Export never
+retrains. A stale retained procedure is rejected by default and may be frozen only with
+`allow_stale=True`; an old learned stacker is never silently paired with a newer member
+fit. The neutral export contains no TeAL dependency; the TeAL bridge can translate this
+contract into its own durable `GeCoPredictor` operator.
+
+During GeCo/TeAL integration work, routinely launch the three-record external-resource
+debug smoke with Dash development checks enabled:
+
+```bash
+uv run python scripts/debug_external_ui_smoke.py
+```
+
+The expected result is an Explore map containing exactly three points immediately after
+launch. The smoke uses `debug=True` with the reloader disabled so Dash's validation and
+dev tooling remain active without duplicating the temporary provider lifecycle.
 
 
 Use custom paths when needed:
@@ -545,3 +609,26 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architect
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Development UI smoke checks
+
+Use a real locally computed project—not only an external toy provider—when checking
+the ordinary browser surface:
+
+```bash
+python scripts/debug_local_ui_smoke.py
+```
+
+The real AERA acceptance example likewise prepares or reopens the project first and
+then launches it directly through `GeometricCoder.launch(...)`. It deliberately does
+not use the temporary `BrowserProgressPage` handoff; that helper is a separate utility
+lifecycle and is not part of the ordinary launch acceptance path.
+
+GeCo no longer carries the temporary Dash `<4.2` diagnostic pin. The normal package
+constraint is again `dash>=4.0`; renderer compatibility should be evaluated through
+the real-project smoke rather than by silently substituting an external toy case.
+
+The clean-install smoke also creates a local TF-IDF geometry and persisted 2D view,
+then requests `/`, `/_dash-layout`, and `/_dash-dependencies` through Dash's Flask
+server before separately exercising the external-provider seam.
+

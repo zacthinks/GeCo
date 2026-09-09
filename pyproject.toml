@@ -1,6 +1,6 @@
 [project]
 name = "geometric-coder"
-version = "0.8.1"
+version = "0.8.14"
 description = "GeCo: explicit geometric coding for qualitative inquiry"
 readme = "README.md"
 license = "MIT"
