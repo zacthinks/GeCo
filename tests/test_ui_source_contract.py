@@ -279,3 +279,94 @@ def test_committee_manager_rename_and_probability_explanation_contract() -> None
     assert 'id="committee-rename"' in app_source
     assert '"Committee probability"' in app_source
     assert 'committee_probability = data.get("committee_probability")' in app_source
+
+
+def test_local_browser_url_normalizes_wildcard_bind_host() -> None:
+    from geometric_coder.ui.app import _local_browser_url
+
+    assert _local_browser_url("0.0.0.0", 8050) == "http://127.0.0.1:8050/"
+    assert _local_browser_url("::", 8051) == "http://127.0.0.1:8051/"
+    assert _local_browser_url("127.0.0.1", 8123) == "http://127.0.0.1:8123/"
+    assert _local_browser_url("localhost", 8124) == "http://localhost:8124/"
+
+
+def test_launch_app_displays_url_before_running(monkeypatch) -> None:
+    import geometric_coder.ui.app as app_module
+
+    events: list[tuple[str, object]] = []
+
+    class FakeApp:
+        def run(self, **kwargs):
+            events.append(("run", kwargs))
+
+    monkeypatch.setattr(app_module, "create_app", lambda *args, **kwargs: FakeApp())
+    monkeypatch.setattr(
+        app_module,
+        "_display_local_browser_url",
+        lambda host, port: events.append(("url", (host, port))),
+    )
+
+    app_module.launch_app(
+        object(),
+        host="0.0.0.0",
+        port=8125,
+        debug=False,
+        use_reloader=False,
+    )
+
+    assert events[0] == ("url", ("0.0.0.0", 8125))
+    assert events[1][0] == "run"
+    assert events[1][1]["host"] == "0.0.0.0"
+    assert events[1][1]["port"] == 8125
+
+
+def test_jupyter_browser_link_opens_new_tab(monkeypatch) -> None:
+    import IPython
+    import IPython.display
+    from geometric_coder.ui.app import _display_local_browser_url
+
+    rendered: list[str] = []
+
+    class FakeHTML:
+        def __init__(self, data: str):
+            self.data = data
+
+    monkeypatch.setattr(IPython, "get_ipython", lambda: object())
+    monkeypatch.setattr(IPython.display, "HTML", FakeHTML)
+    monkeypatch.setattr(IPython.display, "display", lambda value: rendered.append(value.data))
+
+    url = _display_local_browser_url("0.0.0.0", 8050)
+
+    assert url == "http://127.0.0.1:8050/"
+    assert len(rendered) == 1
+    assert "Open in browser" in rendered[0]
+    assert "target='_blank'" in rendered[0]
+    assert "http://127.0.0.1:8050/" in rendered[0]
+
+
+def test_non_ipython_launch_url_is_plain_text(monkeypatch, capsys) -> None:
+    import IPython
+    from geometric_coder.ui.app import _display_local_browser_url
+
+    monkeypatch.setattr(IPython, "get_ipython", lambda: None)
+    _display_local_browser_url("127.0.0.1", 8126)
+
+    assert "GeCo is running at http://127.0.0.1:8126/ (local browser URL)" in capsys.readouterr().out
+
+
+def test_focus_mobile_css_keeps_touch_targets_and_footer_available() -> None:
+    from pathlib import Path
+
+    css_source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "geometric_coder"
+        / "ui"
+        / "assets"
+        / "geco.css"
+    ).read_text(encoding="utf-8")
+    assert "@media (max-width: 650px)" in css_source
+    assert ".focus-coding-document-pane { max-height: 48vh; overflow-y: auto; }" in css_source
+    assert ".focus-coding-judgment { min-height: 44px; font-size: 1rem; }" in css_source
+    assert "position: sticky;" in css_source
+    assert "safe-area-inset-bottom" in css_source

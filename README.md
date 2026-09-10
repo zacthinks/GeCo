@@ -17,7 +17,7 @@ errors, audit-sample correction, or claims that machine-assisted measurements
 are population-valid. Confirmatory workflows should freeze and consume GeCo
 artifacts through an external system such as Text Analysis Lab.
 
-> Status: pre-alpha. GeCo 0.8.14 implements generalized observations,
+> Status: pre-alpha. GeCo 0.8.15 implements generalized observations,
 > observation-based assignments, contiguous span coding, teaching examples,
 > code-owned classifiers and committees sharing one project-wide active predictor-name namespace, with one retained
 > fitted state per classifier, seven geometry-based classifier families,
@@ -26,6 +26,7 @@ artifacts through an external system such as Text Analysis Lab.
 > classifier committees with fit-preserving rename, optimized learned logistic
 > stacking recommendations, optional automatic training before recommendations,
 > neutral frozen predictor export for single classifiers and committees,
+> finite Focus Coding tasks with protocol-aware completion,
 > TeAL-style externally backed numerical representations, a
 > prediction-geometry view in Develop, auditable/undoable Apply and Review bulk
 > commits, and the five functional development workspaces.
@@ -109,6 +110,8 @@ coder = GeometricCoder.create(
 # The same project object will power the notebook API and local web UI.
 # coder.launch()
 ```
+
+When launched from IPython/Jupyter, GeCo keeps Dash's embedded notebook view and also displays a clickable **local browser URL** for opening the same running session in a full browser window. Outside IPython, that URL is printed as plain text. If GeCo binds to `host="0.0.0.0"`, the displayed local-browser link uses `127.0.0.1` instead of the wildcard address.
 
 The supplied key columns may contain a single key (for example, `tweet_id`) or
 an arbitrary hierarchy from broadest to most specific. Input row order is
@@ -484,6 +487,37 @@ from source rather than migrating it or adding runtime compatibility logic.
 
 For externally backed numerical representations (including the intended TeAL
 integration seam), see [docs/teal-integration.md](docs/teal-integration.md).
+
+### Focus Coding
+
+Focus Coding is a finite human-labeling mode for a fixed set of atomic observations
+and required codes. It uses the same GeCo project, assignments, code versions, and
+resumable session state, but presents a stripped-down coding surface with progress,
+protocol-aware Unsure handling, unresolved-only review, and a validated Done action.
+
+```python
+focus_session_id = coder.configure_focus(
+    codes=[qual_code_id, quant_code_id],
+    allow_unsure=False,
+    # Optional external ordering/selection by stable user key:
+    user_keys=[{"document_id": "d3"}, {"document_id": "d1"}],
+)
+
+coder.launch_focus_coder(session_id=focus_session_id)
+```
+
+If `user_keys` is omitted, the complete atomic project snapshot is used in canonical
+import order. External systems such as TeAL should use stable user keys rather than
+GeCo-local unit IDs. The requested text and metadata are already part of the local
+GeCo snapshot, so Focus Coding requires no live numerical provider and exposes no
+geometry, classifier, committee, or machine-prediction controls. When
+`allow_unsure=False`, the Unsure action is absent and any pre-existing Unsure judgment
+counts as unresolved until changed to Present or Absent.
+
+Clicking **Done** validates every required document-by-code judgment. Incomplete tasks
+enter unresolved-review mode; complete tasks persist a closed Focus status that can be
+explicitly reopened for editing. See
+[docs/teal-focus-coding.md](docs/teal-focus-coding.md) for the TeAL creation contract.
 
 ### Public external-resource inspection
 

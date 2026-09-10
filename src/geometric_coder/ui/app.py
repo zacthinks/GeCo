@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import UTC, date, datetime
+from html import escape as html_escape
 import json
 import re
 import uuid
@@ -105,8 +106,23 @@ COMMITTEE_AGGREGATION_LABELS: dict[str, str] = {
 }
 
 
-def create_app(project: GeometricCoder) -> Any:
-    """Create the local GeCo Dash application."""
+def create_app(
+    project: GeometricCoder,
+    *,
+    mode: str = "standard",
+    focus_session_id: int | None = None,
+) -> Any:
+    """Create the local GeCo Dash application.
+
+    ``mode="focus"`` renders the finite Focus Coding surface over the same
+    GeCo project/session state rather than maintaining a separate coding system.
+    """
+    if mode == "focus":
+        from geometric_coder.ui.focus_coding import create_focus_coding_app
+
+        return create_focus_coding_app(project, session_id=focus_session_id)
+    if mode != "standard":
+        raise ValueError("mode must be 'standard' or 'focus'")
     try:
         from dash import (
             ALL, Dash, Input, Output, Patch, State, callback_context, dash_table, dcc, html, no_update, set_props,
@@ -9972,6 +9988,51 @@ def _empty_figure(message: str) -> Any:
     return figure
 
 
+def _local_browser_url(host: str, port: int) -> str:
+    """Return a browser-usable local URL for a Dash bind host and port."""
+    browser_host = str(host).strip() or "127.0.0.1"
+    if browser_host in {"0.0.0.0", "::", "[::]"}:
+        browser_host = "127.0.0.1"
+    elif ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
+    return f"http://{browser_host}:{int(port)}/"
+
+
+def _display_local_browser_url(host: str, port: int) -> str:
+    """Display the local browser URL without changing Dash notebook embedding."""
+    url = _local_browser_url(host, port)
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython()
+    except Exception:
+        shell = None
+
+    if shell is not None:
+        try:
+            from IPython.display import HTML, display
+
+            safe_url = html_escape(url, quote=True)
+            display(
+                HTML(
+                    "<div style='margin:0.25rem 0 0.5rem'>"
+                    f"<div><strong>GeCo is running at</strong> "
+                    f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{safe_url}</a> "
+                    "<span style='color:#6b756e'>(local browser URL)</span></div>"
+                    f"<div><a href='{safe_url}' target='_blank' rel='noopener noreferrer'>"
+                    "Open in browser</a></div>"
+                    "</div>"
+                )
+            )
+            return url
+        except Exception:
+            # URL visibility should never prevent the application from launching.
+            pass
+
+    print(f"GeCo is running at {url} (local browser URL)")
+    return url
+
+
 def launch_app(
     project: GeometricCoder,
     *,
@@ -9979,9 +10040,12 @@ def launch_app(
     port: int,
     debug: bool,
     use_reloader: bool = False,
+    mode: str = "standard",
+    focus_session_id: int | None = None,
 ) -> None:
     """Create and run the local Dash app with a single-process default."""
-    app = create_app(project)
+    app = create_app(project, mode=mode, focus_session_id=focus_session_id)
+    _display_local_browser_url(host, port)
     app.run(
         host=host,
         port=port,

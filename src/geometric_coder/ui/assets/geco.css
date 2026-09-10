@@ -987,3 +987,235 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .memo-presentation-controls { grid-template-columns: 1fr; }
   .memo-presentation-mode-label { display: none; }
 }
+
+/* --------------------------------------------------------------------------
+   Focus Coding mode
+   -------------------------------------------------------------------------- */
+.focus-coding-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
+  gap: 0.8rem;
+  padding: 1rem 1.15rem 1.2rem;
+  background: var(--geco-bg);
+  color: #171b18;
+}
+.focus-coding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.focus-coding-brand { display: flex; align-items: center; gap: 0.7rem; }
+.focus-coding-gecko { font-size: 2rem; line-height: 1; }
+.focus-coding-title { margin: 0; font-size: 1.45rem; }
+.focus-coding-subtitle { margin-top: 0.15rem; color: var(--geco-muted); font-size: 0.84rem; }
+.focus-coding-mode-heading {
+  margin: -0.15rem 0 0;
+  color: #34433a;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.focus-coding-progress-summary { font-weight: 650; color: #284d35; }
+.focus-coding-progress-wrap {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+}
+.focus-coding-progress-bar { width: 100%; height: 0.8rem; }
+.focus-coding-judgment-summary { color: var(--geco-muted); font-size: 0.86rem; white-space: nowrap; }
+.focus-coding-notice { min-height: 1.3rem; font-size: 0.9rem; }
+.focus-coding-notice-warning {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #d8bf73;
+  border-radius: 8px;
+  background: #fff8df;
+  color: #665018;
+}
+.focus-coding-notice-success {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #a7ceb2;
+  border-radius: 8px;
+  background: #edf8f0;
+  color: #235a34;
+}
+.focus-coding-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(330px, 0.75fr);
+  gap: 0.9rem;
+}
+.focus-coding-document-pane,
+.focus-coding-codes-pane {
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid var(--geco-border);
+  border-radius: 10px;
+}
+.focus-coding-document-pane {
+  overflow-y: auto;
+  padding: 1rem 1.1rem 1.25rem;
+}
+.focus-coding-codes-pane {
+  overflow-y: auto;
+  padding: 0.95rem;
+}
+.focus-coding-position { font-weight: 700; color: #274a32; margin-bottom: 0.45rem; }
+.focus-coding-key { display: flex; flex-wrap: wrap; gap: 0.35rem 0.8rem; margin-bottom: 0.65rem; }
+.focus-coding-key-field {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.22rem 0.45rem;
+  border-radius: 6px;
+  background: #f3f7f4;
+  font-size: 0.82rem;
+}
+.focus-coding-metadata {
+  margin-bottom: 1rem;
+  border-top: 1px solid #edf0ee;
+  border-bottom: 1px solid #edf0ee;
+  padding: 0.55rem 0;
+}
+.focus-coding-metadata-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 0.65rem;
+  padding: 0.22rem 0;
+  font-size: 0.86rem;
+}
+.focus-coding-metadata-label { font-weight: 650; color: #526158; }
+.focus-coding-metadata-value { overflow-wrap: anywhere; }
+.focus-coding-metadata-empty { color: var(--geco-muted); font-size: 0.84rem; }
+.focus-coding-text {
+  white-space: pre-wrap;
+  line-height: 1.62;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.focus-coding-codes-heading { margin: 0 0 0.75rem; font-size: 1.12rem; }
+.focus-coding-code-cards { display: flex; flex-direction: column; gap: 0.75rem; }
+.focus-coding-code-card {
+  border: 1px solid #dce5df;
+  border-radius: 9px;
+  padding: 0.8rem;
+  background: #fbfdfb;
+}
+.focus-coding-code-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
+.focus-coding-code-name { margin: 0; font-size: 1rem; }
+.focus-coding-code-version { color: var(--geco-muted); font-size: 0.75rem; }
+.focus-coding-code-description {
+  margin-top: 0.45rem;
+  color: #4a5850;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.focus-coding-judgment-buttons { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.7rem; }
+.focus-coding-judgment {
+  flex: 1 1 90px;
+  min-height: 2.25rem;
+  border-radius: 7px;
+  background: #fff;
+  color: #27352c;
+  font-weight: 650;
+  cursor: pointer;
+}
+.focus-coding-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding-top: 0.15rem;
+  overflow-x: auto;
+}
+.focus-coding-nav-buttons,
+.focus-coding-completion-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.focus-coding-nav-buttons { min-width: max-content; }
+.focus-coding-completion-actions { justify-self: end; }
+.focus-coding-footer .secondary-action { width: auto; margin-top: 0; }
+.focus-coding-auto-advance label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0 0.15rem;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.focus-coding-auto-advance input { margin: 0; }
+.focus-coding-done {
+  min-width: 100px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.focus-coding-complete-panel {
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+.focus-coding-complete-panel:empty { display: none; }
+.focus-coding-complete-panel > div {
+  max-width: 580px;
+  padding: 2.2rem 2.4rem;
+  background: #fff;
+  border: 1px solid var(--geco-border);
+  border-radius: 12px;
+}
+.focus-coding-complete-check { font-size: 2.3rem; color: #2f744a; }
+.focus-coding-complete-panel h2 { margin: 0.35rem 0; }
+.focus-coding-complete-help { color: var(--geco-muted); }
+
+@media (max-width: 900px) {
+  .focus-coding-workspace { grid-template-columns: 1fr; overflow: visible; }
+  .focus-coding-codes-pane { max-height: none; }
+  .focus-coding-progress-wrap { grid-template-columns: 1fr; }
+  .focus-coding-judgment-summary { white-space: normal; }
+}
+@media (max-width: 650px) {
+  .focus-coding-shell {
+    gap: 0.55rem;
+    padding: 0.65rem 0.7rem calc(0.8rem + env(safe-area-inset-bottom));
+  }
+  .focus-coding-header { align-items: stretch; flex-direction: column; gap: 0.45rem; }
+  .focus-coding-progress-summary { text-align: left; }
+  .focus-coding-progress-wrap { gap: 0.4rem; }
+  .focus-coding-workspace { gap: 0.6rem; }
+  .focus-coding-document-pane,
+  .focus-coding-codes-pane { border-radius: 8px; padding: 0.75rem; }
+  .focus-coding-document-pane { max-height: 48vh; overflow-y: auto; }
+  .focus-coding-metadata { margin-bottom: 0.7rem; }
+  .focus-coding-metadata-row { grid-template-columns: 1fr; gap: 0.1rem; }
+  .focus-coding-text { line-height: 1.5; }
+  .focus-coding-judgment { min-height: 44px; font-size: 1rem; }
+  .focus-coding-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    gap: 0.45rem;
+    overflow: visible;
+    margin: 0 -0.15rem;
+    padding: 0.5rem 0.15rem calc(0.5rem + env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(215, 226, 218, 0.95);
+    background: rgba(247, 250, 248, 0.97);
+    backdrop-filter: blur(8px);
+  }
+  .focus-coding-nav-buttons {
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    padding-bottom: 0.1rem;
+  }
+  .focus-coding-nav-buttons > button,
+  .focus-coding-completion-actions > button { min-height: 44px; flex: 0 0 auto; }
+  .focus-coding-done { min-width: 76px; }
+}

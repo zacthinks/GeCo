@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import numpy as np
@@ -531,6 +532,290 @@ class GeometricCoder:
     def patch_session_state(self, session_id: int, patch: dict[str, Any]) -> None:
         """Merge a small resumable-interface state patch."""
         self.database.patch_session_state(int(session_id), dict(patch))
+
+    def configure_focus(
+        self,
+        *,
+        codes: Sequence[int | str],
+        allow_unsure: bool = False,
+        unit_ids: Sequence[int] | None = None,
+        user_keys: Sequence[Mapping[str, Any]] | None = None,
+        session_id: int | None = None,
+        title: str | None = None,
+        overwrite: bool = False,
+    ) -> int:
+        """Configure one finite focus-coding task in a resumable session.
+
+        Focus coding is deliberately defined over atomic observations already
+        present in this GeCo snapshot. ``user_keys`` is the preferred external
+        interface for selecting/ordering a subset; ``unit_ids`` is an internal/local
+        convenience. When neither is supplied, the complete atomic universe is
+        used in canonical import order. TeAL focus workspaces therefore need no
+        live provider: TeAL aligns the requested audit documents to text/metadata,
+        imports them into GeCo, then supplies the stable keys/order (or simply uses
+        the complete imported order).
+
+        Code versions are frozen at configuration time for display/provenance.
+        Annotation events still target the stable code IDs, matching ordinary GeCo
+        coding semantics.
+        """
+        sessions = self.sessions()
+        if not sessions:
+            raise RuntimeError("Focus coding requires at least one GeCo session.")
+        if session_id is None:
+            session_id = int(sessions[0]["session_id"])
+        session = self.database.get_session(int(session_id))
+
+        requested_codes = list(codes)
+        if not requested_codes:
+            raise ValueError("Focus coding requires at least one code.")
+        available_codes = self.codes()
+        by_id = {int(row["code_id"]): row for row in available_codes}
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for row in available_codes:
+            by_name.setdefault(str(row["name"]), []).append(row)
+
+        resolved_codes: list[dict[str, int]] = []
+        seen_code_ids: set[int] = set()
+        for value in requested_codes:
+            if isinstance(value, int):
+                row = by_id.get(int(value))
+                if row is None:
+                    raise KeyError(f"Unknown focus code_id: {value}")
+            else:
+                clean_name = str(value).strip()
+                matches = by_name.get(clean_name, [])
+                if not matches:
+                    raise KeyError(f"Unknown focus code name: {clean_name!r}")
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"Focus code name {clean_name!r} is ambiguous; pass a code ID."
+                    )
+                row = matches[0]
+            code_id = int(row["code_id"])
+            if code_id in seen_code_ids:
+                continue
+            seen_code_ids.add(code_id)
+            resolved_codes.append(
+                {
+                    "code_id": code_id,
+                    "version_number": int(row["version_number"]),
+                }
+            )
+
+        units = self.units()
+        unit_by_id = {int(row["unit_id"]): row for row in units}
+        if unit_ids is not None and user_keys is not None:
+            raise ValueError("Pass either user_keys or unit_ids for Focus ordering, not both.")
+        if user_keys is not None:
+            by_key: dict[str, int] = {}
+            for row in units:
+                token = json.dumps(dict(row["user_key"]), sort_keys=True, separators=(",", ":"))
+                by_key[token] = int(row["unit_id"])
+            ordered_unit_ids = []
+            seen_units: set[int] = set()
+            for raw_key in user_keys:
+                normalized_key = dict(raw_key)
+                token = json.dumps(normalized_key, sort_keys=True, separators=(",", ":"))
+                if token not in by_key:
+                    raise KeyError(f"Unknown focus user key: {normalized_key!r}")
+                unit_id = by_key[token]
+                if unit_id in seen_units:
+                    raise ValueError(f"Duplicate focus user key: {normalized_key!r}")
+                seen_units.add(unit_id)
+                ordered_unit_ids.append(unit_id)
+        elif unit_ids is None:
+            ordered_unit_ids = [int(row["unit_id"]) for row in units]
+        else:
+            ordered_unit_ids = []
+            seen_units = set()
+            for raw in unit_ids:
+                unit_id = int(raw)
+                if unit_id not in unit_by_id:
+                    raise KeyError(f"Unknown focus unit_id: {unit_id}")
+                if unit_id in seen_units:
+                    raise ValueError(f"Duplicate focus unit_id: {unit_id}")
+                seen_units.add(unit_id)
+                ordered_unit_ids.append(unit_id)
+        if not ordered_unit_ids:
+            raise ValueError("Focus coding requires at least one atomic observation.")
+
+        task = {
+            "version": 1,
+            "status": "open",
+            "allow_unsure": bool(allow_unsure),
+            "required_unit_ids": ordered_unit_ids,
+            "required_user_keys": [
+                dict(unit_by_id[unit_id]["user_key"]) for unit_id in ordered_unit_ids
+            ],
+            "required_codes": resolved_codes,
+            "current_unit_id": ordered_unit_ids[0],
+            "review_unresolved": False,
+            "created_at": datetime.now(UTC).isoformat(),
+            "completed_at": None,
+        }
+        existing = dict(session["state"]).get("focus_task")
+        if existing is not None and not overwrite:
+            comparable_existing = {
+                key: existing.get(key)
+                for key in ("allow_unsure", "required_unit_ids", "required_codes")
+            }
+            comparable_requested = {
+                key: task.get(key)
+                for key in ("allow_unsure", "required_unit_ids", "required_codes")
+            }
+            if comparable_existing == comparable_requested:
+                return int(session_id)
+            raise ValueError(
+                "This session already has a different focus task. Pass overwrite=True "
+                "to replace the task definition explicitly."
+            )
+
+        patch: dict[str, Any] = {"focus_task": task}
+        if title is not None:
+            clean_title = str(title).strip()
+            if clean_title:
+                # Session titles are not otherwise mutable.  Keep the user-facing
+                # task label in state rather than adding schema solely for Focus.
+                task["title"] = clean_title
+        self.patch_session_state(int(session_id), patch)
+        return int(session_id)
+
+    def focus_task(self, session_id: int | None = None) -> dict[str, Any]:
+        """Return one configured focus task, validating its referenced state."""
+        sessions = self.sessions()
+        if not sessions:
+            raise RuntimeError("Focus coding requires at least one GeCo session.")
+        if session_id is None:
+            session_id = int(sessions[0]["session_id"])
+        session = self.database.get_session(int(session_id))
+        task = dict(session["state"].get("focus_task") or {})
+        if not task:
+            raise ConfigurationError(
+                "No focus task is configured for this session. Configure one with "
+                "configure_focus(...)."
+            )
+        if int(task.get("version", -1)) != 1:
+            raise ConfigurationError("Unsupported focus-task state version.")
+        unit_ids = [int(value) for value in task.get("required_unit_ids", [])]
+        code_specs = list(task.get("required_codes", []))
+        if not unit_ids or not code_specs:
+            raise ConfigurationError("The configured focus task is incomplete.")
+        available_units = {int(row["unit_id"]) for row in self.units()}
+        missing_units = [value for value in unit_ids if value not in available_units]
+        if missing_units:
+            raise ConfigurationError(
+                f"Focus task refers to unavailable atomic units: {missing_units[:5]}"
+            )
+        for spec in code_specs:
+            self.code(int(spec["code_id"]), int(spec["version_number"]))
+        task["required_unit_ids"] = unit_ids
+        task["required_codes"] = [
+            {
+                "code_id": int(spec["code_id"]),
+                "version_number": int(spec["version_number"]),
+            }
+            for spec in code_specs
+        ]
+        task["allow_unsure"] = bool(task.get("allow_unsure", False))
+        task["session_id"] = int(session_id)
+        return task
+
+    def focus_progress(self, session_id: int | None = None) -> dict[str, Any]:
+        """Return completion state for one finite focus-coding task."""
+        task = self.focus_task(session_id)
+        required_unit_ids = list(task["required_unit_ids"])
+        required_code_ids = [
+            int(spec["code_id"]) for spec in task["required_codes"]
+        ]
+        allow_unsure = bool(task["allow_unsure"])
+        required_unit_set = set(required_unit_ids)
+        required_code_set = set(required_code_ids)
+        annotations = {
+            (int(row["unit_id"]), int(row["code_id"])): str(row["value"])
+            for row in self.current_annotations()
+            if row.get("unit_id") is not None
+            and int(row["unit_id"]) in required_unit_set
+            and int(row["code_id"]) in required_code_set
+        }
+
+        def resolved(value: str | None) -> bool:
+            if value in {"positive", "negative"}:
+                return True
+            return bool(allow_unsure and value == "unsure")
+
+        unresolved: list[dict[str, Any]] = []
+        complete_units = 0
+        resolved_judgments = 0
+        unsure_judgments = 0
+        for unit_id in required_unit_ids:
+            unit_complete = True
+            for code_id in required_code_ids:
+                value = annotations.get((unit_id, code_id))
+                if value == "unsure":
+                    unsure_judgments += 1
+                if resolved(value):
+                    resolved_judgments += 1
+                else:
+                    unit_complete = False
+                    unresolved.append(
+                        {
+                            "unit_id": unit_id,
+                            "code_id": code_id,
+                            "value": value,
+                        }
+                    )
+            if unit_complete:
+                complete_units += 1
+        total_judgments = len(required_unit_ids) * len(required_code_ids)
+        return {
+            "session_id": int(task["session_id"]),
+            "status": str(task.get("status", "open")),
+            "allow_unsure": allow_unsure,
+            "total_units": len(required_unit_ids),
+            "complete_units": complete_units,
+            "total_judgments": total_judgments,
+            "resolved_judgments": resolved_judgments,
+            "unsure_judgments": unsure_judgments,
+            "unresolved_count": len(unresolved),
+            "unresolved": unresolved,
+            "complete": len(unresolved) == 0,
+        }
+
+    def complete_focus(self, session_id: int | None = None) -> dict[str, Any]:
+        """Validate and close a focus session, or enter unresolved-review mode."""
+        progress = self.focus_progress(session_id)
+        session_id = int(progress["session_id"])
+        task = self.focus_task(session_id)
+        if progress["unresolved_count"]:
+            first_unit_id = int(progress["unresolved"][0]["unit_id"])
+            task["status"] = "open"
+            task["review_unresolved"] = True
+            task["current_unit_id"] = first_unit_id
+            task["completed_at"] = None
+            self.patch_session_state(session_id, {"focus_task": task})
+            progress["status"] = "open"
+            progress["current_unit_id"] = first_unit_id
+            progress["review_unresolved"] = True
+            return progress
+
+        task["status"] = "complete"
+        task["review_unresolved"] = False
+        task["completed_at"] = datetime.now(UTC).isoformat()
+        self.patch_session_state(session_id, {"focus_task": task})
+        progress["status"] = "complete"
+        progress["completed_at"] = task["completed_at"]
+        progress["review_unresolved"] = False
+        return progress
+
+    def reopen_focus(self, session_id: int | None = None) -> None:
+        """Reopen a completed focus session for explicit editing."""
+        task = self.focus_task(session_id)
+        session_id = int(task["session_id"])
+        task["status"] = "open"
+        task["completed_at"] = None
+        task["review_unresolved"] = False
+        self.patch_session_state(session_id, {"focus_task": task})
 
     def _ordered_user_keys(self) -> list[dict[str, Any]]:
         """Return stable user keys in canonical atomic-row order."""
@@ -3776,7 +4061,7 @@ class GeometricCoder:
         debug: bool = False,
         use_reloader: bool = False,
     ) -> None:
-        """Launch the local Dash interface.
+        """Launch the ordinary local Dash interface.
 
         ``debug=True`` enables Dash/Flask debug validation and developer tools.
         GeCo deliberately keeps the auto-reloader off by default because the
@@ -3793,6 +4078,86 @@ class GeometricCoder:
             debug=debug,
             use_reloader=use_reloader,
         )
+
+    def launch_focus_coder(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8050,
+        debug: bool = False,
+        use_reloader: bool = False,
+        session_id: int | None = None,
+        codes: Sequence[int | str] | None = None,
+        allow_unsure: bool | None = None,
+    ) -> None:
+        """Launch Focus Coding over one finite configured session.
+
+        ``configure_focus(...)`` is the canonical creation-time API.  For older
+        TeAL bridges that know only the historical launcher, this method can
+        bootstrap a task from the session's Explore palette (or all project codes)
+        and the complete imported atomic universe.  New integrations should
+        configure the task explicitly so ``allow_unsure`` is persisted at creation.
+        """
+        sessions = self.sessions()
+        if not sessions:
+            raise RuntimeError("Focus coding requires at least one GeCo session.")
+        if session_id is None:
+            session_id = int(sessions[0]["session_id"])
+        try:
+            task = self.focus_task(int(session_id))
+        except ConfigurationError:
+            state = dict(self.database.get_session(int(session_id))["state"])
+            requested_codes: Sequence[int | str]
+            if codes is not None:
+                requested_codes = list(codes)
+            else:
+                palette = [
+                    int(value)
+                    for value in state.get("explore_code_palette", [])
+                    if value is not None
+                ]
+                requested_codes = palette or [
+                    int(row["code_id"]) for row in self.codes()
+                ]
+            configured_allow_unsure = (
+                bool(allow_unsure)
+                if allow_unsure is not None
+                else bool(state.get("focus_allow_unsure", False))
+            )
+            self.configure_focus(
+                codes=requested_codes,
+                allow_unsure=configured_allow_unsure,
+                session_id=int(session_id),
+            )
+            task = self.focus_task(int(session_id))
+        else:
+            if allow_unsure is not None and bool(task["allow_unsure"]) != bool(allow_unsure):
+                raise ValueError(
+                    "allow_unsure differs from the persisted focus task. Reconfigure "
+                    "the focus task explicitly rather than changing its protocol at launch."
+                )
+
+        # Completion is derived from the required judgment matrix, not trusted
+        # merely because a prior UI run persisted status='complete'. If another
+        # surface edits a required assignment afterward, Focus becomes open again.
+        progress = self.focus_progress(int(session_id))
+        if str(task.get("status", "open")) == "complete" and not bool(progress["complete"]):
+            self.reopen_focus(int(session_id))
+
+        from geometric_coder.ui import launch_focus_coder
+
+        launch_focus_coder(
+            self,
+            host=host,
+            port=port,
+            debug=debug,
+            use_reloader=use_reloader,
+            session_id=int(session_id),
+        )
+
+    def launch_focus(self, **kwargs: Any) -> None:
+        """Convenience alias for :meth:`launch_focus_coder`."""
+        self.launch_focus_coder(**kwargs)
 
 
 __all__ = ["GeometricCoder", "Geometry"]
