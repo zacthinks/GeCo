@@ -370,3 +370,17 @@ def test_focus_mobile_css_keeps_touch_targets_and_footer_available() -> None:
     assert ".focus-coding-judgment { min-height: 44px; font-size: 1rem; }" in css_source
     assert "position: sticky;" in css_source
     assert "safe-area-inset-bottom" in css_source
+
+
+def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "geometric_coder"
+        / "ui"
+        / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'Output("committee-members", "value")' in app_source
+    assert 'valid_member_ids = {int(row["classifier_spec_id"]) for row in specs}' in app_source
+    assert 'if int(value) in valid_member_ids' in app_source
+    assert 'triggered == "focus-manage-committees"' in app_source

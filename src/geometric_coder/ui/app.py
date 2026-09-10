@@ -3882,7 +3882,9 @@ def create_app(
     @app.callback(
         Output("committee-modal", "style"),
         Output("committee-members", "options"),
+        Output("committee-members", "value"),
         Output("committee-table", "data"),
+        Output("committee-table", "selected_rows"),
         Output("committee-status", "children"),
         Output("committee-refresh-store", "data", allow_duplicate=True),
         Input("focus-manage-committees", "n_clicks"),
@@ -3914,13 +3916,44 @@ def create_app(
         table_data: list[dict[str, Any]] | None,
         rename_name: str | None,
         refresh: int | None,
-    ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]], str, int]:
+    ) -> tuple[
+        dict[str, str],
+        list[dict[str, Any]],
+        list[int],
+        list[dict[str, Any]],
+        list[int],
+        str,
+        int,
+    ]:
         del open_clicks, close_clicks, save_clicks, rename_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         if triggered == "committee-close":
-            return {"display": "none"}, [], [], "", int(refresh or 0)
+            return {"display": "none"}, [], [], [], [], "", int(refresh or 0)
         if code_id is None:
-            return {"display": "none"}, [], [], "Select a code first.", int(refresh or 0)
+            return (
+                {"display": "none"},
+                [],
+                [],
+                [],
+                [],
+                "Select a code first.",
+                int(refresh or 0),
+            )
+        specs = project.classifier_specs(code_id=int(code_id))
+        valid_member_ids = {int(row["classifier_spec_id"]) for row in specs}
+        visible_member_ids = [
+            int(value)
+            for value in (member_ids or [])
+            if int(value) in valid_member_ids
+        ]
+        # Opening the manager always starts with a clean selection. In particular,
+        # dcc.Checklist retains its value when only its options change, which can
+        # otherwise leave an invisible classifier from the previously active code
+        # selected and submit it with the new code's visible classifiers.
+        selected_member_ids = (
+            [] if triggered == "focus-manage-committees" else visible_member_ids
+        )
+        selected_committee_rows = list(selected_rows or [])
         message = ""
         next_refresh = int(refresh or 0)
         try:
@@ -3928,7 +3961,7 @@ def create_app(
                 clean_name = (name or "").strip()
                 if not clean_name:
                     raise ValueError("Enter a committee name.")
-                members = [int(value) for value in (member_ids or [])]
+                members = visible_member_ids
                 if not members:
                     raise ValueError("Select at least one classifier.")
                 project.create_classifier_committee(
@@ -3937,6 +3970,8 @@ def create_app(
                     classifier_spec_ids=members,
                     aggregation=str(aggregation or "mean"),
                 )
+                selected_member_ids = []
+                selected_committee_rows = []
                 next_refresh += 1
                 message = "Committee saved."
             elif triggered == "committee-rename":
@@ -3962,7 +3997,6 @@ def create_app(
                 message = "Committee deleted."
         except (KeyError, ValueError) as error:
             message = str(error)
-        specs = project.classifier_specs(code_id=int(code_id))
         member_options = [
             {
                 "label": f"{row['name']} · {row['geometry_name']}",
@@ -3984,7 +4018,15 @@ def create_app(
             }
             for row in committees
         ]
-        return {"display": "flex"}, member_options, rows, message, next_refresh
+        return (
+            {"display": "flex"},
+            member_options,
+            selected_member_ids,
+            rows,
+            selected_committee_rows,
+            message,
+            next_refresh,
+        )
 
     @app.callback(
         Output("committee-manager-rename-name", "value"),
