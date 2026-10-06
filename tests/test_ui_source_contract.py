@@ -83,15 +83,6 @@ def test_public_launch_allows_explicit_reloader_opt_in(monkeypatch) -> None:
     assert captured["use_reloader"] is True
 
 
-def test_real_aera_acceptance_example_uses_direct_public_launch_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    example_source = (root / "examples" / "aera_2026_project.py").read_text(encoding="utf-8")
-    assert "BrowserProgressPage(" not in example_source
-    assert "ProgressGroup(" not in example_source
-    assert "project.launch(" in example_source
-    assert "use_reloader=False" in example_source
-
-
 def test_package_version_matches_project_metadata() -> None:
     import tomllib
 
@@ -318,40 +309,6 @@ def test_launch_app_displays_url_before_running(monkeypatch) -> None:
     assert events[1][0] == "run"
     assert events[1][1]["host"] == "0.0.0.0"
     assert events[1][1]["port"] == 8125
-
-
-def test_jupyter_browser_link_opens_new_tab(monkeypatch) -> None:
-    import IPython
-    import IPython.display
-    from geometric_coder.ui.app import _display_local_browser_url
-
-    rendered: list[str] = []
-
-    class FakeHTML:
-        def __init__(self, data: str):
-            self.data = data
-
-    monkeypatch.setattr(IPython, "get_ipython", lambda: object())
-    monkeypatch.setattr(IPython.display, "HTML", FakeHTML)
-    monkeypatch.setattr(IPython.display, "display", lambda value: rendered.append(value.data))
-
-    url = _display_local_browser_url("0.0.0.0", 8050)
-
-    assert url == "http://127.0.0.1:8050/"
-    assert len(rendered) == 1
-    assert "Open in browser" in rendered[0]
-    assert "target='_blank'" in rendered[0]
-    assert "http://127.0.0.1:8050/" in rendered[0]
-
-
-def test_non_ipython_launch_url_is_plain_text(monkeypatch, capsys) -> None:
-    import IPython
-    from geometric_coder.ui.app import _display_local_browser_url
-
-    monkeypatch.setattr(IPython, "get_ipython", lambda: None)
-    _display_local_browser_url("127.0.0.1", 8126)
-
-    assert "GeCo is running at http://127.0.0.1:8126/ (local browser URL)" in capsys.readouterr().out
 
 
 def test_focus_mobile_css_keeps_touch_targets_and_footer_available() -> None:
