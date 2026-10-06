@@ -19,11 +19,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install Python
-        run: uv python install 3.11
-
       - name: Install GeCo and all dependencies
-        run: uv sync --python 3.11 --all-extras
+        run: uv sync --all-extras
 
       - name: Run pytest
         run: uv run pytest -q -rs
