@@ -11,6 +11,9 @@ import pytest
 from geometric_coder import CountGeometry, GeometricCoder
 
 
+pytestmark = pytest.mark.acceptance
+
+
 def _require_ui() -> None:
     pytest.importorskip("dash")
     pytest.importorskip("dash_ag_grid")
