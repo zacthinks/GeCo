@@ -70,14 +70,14 @@ def test_indexed_recommendation_matches_frozen_scores(
     if reverse is None:
         expected = sorted(
             remaining,
-            key=lambda row: (-float(row["uncertainty"]), -int(row["observation_id"])),
+            key=lambda row: (-float(row["uncertainty"]), int(row["observation_id"])),
         )
     else:
         expected = sorted(
             remaining,
             key=lambda row: (
                 -float(row["probability"]) if reverse else float(row["probability"]),
-                -int(row["observation_id"]) if reverse else int(row["observation_id"]),
+                int(row["observation_id"]),
             ),
         )
 
@@ -160,3 +160,44 @@ def test_ranked_index_only_scores_its_requested_fit(tmp_path: Path) -> None:
     )
     assert result is not None
     assert 0 <= result["probability"] <= 1
+
+
+def test_existing_project_installs_indexes_on_reopen(tmp_path: Path) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    path = project.project_dir
+    with project.database.connect() as connection:
+        connection.execute("DROP INDEX classifier_predictions_probability_rank_idx")
+        connection.execute("DROP INDEX classifier_predictions_probability_desc_rank_idx")
+        connection.execute("DROP INDEX classifier_predictions_uncertainty_rank_idx")
+    reopened = GeometricCoder.open(path)
+    with reopened.database.connect() as connection:
+        names = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA index_list('classifier_predictions')")
+        }
+    assert {
+        "classifier_predictions_probability_rank_idx",
+        "classifier_predictions_probability_desc_rank_idx",
+        "classifier_predictions_uncertainty_rank_idx",
+    }.issubset(names)
+    assert reopened.database.ranked_classifier_recommendation(
+        classifier_fit_id=fit_id, code_id=code_id, session_id=session,
+        strategy="likely_positive",
+    ) is not None
+
+
+def test_new_ingestion_requires_prediction_completion_before_selection(tmp_path: Path) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    project.ingest(pd.DataFrame({"row_id": [8], "text": ["another helpful document"]}))
+    with pytest.raises(ValueError, match="missing predictions"):
+        project.focus_recommendation(
+            code_id=code_id, session_id=session,
+            strategy="likely_positive", active_classifier_spec_id=spec_id,
+            auto_retrain=False,
+        )
+    project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    assert project.focus_recommendation(
+        code_id=code_id, session_id=session,
+        strategy="likely_positive", active_classifier_spec_id=spec_id,
+        auto_retrain=False,
+    ) is not None
