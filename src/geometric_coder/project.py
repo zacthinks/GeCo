@@ -3483,6 +3483,64 @@ class GeometricCoder:
                         classifier_spec_id=int(active_classifier_spec_id),
                         tune=bool(tune_hyperparameters),
                     )
+            if strategy in {"likely_positive", "likely_negative", "classifier_uncertainty", "geometry_uncertainty"}:
+                spec = self.database.get_classifier_spec(int(active_classifier_spec_id))
+                fit = self.database.latest_classifier_fit(
+                    code_id=int(code_id),
+                    classifier_spec_id=int(active_classifier_spec_id),
+                )
+                if fit is None:
+                    raise ValueError(
+                        f"Train {spec['name']} before using model recommendations."
+                    )
+                # All corpus-wide probabilities were computed and persisted at Train.
+                # Only the next eligible row is retrieved at recommendation time.
+                if str(fit["score_kind"]) == "probability":
+                    ranked_strategy = (
+                        "classifier_uncertainty"
+                        if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
+                        else strategy
+                    )
+                    ranked = self.database.ranked_classifier_recommendation(
+                        classifier_fit_id=int(fit["classifier_fit_id"]),
+                        code_id=int(code_id),
+                        session_id=int(session_id),
+                        strategy=ranked_strategy,
+                    )
+                    if ranked is None:
+                        return None
+                    stale = (
+                        fit["training_snapshot"]
+                        != self._classifier_training_snapshot(int(code_id), annotations)
+                        or int(fit["geometry_id"]) != int(spec["geometry_id"])
+                        or str(fit["algorithm"]) != str(spec["algorithm"])
+                        or fit["hyperparameters"] != spec["hyperparameters"]
+                        or bool(
+                            self.database.missing_classifier_prediction_observation_ids(
+                                int(fit["classifier_fit_id"])
+                            )
+                        )
+                    )
+                    score = (
+                        -abs(float(ranked["probability"]) - 0.5)
+                        if ranked_strategy == "classifier_uncertainty"
+                        else float(ranked["probability"])
+                    )
+                    return {
+                        "unit_id": int(ranked["unit_id"]),
+                        "strategy": ranked_strategy,
+                        "score": score,
+                        "probabilities": {
+                            str(spec["name"]): float(ranked["probability"])
+                        },
+                        "committee_probability": None,
+                        "classifier_fit_ids": {
+                            str(spec["name"]): int(fit["classifier_fit_id"])
+                        },
+                        "stale_classifiers": [str(spec["name"])] if stale else [],
+                        "stale_committee": False,
+                        "fallback": False,
+                    }
             result = self._latest_classifier_scores(
                 code_id=int(code_id),
                 classifier_spec_id=int(active_classifier_spec_id),
