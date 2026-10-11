@@ -79,6 +79,11 @@ class GeometricCoder:
         self.artifacts = ArtifactStore(project_dir / self.ARTIFACT_DIRECTORY)
         self.external_provider = external_provider
         self._runtime_geometries: dict[str, Geometry] | None = None
+        # In-process cache of exact persisted evidence snapshots. A cheap DB
+        # revision changes whenever relevant annotations or teaching state change.
+        self._recommendation_freshness: dict[
+            tuple[int, int, str], tuple[tuple[int, str, int], bool]
+        ] = {}
 
     @classmethod
     def create(
@@ -3333,6 +3338,103 @@ class GeometricCoder:
     ) -> dict[str, Any] | None:
         """Generate one session-aware recommendation from explicit classifiers."""
         self.database.get_code(int(code_id))
+        # The common single-classifier path does not need any corpus-wide arrays.
+        # It performs cheap fit/coverage checks and a single ordered SQLite lookup.
+        direct_classifier = (
+            recommendation_source != "committee"
+            and strategy in {
+                "likely_positive", "likely_negative",
+                "classifier_uncertainty", "geometry_uncertainty",
+            }
+        )
+        if direct_classifier and active_classifier_spec_id is not None:
+            if auto_retrain:
+                if auto_train_all:
+                    self.train_classifiers(
+                        code_id=int(code_id),
+                        classifier_spec_ids=[
+                            int(row["classifier_spec_id"])
+                            for row in self.classifier_specs(code_id=int(code_id))
+                        ],
+                        tune=bool(tune_hyperparameters),
+                    )
+                else:
+                    self.train_classifier(
+                        code_id=int(code_id),
+                        classifier_spec_id=int(active_classifier_spec_id),
+                        tune=bool(tune_hyperparameters),
+                    )
+            spec = self.database.get_classifier_spec(int(active_classifier_spec_id))
+            fit = self.database.latest_classifier_fit(
+                code_id=int(code_id),
+                classifier_spec_id=int(active_classifier_spec_id),
+            )
+            if fit is not None and str(fit["score_kind"]) == "probability":
+                fit_id = int(fit["classifier_fit_id"])
+                if self.database.has_missing_atomic_classifier_predictions(fit_id):
+                    raise ValueError(
+                        "This classifier is missing predictions for some newly added "
+                        "units. Run Train to extend its frozen predictions before "
+                        "requesting recommendations."
+                    )
+                ranked_strategy = (
+                    "classifier_uncertainty"
+                    if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
+                    else strategy
+                )
+                ranked = self.database.ranked_classifier_recommendation(
+                    classifier_fit_id=fit_id,
+                    code_id=int(code_id),
+                    session_id=int(session_id),
+                    strategy=ranked_strategy,
+                )
+                if ranked is None:
+                    return None
+                revision = self.database.recommendation_revision(int(code_id))
+                fingerprint = (
+                    int(spec["geometry_id"]), str(spec["algorithm"]),
+                    json.dumps(spec["hyperparameters"], sort_keys=True),
+                )
+                cache_key = (int(code_id), fit_id, repr(fingerprint))
+                cached = self._recommendation_freshness.get(cache_key)
+                if cached is None or cached[0] != revision:
+                    annotations_now = self.database.current_annotations(int(code_id))
+                    stale = (
+                        fit["training_snapshot"]
+                        != self._classifier_training_snapshot(
+                            int(code_id), annotations_now
+                        )
+                        or int(fit["geometry_id"]) != int(spec["geometry_id"])
+                        or str(fit["algorithm"]) != str(spec["algorithm"])
+                        or fit["hyperparameters"] != spec["hyperparameters"]
+                    )
+                    self._recommendation_freshness[cache_key] = (revision, bool(stale))
+                    if len(self._recommendation_freshness) > 128:
+                        self._recommendation_freshness.clear()
+                else:
+                    stale = cached[1]
+                probability = float(ranked["probability"])
+                score = (
+                    -abs(probability - 0.5)
+                    if ranked_strategy == "classifier_uncertainty"
+                    else probability
+                )
+                name = str(spec["name"])
+                return {
+                    "unit_id": int(ranked["unit_id"]),
+                    "strategy": ranked_strategy,
+                    "score": score,
+                    "probabilities": {name: probability},
+                    "committee_probability": None,
+                    "classifier_fit_ids": {name: fit_id},
+                    "stale_classifiers": [name] if stale else [],
+                    "stale_committee": False,
+                    "fallback": False,
+                }
+            if fit is None:
+                raise ValueError(
+                    f"Train {spec['name']} before using model recommendations."
+                )
         units = self.units()
         unit_ids = [int(unit["unit_id"]) for unit in units]
         unit_position = {unit_id: position for position, unit_id in enumerate(unit_ids)}
