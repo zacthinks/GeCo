@@ -239,3 +239,95 @@ def test_training_coverage_is_updated_with_predictions(tmp_path: Path) -> None:
     assert project.database.has_missing_atomic_classifier_predictions(fit_id)
     project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
     assert not project.database.has_missing_atomic_classifier_predictions(fit_id)
+
+
+@pytest.mark.parametrize("strategy", ["likely_positive", "likely_negative", "classifier_uncertainty"])
+@pytest.mark.parametrize("auto_retrain", [False, True])
+@pytest.mark.parametrize("label_count", [0, 1])
+def test_bootstrap_random_fallback_before_two_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    strategy: str, auto_retrain: bool, label_count: int,
+) -> None:
+    data = pd.DataFrame({
+        "row_id": list(range(4)),
+        "text": ["good clear", "bad unclear", "helpful text", "difficult text"],
+    })
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "bootstrap.geco", data=data,
+        keys=["row_id"], text="text", metadata=[],
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code_id = project.create_code("quality")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    if label_count:
+        observation = project.database.list_observations()[0]
+        project.annotate(int(observation["observation_id"]), code_id, "positive")
+    session = project.create_session("Develop")
+
+    def train_forbidden(*args, **kwargs):
+        raise AssertionError("Bootstrap recommendations cannot attempt fitting")
+
+    monkeypatch.setattr(project, "train_classifier", train_forbidden)
+    monkeypatch.setattr(project, "train_classifiers", train_forbidden)
+    result = project.focus_recommendation(
+        code_id=code_id, session_id=session, strategy=strategy,
+        active_classifier_spec_id=spec_id, auto_retrain=auto_retrain, random_seed=8,
+    )
+    assert result is not None
+    assert result["strategy"] == "random"
+    assert result["fallback"] is True
+    assert result["probabilities"] == {}
+    project.record_visit(session, int(result["unit_id"]), method="test")
+    second = project.focus_recommendation(
+        code_id=code_id, session_id=session, strategy=strategy,
+        active_classifier_spec_id=spec_id, auto_retrain=auto_retrain, random_seed=8,
+    )
+    assert second is not None
+    assert second["unit_id"] != result["unit_id"]
+
+
+def test_out_of_order_apply_retractions_advance_freshness_revision(tmp_path: Path) -> None:
+    project, code_id, spec_id, fit_id, _session = _trained_project(tmp_path)
+    db = project.database
+    before = db.recommendation_revision(code_id)
+    with db.connect() as connection:
+        run = connection.execute(
+            """INSERT INTO apply_runs(
+                code_id, aggregation, source_kind, source_id, threshold,
+                eligibility, status, created_at
+            ) VALUES (?, 'mean', 'classifier', ?, 0.5, 'unreviewed', 'draft', ?)""",
+            (code_id, spec_id, "2026-10-11T00:00:00+00:00"),
+        )
+        run_id = int(run.lastrowid)
+        op_ids = []
+        for _ in range(2):
+            operation = connection.execute(
+                """INSERT INTO apply_commit_operations(apply_run_id, scope, created_at)
+                VALUES (?, 'explicit', ?)""",
+                (run_id, "2026-10-11T00:00:00+00:00"),
+            )
+            op_ids.append(int(operation.lastrowid))
+        event_ids = [
+            int(row["annotation_event_id"])
+            for row in connection.execute(
+                "SELECT annotation_event_id FROM annotation_events WHERE code_id = ? "
+                "ORDER BY annotation_event_id LIMIT 2",
+                (code_id,),
+            )
+        ]
+        connection.execute(
+            """INSERT INTO annotation_event_retractions(
+                annotation_event_id, commit_operation_id, retracted_at
+            ) VALUES (?, ?, ?)""",
+            (event_ids[0], op_ids[1], "2026-10-11T00:00:01+00:00"),
+        )
+    middle = db.recommendation_revision(code_id)
+    assert middle != before
+    with db.connect() as connection:
+        connection.execute(
+            """INSERT INTO annotation_event_retractions(
+                annotation_event_id, commit_operation_id, retracted_at
+            ) VALUES (?, ?, ?)""",
+            (event_ids[1], op_ids[0], "2026-10-11T00:00:02+00:00"),
+        )
+    assert db.recommendation_revision(code_id) != middle
