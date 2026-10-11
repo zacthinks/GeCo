@@ -84,6 +84,11 @@ class GeometricCoder:
         self._recommendation_freshness: dict[
             tuple[int, int, str], tuple[tuple[int, str, int], bool]
         ] = {}
+        # Training eligibility changes only when coded or teaching evidence
+        # changes, not when the researcher visits a different observation.
+        self._recommendation_has_classes: dict[
+            int, tuple[tuple[int, str, int], bool]
+        ] = {}
 
     @classmethod
     def create(
@@ -2128,6 +2133,28 @@ class GeometricCoder:
             and teaching_status.get(int(row["observation_id"]), "active") == "active"
         ]
 
+    def _has_two_class_recommendation_evidence(
+        self, code_id: int, revision: tuple[int, str, int]
+    ) -> bool:
+        """Reuse exact label-eligibility checks until the coding state changes.
+
+        The existing pre-training random fallback must still work for empty or
+        one-class evidence. Do not call Train (automatic or otherwise) before
+        establishing that both classes are available.
+        """
+        cached = self._recommendation_has_classes.get(int(code_id))
+        if cached is not None and cached[0] == revision:
+            return cached[1]
+        annotations = self.database.current_annotations(int(code_id))
+        eligible = self._eligible_training_annotations(int(code_id), annotations)
+        has_positive = any(row["value"] == "positive" for row in eligible)
+        has_negative = any(row["value"] == "negative" for row in eligible)
+        has_both = bool(has_positive and has_negative)
+        if len(self._recommendation_has_classes) >= 128:
+            self._recommendation_has_classes.clear()
+        self._recommendation_has_classes[int(code_id)] = (revision, has_both)
+        return has_both
+
     def classifier_specs(
         self,
         code_id: int | None = None,
@@ -3347,7 +3374,22 @@ class GeometricCoder:
                 "classifier_uncertainty", "geometry_uncertainty",
             }
         )
-        if direct_classifier and active_classifier_spec_id is not None:
+        # An untrained, zero-/one-class workspace must bootstrap through the
+        # original random unseen-unit path. This check is revision-cached so
+        # repeat navigation does not reconstruct all annotations.
+        direct_revision = (
+            self.database.recommendation_revision(int(code_id))
+            if direct_classifier and active_classifier_spec_id is not None
+            else None
+        )
+        if (
+            direct_classifier
+            and active_classifier_spec_id is not None
+            and direct_revision is not None
+            and self._has_two_class_recommendation_evidence(
+                int(code_id), direct_revision
+            )
+        ):
             if auto_retrain:
                 if auto_train_all:
                     self.train_classifiers(
@@ -3390,7 +3432,7 @@ class GeometricCoder:
                 )
                 if ranked is None:
                     return None
-                revision = self.database.recommendation_revision(int(code_id))
+                revision = self.database.recommendation_revision(int(code_id)) if auto_retrain else direct_revision
                 fingerprint = (
                     int(spec["geometry_id"]), str(spec["algorithm"]),
                     json.dumps(spec["hyperparameters"], sort_keys=True),
