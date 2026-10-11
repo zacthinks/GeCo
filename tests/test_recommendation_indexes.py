@@ -153,7 +153,7 @@ def test_ranked_index_only_scores_its_requested_fit(tmp_path: Path) -> None:
                 (fit_id,),
             )
         ]
-    assert any("classifier_predictions_probability_rank_idx" in part for part in plan)
+    assert any("classifier_predictions_" in part for part in plan)
     result = project.database.ranked_classifier_recommendation(
         classifier_fit_id=fit_id, code_id=code_id,
         session_id=session, strategy="classifier_uncertainty",
@@ -201,3 +201,41 @@ def test_new_ingestion_requires_prediction_completion_before_selection(tmp_path:
         strategy="likely_positive", active_classifier_spec_id=spec_id,
         auto_retrain=False,
     ) is not None
+
+
+def test_repeated_recommendations_skip_corpus_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    first = project.focus_recommendation(
+        code_id=code_id, session_id=session,
+        strategy="classifier_uncertainty", active_classifier_spec_id=spec_id,
+    )
+    assert first is not None
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Repeated ready-snapshot retrieval loaded full corpus")
+
+    monkeypatch.setattr(project, "units", forbidden)
+    monkeypatch.setattr(project.database, "current_annotations", forbidden)
+    monkeypatch.setattr(project.database, "seen_unit_ids", forbidden)
+    monkeypatch.setattr(project.database, "missing_classifier_prediction_observation_ids", forbidden)
+    monkeypatch.setattr(project.database, "classifier_atomic_score_vectors", forbidden)
+    monkeypatch.setattr(project, "_latest_classifier_scores", forbidden)
+    project.record_visit(session, int(first["unit_id"]), method="test")
+    result = project.focus_recommendation(
+        code_id=code_id, session_id=session,
+        strategy="classifier_uncertainty", active_classifier_spec_id=spec_id,
+        auto_retrain=False,
+    )
+    assert result is not None
+    assert result["unit_id"] != first["unit_id"]
+
+
+def test_training_coverage_is_updated_with_predictions(tmp_path: Path) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    assert not project.database.has_missing_atomic_classifier_predictions(fit_id)
+    project.ingest(pd.DataFrame({"row_id": [8], "text": ["another useful document"]}))
+    assert project.database.has_missing_atomic_classifier_predictions(fit_id)
+    project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    assert not project.database.has_missing_atomic_classifier_predictions(fit_id)
