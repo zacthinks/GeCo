@@ -762,3 +762,31 @@ def test_learned_committee_index_backfill_and_ingestion_guard(tmp_path: Path) ->
             committee_id=committee_id, recommendation_source="committee",
             auto_retrain=False,
         )
+
+
+def test_reopen_pre_committee_index_schema13_project(tmp_path: Path) -> None:
+    """Opening a schema-13 project with no Phase 1C objects is additive and repeatable."""
+    project = _project(tmp_path)
+    path = project.project_dir
+    with project.database.connect() as connection:
+        connection.execute("DROP INDEX classifier_committee_predictions_probability_rank_idx")
+        connection.execute("DROP INDEX classifier_committee_predictions_probability_desc_rank_idx")
+        connection.execute("DROP INDEX classifier_committee_predictions_uncertainty_rank_idx")
+        connection.execute("DROP TABLE classifier_committee_atomic_prediction_coverage")
+    reopened = GeometricCoder.open(path)
+    reopened_again = GeometricCoder.open(path)
+    with reopened_again.database.connect() as connection:
+        indexes = {
+            str(row["name"]) for row in connection.execute(
+                "PRAGMA index_list('classifier_committee_predictions')"
+            )
+        }
+        assert {
+            "classifier_committee_predictions_probability_rank_idx",
+            "classifier_committee_predictions_probability_desc_rank_idx",
+            "classifier_committee_predictions_uncertainty_rank_idx",
+        } <= indexes
+        assert connection.execute(
+            "SELECT COUNT(*) FROM classifier_committee_atomic_prediction_coverage"
+        ).fetchone()[0] == 0
+    assert reopened.database is not None
