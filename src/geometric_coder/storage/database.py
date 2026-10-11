@@ -617,46 +617,46 @@ class ProjectDatabase:
                 """
             )
 
-        # Phase 1C: older schema-13 projects also need learned committee rankings.
-        for name, columns in (
-            ("classifier_committee_predictions_probability_rank_idx",
-             "committee_fit_id, probability, observation_id"),
-            ("classifier_committee_predictions_probability_desc_rank_idx",
-             "committee_fit_id, probability DESC, observation_id ASC"),
-            ("classifier_committee_predictions_uncertainty_rank_idx",
-             "committee_fit_id, uncertainty DESC, observation_id ASC"),
-        ):
+            # Phase 1C: older schema-13 projects also need learned committee rankings.
+            for name, columns in (
+                ("classifier_committee_predictions_probability_rank_idx",
+                 "committee_fit_id, probability, observation_id"),
+                ("classifier_committee_predictions_probability_desc_rank_idx",
+                 "committee_fit_id, probability DESC, observation_id ASC"),
+                ("classifier_committee_predictions_uncertainty_rank_idx",
+                 "committee_fit_id, uncertainty DESC, observation_id ASC"),
+            ):
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} "
+                    f"ON classifier_committee_predictions({columns})"
+                )
             connection.execute(
-                f"CREATE INDEX IF NOT EXISTS {name} "
-                f"ON classifier_committee_predictions({columns})"
+                """
+                CREATE TABLE IF NOT EXISTS classifier_committee_atomic_prediction_coverage (
+                    committee_fit_id INTEGER PRIMARY KEY
+                        REFERENCES classifier_committee_fits(committee_fit_id) ON DELETE CASCADE,
+                    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+                )
+                """
             )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS classifier_committee_atomic_prediction_coverage (
-                committee_fit_id INTEGER PRIMARY KEY
-                    REFERENCES classifier_committee_fits(committee_fit_id) ON DELETE CASCADE,
-                prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+            # Backfill only retained learned fits, once. Reopening does not rescan.
+            connection.execute(
+                """
+                INSERT INTO classifier_committee_atomic_prediction_coverage(
+                    committee_fit_id, prediction_count
+                )
+                SELECT ccf.committee_fit_id,
+                       (SELECT COUNT(*)
+                        FROM classifier_committee_predictions AS ccp
+                        JOIN units AS u ON u.observation_id = ccp.observation_id
+                        WHERE ccp.committee_fit_id = ccf.committee_fit_id)
+                FROM classifier_committee_fits AS ccf
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM classifier_committee_atomic_prediction_coverage AS capc
+                    WHERE capc.committee_fit_id = ccf.committee_fit_id
+                )
+                """
             )
-            """
-        )
-        # Backfill only retained learned fits, once. Reopening does not rescan.
-        connection.execute(
-            """
-            INSERT INTO classifier_committee_atomic_prediction_coverage(
-                committee_fit_id, prediction_count
-            )
-            SELECT ccf.committee_fit_id,
-                   (SELECT COUNT(*)
-                    FROM classifier_committee_predictions AS ccp
-                    JOIN units AS u ON u.observation_id = ccp.observation_id
-                    WHERE ccp.committee_fit_id = ccf.committee_fit_id)
-            FROM classifier_committee_fits AS ccf
-            WHERE NOT EXISTS (
-                SELECT 1 FROM classifier_committee_atomic_prediction_coverage AS capc
-                WHERE capc.committee_fit_id = ccf.committee_fit_id
-            )
-            """
-        )
 
     def recommendation_revision(self, code_id: int) -> tuple[int, str, int]:
         """Cheap cross-connection revision for exactly checking snapshot only on change.
