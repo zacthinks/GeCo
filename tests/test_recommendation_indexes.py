@@ -1,0 +1,162 @@
+"""Regression tests for frozen-score, indexed active-learning retrieval."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from geometric_coder import CountGeometry, GeometricCoder
+
+
+def _trained_project(tmp_path: Path):
+    data = pd.DataFrame(
+        {
+            "row_id": range(8),
+            "text": [
+                "positive delightful wonderful",
+                "positive great excellent",
+                "positive helpful good",
+                "negative awful poor",
+                "negative terrible disappointing",
+                "negative bad difficult",
+                "positive kind clear",
+                "negative wrong weak",
+            ],
+        }
+    )
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "indexed.geco",
+        data=data,
+        keys=["row_id"],
+        text="text",
+        metadata=[],
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code_id = project.create_code("quality")
+    obs = project.database.list_observations()
+    for idx in (0, 1):
+        project.annotate(int(obs[idx]["observation_id"]), code_id, "positive")
+    for idx in (3, 4):
+        project.annotate(int(obs[idx]["observation_id"]), code_id, "negative")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    fit = project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    session = project.create_session("Develop")
+    return project, code_id, spec_id, int(fit["classifier_fit_id"]), session
+
+
+@pytest.mark.parametrize(
+    "strategy,reverse",
+    [
+        ("likely_positive", True),
+        ("likely_negative", False),
+        ("classifier_uncertainty", None),
+    ],
+)
+def test_indexed_recommendation_matches_frozen_scores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, strategy: str, reverse: bool | None
+) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    scores = project.database.classifier_predictions(fit_id, atomic_only=True)
+    annotated = {
+        int(row["observation_id"])
+        for row in project.database.current_annotations(code_id)
+        if row["unit_id"] is not None
+    }
+    remaining = [
+        row for row in scores if int(row["observation_id"]) not in annotated
+    ]
+    if reverse is None:
+        expected = sorted(
+            remaining,
+            key=lambda row: (-float(row["uncertainty"]), -int(row["observation_id"])),
+        )
+    else:
+        expected = sorted(
+            remaining,
+            key=lambda row: (
+                -float(row["probability"]) if reverse else float(row["probability"]),
+                -int(row["observation_id"]) if reverse else int(row["observation_id"]),
+            ),
+        )
+
+    def full_scan_forbidden(*args, **kwargs):
+        raise AssertionError("A full prediction score vector was loaded on a button click")
+
+    monkeypatch.setattr(project.database, "classifier_atomic_score_vectors", full_scan_forbidden)
+    monkeypatch.setattr(project, "_latest_classifier_scores", full_scan_forbidden)
+    for row in expected:
+        result = project.focus_recommendation(
+            code_id=code_id,
+            session_id=session,
+            strategy=strategy,
+            active_classifier_spec_id=spec_id,
+            auto_retrain=False,
+        )
+        assert result is not None
+        assert int(result["unit_id"]) == int(row["unit_id"])
+        project.record_visit(session, int(result["unit_id"]), method="test")
+    assert project.focus_recommendation(
+        code_id=code_id,
+        session_id=session,
+        strategy=strategy,
+        active_classifier_spec_id=spec_id,
+        auto_retrain=False,
+    ) is None
+
+
+def test_cached_scores_remain_usable_after_new_label_without_retrain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    first = project.focus_recommendation(
+        code_id=code_id, session_id=session, strategy="likely_positive",
+        active_classifier_spec_id=spec_id, auto_retrain=False,
+    )
+    assert first is not None
+    project.annotate(
+        int(project.observation_id_for_unit(int(first["unit_id"]))),
+        code_id,
+        "positive",
+    )
+
+    def fail_fit(*args, **kwargs):
+        raise AssertionError("Recommendation must not retrain a stale classifier")
+
+    monkeypatch.setattr(project, "train_classifier", fail_fit)
+    second = project.focus_recommendation(
+        code_id=code_id, session_id=session, strategy="likely_positive",
+        active_classifier_spec_id=spec_id, auto_retrain=False,
+    )
+    assert second is not None
+    assert second["unit_id"] != first["unit_id"]
+    assert second["stale_classifiers"]
+    assert int(project.database.latest_classifier_fit(
+        code_id=code_id, classifier_spec_id=spec_id
+    )["classifier_fit_id"]) == fit_id
+
+
+def test_ranked_index_only_scores_its_requested_fit(tmp_path: Path) -> None:
+    project, code_id, spec_id, fit_id, session = _trained_project(tmp_path)
+    plan = []
+    with project.database.connect() as connection:
+        plan = [
+            str(row["detail"])
+            for row in connection.execute(
+                """EXPLAIN QUERY PLAN
+                SELECT cp.observation_id FROM classifier_predictions AS cp
+                WHERE cp.classifier_fit_id = ?
+                  AND cp.probability IS NOT NULL
+                ORDER BY cp.probability DESC, cp.observation_id DESC
+                LIMIT 1""",
+                (fit_id,),
+            )
+        ]
+    assert any("classifier_predictions_probability_rank_idx" in part for part in plan)
+    result = project.database.ranked_classifier_recommendation(
+        classifier_fit_id=fit_id, code_id=code_id,
+        session_id=session, strategy="classifier_uncertainty",
+    )
+    assert result is not None
+    assert 0 <= result["probability"] <= 1
