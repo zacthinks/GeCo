@@ -279,6 +279,11 @@ CREATE TABLE classifier_predictions (
 );
 CREATE INDEX classifier_predictions_observation_idx
 ON classifier_predictions(observation_id, classifier_fit_id);
+-- Frozen fit scores can be traversed from either end of the same B-tree.
+CREATE INDEX classifier_predictions_probability_rank_idx
+ON classifier_predictions(classifier_fit_id, probability, observation_id);
+CREATE INDEX classifier_predictions_uncertainty_rank_idx
+ON classifier_predictions(classifier_fit_id, uncertainty, observation_id);
 
 CREATE TABLE classifier_committees (
     committee_id INTEGER PRIMARY KEY,
@@ -2302,6 +2307,62 @@ class ProjectDatabase:
             if score is not None:
                 result[int(row["classifier_fit_id"])][int(row["unit_id"])] = float(score)
         return result
+
+    def ranked_classifier_recommendation(
+        self,
+        *,
+        classifier_fit_id: int,
+        code_id: int,
+        session_id: int,
+        strategy: str,
+    ) -> dict[str, Any] | None:
+        """Select one eligible atomic unit directly from a frozen indexed score order.
+
+        No whole-corpus score arrays, Python reranking, or session-specific ranked
+        tables are involved. Navigation and human annotations remain live filters.
+        """
+        if strategy not in {"likely_positive", "likely_negative", "classifier_uncertainty"}:
+            raise ValueError(f"Unsupported indexed classifier strategy: {strategy!r}")
+        ranking = {
+            "likely_positive": "cp.probability DESC, cp.observation_id DESC",
+            "likely_negative": "cp.probability ASC, cp.observation_id ASC",
+            "classifier_uncertainty": "cp.uncertainty DESC, cp.observation_id DESC",
+        }[strategy]
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT u.unit_id, cp.observation_id, cp.probability,
+                       cp.uncertainty, cp.decision_score
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id = ?
+                  AND cp.probability IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM navigation_events AS ne
+                      WHERE ne.session_id = ? AND ne.unit_id = u.unit_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM annotation_events AS ae
+                      WHERE ae.observation_id = cp.observation_id
+                        AND ae.code_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM annotation_event_retractions AS aer
+                            WHERE aer.annotation_event_id = ae.annotation_event_id
+                        )
+                  )
+                ORDER BY {ranking}
+                LIMIT 1
+                """,
+                (int(classifier_fit_id), int(session_id), int(code_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "unit_id": int(row["unit_id"]),
+            "observation_id": int(row["observation_id"]),
+            "probability": float(row["probability"]),
+            "uncertainty": float(row["uncertainty"]),
+        }
 
     def classifier_scores_for_unit(
         self, classifier_fit_ids: Sequence[int], unit_id: int
