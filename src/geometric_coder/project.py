@@ -296,6 +296,7 @@ class GeometricCoder:
                 "This GeCo project uses externally backed numerical resources. "
                 "Reopen it with external_provider=... ."
             )
+        project.database.ensure_recommendation_indexes()
         project.ensure_default_classifier_specs()
         return project
 
@@ -3492,6 +3493,16 @@ class GeometricCoder:
                 if fit is None:
                     raise ValueError(
                         f"Train {spec['name']} before using model recommendations."
+                    )
+                # Never silently omit newly ingested units whose frozen fit
+                # has not yet been extended. Recommendation clicks do not infer.
+                if self.database.has_missing_atomic_classifier_predictions(
+                    int(fit["classifier_fit_id"])
+                ):
+                    raise ValueError(
+                        "This classifier is missing predictions for some newly added "
+                        "units. Run Train to extend its frozen predictions before "
+                        "requesting recommendations."
                     )
                 # All corpus-wide probabilities were computed and persisted at Train.
                 # Only the next eligible row is retrieved at recommendation time.
