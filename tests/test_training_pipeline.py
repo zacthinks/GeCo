@@ -672,3 +672,93 @@ def test_fixed_committee_recommendation_reports_member_and_committee_probabiliti
     assert len(result["probabilities"]) == 2
     expected = sum(float(value) for value in result["probabilities"].values()) / 2.0
     assert float(result["committee_probability"]) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("strategy", ["likely_positive", "likely_negative", "committee_uncertainty"])
+def test_learned_committee_ranked_recommendation_skips_full_score_vectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
+) -> None:
+    project, code_id, committee_id, committee_fit_id, session_id = (
+        _trained_logistic_stack_committee(tmp_path)
+    )
+    predictions = project.database.classifier_committee_predictions(committee_fit_id)
+    annotated = {
+        int(row["observation_id"])
+        for row in project.database.current_annotations(code_id)
+        if row["unit_id"] is not None
+    }
+    remaining = [row for row in predictions if row["unit_id"] is not None
+                 and int(row["observation_id"]) not in annotated]
+    if strategy == "committee_uncertainty":
+        expected = sorted(remaining, key=lambda r: (
+            -float(r["uncertainty"]), int(r["observation_id"])
+        ))
+    else:
+        expected = sorted(remaining, key=lambda r: (
+            -float(r["probability"]) if strategy == "likely_positive"
+            else float(r["probability"]), int(r["observation_id"])
+        ))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Recommendation loaded a whole classifier/committee vector")
+    monkeypatch.setattr(project.database, "classifier_committee_atomic_probabilities", forbidden)
+    monkeypatch.setattr(project.database, "classifier_atomic_score_vectors", forbidden)
+    monkeypatch.setattr(project, "_latest_trainable_committee_scores", forbidden)
+    for row in expected:
+        result = project.focus_recommendation(
+            code_id=code_id, session_id=session_id, strategy=strategy,
+            committee_id=committee_id, recommendation_source="committee",
+            auto_retrain=False,
+        )
+        assert result is not None
+        assert result["unit_id"] == row["unit_id"]
+        assert result["committee_probability"] == pytest.approx(row["probability"])
+        assert len(result["probabilities"]) == 2
+        project.record_visit(session_id, int(result["unit_id"]), method="test")
+    assert project.focus_recommendation(
+        code_id=code_id, session_id=session_id, strategy=strategy,
+        committee_id=committee_id, recommendation_source="committee",
+        auto_retrain=False,
+    ) is None
+
+
+def test_learned_committee_index_backfill_and_ingestion_guard(tmp_path: Path) -> None:
+    project, code_id, committee_id, committee_fit_id, session_id = (
+        _trained_logistic_stack_committee(tmp_path)
+    )
+    assert not project.database.has_missing_atomic_classifier_committee_predictions(
+        committee_fit_id
+    )
+    with project.database.connect() as connection:
+        connection.execute("DROP INDEX classifier_committee_predictions_probability_rank_idx")
+        connection.execute("DROP INDEX classifier_committee_predictions_probability_desc_rank_idx")
+        connection.execute("DROP INDEX classifier_committee_predictions_uncertainty_rank_idx")
+        connection.execute(
+            "DELETE FROM classifier_committee_atomic_prediction_coverage"
+        )
+    reopened = GeometricCoder.open(project.project_dir)
+    assert not reopened.database.has_missing_atomic_classifier_committee_predictions(
+        committee_fit_id
+    )
+    with reopened.database.connect() as connection:
+        names = {
+            str(row["name"]) for row in connection.execute(
+                "PRAGMA index_list('classifier_committee_predictions')"
+            )
+        }
+    assert {
+        "classifier_committee_predictions_probability_rank_idx",
+        "classifier_committee_predictions_probability_desc_rank_idx",
+        "classifier_committee_predictions_uncertainty_rank_idx",
+    }.issubset(names)
+    reopened.ingest(
+        pd.DataFrame({"row_id": [100], "text": ["newly ingested unmatched sentence"]})
+    )
+    assert reopened.database.has_missing_atomic_classifier_committee_predictions(
+        committee_fit_id
+    )
+    with pytest.raises(ValueError, match="missing predictions"):
+        reopened.focus_recommendation(
+            code_id=code_id, session_id=session_id, strategy="likely_positive",
+            committee_id=committee_id, recommendation_source="committee",
+            auto_retrain=False,
+        )
