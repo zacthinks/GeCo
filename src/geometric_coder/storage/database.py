@@ -282,8 +282,10 @@ ON classifier_predictions(observation_id, classifier_fit_id);
 -- Frozen fit scores can be traversed from either end of the same B-tree.
 CREATE INDEX classifier_predictions_probability_rank_idx
 ON classifier_predictions(classifier_fit_id, probability, observation_id);
+CREATE INDEX classifier_predictions_probability_desc_rank_idx
+ON classifier_predictions(classifier_fit_id, probability DESC, observation_id ASC);
 CREATE INDEX classifier_predictions_uncertainty_rank_idx
-ON classifier_predictions(classifier_fit_id, uncertainty, observation_id);
+ON classifier_predictions(classifier_fit_id, uncertainty DESC, observation_id ASC);
 
 CREATE TABLE classifier_committees (
     committee_id INTEGER PRIMARY KEY,
@@ -513,6 +515,58 @@ class ProjectDatabase:
                 """,
                 ("Default session", now, now),
             )
+
+    def ensure_recommendation_indexes(self) -> None:
+        """Install additive ranking indexes in already supported schema-13 databases.
+
+        Index definitions also live in _SCHEMA for newly created projects. Existing
+        same-schema projects can gain them idempotently without replacing user data
+        or invoking a general project-file migration. A first open may take longer
+        while SQLite builds each B-tree; repeated opens do not rebuild it.
+        """
+        with self.connect() as connection:
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_probability_rank_idx
+                ON classifier_predictions(classifier_fit_id, probability, observation_id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_probability_desc_rank_idx
+                ON classifier_predictions(classifier_fit_id, probability DESC, observation_id ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_uncertainty_rank_idx
+                ON classifier_predictions(classifier_fit_id, uncertainty DESC, observation_id ASC)
+                """
+            )
+
+    def has_missing_atomic_classifier_predictions(self, classifier_fit_id: int) -> bool:
+        """Check exact atomic coverage without materializing missing rows in Python.
+
+        This is a conservative safety guard for appended observations or partially
+        populated caches. It can still examine many indexed rows in SQLite, so
+        profiling faster completeness bookkeeping is deferred to Phase 1E.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM units AS u
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM classifier_predictions AS cp
+                        WHERE cp.classifier_fit_id = ?
+                          AND cp.observation_id = u.observation_id
+                    )
+                    LIMIT 1
+                ) AS missing
+                """,
+                (int(classifier_fit_id),),
+            ).fetchone()
+        return bool(row["missing"])
 
     def import_dataframe(
         self,
@@ -2324,9 +2378,9 @@ class ProjectDatabase:
         if strategy not in {"likely_positive", "likely_negative", "classifier_uncertainty"}:
             raise ValueError(f"Unsupported indexed classifier strategy: {strategy!r}")
         ranking = {
-            "likely_positive": "cp.probability DESC, cp.observation_id DESC",
+            "likely_positive": "cp.probability DESC, cp.observation_id ASC",
             "likely_negative": "cp.probability ASC, cp.observation_id ASC",
-            "classifier_uncertainty": "cp.uncertainty DESC, cp.observation_id DESC",
+            "classifier_uncertainty": "cp.uncertainty DESC, cp.observation_id ASC",
         }[strategy]
         with self.connect() as connection:
             row = connection.execute(
