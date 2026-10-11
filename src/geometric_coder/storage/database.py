@@ -279,6 +279,24 @@ CREATE TABLE classifier_predictions (
 );
 CREATE INDEX classifier_predictions_observation_idx
 ON classifier_predictions(observation_id, classifier_fit_id);
+-- Frozen fit scores can be traversed from either end of the same B-tree.
+CREATE INDEX classifier_predictions_probability_rank_idx
+ON classifier_predictions(classifier_fit_id, probability, observation_id);
+CREATE INDEX classifier_predictions_probability_desc_rank_idx
+ON classifier_predictions(classifier_fit_id, probability DESC, observation_id ASC);
+CREATE INDEX classifier_predictions_uncertainty_rank_idx
+ON classifier_predictions(classifier_fit_id, uncertainty DESC, observation_id ASC);
+
+-- Fit-specific, atomically refreshed counts avoid a corpus-wide coverage probe
+-- on each recommendation click. Counts are refreshed when predictions are saved.
+CREATE TABLE classifier_atomic_prediction_coverage (
+    classifier_fit_id INTEGER PRIMARY KEY REFERENCES classifier_fits(classifier_fit_id),
+    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+);
+CREATE INDEX annotation_events_code_revision_idx
+ON annotation_events(code_id, annotation_event_id);
+CREATE INDEX teaching_examples_code_revision_idx
+ON teaching_examples(code_id, updated_at);
 
 CREATE TABLE classifier_committees (
     committee_id INTEGER PRIMARY KEY,
@@ -392,6 +410,8 @@ CREATE TABLE annotation_event_retractions (
     commit_operation_id INTEGER NOT NULL REFERENCES apply_commit_operations(commit_operation_id),
     retracted_at TEXT NOT NULL
 );
+CREATE INDEX annotation_event_retractions_revision_idx
+ON annotation_event_retractions(commit_operation_id);
 
 CREATE TABLE apply_proposals (
     apply_run_id INTEGER NOT NULL REFERENCES apply_runs(apply_run_id) ON DELETE CASCADE,
@@ -508,6 +528,135 @@ class ProjectDatabase:
                 """,
                 ("Default session", now, now),
             )
+
+    def ensure_recommendation_indexes(self) -> None:
+        """Install additive ranking indexes in already supported schema-13 databases.
+
+        Index definitions also live in _SCHEMA for newly created projects. Existing
+        same-schema projects can gain them idempotently without replacing user data
+        or invoking a general project-file migration. A first open may take longer
+        while SQLite builds each B-tree; repeated opens do not rebuild it.
+        """
+        with self.connect() as connection:
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_probability_rank_idx
+                ON classifier_predictions(classifier_fit_id, probability, observation_id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_probability_desc_rank_idx
+                ON classifier_predictions(classifier_fit_id, probability DESC, observation_id ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS classifier_predictions_uncertainty_rank_idx
+                ON classifier_predictions(classifier_fit_id, uncertainty DESC, observation_id ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS classifier_atomic_prediction_coverage (
+                    classifier_fit_id INTEGER PRIMARY KEY REFERENCES classifier_fits(classifier_fit_id),
+                    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS annotation_events_code_revision_idx
+                ON annotation_events(code_id, annotation_event_id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS teaching_examples_code_revision_idx
+                ON teaching_examples(code_id, updated_at)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS annotation_event_retractions_revision_idx
+                ON annotation_event_retractions(commit_operation_id)
+                """
+            )
+            # Backfill retained fits from existing schema-13 workspaces once.
+            # Normal fit and extension writes update this count in their own
+            # transaction; subsequent project opens do not rescan predictions.
+            connection.execute(
+                """
+                INSERT INTO classifier_atomic_prediction_coverage(
+                    classifier_fit_id, prediction_count
+                )
+                SELECT cf.classifier_fit_id,
+                       (SELECT COUNT(*)
+                        FROM classifier_predictions AS cp
+                        JOIN units AS u ON u.observation_id = cp.observation_id
+                        WHERE cp.classifier_fit_id = cf.classifier_fit_id)
+                FROM classifier_fits AS cf
+                WHERE cf.artifact_path != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM classifier_atomic_prediction_coverage AS capc
+                      WHERE capc.classifier_fit_id = cf.classifier_fit_id
+                  )
+                """
+            )
+
+    def recommendation_revision(self, code_id: int) -> tuple[int, str, int]:
+        """Cheap cross-connection revision for exactly checking snapshot only on change.
+
+        Annotation IDs increase monotonically; teaching status changes update
+        updated_at; apply retractions may change effective historical assignments.
+        The append-only retraction row count advances even when an older Apply\n        operation is undone after a newer one; it is deliberately project-wide.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                  COALESCE((
+                    SELECT MAX(annotation_event_id) FROM annotation_events
+                    WHERE code_id = ?
+                  ), 0) AS annotation_revision,
+                  COALESCE((
+                    SELECT MAX(updated_at) FROM teaching_examples
+                    WHERE code_id = ?
+                  ), '') AS teaching_revision,
+                  COALESCE((
+                    SELECT COUNT(*) FROM annotation_event_retractions
+                  ), 0) AS retraction_revision
+                """,
+                (int(code_id), int(code_id)),
+            ).fetchone()
+        return (
+            int(row["annotation_revision"]),
+            str(row["teaching_revision"]),
+            int(row["retraction_revision"]),
+        )
+
+    def has_missing_atomic_classifier_predictions(self, classifier_fit_id: int) -> bool:
+        """Constant-size coverage check against an atomic fit prediction count.
+
+        Atomic rows are append-only and row_position is contiguous from zero.
+        Every fit and extension refreshes this count atomically alongside scores;
+        the count cannot match the unit universe if an atomic score is missing.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT (
+                    COALESCE((
+                        SELECT prediction_count
+                        FROM classifier_atomic_prediction_coverage
+                        WHERE classifier_fit_id = ?
+                    ), -1) !=
+                    COALESCE((SELECT MAX(row_position) + 1 FROM units), 0)
+                ) AS missing
+                """,
+                (int(classifier_fit_id),),
+            ).fetchone()
+        return bool(row["missing"])
 
     def import_dataframe(
         self,
@@ -2177,6 +2326,18 @@ class ProjectDatabase:
                     for row in predictions
                 ),
             )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO classifier_atomic_prediction_coverage(
+                    classifier_fit_id, prediction_count
+                )
+                SELECT ?, COUNT(*)
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id = ?
+                """,
+                (classifier_fit_id, classifier_fit_id),
+            )
             return classifier_fit_id
 
     def get_classifier_fit(self, classifier_fit_id: int) -> dict[str, Any]:
@@ -2303,6 +2464,62 @@ class ProjectDatabase:
                 result[int(row["classifier_fit_id"])][int(row["unit_id"])] = float(score)
         return result
 
+    def ranked_classifier_recommendation(
+        self,
+        *,
+        classifier_fit_id: int,
+        code_id: int,
+        session_id: int,
+        strategy: str,
+    ) -> dict[str, Any] | None:
+        """Select one eligible atomic unit directly from a frozen indexed score order.
+
+        No whole-corpus score arrays, Python reranking, or session-specific ranked
+        tables are involved. Navigation and human annotations remain live filters.
+        """
+        if strategy not in {"likely_positive", "likely_negative", "classifier_uncertainty"}:
+            raise ValueError(f"Unsupported indexed classifier strategy: {strategy!r}")
+        ranking = {
+            "likely_positive": "cp.probability DESC, cp.observation_id ASC",
+            "likely_negative": "cp.probability ASC, cp.observation_id ASC",
+            "classifier_uncertainty": "cp.uncertainty DESC, cp.observation_id ASC",
+        }[strategy]
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT u.unit_id, cp.observation_id, cp.probability,
+                       cp.uncertainty, cp.decision_score
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id = ?
+                  AND cp.probability IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM navigation_events AS ne
+                      WHERE ne.session_id = ? AND ne.unit_id = u.unit_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM annotation_events AS ae
+                      WHERE ae.observation_id = cp.observation_id
+                        AND ae.code_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM annotation_event_retractions AS aer
+                            WHERE aer.annotation_event_id = ae.annotation_event_id
+                        )
+                  )
+                ORDER BY {ranking}
+                LIMIT 1
+                """,
+                (int(classifier_fit_id), int(session_id), int(code_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "unit_id": int(row["unit_id"]),
+            "observation_id": int(row["observation_id"]),
+            "probability": float(row["probability"]),
+            "uncertainty": float(row["uncertainty"]),
+        }
+
     def classifier_scores_for_unit(
         self, classifier_fit_ids: Sequence[int], unit_id: int
     ) -> dict[int, float]:
@@ -2387,6 +2604,18 @@ class ProjectDatabase:
                     )
                     for row in predictions
                 ),
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO classifier_atomic_prediction_coverage(
+                    classifier_fit_id, prediction_count
+                )
+                SELECT ?, COUNT(*)
+                FROM classifier_predictions AS cp
+                JOIN units AS u ON u.observation_id = cp.observation_id
+                WHERE cp.classifier_fit_id = ?
+                """,
+                (int(classifier_fit_id), int(classifier_fit_id)),
             )
 
     def retire_classifier_fit_states(

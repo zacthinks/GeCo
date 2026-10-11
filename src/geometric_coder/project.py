@@ -79,6 +79,16 @@ class GeometricCoder:
         self.artifacts = ArtifactStore(project_dir / self.ARTIFACT_DIRECTORY)
         self.external_provider = external_provider
         self._runtime_geometries: dict[str, Geometry] | None = None
+        # In-process cache of exact persisted evidence snapshots. A cheap DB
+        # revision changes whenever relevant annotations or teaching state change.
+        self._recommendation_freshness: dict[
+            tuple[int, int, str], tuple[tuple[int, str, int], bool]
+        ] = {}
+        # Training eligibility changes only when coded or teaching evidence
+        # changes, not when the researcher visits a different observation.
+        self._recommendation_has_classes: dict[
+            int, tuple[tuple[int, str, int], bool]
+        ] = {}
 
     @classmethod
     def create(
@@ -296,6 +306,7 @@ class GeometricCoder:
                 "This GeCo project uses externally backed numerical resources. "
                 "Reopen it with external_provider=... ."
             )
+        project.database.ensure_recommendation_indexes()
         project.ensure_default_classifier_specs()
         return project
 
@@ -2122,6 +2133,28 @@ class GeometricCoder:
             and teaching_status.get(int(row["observation_id"]), "active") == "active"
         ]
 
+    def _has_two_class_recommendation_evidence(
+        self, code_id: int, revision: tuple[int, str, int]
+    ) -> bool:
+        """Reuse exact label-eligibility checks until the coding state changes.
+
+        The existing pre-training random fallback must still work for empty or
+        one-class evidence. Do not call Train (automatic or otherwise) before
+        establishing that both classes are available.
+        """
+        cached = self._recommendation_has_classes.get(int(code_id))
+        if cached is not None and cached[0] == revision:
+            return cached[1]
+        annotations = self.database.current_annotations(int(code_id))
+        eligible = self._eligible_training_annotations(int(code_id), annotations)
+        has_positive = any(row["value"] == "positive" for row in eligible)
+        has_negative = any(row["value"] == "negative" for row in eligible)
+        has_both = bool(has_positive and has_negative)
+        if len(self._recommendation_has_classes) >= 128:
+            self._recommendation_has_classes.clear()
+        self._recommendation_has_classes[int(code_id)] = (revision, has_both)
+        return has_both
+
     def classifier_specs(
         self,
         code_id: int | None = None,
@@ -3332,6 +3365,118 @@ class GeometricCoder:
     ) -> dict[str, Any] | None:
         """Generate one session-aware recommendation from explicit classifiers."""
         self.database.get_code(int(code_id))
+        # The common single-classifier path does not need any corpus-wide arrays.
+        # It performs cheap fit/coverage checks and a single ordered SQLite lookup.
+        direct_classifier = (
+            recommendation_source != "committee"
+            and strategy in {
+                "likely_positive", "likely_negative",
+                "classifier_uncertainty", "geometry_uncertainty",
+            }
+        )
+        # An untrained, zero-/one-class workspace must bootstrap through the
+        # original random unseen-unit path. This check is revision-cached so
+        # repeat navigation does not reconstruct all annotations.
+        direct_revision = (
+            self.database.recommendation_revision(int(code_id))
+            if direct_classifier and active_classifier_spec_id is not None
+            else None
+        )
+        if (
+            direct_classifier
+            and active_classifier_spec_id is not None
+            and direct_revision is not None
+            and self._has_two_class_recommendation_evidence(
+                int(code_id), direct_revision
+            )
+        ):
+            if auto_retrain:
+                if auto_train_all:
+                    self.train_classifiers(
+                        code_id=int(code_id),
+                        classifier_spec_ids=[
+                            int(row["classifier_spec_id"])
+                            for row in self.classifier_specs(code_id=int(code_id))
+                        ],
+                        tune=bool(tune_hyperparameters),
+                    )
+                else:
+                    self.train_classifier(
+                        code_id=int(code_id),
+                        classifier_spec_id=int(active_classifier_spec_id),
+                        tune=bool(tune_hyperparameters),
+                    )
+            spec = self.database.get_classifier_spec(int(active_classifier_spec_id))
+            fit = self.database.latest_classifier_fit(
+                code_id=int(code_id),
+                classifier_spec_id=int(active_classifier_spec_id),
+            )
+            if fit is not None and str(fit["score_kind"]) == "probability":
+                fit_id = int(fit["classifier_fit_id"])
+                if self.database.has_missing_atomic_classifier_predictions(fit_id):
+                    raise ValueError(
+                        "This classifier is missing predictions for some newly added "
+                        "units. Run Train to extend its frozen predictions before "
+                        "requesting recommendations."
+                    )
+                ranked_strategy = (
+                    "classifier_uncertainty"
+                    if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
+                    else strategy
+                )
+                ranked = self.database.ranked_classifier_recommendation(
+                    classifier_fit_id=fit_id,
+                    code_id=int(code_id),
+                    session_id=int(session_id),
+                    strategy=ranked_strategy,
+                )
+                if ranked is None:
+                    return None
+                revision = self.database.recommendation_revision(int(code_id)) if auto_retrain else direct_revision
+                fingerprint = (
+                    int(spec["geometry_id"]), str(spec["algorithm"]),
+                    json.dumps(spec["hyperparameters"], sort_keys=True),
+                )
+                cache_key = (int(code_id), fit_id, repr(fingerprint))
+                cached = self._recommendation_freshness.get(cache_key)
+                if cached is None or cached[0] != revision:
+                    annotations_now = self.database.current_annotations(int(code_id))
+                    stale = (
+                        fit["training_snapshot"]
+                        != self._classifier_training_snapshot(
+                            int(code_id), annotations_now
+                        )
+                        or int(fit["geometry_id"]) != int(spec["geometry_id"])
+                        or str(fit["algorithm"]) != str(spec["algorithm"])
+                        or fit["hyperparameters"] != spec["hyperparameters"]
+                    )
+                    self._recommendation_freshness[cache_key] = (revision, bool(stale))
+                    if len(self._recommendation_freshness) > 128:
+                        self._recommendation_freshness.clear()
+                else:
+                    stale = cached[1]
+                probability = float(ranked["probability"])
+                score = (
+                    -abs(probability - 0.5)
+                    if ranked_strategy == "classifier_uncertainty"
+                    else probability
+                )
+                name = str(spec["name"])
+                return {
+                    "unit_id": int(ranked["unit_id"]),
+                    "strategy": ranked_strategy,
+                    "score": score,
+                    "probabilities": {name: probability},
+                    "committee_probability": None,
+                    "classifier_fit_ids": {name: fit_id},
+                    "stale_classifiers": [name] if stale else [],
+                    "stale_committee": False,
+                    "fallback": False,
+                }
+            if fit is None:
+                raise ValueError(
+                    f"Train {spec['name']} before using model recommendations."
+                )
         units = self.units()
         unit_ids = [int(unit["unit_id"]) for unit in units]
         unit_position = {unit_id: position for position, unit_id in enumerate(unit_ids)}
@@ -3483,6 +3628,74 @@ class GeometricCoder:
                         classifier_spec_id=int(active_classifier_spec_id),
                         tune=bool(tune_hyperparameters),
                     )
+            if strategy in {"likely_positive", "likely_negative", "classifier_uncertainty", "geometry_uncertainty"}:
+                spec = self.database.get_classifier_spec(int(active_classifier_spec_id))
+                fit = self.database.latest_classifier_fit(
+                    code_id=int(code_id),
+                    classifier_spec_id=int(active_classifier_spec_id),
+                )
+                if fit is None:
+                    raise ValueError(
+                        f"Train {spec['name']} before using model recommendations."
+                    )
+                # Never silently omit newly ingested units whose frozen fit
+                # has not yet been extended. Recommendation clicks do not infer.
+                if self.database.has_missing_atomic_classifier_predictions(
+                    int(fit["classifier_fit_id"])
+                ):
+                    raise ValueError(
+                        "This classifier is missing predictions for some newly added "
+                        "units. Run Train to extend its frozen predictions before "
+                        "requesting recommendations."
+                    )
+                # All corpus-wide probabilities were computed and persisted at Train.
+                # Only the next eligible row is retrieved at recommendation time.
+                if str(fit["score_kind"]) == "probability":
+                    ranked_strategy = (
+                        "classifier_uncertainty"
+                        if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
+                        else strategy
+                    )
+                    ranked = self.database.ranked_classifier_recommendation(
+                        classifier_fit_id=int(fit["classifier_fit_id"]),
+                        code_id=int(code_id),
+                        session_id=int(session_id),
+                        strategy=ranked_strategy,
+                    )
+                    if ranked is None:
+                        return None
+                    stale = (
+                        fit["training_snapshot"]
+                        != self._classifier_training_snapshot(int(code_id), annotations)
+                        or int(fit["geometry_id"]) != int(spec["geometry_id"])
+                        or str(fit["algorithm"]) != str(spec["algorithm"])
+                        or fit["hyperparameters"] != spec["hyperparameters"]
+                        or bool(
+                            self.database.missing_classifier_prediction_observation_ids(
+                                int(fit["classifier_fit_id"])
+                            )
+                        )
+                    )
+                    score = (
+                        -abs(float(ranked["probability"]) - 0.5)
+                        if ranked_strategy == "classifier_uncertainty"
+                        else float(ranked["probability"])
+                    )
+                    return {
+                        "unit_id": int(ranked["unit_id"]),
+                        "strategy": ranked_strategy,
+                        "score": score,
+                        "probabilities": {
+                            str(spec["name"]): float(ranked["probability"])
+                        },
+                        "committee_probability": None,
+                        "classifier_fit_ids": {
+                            str(spec["name"]): int(fit["classifier_fit_id"])
+                        },
+                        "stale_classifiers": [str(spec["name"])] if stale else [],
+                        "stale_committee": False,
+                        "fallback": False,
+                    }
             result = self._latest_classifier_scores(
                 code_id=int(code_id),
                 classifier_spec_id=int(active_classifier_spec_id),
