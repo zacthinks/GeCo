@@ -297,8 +297,6 @@ CREATE INDEX annotation_events_code_revision_idx
 ON annotation_events(code_id, annotation_event_id);
 CREATE INDEX teaching_examples_code_revision_idx
 ON teaching_examples(code_id, updated_at);
-CREATE INDEX annotation_event_retractions_revision_idx
-ON annotation_event_retractions(commit_operation_id);
 
 CREATE TABLE classifier_committees (
     committee_id INTEGER PRIMARY KEY,
@@ -412,6 +410,8 @@ CREATE TABLE annotation_event_retractions (
     commit_operation_id INTEGER NOT NULL REFERENCES apply_commit_operations(commit_operation_id),
     retracted_at TEXT NOT NULL
 );
+CREATE INDEX annotation_event_retractions_revision_idx
+ON annotation_event_retractions(commit_operation_id);
 
 CREATE TABLE apply_proposals (
     apply_run_id INTEGER NOT NULL REFERENCES apply_runs(apply_run_id) ON DELETE CASCADE,
