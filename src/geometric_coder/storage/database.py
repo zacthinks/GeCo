@@ -609,7 +609,7 @@ class ProjectDatabase:
 
         Annotation IDs increase monotonically; teaching status changes update
         updated_at; apply retractions may change effective historical assignments.
-        The retraction counter is project-wide, deliberately conservative.
+        The append-only retraction row count advances even when an older Apply\n        operation is undone after a newer one; it is deliberately project-wide.
         """
         with self.connect() as connection:
             row = connection.execute(
@@ -624,7 +624,7 @@ class ProjectDatabase:
                     WHERE code_id = ?
                   ), '') AS teaching_revision,
                   COALESCE((
-                    SELECT MAX(commit_operation_id) FROM annotation_event_retractions
+                    SELECT COUNT(*) FROM annotation_event_retractions
                   ), 0) AS retraction_revision
                 """,
                 (int(code_id), int(code_id)),
