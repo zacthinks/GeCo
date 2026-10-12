@@ -184,6 +184,40 @@ def _post_saved_develop_judgment_training_request(
     )
 
 
+def _post_saved_external_judgment_training_request(
+    project: GeometricCoder, *, code_id: int,
+    develop_code_id: int | None, annotation_event_id: int,
+    auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Route an external judgment only to an explicitly selected Develop code.
+
+    Explore/Code Center can assign any code; automatically training unrelated
+    models just because a Develop selection exists would violate user scope.
+    The saved judgment is acknowledged even if selection is absent or stale.
+    """
+    if "auto" not in set(auto_train_values or []):
+        return None, "Judgment saved."
+    if develop_code_id is None or int(code_id) != int(develop_code_id):
+        return (
+            None,
+            "Judgment saved. Automatic training was not requested because "
+            "this code is not the selected Develop code.",
+        )
+    return _post_saved_develop_judgment_training_request(
+        project, code_id=int(code_id),
+        annotation_event_id=int(annotation_event_id),
+        auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values,
+        tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -3336,6 +3370,7 @@ def create_app(
         Output("code-center-assignment-status", "children"),
         Output("explore-annotation-refresh-store", "data", allow_duplicate=True),
         Output("focus-refresh-store", "data", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("code-center-assignment-positive", "n_clicks"),
         Input("code-center-assignment-negative", "n_clicks"),
         Input("code-center-assignment-unsure", "n_clicks"),
@@ -3343,6 +3378,13 @@ def create_app(
         State("code-center-focal-store", "data"),
         State("explore-annotation-refresh-store", "data"),
         State("focus-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def revise_code_center_assignment(
@@ -3353,13 +3395,21 @@ def create_app(
         observation_id: int | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
-    ) -> tuple[str, int, int]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[str, int, int, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
         if code_id is None or observation_id is None:
             return (
                 "Select a code and observation first.",
                 int(explore_refresh or 0),
                 int(focus_refresh or 0),
+                no_update,
             )
         observation = project.observation(int(observation_id))
         if str(observation["kind"]) == "teaching_example":
@@ -3367,6 +3417,7 @@ def create_app(
                 "Revise teaching examples through the teaching-example manager.",
                 int(explore_refresh or 0),
                 int(focus_refresh or 0),
+                no_update,
             )
         value_by_button = {
             "code-center-assignment-positive": "positive",
@@ -3378,17 +3429,30 @@ def create_app(
             project, int(observation_id), int(code_id)
         )
         if current == value:
-            return "", int(explore_refresh or 0), int(focus_refresh or 0)
-        project.annotate(
+            return "", int(explore_refresh or 0), int(focus_refresh or 0), no_update
+        event_id = project.annotate(
             int(observation_id),
             int(code_id),
             value,
             origin="human_code_center",
         )
+        request, status = _post_saved_external_judgment_training_request(
+            project, code_id=int(code_id), develop_code_id=develop_code_id,
+            annotation_event_id=int(event_id),
+            auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values,
+            tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+        )
+        if request is not None:
+            request["origin"] = "code_center"
         return (
-            f"Revised the assignment to {value}.",
+            f"Revised the assignment to {value}. {status}",
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
+            request if request is not None else no_update,
         )
 
     @app.callback(
@@ -4645,6 +4709,8 @@ def create_app(
     @app.callback(
         Output("focus-auto-training-status", "children"),
         Output("focus-model-refresh-store", "data", allow_duplicate=True),
+        Output("explore-code-status", "children", allow_duplicate=True),
+        Output("code-center-assignment-status", "children", allow_duplicate=True),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4658,9 +4724,9 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, Any, Any]:
         if not request:
-            return "", no_update
+            return "", no_update, no_update, no_update
         try:
             result = project.train_classifiers_after_evidence_change(
                 code_id=int(request["code_id"]),
@@ -4668,17 +4734,27 @@ def create_app(
                 tune=bool(request["tune"]),
             )
         except (KeyError, ValueError, RuntimeError) as error:
-            return f"Saved coding judgment. Automatic training failed: {error}", no_update
-        status = str(result["status"])
-        if status == "trained":
-            count = len(result["trained_fit_ids"])
-            return (
-                f"Saved judgment; trained {count} selected classifier(s).",
-                int(refresh or 0) + 1,
-            )
-        if status == "awaiting_two_classes":
-            return "Saved judgment; training awaits both positive and negative evidence.", no_update
-        return "Saved judgment; selected classifier(s) are already current.", no_update
+            message = f"Saved coding judgment. Automatic training failed: {error}"
+            model_refresh: Any = no_update
+        else:
+            status = str(result["status"])
+            if status == "trained":
+                count = len(result["trained_fit_ids"])
+                message = f"Saved judgment; trained {count} selected classifier(s)."
+                model_refresh = int(refresh or 0) + 1
+            elif status == "awaiting_two_classes":
+                message = "Saved judgment; training awaits both positive and negative evidence."
+                model_refresh = no_update
+            else:
+                message = "Saved judgment; selected classifier(s) are already current."
+                model_refresh = no_update
+        origin = str(request.get("origin", "develop"))
+        return (
+            message if origin == "develop" else no_update,
+            model_refresh,
+            message if origin == "explore" else no_update,
+            message if origin == "code_center" else no_update,
+        )
 
     @app.callback(
         Output("focus-annotation-status", "children"),
