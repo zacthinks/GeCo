@@ -248,6 +248,21 @@ def _post_saved_teaching_example_training_request(
     return request, status.replace("Judgment saved", "Teaching example saved")
 
 
+def _teaching_example_for_code(
+    project: GeometricCoder, *, code_id: int, observation_id: int,
+) -> dict[str, Any] | None:
+    """Validate a teaching table row against its owning code before mutation.
+
+    The modal code and selected table row can become desynchronized after a
+    code change or a preceding edit. Never write using a stale selection.
+    """
+    return next((
+        row
+        for row in project.teaching_examples(int(code_id), include_deleted=True)
+        if int(row["observation_id"]) == int(observation_id)
+    ), None)
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -3055,12 +3070,22 @@ def create_app(
         index = int(selected_rows[0])
         if index < 0 or index >= len(rows):
             return "Select an example first.", int(refresh or 0), no_update
-        project.set_teaching_example_status(
-            int(rows[index]["observation_id"]), str(status or "inactive")
+        observation_id = int(rows[index]["observation_id"])
+        existing = _teaching_example_for_code(
+            project, code_id=int(selected_code_id), observation_id=observation_id
         )
-        action = "Deleted" if status == "deleted" else str(status or "inactive").title()
+        if existing is None:
+            return (
+                "This teaching example is no longer in the selected code. Refresh the list.",
+                int(refresh or 0), no_update,
+            )
+        selected_status = str(status or "inactive")
+        if str(existing["teaching_status"]) == selected_status:
+            return "Teaching example status is already current.", int(refresh or 0), no_update
+        project.set_teaching_example_status(observation_id, selected_status)
+        action = "Deleted" if selected_status == "deleted" else selected_status.title()
         request, note = _post_saved_teaching_example_training_request(
-            project, code_id=int(selected_code_id), observation_id=int(rows[index]["observation_id"]),
+            project, code_id=int(selected_code_id), observation_id=observation_id,
             develop_code_id=develop_code_id, auto_train_values=auto_train_values,
             train_scope_values=train_scope_values, tune_values=tune_values,
             recommendation_source=recommendation_source,
@@ -3108,7 +3133,17 @@ def create_app(
         if index < 0 or index >= len(rows):
             return "Select an example first.", int(refresh or 0), no_update
         observation_id = int(rows[index]["observation_id"])
+        existing = _teaching_example_for_code(
+            project, code_id=int(selected_code_id), observation_id=observation_id
+        )
+        if existing is None:
+            return (
+                "This teaching example is no longer in the selected code. Refresh the list.",
+                int(refresh or 0), no_update,
+            )
         selected_label = str(label or "positive")
+        if str(existing["teaching_label"]) == selected_label:
+            return "Teaching example label is already current.", int(refresh or 0), no_update
         project.set_teaching_example_label(observation_id, selected_label)
         display = "Present" if selected_label == "positive" else "Absent"
         request, note = _post_saved_teaching_example_training_request(
@@ -4910,23 +4945,24 @@ def create_app(
 
         completed = training_inbox.drain(fit)
         if not completed:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
         messages: dict[str, str] = {}
         any_trained = False
         for task, result, error in completed:
             origin = str(task.get("origin", "develop"))
+            saved_label = "Teaching example saved" if origin == "teaching_example" else "Saved judgment"
             if error is not None:
-                message = f"Saved judgment. Automatic training failed: {error}"
+                message = f"{saved_label}. Automatic training failed: {error}"
             elif str(result["status"]) == "trained":
                 any_trained = True
                 message = (
-                    f"Saved judgment; trained {len(result['trained_fit_ids'])} "
+                    f"{saved_label}; trained {len(result['trained_fit_ids'])} "
                     "selected classifier(s)."
                 )
             elif str(result["status"]) == "awaiting_two_classes":
-                message = "Saved judgment; training awaits both positive and negative evidence."
+                message = f"{saved_label}; training awaits both positive and negative evidence."
             else:
-                message = "Saved judgment; selected classifier(s) are current."
+                message = f"{saved_label}; selected classifier(s) are current."
             messages[origin] = message
         return (
             messages.get("develop", no_update),
