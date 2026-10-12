@@ -257,8 +257,8 @@ class _ScopedTrainingInbox:
             return {"nonce": str(uuid.uuid4())}
 
     def drain(self, runner: Any) -> list[tuple[dict[str, Any], Any, Exception | None]]:
-        if not self._drain_lock.acquire(blocking=False):
-            return []
+        # Wait for an earlier drain: a second wake-up must not discard pending work.
+        self._drain_lock.acquire()
         results: list[tuple[dict[str, Any], Any, Exception | None]] = []
         try:
             while True:
