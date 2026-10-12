@@ -8030,7 +8030,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Automatically train after Develop judgments",
+                                                        "label": "Auto-train selected models after saved judgments",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -8048,14 +8048,15 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "Automatic training runs after saved Develop judgments, never from the "
-                                        "recommendation buttons. Other coding workspaces do not yet start "
-                                        "post-judgment training. If the selected classifier has no fitted model, "
-                                        "use Train; for a fixed committee use Prepare selected committee, or Train "
-                                        "committee for learned aggregation. With auto mode off, prior predictions "
-                                        "remain available and may be stale. Train All must be selected explicitly; "
-                                        "otherwise only the chosen classifier or committee members are considered. "
-                                        "Cross-validation tuning can be slower.",
+                                        "With auto-training enabled, saved Develop judgments can train selected models. "
+                                        "Explore and Code Center judgments do so only when coding the code currently "
+                                        "selected in Develop. The scope is the active classifier or selected committee "
+                                        "members, unless Train All is explicitly chosen. Teaching-example changes and "
+                                        "Apply reviews are not yet connected. Recommendation/navigation clicks never "
+                                        "train; if no fit exists, use Train (or Train committee for learned aggregation). "
+                                        "Fixed committees require Prepare selected committee. With auto mode off, "
+                                        "frozen predictions remain available but may be stale. Optional cross-validation "
+                                        "tuning can be slower.",
                                         className="focus-help",
                                     ),
                                     html.Div(
