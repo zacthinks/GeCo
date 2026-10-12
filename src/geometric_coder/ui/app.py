@@ -3817,6 +3817,7 @@ def create_app(
     @app.callback(
         Output("explore-annotation-refresh-store", "data", allow_duplicate=True),
         Output("explore-code-status", "children", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input({"type": "explore-code-positive", "index": ALL}, "n_clicks"),
         Input({"type": "explore-code-negative", "index": ALL}, "n_clicks"),
         Input({"type": "explore-code-unsure", "index": ALL}, "n_clicks"),
@@ -3824,6 +3825,13 @@ def create_app(
         State("explore-code-palette-store", "data"),
         State("explore-span-selection-store", "data"),
         State("explore-annotation-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def annotate_from_explore_palette(
@@ -3834,7 +3842,14 @@ def create_app(
         palette: list[int | None] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
-    ) -> tuple[Any, Any]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[Any, Any, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
         triggered = callback_context.triggered_id
         triggered_value = (
@@ -3845,15 +3860,15 @@ def create_app(
         # Pattern-matched buttons can fire when a dynamic row is mounted. Only a
         # positive click count is an actual coding judgment.
         if not isinstance(triggered, dict) or int(triggered_value or 0) < 1:
-            return no_update, no_update
+            return no_update, no_update, no_update
         if focal_unit_id is None:
-            return no_update, "Select a focal unit first."
+            return no_update, "Select a focal unit first.", no_update
         valid_ids = {int(code["code_id"]) for code in project.codes()}
         normalized = _normalize_explore_code_palette(palette, valid_ids)
         row_index = int(triggered.get("index", -1))
         code_id = normalized[row_index] if 0 <= row_index < len(normalized) else None
         if code_id is None:
-            return no_update, "Select or create a code first."
+            return no_update, "Select or create a code first.", no_update
         values = {
             "explore-code-positive": "positive",
             "explore-code-negative": "negative",
@@ -3861,14 +3876,31 @@ def create_app(
         }
         value = values.get(str(triggered.get("type")))
         if value is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
         selected = [int(item) for item in (selected_unit_ids or [focal_unit_id])]
         observation_id = _selection_observation_id(project, int(focal_unit_id), selected)
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
-            return no_update, no_update
-        project.annotate_span(selected, int(code_id), value, origin="human_direct")
-        return int(refresh or 0) + 1, ""
+            return no_update, no_update, no_update
+        _observation_id, event_id = project.annotate_span(
+            selected, int(code_id), value, origin="human_direct"
+        )
+        request, message = _post_saved_external_judgment_training_request(
+            project, code_id=int(code_id), develop_code_id=develop_code_id,
+            annotation_event_id=int(event_id),
+            auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values,
+            tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+        )
+        if request is not None:
+            request["origin"] = "explore"
+        return (
+            int(refresh or 0) + 1, message,
+            request if request is not None else no_update,
+        )
 
     @app.callback(
         Output("focus-active-area", "className"),
