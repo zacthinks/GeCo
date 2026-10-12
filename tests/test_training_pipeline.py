@@ -840,3 +840,50 @@ def test_prepared_fixed_committee_rankings(
     )
     assert next_ranked is not None
     assert next_ranked["unit_id"] != ranked["unit_id"]
+
+
+def test_event_boundary_training_reuses_unchanged_classifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("event training")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    first = project.train_classifiers_after_evidence_change(code_id=code_id)
+    assert first["status"] == "awaiting_two_classes"
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    assert project.train_classifiers_after_evidence_change(code_id=code_id)["status"] == "awaiting_two_classes"
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    trained = project.train_classifiers_after_evidence_change(code_id=code_id)
+    assert trained["status"] == "trained"
+    fit_id = trained["trained_fit_ids"][spec_id]
+    assert project.train_classifiers_after_evidence_change(code_id=code_id)["status"] == "already_current"
+    project.annotate(int(observations[1]["observation_id"]), code_id, "positive")
+    again = project.train_classifiers_after_evidence_change(code_id=code_id)
+    assert again["status"] == "trained"
+    assert again["trained_fit_ids"][spec_id] != fit_id
+
+
+def test_event_boundary_training_respects_selected_scope(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("scoped")
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    first_spec = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    geometry_id = int(project.database.get_classifier_spec(first_spec)["geometry_id"])
+    second_spec = project.create_classifier_spec(
+        code_id=code_id, name="scoped tree", geometry_id=geometry_id,
+        algorithm="decision_tree"
+    )
+    changed = project.train_classifiers_after_evidence_change(
+        code_id=code_id, classifier_spec_ids=[first_spec]
+    )
+    assert list(changed["trained_fit_ids"]) == [first_spec]
+    assert project.database.latest_classifier_fit(
+        code_id=code_id, classifier_spec_id=second_spec
+    ) is None
+    second = project.train_classifiers_after_evidence_change(
+        code_id=code_id, classifier_spec_ids=[second_spec]
+    )
+    assert list(second["trained_fit_ids"]) == [second_spec]
