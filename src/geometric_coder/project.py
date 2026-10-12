@@ -3371,17 +3371,21 @@ class GeometricCoder:
             if self.database.has_missing_atomic_classifier_predictions(fit_id):
                 raise ValueError("Train committee members to complete frozen predictions before preparing.")
         score_lookup = self.database.classifier_atomic_score_vectors(fit_ids)
-        ids = [int(unit["unit_id"]) for unit in self.units()]
+        unit_rows = self.units()
+        ids = [int(unit["unit_id"]) for unit in unit_rows]
         if any(any(uid not in score_lookup[fit_id] for uid in ids) for fit_id in fit_ids):
             raise ValueError("Committee member prediction coverage is incomplete.")
-        import numpy as np
-        matrix = np.column_stack([[score_lookup[fit_id][uid] for fit_id in fit_ids] for uid in ids])
-        from geometric_coder.apply import aggregate_probabilities
+        # Each COLUMN corresponds to one member fit, each ROW to one atomic unit.
+        # Reversing these axes gave an (n_members, n_units) array, and broke
+        # every preparation path when n_members != n_units.
+        matrix = np.column_stack([
+            [score_lookup[fit_id][uid] for uid in ids] for fit_id in fit_ids
+        ])
         aggregates = aggregate_probabilities(
-            {str(i): matrix[:, i] for i in range(len(fit_ids))}, aggregation=aggregation
+            {str(i): matrix[:, i] for i in range(len(fit_ids))},
+            aggregation=aggregation,
         )
         disagreement = np.ptp(matrix, axis=1)
-        unit_rows = self.units()
         scores = [
             {"observation_id": int(row["observation_id"]), "probability": float(p),
              "uncertainty": float(1 - min(1, abs(float(p) - .5) * 2)),
