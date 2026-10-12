@@ -3048,6 +3048,8 @@ def create_app(
         committee_id: int | None,
     ) -> tuple[str, int, Any]:
         del clicks
+        if selected_code_id is None:
+            return "Select a teaching-example code first.", int(refresh or 0), no_update
         if not selected_rows or not rows:
             return "Select an example first.", int(refresh or 0), no_update
         index = int(selected_rows[0])
@@ -3098,6 +3100,8 @@ def create_app(
         committee_id: int | None,
     ) -> tuple[str, int, Any]:
         del clicks
+        if selected_code_id is None:
+            return "Select a teaching-example code first.", int(refresh or 0), no_update
         if not selected_rows or not rows:
             return "Select an example first.", int(refresh or 0), no_update
         index = int(selected_rows[0])
