@@ -8120,7 +8120,10 @@ def _focus_layout(
                                 disabled=initial_code_id is None,
                             ),
                             html.Small(
-                                "Active examples join corpus assignments at the next manual retrain.",
+                                "Saving a teaching example updates the evidence, not the fitted model. "
+                                "For the code selected in Develop, active examples can trigger training of "
+                                "the selected models after a change when automatic training is enabled. "
+                                "Otherwise, use Train to include active examples in the next manual fit.",
                                 className="focus-help",
                             ),
                         ],
