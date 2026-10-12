@@ -887,3 +887,36 @@ def test_event_boundary_training_respects_selected_scope(tmp_path: Path) -> None
         code_id=code_id, classifier_spec_ids=[second_spec]
     )
     assert list(second["trained_fit_ids"]) == [second_spec]
+
+
+def test_event_training_scope_is_explicit(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _auto_training_spec_scope
+
+    project = _project(tmp_path)
+    code_id = project.create_code("scope")
+    first = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    geometry_id = int(project.database.get_classifier_spec(first)["geometry_id"])
+    second = project.create_classifier_spec(
+        code_id=code_id, name="scope tree", geometry_id=geometry_id,
+        algorithm="decision_tree"
+    )
+    assert _auto_training_spec_scope(
+        project, code_id=code_id, source="classifier",
+        classifier_spec_id=first, committee_id=None, train_all=False
+    ) == [first]
+    assert _auto_training_spec_scope(
+        project, code_id=code_id, source="classifier",
+        classifier_spec_id=None, committee_id=None, train_all=False
+    ) == []
+    assert set(_auto_training_spec_scope(
+        project, code_id=code_id, source="classifier",
+        classifier_spec_id=first, committee_id=None, train_all=True
+    )) == {first, second}
+    committee = project.create_classifier_committee(
+        code_id=code_id, name="scope committee",
+        classifier_spec_ids=[second], aggregation="mean"
+    )
+    assert _auto_training_spec_scope(
+        project, code_id=code_id, source="committee",
+        classifier_spec_id=first, committee_id=committee, train_all=False
+    ) == [second]
