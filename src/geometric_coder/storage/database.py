@@ -343,6 +343,19 @@ CREATE TABLE classifier_committee_predictions (
 );
 CREATE INDEX classifier_committee_predictions_observation_idx
 ON classifier_committee_predictions(observation_id, committee_fit_id);
+CREATE INDEX classifier_committee_predictions_probability_rank_idx
+ON classifier_committee_predictions(committee_fit_id, probability, observation_id);
+CREATE INDEX classifier_committee_predictions_probability_desc_rank_idx
+ON classifier_committee_predictions(committee_fit_id, probability DESC, observation_id ASC);
+CREATE INDEX classifier_committee_predictions_uncertainty_rank_idx
+ON classifier_committee_predictions(committee_fit_id, uncertainty DESC, observation_id ASC);
+
+-- Learned committee prediction coverage is updated with score writes.
+CREATE TABLE classifier_committee_atomic_prediction_coverage (
+    committee_fit_id INTEGER PRIMARY KEY
+        REFERENCES classifier_committee_fits(committee_fit_id) ON DELETE CASCADE,
+    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+);
 
 CREATE TABLE classifier_evaluation_events (
     evaluation_event_id INTEGER PRIMARY KEY,
@@ -601,6 +614,47 @@ class ProjectDatabase:
                       SELECT 1 FROM classifier_atomic_prediction_coverage AS capc
                       WHERE capc.classifier_fit_id = cf.classifier_fit_id
                   )
+                """
+            )
+
+            # Phase 1C: older schema-13 projects also need learned committee rankings.
+            for name, columns in (
+                ("classifier_committee_predictions_probability_rank_idx",
+                 "committee_fit_id, probability, observation_id"),
+                ("classifier_committee_predictions_probability_desc_rank_idx",
+                 "committee_fit_id, probability DESC, observation_id ASC"),
+                ("classifier_committee_predictions_uncertainty_rank_idx",
+                 "committee_fit_id, uncertainty DESC, observation_id ASC"),
+            ):
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} "
+                    f"ON classifier_committee_predictions({columns})"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS classifier_committee_atomic_prediction_coverage (
+                    committee_fit_id INTEGER PRIMARY KEY
+                        REFERENCES classifier_committee_fits(committee_fit_id) ON DELETE CASCADE,
+                    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
+                )
+                """
+            )
+            # Backfill only retained learned fits, once. Reopening does not rescan.
+            connection.execute(
+                """
+                INSERT INTO classifier_committee_atomic_prediction_coverage(
+                    committee_fit_id, prediction_count
+                )
+                SELECT ccf.committee_fit_id,
+                       (SELECT COUNT(*)
+                        FROM classifier_committee_predictions AS ccp
+                        JOIN units AS u ON u.observation_id = ccp.observation_id
+                        WHERE ccp.committee_fit_id = ccf.committee_fit_id)
+                FROM classifier_committee_fits AS ccf
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM classifier_committee_atomic_prediction_coverage AS capc
+                    WHERE capc.committee_fit_id = ccf.committee_fit_id
+                )
                 """
             )
 
@@ -2905,6 +2959,18 @@ class ProjectDatabase:
                     for row in predictions
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO classifier_committee_atomic_prediction_coverage(
+                    committee_fit_id, prediction_count
+                )
+                SELECT ?, COUNT(*)
+                FROM classifier_committee_predictions AS ccp
+                JOIN units AS u ON u.observation_id = ccp.observation_id
+                WHERE ccp.committee_fit_id = ?
+                """,
+                (committee_fit_id, committee_fit_id),
+            )
             return committee_fit_id
 
     def latest_classifier_committee_fit(
@@ -3003,6 +3069,73 @@ class ProjectDatabase:
             ).fetchall()
         return {int(row["unit_id"]): float(row["probability"]) for row in rows}
 
+    def has_missing_atomic_classifier_committee_predictions(
+        self, committee_fit_id: int
+    ) -> bool:
+        """Check the frozen learned-fit's atomic coverage without loading its rows."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT (
+                    COALESCE((
+                        SELECT prediction_count
+                        FROM classifier_committee_atomic_prediction_coverage
+                        WHERE committee_fit_id = ?
+                    ), -1) !=
+                    COALESCE((SELECT MAX(row_position) + 1 FROM units), 0)
+                ) AS missing
+                """,
+                (int(committee_fit_id),),
+            ).fetchone()
+        return bool(row["missing"])
+
+    def ranked_classifier_committee_recommendation(
+        self, *, committee_fit_id: int, code_id: int, session_id: int,
+        strategy: str,
+    ) -> dict[str, Any] | None:
+        """Find a live eligible unit from one frozen learned-committee score index."""
+        orderings = {
+            "likely_positive": "ccp.probability DESC, ccp.observation_id ASC",
+            "likely_negative": "ccp.probability ASC, ccp.observation_id ASC",
+            "committee_uncertainty": "ccp.uncertainty DESC, ccp.observation_id ASC",
+        }
+        if strategy not in orderings:
+            raise ValueError(f"Unsupported indexed committee strategy: {strategy!r}")
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT u.unit_id, ccp.observation_id,
+                       ccp.probability, ccp.uncertainty
+                FROM classifier_committee_predictions AS ccp
+                JOIN units AS u ON u.observation_id = ccp.observation_id
+                WHERE ccp.committee_fit_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM navigation_events AS ne
+                      WHERE ne.session_id = ? AND ne.unit_id = u.unit_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM annotation_events AS ae
+                      WHERE ae.observation_id = ccp.observation_id
+                        AND ae.code_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM annotation_event_retractions AS aer
+                            WHERE aer.annotation_event_id = ae.annotation_event_id
+                        )
+                  )
+                ORDER BY {orderings[strategy]}
+                LIMIT 1
+                """,
+                (int(committee_fit_id), int(session_id), int(code_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "unit_id": int(row["unit_id"]),
+            "observation_id": int(row["observation_id"]),
+            "probability": float(row["probability"]),
+            "uncertainty": float(row["uncertainty"]),
+        }
+
     def classifier_committee_probability_for_unit(
         self, committee_fit_id: int, unit_id: int
     ) -> float | None:
@@ -3046,6 +3179,19 @@ class ProjectDatabase:
                     )
                     for row in predictions
                 ),
+            )
+
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO classifier_committee_atomic_prediction_coverage(
+                    committee_fit_id, prediction_count
+                )
+                SELECT ?, COUNT(*)
+                FROM classifier_committee_predictions AS ccp
+                JOIN units AS u ON u.observation_id = ccp.observation_id
+                WHERE ccp.committee_fit_id = ?
+                """,
+                (int(committee_fit_id), int(committee_fit_id)),
             )
 
     def register_classifier_evaluation(

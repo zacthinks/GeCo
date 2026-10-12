@@ -3477,6 +3477,99 @@ class GeometricCoder:
                 raise ValueError(
                     f"Train {spec['name']} before using model recommendations."
                 )
+        # Learned committees already persist their fitted aggregate probabilities.
+        # Index their frozen snapshot directly; retrieve only selected member scores.
+        committee_strategy = (
+            "committee_uncertainty"
+            if strategy == "committee_uncertainty"
+            else strategy
+        )
+        if (
+            recommendation_source == "committee"
+            and committee_id is not None
+            and committee_strategy in {
+                "likely_positive", "likely_negative", "committee_uncertainty"
+            }
+            and not auto_retrain
+        ):
+            chosen_committee = self.database.get_classifier_committee(int(committee_id))
+            if int(chosen_committee["code_id"]) != int(code_id):
+                raise ValueError("The selected committee belongs to another code.")
+            if str(chosen_committee["aggregation"]) in TRAINABLE_COMMITTEE_AGGREGATIONS:
+                # Bootstrap without a fitted model stays random, as before.
+                revision = self.database.recommendation_revision(int(code_id))
+                if self._has_two_class_recommendation_evidence(int(code_id), revision):
+                    learned_fit = self.database.latest_classifier_committee_fit(
+                        committee_id=int(committee_id), code_id=int(code_id)
+                    )
+                    if learned_fit is None:
+                        raise ValueError(
+                            "Train this committee before using its learned aggregation."
+                        )
+                    learned_fit_id = int(learned_fit["committee_fit_id"])
+                    if self.database.has_missing_atomic_classifier_committee_predictions(
+                        learned_fit_id
+                    ):
+                        raise ValueError(
+                            "This committee is missing predictions for newly added units. "
+                            "Train the selected committee to extend its frozen scores."
+                        )
+                    ranked_committee = self.database.ranked_classifier_committee_recommendation(
+                        committee_fit_id=learned_fit_id,
+                        code_id=int(code_id), session_id=int(session_id),
+                        strategy=committee_strategy,
+                    )
+                    if ranked_committee is None:
+                        return None
+                    member_states, _ = self._committee_member_states(
+                        code_id=int(code_id), committee=chosen_committee
+                    )
+                    selected_fit_ids = [
+                        int(state["fit"]["classifier_fit_id"])
+                        for state in member_states if state["fit"] is not None
+                    ]
+                    if len(selected_fit_ids) != len(member_states):
+                        raise ValueError(
+                            "Train all committee classifiers before using it."
+                        )
+                    latest_snapshot = self._committee_training_snapshot(
+                        code_id=int(code_id), committee=chosen_committee,
+                        member_fit_ids=selected_fit_ids,
+                    )
+                    committee_stale = (
+                        learned_fit["training_snapshot"] != latest_snapshot
+                        or any(bool(state["stale"]) for state in member_states)
+                    )
+                    point_scores = self.database.classifier_scores_for_unit(
+                        selected_fit_ids, int(ranked_committee["unit_id"])
+                    )
+                    probabilities: dict[str, float] = {}
+                    fit_ids_by_name: dict[str, int] = {}
+                    stale_names: list[str] = []
+                    for state, fit_id in zip(member_states, selected_fit_ids, strict=True):
+                        name = str(state["classifier_name"])
+                        if fit_id in point_scores:
+                            probabilities[name] = float(point_scores[fit_id])
+                        fit_ids_by_name[name] = fit_id
+                        if state["stale"]:
+                            stale_names.append(name)
+                    p = float(ranked_committee["probability"])
+                    ranking_score = (
+                        -abs(p - 0.5)
+                        if committee_strategy == "committee_uncertainty" else p
+                    )
+                    return {
+                        "unit_id": int(ranked_committee["unit_id"]),
+                        "strategy": committee_strategy,
+                        "score": ranking_score,
+                        "probabilities": probabilities,
+                        "committee_probability": p,
+                        "classifier_fit_ids": fit_ids_by_name,
+                        "stale_classifiers": stale_names,
+                        "stale_committee": bool(committee_stale),
+                        "fallback": False,
+                    }
+
         units = self.units()
         unit_ids = [int(unit["unit_id"]) for unit in units]
         unit_position = {unit_id: position for position, unit_id in enumerate(unit_ids)}
