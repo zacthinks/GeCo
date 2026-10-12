@@ -3349,6 +3349,52 @@ class GeometricCoder:
             }
         return results, committee
 
+    def prepare_selected_committee(self, *, code_id: int, committee_id: int) -> dict[str, Any]:
+        """Explicitly prepare only the selected fixed committee's frozen rankings."""
+        committee = self.database.get_classifier_committee(int(committee_id))
+        if int(committee["code_id"]) != int(code_id):
+            raise ValueError("The selected committee belongs to another code.")
+        aggregation = str(committee["aggregation"])
+        if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
+            raise ValueError("Learned committees already use their fitted score indexes.")
+        states, _ = self._committee_member_states(code_id=int(code_id), committee=committee)
+        if any(state["fit"] is None for state in states):
+            raise ValueError("Train selected committee members before preparing rankings.")
+        fit_ids = [int(state["fit"]["classifier_fit_id"]) for state in states]
+        existing = self.database.prepared_committee_ranking(int(committee_id))
+        if (existing is not None and existing["aggregation"] == aggregation
+                and existing["committee_updated_at"] == str(committee["updated_at"])
+                and existing["member_fit_ids"] == fit_ids
+                and not self.database.prepared_committee_has_missing_atomic_scores(int(committee_id))):
+            return {"prepared": False, "unit_count": existing["prediction_count"]}
+        for fit_id in fit_ids:
+            if self.database.has_missing_atomic_classifier_predictions(fit_id):
+                raise ValueError("Train committee members to complete frozen predictions before preparing.")
+        score_lookup = self.database.classifier_atomic_score_vectors(fit_ids)
+        ids = [int(unit["unit_id"]) for unit in self.units()]
+        if any(any(uid not in score_lookup[fit_id] for uid in ids) for fit_id in fit_ids):
+            raise ValueError("Committee member prediction coverage is incomplete.")
+        import numpy as np
+        matrix = np.column_stack([[score_lookup[fit_id][uid] for fit_id in fit_ids] for uid in ids])
+        from geometric_coder.apply import aggregate_probabilities
+        aggregates = aggregate_probabilities(
+            {str(i): matrix[:, i] for i in range(len(fit_ids))}, aggregation=aggregation
+        )
+        disagreement = np.ptp(matrix, axis=1)
+        unit_rows = self.units()
+        scores = [
+            {"observation_id": int(row["observation_id"]), "probability": float(p),
+             "uncertainty": float(1 - min(1, abs(float(p) - .5) * 2)),
+             "disagreement": float(d)}
+            for row, p, d in zip(unit_rows, aggregates, disagreement, strict=True)
+        ]
+        self.database.save_prepared_committee_ranking(
+            committee_id=int(committee_id), aggregation=aggregation,
+            committee_updated_at=str(committee["updated_at"]),
+            member_fit_ids=fit_ids, scores=scores,
+        )
+        return {"prepared": True, "unit_count": len(scores)}
+
     def focus_recommendation(
         self,
         *,
@@ -3568,6 +3614,55 @@ class GeometricCoder:
                         "stale_classifiers": stale_names,
                         "stale_committee": bool(committee_stale),
                         "fallback": False,
+                    }
+
+        if recommendation_source == "committee" and committee_id is not None and not auto_retrain and strategy in {
+            "likely_positive", "likely_negative", "committee_uncertainty",
+            "classifier_disagreement", "geometry_disagreement",
+        }:
+            selected_committee = self.database.get_classifier_committee(int(committee_id))
+            if int(selected_committee["code_id"]) != int(code_id):
+                raise ValueError("Selected committee belongs to another code.")
+            if str(selected_committee["aggregation"]) not in TRAINABLE_COMMITTEE_AGGREGATIONS:
+                revision = self.database.recommendation_revision(int(code_id))
+                if self._has_two_class_recommendation_evidence(int(code_id), revision):
+                    states, _ = self._committee_member_states(code_id=int(code_id), committee=selected_committee)
+                    if any(state["fit"] is None for state in states):
+                        raise ValueError("Train committee members before requesting recommendations.")
+                    fit_ids = [int(state["fit"]["classifier_fit_id"]) for state in states]
+                    prepared = self.database.prepared_committee_ranking(int(committee_id))
+                    if (prepared is None or prepared["aggregation"] != str(selected_committee["aggregation"])
+                            or prepared["committee_updated_at"] != str(selected_committee["updated_at"])
+                            or prepared["member_fit_ids"] != fit_ids
+                            or self.database.prepared_committee_has_missing_atomic_scores(int(committee_id))):
+                        raise ValueError("Prepare selected committee after member training or committee changes.")
+                    ranked_strategy = ("classifier_disagreement" if strategy in {
+                        "classifier_disagreement", "geometry_disagreement"
+                    } else strategy)
+                    selection = self.database.ranked_prepared_committee_recommendation(
+                        committee_id=int(committee_id), code_id=int(code_id),
+                        session_id=int(session_id), strategy=ranked_strategy,
+                    )
+                    if selection is None:
+                        return None
+                    member_probs = self.database.classifier_scores_for_unit(
+                        fit_ids, int(selection["unit_id"])
+                    )
+                    names = [str(state["classifier_name"]) for state in states]
+                    probability = float(selection["probability"])
+                    score = (
+                        float(selection["disagreement"]) if ranked_strategy == "classifier_disagreement"
+                        else -abs(probability - .5) if ranked_strategy == "committee_uncertainty"
+                        else probability
+                    )
+                    return {
+                        "unit_id": int(selection["unit_id"]), "strategy": ranked_strategy,
+                        "score": score,
+                        "probabilities": {name: member_probs[fit_id] for name, fit_id in zip(names, fit_ids, strict=True) if fit_id in member_probs},
+                        "committee_probability": probability,
+                        "classifier_fit_ids": dict(zip(names, fit_ids, strict=True)),
+                        "stale_classifiers": [str(x["classifier_name"]) for x in states if x["stale"]],
+                        "stale_committee": False, "fallback": False,
                     }
 
         units = self.units()
