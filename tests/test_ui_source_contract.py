@@ -352,10 +352,11 @@ def test_auto_training_ui_describes_cross_workspace_triggers() -> None:
         Path(__file__).resolve().parents[1]
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
-    assert '"label": "Auto-train selected models after saved judgments"' in app_source
+    assert '"label": "Auto-train selected models after saved judgments or teaching changes"' in app_source
     assert "Explore and Code Center judgments do so only when coding the code currently " in app_source
     assert "selected in Develop." in app_source
-    assert "Teaching-example changes and " in app_source
-    assert "Apply reviews are not yet connected." in app_source
+    assert "Teaching-example additions and " in app_source
+    assert "changes can trigger training for the selected Develop code. Apply reviews " in app_source
+    assert "are not yet connected. Recommendation/navigation clicks never " in app_source
     assert "Recommendation/navigation clicks never " in app_source
     assert "The scope is the active classifier or selected committee " in app_source
