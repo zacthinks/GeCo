@@ -920,3 +920,56 @@ def test_event_training_scope_is_explicit(tmp_path: Path) -> None:
         project, code_id=code_id, source="committee",
         classifier_spec_id=first, committee_id=committee, train_all=False
     ) == [second]
+
+
+def test_saved_develop_judgment_invalid_scope_preserves_acknowledgment(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.ui.app import _post_saved_develop_judgment_training_request
+
+    project = _project(tmp_path)
+    code_id = project.create_code("saved judgment")
+    unrelated_code_id = project.create_code("unrelated")
+    unrelated_spec = int(
+        project.classifier_specs(code_id=unrelated_code_id)[0]["classifier_spec_id"]
+    )
+    observation_id = int(project.database.list_observations()[0]["observation_id"])
+    event_id = project.annotate(observation_id, code_id, "positive")
+    assert project.database.current_annotations(code_id)
+
+    request, message = _post_saved_develop_judgment_training_request(
+        project, code_id=code_id, annotation_event_id=int(event_id),
+        auto_train_values=["auto"], train_scope_values=[], tune_values=[],
+        recommendation_source="classifier",
+        active_classifier_spec_id=unrelated_spec, committee_id=None,
+    )
+    assert request is None
+    assert "Judgment saved" in message
+    assert "not requested" in message
+    assert len(project.database.current_annotations(code_id)) == 1
+
+    request, message = _post_saved_develop_judgment_training_request(
+        project, code_id=code_id, annotation_event_id=int(event_id),
+        auto_train_values=["auto"], train_scope_values=[], tune_values=[],
+        recommendation_source="classifier",
+        active_classifier_spec_id=999999999, committee_id=None,
+    )
+    assert request is None
+    assert "Judgment saved" in message
+    assert len(project.database.current_annotations(code_id)) == 1
+
+
+def test_post_saved_develop_judgment_training_request_auto_disabled(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _post_saved_develop_judgment_training_request
+
+    project = _project(tmp_path)
+    code_id = project.create_code("no automatic training")
+    classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    request, message = _post_saved_develop_judgment_training_request(
+        project, code_id=code_id, annotation_event_id=42,
+        auto_train_values=[], train_scope_values=["all"], tune_values=["tune"],
+        recommendation_source="classifier", active_classifier_spec_id=classifier_id,
+        committee_id=None,
+    )
+    assert request is None
+    assert message == "Judgment saved."
