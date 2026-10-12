@@ -106,6 +106,84 @@ COMMITTEE_AGGREGATION_LABELS: dict[str, str] = {
 }
 
 
+def _auto_training_spec_scope(
+    project: GeometricCoder, *, code_id: int,
+    source: str, classifier_spec_id: int | None,
+    committee_id: int | None, train_all: bool,
+) -> list[int]:
+    """Resolve an explicit scope at the coding-event boundary.
+
+    A single active classifier or the selected committee's members is the
+    default. Every classifier in the code is requested *only* when the UI's
+    Train All choice was selected. A missing selection trains nothing.
+    """
+    if train_all:
+        return [
+            int(spec["classifier_spec_id"])
+            for spec in project.database.list_classifier_specs(code_id=int(code_id))
+        ]
+    if source == "committee":
+        if committee_id is None:
+            return []
+        committee = project.database.get_classifier_committee(int(committee_id))
+        if int(committee["code_id"]) != int(code_id):
+            raise ValueError("The selected committee belongs to another code.")
+        return [
+            int(member["classifier_spec_id"]) for member in committee["members"]
+        ]
+    if classifier_spec_id is None:
+        return []
+    spec = project.database.get_classifier_spec(int(classifier_spec_id))
+    if int(spec["code_id"]) != int(code_id):
+        raise ValueError("The selected classifier belongs to another code.")
+    return [int(classifier_spec_id)]
+
+
+def _post_saved_develop_judgment_training_request(
+    project: GeometricCoder, *, code_id: int, annotation_event_id: int,
+    auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Compose an optional training request *after* the judgment was persisted.
+
+    Resolving a stale/invalid UI dropdown must never make a successful human
+    annotation look like a failed save, or suppress the map/store refresh.
+    """
+    if "auto" not in set(auto_train_values or []):
+        return None, "Judgment saved."
+    try:
+        selected_ids = _auto_training_spec_scope(
+            project, code_id=int(code_id),
+            source=str(recommendation_source or "classifier"),
+            classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+            train_all="all" in set(train_scope_values or []),
+        )
+    except (KeyError, ValueError) as error:
+        return (
+            None,
+            "Judgment saved, but automatic training was not requested "
+            f"because the classifier selection is invalid: {error}",
+        )
+    if not selected_ids:
+        return (
+            None,
+            "Judgment saved. Automatic training was not requested because "
+            "no classifier or committee members are selected.",
+        )
+    return (
+        {
+            "code_id": int(code_id),
+            "classifier_spec_ids": selected_ids,
+            "tune": "tune" in set(tune_values or []),
+            "annotation_event_id": int(annotation_event_id),
+        },
+        "Judgment saved; automatic training requested for the selected classifier(s).",
+    )
+
+
 def create_app(
     project: GeometricCoder,
     *,
@@ -210,6 +288,7 @@ def create_app(
                     "view-refresh-store": "data",
                     "focus-refresh-store": "data",
                     "focus-model-refresh-store": "data",
+                    "focus-auto-training-status": "children",
                     "classifier-spec-refresh-store": "data",
                     "prediction-geometry-refresh-store": "data",
                     "teaching-example-refresh-store": "data",
@@ -278,6 +357,9 @@ def create_app(
                 dcc.Store(id="focus-recommendation-store", data={}),
                 dcc.Store(id="focus-refresh-store", data=0),
                 dcc.Store(id="focus-model-refresh-store", data=0),
+                # A stored code/evidence event separates quick annotation writes
+                # from optional model fitting. It is never fired on navigation.
+                dcc.Store(id="focus-auto-training-request-store", data=None),
                 dcc.Store(id="classifier-spec-refresh-store", data=0),
                 dcc.Store(id="committee-refresh-store", data=0),
                 dcc.Store(id="prediction-geometry-refresh-store", data=None),
@@ -4546,9 +4628,48 @@ def create_app(
         return unit_id, _append_navigation_history(history, unit_id), status, result
 
     @app.callback(
+        Output("focus-auto-training-status", "children"),
+        Output("focus-model-refresh-store", "data", allow_duplicate=True),
+        Input("focus-auto-training-request-store", "data"),
+        State("focus-model-refresh-store", "data"),
+        prevent_initial_call=True,
+        running=[
+            (
+                Output("focus-auto-training-progress", "children"),
+                "Training selected classifier(s) after saved coding judgment…",
+                "",
+            ),
+        ],
+    )
+    def train_after_develop_judgment(
+        request: dict[str, Any] | None, refresh: int | None
+    ) -> tuple[str, Any]:
+        if not request:
+            return "", no_update
+        try:
+            result = project.train_classifiers_after_evidence_change(
+                code_id=int(request["code_id"]),
+                classifier_spec_ids=[int(i) for i in request["classifier_spec_ids"]],
+                tune=bool(request["tune"]),
+            )
+        except (KeyError, ValueError, RuntimeError) as error:
+            return f"Saved coding judgment. Automatic training failed: {error}", no_update
+        status = str(result["status"])
+        if status == "trained":
+            count = len(result["trained_fit_ids"])
+            return (
+                f"Saved judgment; trained {count} selected classifier(s).",
+                int(refresh or 0) + 1,
+            )
+        if status == "awaiting_two_classes":
+            return "Saved judgment; training awaits both positive and negative evidence.", no_update
+        return "Saved judgment; selected classifier(s) are already current.", no_update
+
+    @app.callback(
         Output("focus-annotation-status", "children"),
         Output("focus-refresh-store", "data", allow_duplicate=True),
         Output("focus-prediction-map", "figure", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("focus-label-positive", "n_clicks"),
         Input("focus-label-negative", "n_clicks"),
         Input("focus-label-unsure", "n_clicks"),
@@ -4558,6 +4679,12 @@ def create_app(
         State("focus-span-selection-store", "data"),
         State("focus-refresh-store", "data"),
         State("focus-prediction-map", "figure"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def annotate_focus_unit(
@@ -4570,12 +4697,19 @@ def create_app(
         selected_unit_ids: list[int] | None,
         refresh: int | None,
         prediction_figure: dict[str, Any] | None,
-    ) -> tuple[str, int, Any]:
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[str, int, Any, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
         if code_id is None or focal_unit_id is None:
             return (
                 "Select a code and focal unit before labeling.",
                 int(refresh or 0),
+                no_update,
                 no_update,
             )
         value_by_button = {
@@ -4590,7 +4724,7 @@ def create_app(
         )
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
-            return "", int(refresh or 0), no_update
+            return "", int(refresh or 0), no_update, no_update
         fit_ids = list((recommendation or {}).get("classifier_fit_ids", {}).values())
         classifier_fit_id = int(fit_ids[0]) if len(fit_ids) == 1 else None
         observation_id, _event_id = project.annotate_span(
@@ -4627,7 +4761,21 @@ def create_app(
                         break
                 if patch is not no_update:
                     break
-        return "", int(refresh or 0) + 1, patch
+        # The persisted human judgment always wins over a possibly stale UI
+        # classifier selection. Report scope errors without discarding the
+        # normal annotation-store/figure refresh.
+        request, message = _post_saved_develop_judgment_training_request(
+            project, code_id=int(code_id), annotation_event_id=int(_event_id),
+            auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values,
+            tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+        )
+        return message, int(refresh or 0) + 1, patch, (
+            request if request is not None else no_update
+        )
 
     @app.callback(
         Output("focus-code-definition", "children"),
@@ -7730,7 +7878,7 @@ def _focus_layout(
                                                     ["all"]
                                                     if bool(
                                                         initial_state.get(
-                                                            "focus_train_all", True
+                                                            "focus_train_all", False
                                                         )
                                                     )
                                                     else []
@@ -7759,7 +7907,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Automatically train before recommendations",
+                                                        "label": "Automatically train after Develop judgments and before recommendations",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -7777,10 +7925,12 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "Train uses each classifier's current hyperparameters by default. "
-                                        "Check Tune hyperparameters with cross-validation when you want the "
-                                        "slower family-specific search before fitting. Automatic training uses "
-                                        "the same tuning choice.",
+                                        "During this transition, automatic training can run after a saved Develop "
+                                        "judgment AND before a recommendation. Other coding workspaces do not yet "
+                                        "start post-judgment training. Train All must be explicitly selected; "
+                                        "otherwise only the active classifier or selected committee members are "
+                                        "considered. Train uses existing hyperparameters by default; optional "
+                                        "cross-validation tuning can be slower.",
                                         className="focus-help",
                                     ),
                                     html.Div(
@@ -7805,6 +7955,18 @@ def _focus_layout(
                                     html.Div(
                                         id="focus-train-action-status",
                                         className="control-status",
+                                    ),
+                                    html.Div(
+                                        id="focus-auto-training-progress",
+                                        className="control-status",
+                                        role="status",
+                                        **{"aria-live": "polite"},
+                                    ),
+                                    html.Div(
+                                        id="focus-auto-training-status",
+                                        className="control-status",
+                                        role="status",
+                                        **{"aria-live": "polite"},
                                     ),
                                     html.H3("Committee"),
                                     dcc.Dropdown(
@@ -8049,7 +8211,7 @@ def _focus_layout(
                                                     ),
                                                     html.Div(
                                                         id="focus-annotation-status",
-                                                        className="sr-only",
+                                                        className="control-status",
                                                     ),
                                                     html.Div(
                                                         id="focus-probabilities",
