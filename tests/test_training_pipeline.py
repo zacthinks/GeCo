@@ -790,3 +790,52 @@ def test_reopen_pre_committee_index_schema13_project(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM classifier_committee_atomic_prediction_coverage"
         ).fetchone()[0] == 0
     assert reopened.database is not None
+
+
+@pytest.mark.parametrize("aggregation", [
+    "mean", "median", "minimum", "maximum", "harmonic_mean", "geometric_mean"
+])
+@pytest.mark.parametrize("strategy", [
+    "likely_positive", "likely_negative", "committee_uncertainty", "classifier_disagreement"
+])
+def test_prepared_fixed_committee_rankings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, aggregation: str, strategy: str
+) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("ranking")
+    obs = project.database.list_observations()
+    for index in (0, 1, 2):
+        project.annotate(int(obs[index]["observation_id"]), code_id, "positive")
+    for index in (3, 4, 5):
+        project.annotate(int(obs[index]["observation_id"]), code_id, "negative")
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    spec_a = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    spec_b = project.create_classifier_spec(
+        code_id=code_id, name="rank tree", geometry_id=geometry_id, algorithm="decision_tree"
+    )
+    project.train_classifiers(code_id=code_id, classifier_spec_ids=[spec_a, spec_b])
+    committee_id = project.create_classifier_committee(
+        code_id=code_id, name="rank committee", classifier_spec_ids=[spec_a, spec_b],
+        aggregation=aggregation
+    )
+    result = project.prepare_selected_committee(code_id=code_id, committee_id=committee_id)
+    assert result["prepared"]
+    assert not project.prepare_selected_committee(code_id=code_id, committee_id=committee_id)["prepared"]
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unexpected full prediction vector on recommendation click")
+    monkeypatch.setattr(project.database, "classifier_atomic_score_vectors", forbidden)
+    monkeypatch.setattr(project, "units", forbidden)
+    session_id = project.create_session("develop")
+    ranked = project.focus_recommendation(
+        code_id=code_id, session_id=session_id, strategy=strategy,
+        committee_id=committee_id, recommendation_source="committee", auto_retrain=False
+    )
+    assert ranked is not None
+    assert len(ranked["probabilities"]) == 2
+    project.record_visit(session_id, ranked["unit_id"], method="test")
+    next_ranked = project.focus_recommendation(
+        code_id=code_id, session_id=session_id, strategy=strategy,
+        committee_id=committee_id, recommendation_source="committee", auto_retrain=False
+    )
+    assert next_ranked is not None
+    assert next_ranked["unit_id"] != ranked["unit_id"]
