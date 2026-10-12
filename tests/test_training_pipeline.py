@@ -1052,3 +1052,61 @@ def test_external_judgment_training_only_selected_develop_code(tmp_path: Path) -
     assert request is not None
     assert request["classifier_spec_ids"] == [spec]
     assert request["annotation_event_id"] == 11
+
+
+def test_post_judgment_training_inbox_serializes_overlapping_fits() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    from geometric_coder.ui.app import _ScopedTrainingInbox
+
+    inbox = _ScopedTrainingInbox()
+    started = Event()
+    release = Event()
+    guard = Lock()
+    active = 0
+    peak = 0
+    handled: list[int] = []
+
+    def slow_training(task: dict[str, int]) -> int:
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        if task["id"] == 1:
+            started.set()
+            assert release.wait(timeout=10)
+        handled.append(task["id"])
+        with guard:
+            active -= 1
+        return task["id"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        inbox.enqueue({"id": 1})
+        first = executor.submit(inbox.drain, slow_training)
+        assert started.wait(timeout=10)
+        inbox.enqueue({"id": 2})
+        second = executor.submit(inbox.drain, slow_training)
+        release.set()
+        first.result(timeout=10)
+        second.result(timeout=10)
+    assert handled == [1, 2]
+    assert peak == 1
+    assert inbox.drain(slow_training) == []
+
+
+def test_post_judgment_training_inbox_keeps_work_after_failure() -> None:
+    from geometric_coder.ui.app import _ScopedTrainingInbox
+
+    inbox = _ScopedTrainingInbox()
+    inbox.enqueue({"id": 1})
+    inbox.enqueue({"id": 2})
+
+    def runner(task: dict[str, int]) -> int:
+        if task["id"] == 1:
+            raise ValueError("deliberate test failure")
+        return task["id"]
+
+    result = inbox.drain(runner)
+    assert len(result) == 2
+    assert isinstance(result[0][2], ValueError)
+    assert result[1][1] == 2
