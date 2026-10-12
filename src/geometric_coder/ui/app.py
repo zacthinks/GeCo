@@ -142,7 +142,7 @@ def _auto_training_spec_scope(
 
 
 def _post_saved_develop_judgment_training_request(
-    project: GeometricCoder, *, code_id: int, annotation_event_id: int,
+    project: GeometricCoder, *, code_id: int, annotation_event_id: int | None,
     auto_train_values: list[str] | None,
     train_scope_values: list[str] | None, tune_values: list[str] | None,
     recommendation_source: str | None,
@@ -180,7 +180,8 @@ def _post_saved_develop_judgment_training_request(
             "code_id": int(code_id),
             "classifier_spec_ids": selected_ids,
             "tune": "tune" in set(tune_values or []),
-            "annotation_event_id": int(annotation_event_id),
+            **({"annotation_event_id": int(annotation_event_id)}
+               if annotation_event_id is not None else {}),
         },
         "Judgment saved; automatic training requested for the selected classifier(s).",
     )
@@ -188,7 +189,7 @@ def _post_saved_develop_judgment_training_request(
 
 def _post_saved_external_judgment_training_request(
     project: GeometricCoder, *, code_id: int,
-    develop_code_id: int | None, annotation_event_id: int,
+    develop_code_id: int | None, annotation_event_id: int | None,
     auto_train_values: list[str] | None,
     train_scope_values: list[str] | None, tune_values: list[str] | None,
     recommendation_source: str | None,
@@ -210,7 +211,7 @@ def _post_saved_external_judgment_training_request(
         )
     return _post_saved_develop_judgment_training_request(
         project, code_id=int(code_id),
-        annotation_event_id=int(annotation_event_id),
+        annotation_event_id=annotation_event_id,
         auto_train_values=auto_train_values,
         train_scope_values=train_scope_values,
         tune_values=tune_values,
@@ -218,6 +219,33 @@ def _post_saved_external_judgment_training_request(
         active_classifier_spec_id=active_classifier_spec_id,
         committee_id=committee_id,
     )
+
+
+def _post_saved_teaching_example_training_request(
+    project: GeometricCoder, *, code_id: int, observation_id: int,
+    develop_code_id: int | None, auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """A saved teaching example is evidence, not an annotation event.
+
+    Only the currently selected Develop code and selected model scope are
+    eligible for automatic training. Retain teaching-observation provenance
+    without fabricating an annotation-event ID.
+    """
+    request, status = _post_saved_external_judgment_training_request(
+        project, code_id=int(code_id), develop_code_id=develop_code_id,
+        annotation_event_id=None, auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values, tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+    if request is not None:
+        request["origin"] = "teaching_example"
+        request["teaching_observation_id"] = int(observation_id)
+    return request, status.replace("Judgment saved", "Teaching example saved")
 
 
 def _recommend_without_fitting(
@@ -4780,6 +4808,7 @@ def create_app(
         Output("focus-model-refresh-store", "data", allow_duplicate=True),
         Output("explore-code-status", "children", allow_duplicate=True),
         Output("code-center-assignment-status", "children", allow_duplicate=True),
+        Output("teaching-example-status", "children", allow_duplicate=True),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4793,9 +4822,9 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any, Any, Any]:
+    ) -> tuple[str, Any, Any, Any, Any]:
         if not request:
-            return "", no_update, no_update, no_update
+            return "", no_update, no_update, no_update, no_update
 
         def fit(next_request: dict[str, Any]) -> dict[str, Any]:
             return project.train_classifiers_after_evidence_change(
@@ -4829,6 +4858,7 @@ def create_app(
             int(refresh or 0) + 1 if any_trained else no_update,
             messages.get("explore", no_update),
             messages.get("code_center", no_update),
+            messages.get("teaching_example", no_update),
         )
 
     @app.callback(
@@ -8073,7 +8103,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Auto-train selected models after saved judgments",
+                                                        "label": "Auto-train selected models after saved judgments or teaching changes",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -8094,8 +8124,9 @@ def _focus_layout(
                                         "With auto-training enabled, saved Develop judgments can train selected models. "
                                         "Explore and Code Center judgments do so only when coding the code currently "
                                         "selected in Develop. The scope is the active classifier or selected committee "
-                                        "members, unless Train All is explicitly chosen. Teaching-example changes and "
-                                        "Apply reviews are not yet connected. Recommendation/navigation clicks never "
+                                        "members, unless Train All is explicitly chosen. Teaching-example additions and "
+                                        "changes can trigger training for the selected Develop code. Apply reviews "
+                                        "are not yet connected. Recommendation/navigation clicks never "
                                         "train; if no fit exists, use Train (or Train committee for learned aggregation). "
                                         "Fixed committees require Prepare selected committee. With auto mode off, "
                                         "frozen predictions remain available but may be stale. Optional cross-validation "
