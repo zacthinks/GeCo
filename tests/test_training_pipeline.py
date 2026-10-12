@@ -661,6 +661,7 @@ def test_fixed_committee_recommendation_reports_member_and_committee_probabiliti
         classifier_spec_ids=[logistic_id, tree_id],
         aggregation="mean",
     )
+    project.prepare_selected_committee(code_id=code_id, committee_id=committee_id)
     result = project.focus_recommendation(
         code_id=code_id,
         session_id=project.create_session("Develop"),
