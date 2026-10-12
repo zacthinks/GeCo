@@ -1026,3 +1026,29 @@ def test_ui_recommendation_untrained_model_does_not_fit(tmp_path: Path, monkeypa
             strategy="likely_positive", active_classifier_spec_id=spec_id,
             committee_id=None, recommendation_source="classifier",
         )
+
+
+def test_external_judgment_training_only_selected_develop_code(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _post_saved_external_judgment_training_request
+
+    project = _project(tmp_path)
+    first_code = project.create_code("selected in Develop")
+    other_code = project.create_code("Explore only")
+    spec = int(project.classifier_specs(code_id=first_code)[0]["classifier_spec_id"])
+    request, message = _post_saved_external_judgment_training_request(
+        project, code_id=other_code, develop_code_id=first_code, annotation_event_id=10,
+        auto_train_values=["auto"], train_scope_values=["all"], tune_values=[],
+        recommendation_source="classifier", active_classifier_spec_id=spec,
+        committee_id=None,
+    )
+    assert request is None
+    assert "Judgment saved" in message
+    request, message = _post_saved_external_judgment_training_request(
+        project, code_id=first_code, develop_code_id=first_code, annotation_event_id=11,
+        auto_train_values=["auto"], train_scope_values=[], tune_values=[],
+        recommendation_source="classifier", active_classifier_spec_id=spec,
+        committee_id=None,
+    )
+    assert request is not None
+    assert request["classifier_spec_ids"] == [spec]
+    assert request["annotation_event_id"] == 11
