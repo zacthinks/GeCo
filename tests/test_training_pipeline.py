@@ -1150,3 +1150,28 @@ def test_teaching_example_event_training_is_scoped_and_has_no_fake_annotation(
     )
     assert request is None
     assert "Teaching example saved" in message
+
+
+def test_teaching_example_selection_rejects_other_code_and_stale_rows(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _teaching_example_for_code
+
+    project = _project(tmp_path)
+    first_code = project.create_code("teacher a")
+    second_code = project.create_code("teacher b")
+    obs = project.create_teaching_example(
+        code_id=first_code, text="teaching example for first code", label="positive"
+    )
+    assert _teaching_example_for_code(
+        project, code_id=first_code, observation_id=obs
+    )["teaching_label"] == "positive"
+    assert _teaching_example_for_code(
+        project, code_id=second_code, observation_id=obs
+    ) is None
+    project.set_teaching_example_label(obs, "negative")
+    assert _teaching_example_for_code(
+        project, code_id=first_code, observation_id=obs
+    )["teaching_label"] == "negative"
+    project.set_teaching_example_status(obs, "inactive")
+    assert _teaching_example_for_code(
+        project, code_id=first_code, observation_id=obs
+    )["teaching_status"] == "inactive"
