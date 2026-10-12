@@ -133,7 +133,11 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     assert '"focus_tune_hyperparameters", False' in app_source
     assert 'tune=tune_hyperparameters' in app_source
     assert 'retune_current=tune_hyperparameters' in app_source
-    assert 'tune_hyperparameters="tune" in set(tune_hyperparameter_values or [])' in app_source
+    # Cross-validation remains opt-in at the explicit training boundary, not
+    # on recommendation clicks (which must only use frozen predictions).
+    assert '"tune": "tune" in set(tune_values or [])' in app_source
+    assert 'tune=bool(request["tune"])' in app_source
+    assert 'auto_retrain=False' in app_source
 
 
 def test_explore_multi_code_palette_normalizes_and_places_codes() -> None:

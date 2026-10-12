@@ -973,3 +973,56 @@ def test_post_saved_develop_judgment_training_request_auto_disabled(tmp_path: Pa
     )
     assert request is None
     assert message == "Judgment saved."
+
+
+def test_ui_recommendation_never_requests_training(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from geometric_coder.ui.app import _recommend_without_fitting
+
+    project = _project(tmp_path)
+    code_id = project.create_code("click does not fit")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    trained = project.train_classifiers_after_evidence_change(
+        code_id=code_id, classifier_spec_ids=[spec_id]
+    )
+    original_fit_id = trained["trained_fit_ids"][spec_id]
+    project.annotate(int(observations[1]["observation_id"]), code_id, "positive")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Recommendation click must never train classifiers")
+    monkeypatch.setattr(project, "train_classifier", forbidden)
+    monkeypatch.setattr(project, "train_classifiers", forbidden)
+    session_id = project.create_session("click-only")
+    result = _recommend_without_fitting(
+        project, code_id=code_id, session_id=session_id,
+        strategy="likely_positive", active_classifier_spec_id=spec_id,
+        committee_id=None, recommendation_source="classifier",
+    )
+    assert result is not None
+    assert result["stale_classifiers"]
+    assert int(project.database.latest_classifier_fit(
+        code_id=code_id, classifier_spec_id=spec_id
+    )["classifier_fit_id"]) == original_fit_id
+
+
+def test_ui_recommendation_untrained_model_does_not_fit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from geometric_coder.ui.app import _recommend_without_fitting
+
+    project = _project(tmp_path)
+    code_id = project.create_code("untrained model")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unexpected recommendation-time fitting")
+    monkeypatch.setattr(project, "train_classifier", forbidden)
+    with pytest.raises(ValueError, match="Train"):
+        _recommend_without_fitting(
+            project, code_id=code_id, session_id=project.create_session("untrained"),
+            strategy="likely_positive", active_classifier_spec_id=spec_id,
+            committee_id=None, recommendation_source="classifier",
+        )

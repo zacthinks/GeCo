@@ -184,6 +184,29 @@ def _post_saved_develop_judgment_training_request(
     )
 
 
+def _recommend_without_fitting(
+    project: GeometricCoder, *,
+    code_id: int, session_id: int, strategy: str,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+    recommendation_source: str,
+) -> dict[str, Any] | None:
+    """UI navigation may read frozen scores but must never fit a model.
+
+    Automatic training is an explicit post-evidence event, not a side effect of
+    clicking a recommendation button. Programmatic callers of the project API
+    retain their existing explicit auto_retrain option for compatibility.
+    """
+    return project.focus_recommendation(
+        code_id=int(code_id),
+        session_id=int(session_id),
+        strategy=str(strategy),
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+        recommendation_source=str(recommendation_source),
+        auto_retrain=False,
+    )
+
+
 def create_app(
     project: GeometricCoder,
     *,
@@ -4527,9 +4550,6 @@ def create_app(
         State("active-session-store", "data"),
         State("focus-active-classifier-dropdown", "value"),
         State("focus-committee-dropdown", "value"),
-        State("focus-train-scope", "value"),
-        State("focus-auto-retrain", "value"),
-        State("focus-tune-hyperparameters", "value"),
         State("focal-unit-store", "data"),
         State("navigation-history-store", "data"),
         prevent_initial_call=True,
@@ -4546,9 +4566,6 @@ def create_app(
         session_id: int,
         active_classifier_spec_id: int | None,
         committee_id: int | None,
-        train_scope_values: list[str] | None,
-        auto_retrain_values: list[str] | None,
-        tune_hyperparameter_values: list[str] | None,
         focal_unit_id: int | None,
         history: dict[str, Any] | None,
     ) -> tuple[Any, Any, str, dict[str, Any]]:
@@ -4577,7 +4594,8 @@ def create_app(
         }:
             return no_update, no_update, "Select a classifier committee first.", {}
         try:
-            result = project.focus_recommendation(
+            result = _recommend_without_fitting(
+                project,
                 code_id=int(code_id),
                 session_id=int(session_id),
                 strategy=strategy,
@@ -4588,9 +4606,6 @@ def create_app(
                 ),
                 committee_id=(int(committee_id) if committee_id is not None else None),
                 recommendation_source=source,
-                auto_retrain="auto" in set(auto_retrain_values or []),
-                auto_train_all="all" in set(train_scope_values or []),
-                tune_hyperparameters="tune" in set(tune_hyperparameter_values or []),
             )
         except (KeyError, ValueError) as error:
             return no_update, no_update, str(error), {}
@@ -7907,7 +7922,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Automatically train after Develop judgments and before recommendations",
+                                                        "label": "Automatically train after Develop judgments",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -7925,12 +7940,14 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "During this transition, automatic training can run after a saved Develop "
-                                        "judgment AND before a recommendation. Other coding workspaces do not yet "
-                                        "start post-judgment training. Train All must be explicitly selected; "
-                                        "otherwise only the active classifier or selected committee members are "
-                                        "considered. Train uses existing hyperparameters by default; optional "
-                                        "cross-validation tuning can be slower.",
+                                        "Automatic training runs after saved Develop judgments, never from the "
+                                        "recommendation buttons. Other coding workspaces do not yet start "
+                                        "post-judgment training. If the selected classifier has no fitted model, "
+                                        "use Train; for a fixed committee use Prepare selected committee, or Train "
+                                        "committee for learned aggregation. With auto mode off, prior predictions "
+                                        "remain available and may be stale. Train All must be selected explicitly; "
+                                        "otherwise only the chosen classifier or committee members are considered. "
+                                        "Cross-validation tuning can be slower.",
                                         className="focus-help",
                                     ),
                                     html.Div(
