@@ -357,6 +357,35 @@ CREATE TABLE classifier_committee_atomic_prediction_coverage (
     prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0)
 );
 
+
+-- Cached selector scores for one explicitly prepared committee at a time.
+-- Scientific classifier/committee fits and Apply snapshots remain elsewhere.
+CREATE TABLE prepared_committee_rankings (
+    committee_id INTEGER PRIMARY KEY REFERENCES classifier_committees(committee_id),
+    aggregation TEXT NOT NULL,
+    committee_updated_at TEXT NOT NULL,
+    member_fit_ids_json TEXT NOT NULL,
+    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0),
+    prepared_at TEXT NOT NULL
+);
+CREATE TABLE prepared_committee_scores (
+    committee_id INTEGER NOT NULL
+        REFERENCES prepared_committee_rankings(committee_id) ON DELETE CASCADE,
+    observation_id INTEGER NOT NULL REFERENCES observations(observation_id),
+    probability REAL,
+    uncertainty REAL,
+    disagreement REAL NOT NULL,
+    PRIMARY KEY (committee_id, observation_id)
+);
+CREATE INDEX prepared_committee_probability_asc_idx
+ON prepared_committee_scores(committee_id, probability, observation_id);
+CREATE INDEX prepared_committee_probability_desc_idx
+ON prepared_committee_scores(committee_id, probability DESC, observation_id ASC);
+CREATE INDEX prepared_committee_uncertainty_idx
+ON prepared_committee_scores(committee_id, uncertainty DESC, observation_id ASC);
+CREATE INDEX prepared_committee_disagreement_idx
+ON prepared_committee_scores(committee_id, disagreement DESC, observation_id ASC);
+
 CREATE TABLE classifier_evaluation_events (
     evaluation_event_id INTEGER PRIMARY KEY,
     event_type TEXT NOT NULL CHECK (
@@ -657,6 +686,48 @@ class ProjectDatabase:
                 )
                 """
             )
+
+            # Phase 1C-B: selected-committee prepared ranking caches.
+            # These are additive tables on an already-supported schema-13 project.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prepared_committee_rankings (
+                    committee_id INTEGER PRIMARY KEY REFERENCES classifier_committees(committee_id),
+                    aggregation TEXT NOT NULL,
+                    committee_updated_at TEXT NOT NULL,
+                    member_fit_ids_json TEXT NOT NULL,
+                    prediction_count INTEGER NOT NULL CHECK (prediction_count >= 0),
+                    prepared_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prepared_committee_scores (
+                    committee_id INTEGER NOT NULL
+                        REFERENCES prepared_committee_rankings(committee_id) ON DELETE CASCADE,
+                    observation_id INTEGER NOT NULL REFERENCES observations(observation_id),
+                    probability REAL,
+                    uncertainty REAL,
+                    disagreement REAL NOT NULL,
+                    PRIMARY KEY (committee_id, observation_id)
+                )
+                """
+            )
+            for name, columns in (
+                ("prepared_committee_probability_asc_idx",
+                 "committee_id, probability, observation_id"),
+                ("prepared_committee_probability_desc_idx",
+                 "committee_id, probability DESC, observation_id ASC"),
+                ("prepared_committee_uncertainty_idx",
+                 "committee_id, uncertainty DESC, observation_id ASC"),
+                ("prepared_committee_disagreement_idx",
+                 "committee_id, disagreement DESC, observation_id ASC"),
+            ):
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} "
+                    f"ON prepared_committee_scores({columns})"
+                )
 
     def recommendation_revision(self, code_id: int) -> tuple[int, str, int]:
         """Cheap cross-connection revision for exactly checking snapshot only on change.
@@ -3193,6 +3264,130 @@ class ProjectDatabase:
                 """,
                 (int(committee_fit_id), int(committee_fit_id)),
             )
+
+    def prepared_committee_ranking(self, committee_id: int) -> dict[str, Any] | None:
+        """Retrieve one explicitly prepared committee fingerprint without score rows."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM prepared_committee_rankings WHERE committee_id = ?",
+                (int(committee_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "committee_id": int(row["committee_id"]),
+            "aggregation": str(row["aggregation"]),
+            "committee_updated_at": str(row["committee_updated_at"]),
+            "member_fit_ids": json.loads(row["member_fit_ids_json"]),
+            "prediction_count": int(row["prediction_count"]),
+        }
+
+    def save_prepared_committee_ranking(
+        self, *, committee_id: int, aggregation: str,
+        committee_updated_at: str, member_fit_ids: Sequence[int],
+        scores: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Atomically replace only the requested committee's derived ranking cache."""
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM prepared_committee_scores WHERE committee_id = ?",
+                (int(committee_id),),
+            )
+            connection.execute(
+                "DELETE FROM prepared_committee_rankings WHERE committee_id = ?",
+                (int(committee_id),),
+            )
+            connection.execute(
+                """
+                INSERT INTO prepared_committee_rankings(
+                    committee_id, aggregation, committee_updated_at,
+                    member_fit_ids_json, prediction_count, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(committee_id), str(aggregation), str(committee_updated_at),
+                    json.dumps([int(value) for value in member_fit_ids]),
+                    len(scores), utc_now(),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO prepared_committee_scores(
+                    committee_id, observation_id, probability, uncertainty, disagreement
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        int(committee_id), int(row["observation_id"]),
+                        float(row["probability"]) if row["probability"] is not None else None,
+                        float(row["uncertainty"]) if row["uncertainty"] is not None else None,
+                        float(row["disagreement"]),
+                    )
+                    for row in scores
+                ),
+            )
+
+    def prepared_committee_has_missing_atomic_scores(self, committee_id: int) -> bool:
+        """A cheap coverage check before selecting a prepared fixed committee."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE((
+                    SELECT prediction_count FROM prepared_committee_rankings
+                    WHERE committee_id = ?
+                ), -1) != COALESCE((SELECT MAX(row_position) + 1 FROM units), 0)
+                AS missing
+                """,
+                (int(committee_id),),
+            ).fetchone()
+        return bool(row["missing"])
+
+    def ranked_prepared_committee_recommendation(
+        self, *, committee_id: int, code_id: int, session_id: int, strategy: str,
+    ) -> dict[str, Any] | None:
+        """Use precomputed ranks, excluding only live code judgments and visits."""
+        ordering = {
+            "likely_positive": "pcs.probability DESC, pcs.observation_id ASC",
+            "likely_negative": "pcs.probability ASC, pcs.observation_id ASC",
+            "committee_uncertainty": "pcs.uncertainty DESC, pcs.observation_id ASC",
+            "classifier_disagreement": "pcs.disagreement DESC, pcs.observation_id ASC",
+        }.get(strategy)
+        if ordering is None:
+            raise ValueError(f"Unsupported committee ranking: {strategy!r}")
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT u.unit_id, pcs.observation_id, pcs.probability,
+                       pcs.uncertainty, pcs.disagreement
+                FROM prepared_committee_scores AS pcs
+                JOIN units AS u ON u.observation_id = pcs.observation_id
+                WHERE pcs.committee_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM navigation_events AS ne
+                      WHERE ne.session_id = ? AND ne.unit_id = u.unit_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM annotation_events AS ae
+                      WHERE ae.observation_id = pcs.observation_id
+                        AND ae.code_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM annotation_event_retractions AS aer
+                            WHERE aer.annotation_event_id = ae.annotation_event_id
+                        )
+                  )
+                ORDER BY {ordering} LIMIT 1
+                """,
+                (int(committee_id), int(session_id), int(code_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "unit_id": int(row["unit_id"]),
+            "observation_id": int(row["observation_id"]),
+            "probability": float(row["probability"]) if row["probability"] is not None else None,
+            "uncertainty": float(row["uncertainty"]) if row["uncertainty"] is not None else None,
+            "disagreement": float(row["disagreement"]),
+        }
 
     def register_classifier_evaluation(
         self,

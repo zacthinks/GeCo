@@ -4386,6 +4386,39 @@ def create_app(
         )
 
     @app.callback(
+        Output("focus-prepare-committee", "disabled"),
+        Input("focus-committee-dropdown", "value"),
+        Input("committee-refresh-store", "data"),
+    )
+    def configure_prepare_committee(committee_id: int | None, refresh: int | None) -> bool:
+        del refresh
+        if committee_id is None:
+            return True
+        committee = project.database.get_classifier_committee(int(committee_id))
+        return str(committee["aggregation"]) == "logistic_stack"
+
+    @app.callback(
+        Output("focus-committee-train-status", "children", allow_duplicate=True),
+        Input("focus-prepare-committee", "n_clicks"),
+        State("focus-code-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def prepare_committee(clicks: int, code_id: int | None,
+                          committee_id: int | None) -> str:
+        del clicks
+        if code_id is None or committee_id is None:
+            return "Select a code and committee first."
+        try:
+            result = project.prepare_selected_committee(
+                code_id=int(code_id), committee_id=int(committee_id)
+            )
+        except (KeyError, ValueError) as error:
+            return str(error)
+        return ("Prepared selected committee rankings." if result["prepared"]
+                else "Selected committee rankings already prepared.")
+
+    @app.callback(
         Output("focus-disagreement", "style"),
         Input("focus-recommendation-source", "value"),
     )
@@ -7791,6 +7824,11 @@ def _focus_layout(
                                             html.Button(
                                                 "Train committee",
                                                 id="focus-train-committee",
+                                                n_clicks=0,
+                                            ),
+                                            html.Button(
+                                                "Prepare selected committee",
+                                                id="focus-prepare-committee",
                                                 n_clicks=0,
                                             ),
                                         ],
