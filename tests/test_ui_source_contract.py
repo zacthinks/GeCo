@@ -136,7 +136,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     # Cross-validation remains opt-in at the explicit training boundary, not
     # on recommendation clicks (which must only use frozen predictions).
     assert '"tune": "tune" in set(tune_values or [])' in app_source
-    assert 'tune=bool(request["tune"])' in app_source
+    assert 'tune=bool(next_request["tune"])' in app_source
     assert 'auto_retrain=False' in app_source
 
 
@@ -345,3 +345,17 @@ def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
     assert 'valid_member_ids = {int(row["classifier_spec_id"]) for row in specs}' in app_source
     assert 'if int(value) in valid_member_ids' in app_source
     assert 'triggered == "focus-manage-committees"' in app_source
+
+
+def test_auto_training_ui_describes_cross_workspace_triggers() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert '"label": "Auto-train selected models after saved judgments"' in app_source
+    assert "Explore and Code Center judgments do so only when coding the code currently " in app_source
+    assert "selected in Develop." in app_source
+    assert "Teaching-example changes and " in app_source
+    assert "Apply reviews are not yet connected." in app_source
+    assert "Recommendation/navigation clicks never " in app_source
+    assert "The scope is the active classifier or selected committee " in app_source

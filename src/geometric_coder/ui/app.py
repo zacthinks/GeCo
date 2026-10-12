@@ -8,6 +8,8 @@ from html import escape as html_escape
 import json
 import re
 import uuid
+from collections import deque
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, unquote
 
@@ -184,6 +186,40 @@ def _post_saved_develop_judgment_training_request(
     )
 
 
+def _post_saved_external_judgment_training_request(
+    project: GeometricCoder, *, code_id: int,
+    develop_code_id: int | None, annotation_event_id: int,
+    auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Route an external judgment only to an explicitly selected Develop code.
+
+    Explore/Code Center can assign any code; automatically training unrelated
+    models just because a Develop selection exists would violate user scope.
+    The saved judgment is acknowledged even if selection is absent or stale.
+    """
+    if "auto" not in set(auto_train_values or []):
+        return None, "Judgment saved."
+    if develop_code_id is None or int(code_id) != int(develop_code_id):
+        return (
+            None,
+            "Judgment saved. Automatic training was not requested because "
+            "this code is not the selected Develop code.",
+        )
+    return _post_saved_develop_judgment_training_request(
+        project, code_id=int(code_id),
+        annotation_event_id=int(annotation_event_id),
+        auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values,
+        tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -205,6 +241,40 @@ def _recommend_without_fitting(
         recommendation_source=str(recommendation_source),
         auto_retrain=False,
     )
+
+
+class _ScopedTrainingInbox:
+    """Retain each saved-judgment request and serialize synchronous fitting."""
+
+    def __init__(self) -> None:
+        self._guard = Lock()
+        self._drain_lock = Lock()
+        self._pending: deque[dict[str, Any]] = deque()
+
+    def enqueue(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self._guard:
+            self._pending.append(dict(request))
+            return {"nonce": str(uuid.uuid4())}
+
+    def drain(self, runner: Any) -> list[tuple[dict[str, Any], Any, Exception | None]]:
+        # Wait for an earlier drain: a second wake-up must not discard pending work.
+        self._drain_lock.acquire()
+        results: list[tuple[dict[str, Any], Any, Exception | None]] = []
+        try:
+            while True:
+                with self._guard:
+                    if not self._pending:
+                        break
+                    request = self._pending.popleft()
+                try:
+                    result = runner(request)
+                except Exception as error:
+                    results.append((request, None, error))
+                else:
+                    results.append((request, result, None))
+        finally:
+            self._drain_lock.release()
+        return results
 
 
 def create_app(
@@ -260,6 +330,7 @@ def create_app(
     codes = project.codes()
     classifier_specs = project.ensure_default_classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
+    training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
     initial_session = sessions[0]
@@ -3336,6 +3407,7 @@ def create_app(
         Output("code-center-assignment-status", "children"),
         Output("explore-annotation-refresh-store", "data", allow_duplicate=True),
         Output("focus-refresh-store", "data", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("code-center-assignment-positive", "n_clicks"),
         Input("code-center-assignment-negative", "n_clicks"),
         Input("code-center-assignment-unsure", "n_clicks"),
@@ -3343,6 +3415,13 @@ def create_app(
         State("code-center-focal-store", "data"),
         State("explore-annotation-refresh-store", "data"),
         State("focus-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def revise_code_center_assignment(
@@ -3353,13 +3432,21 @@ def create_app(
         observation_id: int | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
-    ) -> tuple[str, int, int]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[str, int, int, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
         if code_id is None or observation_id is None:
             return (
                 "Select a code and observation first.",
                 int(explore_refresh or 0),
                 int(focus_refresh or 0),
+                no_update,
             )
         observation = project.observation(int(observation_id))
         if str(observation["kind"]) == "teaching_example":
@@ -3367,6 +3454,7 @@ def create_app(
                 "Revise teaching examples through the teaching-example manager.",
                 int(explore_refresh or 0),
                 int(focus_refresh or 0),
+                no_update,
             )
         value_by_button = {
             "code-center-assignment-positive": "positive",
@@ -3378,17 +3466,30 @@ def create_app(
             project, int(observation_id), int(code_id)
         )
         if current == value:
-            return "", int(explore_refresh or 0), int(focus_refresh or 0)
-        project.annotate(
+            return "", int(explore_refresh or 0), int(focus_refresh or 0), no_update
+        event_id = project.annotate(
             int(observation_id),
             int(code_id),
             value,
             origin="human_code_center",
         )
+        request, status = _post_saved_external_judgment_training_request(
+            project, code_id=int(code_id), develop_code_id=develop_code_id,
+            annotation_event_id=int(event_id),
+            auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values,
+            tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+        )
+        if request is not None:
+            request["origin"] = "code_center"
         return (
-            f"Revised the assignment to {value}.",
+            f"Revised the assignment to {value}. {status}",
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
+            training_inbox.enqueue(request) if request is not None else no_update,
         )
 
     @app.callback(
@@ -3753,6 +3854,7 @@ def create_app(
     @app.callback(
         Output("explore-annotation-refresh-store", "data", allow_duplicate=True),
         Output("explore-code-status", "children", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input({"type": "explore-code-positive", "index": ALL}, "n_clicks"),
         Input({"type": "explore-code-negative", "index": ALL}, "n_clicks"),
         Input({"type": "explore-code-unsure", "index": ALL}, "n_clicks"),
@@ -3760,6 +3862,13 @@ def create_app(
         State("explore-code-palette-store", "data"),
         State("explore-span-selection-store", "data"),
         State("explore-annotation-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def annotate_from_explore_palette(
@@ -3770,7 +3879,14 @@ def create_app(
         palette: list[int | None] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
-    ) -> tuple[Any, Any]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[Any, Any, Any]:
         del positive_clicks, negative_clicks, unsure_clicks
         triggered = callback_context.triggered_id
         triggered_value = (
@@ -3781,15 +3897,15 @@ def create_app(
         # Pattern-matched buttons can fire when a dynamic row is mounted. Only a
         # positive click count is an actual coding judgment.
         if not isinstance(triggered, dict) or int(triggered_value or 0) < 1:
-            return no_update, no_update
+            return no_update, no_update, no_update
         if focal_unit_id is None:
-            return no_update, "Select a focal unit first."
+            return no_update, "Select a focal unit first.", no_update
         valid_ids = {int(code["code_id"]) for code in project.codes()}
         normalized = _normalize_explore_code_palette(palette, valid_ids)
         row_index = int(triggered.get("index", -1))
         code_id = normalized[row_index] if 0 <= row_index < len(normalized) else None
         if code_id is None:
-            return no_update, "Select or create a code first."
+            return no_update, "Select or create a code first.", no_update
         values = {
             "explore-code-positive": "positive",
             "explore-code-negative": "negative",
@@ -3797,14 +3913,31 @@ def create_app(
         }
         value = values.get(str(triggered.get("type")))
         if value is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
         selected = [int(item) for item in (selected_unit_ids or [focal_unit_id])]
         observation_id = _selection_observation_id(project, int(focal_unit_id), selected)
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
-            return no_update, no_update
-        project.annotate_span(selected, int(code_id), value, origin="human_direct")
-        return int(refresh or 0) + 1, ""
+            return no_update, no_update, no_update
+        _observation_id, event_id = project.annotate_span(
+            selected, int(code_id), value, origin="human_direct"
+        )
+        request, message = _post_saved_external_judgment_training_request(
+            project, code_id=int(code_id), develop_code_id=develop_code_id,
+            annotation_event_id=int(event_id),
+            auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values,
+            tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id,
+            committee_id=committee_id,
+        )
+        if request is not None:
+            request["origin"] = "explore"
+        return (
+            int(refresh or 0) + 1, message,
+            training_inbox.enqueue(request) if request is not None else no_update,
+        )
 
     @app.callback(
         Output("focus-active-area", "className"),
@@ -4645,6 +4778,8 @@ def create_app(
     @app.callback(
         Output("focus-auto-training-status", "children"),
         Output("focus-model-refresh-store", "data", allow_duplicate=True),
+        Output("explore-code-status", "children", allow_duplicate=True),
+        Output("code-center-assignment-status", "children", allow_duplicate=True),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4658,27 +4793,43 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, Any, Any]:
         if not request:
-            return "", no_update
-        try:
-            result = project.train_classifiers_after_evidence_change(
-                code_id=int(request["code_id"]),
-                classifier_spec_ids=[int(i) for i in request["classifier_spec_ids"]],
-                tune=bool(request["tune"]),
+            return "", no_update, no_update, no_update
+
+        def fit(next_request: dict[str, Any]) -> dict[str, Any]:
+            return project.train_classifiers_after_evidence_change(
+                code_id=int(next_request["code_id"]),
+                classifier_spec_ids=[int(i) for i in next_request["classifier_spec_ids"]],
+                tune=bool(next_request["tune"]),
             )
-        except (KeyError, ValueError, RuntimeError) as error:
-            return f"Saved coding judgment. Automatic training failed: {error}", no_update
-        status = str(result["status"])
-        if status == "trained":
-            count = len(result["trained_fit_ids"])
-            return (
-                f"Saved judgment; trained {count} selected classifier(s).",
-                int(refresh or 0) + 1,
-            )
-        if status == "awaiting_two_classes":
-            return "Saved judgment; training awaits both positive and negative evidence.", no_update
-        return "Saved judgment; selected classifier(s) are already current.", no_update
+
+        completed = training_inbox.drain(fit)
+        if not completed:
+            return no_update, no_update, no_update, no_update
+        messages: dict[str, str] = {}
+        any_trained = False
+        for task, result, error in completed:
+            origin = str(task.get("origin", "develop"))
+            if error is not None:
+                message = f"Saved judgment. Automatic training failed: {error}"
+            elif str(result["status"]) == "trained":
+                any_trained = True
+                message = (
+                    f"Saved judgment; trained {len(result['trained_fit_ids'])} "
+                    "selected classifier(s)."
+                )
+            elif str(result["status"]) == "awaiting_two_classes":
+                message = "Saved judgment; training awaits both positive and negative evidence."
+            else:
+                message = "Saved judgment; selected classifier(s) are current."
+            messages[origin] = message
+        return (
+            messages.get("develop", no_update),
+            int(refresh or 0) + 1 if any_trained else no_update,
+            messages.get("explore", no_update),
+            messages.get("code_center", no_update),
+        )
 
     @app.callback(
         Output("focus-annotation-status", "children"),
@@ -4789,7 +4940,7 @@ def create_app(
             committee_id=committee_id,
         )
         return message, int(refresh or 0) + 1, patch, (
-            request if request is not None else no_update
+            training_inbox.enqueue(request) if request is not None else no_update
         )
 
     @app.callback(
@@ -7922,7 +8073,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Automatically train after Develop judgments",
+                                                        "label": "Auto-train selected models after saved judgments",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -7940,14 +8091,15 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "Automatic training runs after saved Develop judgments, never from the "
-                                        "recommendation buttons. Other coding workspaces do not yet start "
-                                        "post-judgment training. If the selected classifier has no fitted model, "
-                                        "use Train; for a fixed committee use Prepare selected committee, or Train "
-                                        "committee for learned aggregation. With auto mode off, prior predictions "
-                                        "remain available and may be stale. Train All must be selected explicitly; "
-                                        "otherwise only the chosen classifier or committee members are considered. "
-                                        "Cross-validation tuning can be slower.",
+                                        "With auto-training enabled, saved Develop judgments can train selected models. "
+                                        "Explore and Code Center judgments do so only when coding the code currently "
+                                        "selected in Develop. The scope is the active classifier or selected committee "
+                                        "members, unless Train All is explicitly chosen. Teaching-example changes and "
+                                        "Apply reviews are not yet connected. Recommendation/navigation clicks never "
+                                        "train; if no fit exists, use Train (or Train committee for learned aggregation). "
+                                        "Fixed committees require Prepare selected committee. With auto mode off, "
+                                        "frozen predictions remain available but may be stale. Optional cross-validation "
+                                        "tuning can be slower.",
                                         className="focus-help",
                                     ),
                                     html.Div(

@@ -1026,3 +1026,87 @@ def test_ui_recommendation_untrained_model_does_not_fit(tmp_path: Path, monkeypa
             strategy="likely_positive", active_classifier_spec_id=spec_id,
             committee_id=None, recommendation_source="classifier",
         )
+
+
+def test_external_judgment_training_only_selected_develop_code(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _post_saved_external_judgment_training_request
+
+    project = _project(tmp_path)
+    first_code = project.create_code("selected in Develop")
+    other_code = project.create_code("Explore only")
+    spec = int(project.classifier_specs(code_id=first_code)[0]["classifier_spec_id"])
+    request, message = _post_saved_external_judgment_training_request(
+        project, code_id=other_code, develop_code_id=first_code, annotation_event_id=10,
+        auto_train_values=["auto"], train_scope_values=["all"], tune_values=[],
+        recommendation_source="classifier", active_classifier_spec_id=spec,
+        committee_id=None,
+    )
+    assert request is None
+    assert "Judgment saved" in message
+    request, message = _post_saved_external_judgment_training_request(
+        project, code_id=first_code, develop_code_id=first_code, annotation_event_id=11,
+        auto_train_values=["auto"], train_scope_values=[], tune_values=[],
+        recommendation_source="classifier", active_classifier_spec_id=spec,
+        committee_id=None,
+    )
+    assert request is not None
+    assert request["classifier_spec_ids"] == [spec]
+    assert request["annotation_event_id"] == 11
+
+
+def test_post_judgment_training_inbox_serializes_overlapping_fits() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    from geometric_coder.ui.app import _ScopedTrainingInbox
+
+    inbox = _ScopedTrainingInbox()
+    started = Event()
+    release = Event()
+    guard = Lock()
+    active = 0
+    peak = 0
+    handled: list[int] = []
+
+    def slow_training(task: dict[str, int]) -> int:
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        if task["id"] == 1:
+            started.set()
+            assert release.wait(timeout=10)
+        handled.append(task["id"])
+        with guard:
+            active -= 1
+        return task["id"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        inbox.enqueue({"id": 1})
+        first = executor.submit(inbox.drain, slow_training)
+        assert started.wait(timeout=10)
+        inbox.enqueue({"id": 2})
+        second = executor.submit(inbox.drain, slow_training)
+        release.set()
+        first.result(timeout=10)
+        second.result(timeout=10)
+    assert handled == [1, 2]
+    assert peak == 1
+    assert inbox.drain(slow_training) == []
+
+
+def test_post_judgment_training_inbox_keeps_work_after_failure() -> None:
+    from geometric_coder.ui.app import _ScopedTrainingInbox
+
+    inbox = _ScopedTrainingInbox()
+    inbox.enqueue({"id": 1})
+    inbox.enqueue({"id": 2})
+
+    def runner(task: dict[str, int]) -> int:
+        if task["id"] == 1:
+            raise ValueError("deliberate test failure")
+        return task["id"]
+
+    result = inbox.drain(runner)
+    assert len(result) == 2
+    assert isinstance(result[0][2], ValueError)
+    assert result[1][1] == 2
