@@ -8,6 +8,8 @@ from html import escape as html_escape
 import json
 import re
 import uuid
+from collections import deque
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, unquote
 
@@ -241,6 +243,40 @@ def _recommend_without_fitting(
     )
 
 
+class _ScopedTrainingInbox:
+    """Retain each saved-judgment request and serialize synchronous fitting."""
+
+    def __init__(self) -> None:
+        self._guard = Lock()
+        self._drain_lock = Lock()
+        self._pending: deque[dict[str, Any]] = deque()
+
+    def enqueue(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self._guard:
+            self._pending.append(dict(request))
+            return {"nonce": str(uuid.uuid4())}
+
+    def drain(self, runner: Any) -> list[tuple[dict[str, Any], Any, Exception | None]]:
+        if not self._drain_lock.acquire(blocking=False):
+            return []
+        results: list[tuple[dict[str, Any], Any, Exception | None]] = []
+        try:
+            while True:
+                with self._guard:
+                    if not self._pending:
+                        break
+                    request = self._pending.popleft()
+                try:
+                    result = runner(request)
+                except Exception as error:
+                    results.append((request, None, error))
+                else:
+                    results.append((request, result, None))
+        finally:
+            self._drain_lock.release()
+        return results
+
+
 def create_app(
     project: GeometricCoder,
     *,
@@ -294,6 +330,7 @@ def create_app(
     codes = project.codes()
     classifier_specs = project.ensure_default_classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
+    training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
     initial_session = sessions[0]
@@ -3452,7 +3489,7 @@ def create_app(
             f"Revised the assignment to {value}. {status}",
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
-            request if request is not None else no_update,
+            training_inbox.enqueue(request) if request is not None else no_update,
         )
 
     @app.callback(
@@ -3899,7 +3936,7 @@ def create_app(
             request["origin"] = "explore"
         return (
             int(refresh or 0) + 1, message,
-            request if request is not None else no_update,
+            training_inbox.enqueue(request) if request is not None else no_update,
         )
 
     @app.callback(
@@ -4759,33 +4796,39 @@ def create_app(
     ) -> tuple[str, Any, Any, Any]:
         if not request:
             return "", no_update, no_update, no_update
-        try:
-            result = project.train_classifiers_after_evidence_change(
-                code_id=int(request["code_id"]),
-                classifier_spec_ids=[int(i) for i in request["classifier_spec_ids"]],
-                tune=bool(request["tune"]),
+
+        def fit(next_request: dict[str, Any]) -> dict[str, Any]:
+            return project.train_classifiers_after_evidence_change(
+                code_id=int(next_request["code_id"]),
+                classifier_spec_ids=[int(i) for i in next_request["classifier_spec_ids"]],
+                tune=bool(next_request["tune"]),
             )
-        except (KeyError, ValueError, RuntimeError) as error:
-            message = f"Saved coding judgment. Automatic training failed: {error}"
-            model_refresh: Any = no_update
-        else:
-            status = str(result["status"])
-            if status == "trained":
-                count = len(result["trained_fit_ids"])
-                message = f"Saved judgment; trained {count} selected classifier(s)."
-                model_refresh = int(refresh or 0) + 1
-            elif status == "awaiting_two_classes":
+
+        completed = training_inbox.drain(fit)
+        if not completed:
+            return no_update, no_update, no_update, no_update
+        messages: dict[str, str] = {}
+        any_trained = False
+        for task, result, error in completed:
+            origin = str(task.get("origin", "develop"))
+            if error is not None:
+                message = f"Saved judgment. Automatic training failed: {error}"
+            elif str(result["status"]) == "trained":
+                any_trained = True
+                message = (
+                    f"Saved judgment; trained {len(result['trained_fit_ids'])} "
+                    "selected classifier(s)."
+                )
+            elif str(result["status"]) == "awaiting_two_classes":
                 message = "Saved judgment; training awaits both positive and negative evidence."
-                model_refresh = no_update
             else:
-                message = "Saved judgment; selected classifier(s) are already current."
-                model_refresh = no_update
-        origin = str(request.get("origin", "develop"))
+                message = "Saved judgment; selected classifier(s) are current."
+            messages[origin] = message
         return (
-            message if origin == "develop" else no_update,
-            model_refresh,
-            message if origin == "explore" else no_update,
-            message if origin == "code_center" else no_update,
+            messages.get("develop", no_update),
+            int(refresh or 0) + 1 if any_trained else no_update,
+            messages.get("explore", no_update),
+            messages.get("code_center", no_update),
         )
 
     @app.callback(
@@ -4897,7 +4940,7 @@ def create_app(
             committee_id=committee_id,
         )
         return message, int(refresh or 0) + 1, patch, (
-            request if request is not None else no_update
+            training_inbox.enqueue(request) if request is not None else no_update
         )
 
     @app.callback(
