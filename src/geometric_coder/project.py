@@ -2844,6 +2844,78 @@ class GeometricCoder:
             for classifier_spec_id in dict.fromkeys(classifier_spec_ids)
         }
 
+    def train_classifiers_after_evidence_change(
+        self,
+        *,
+        code_id: int,
+        classifier_spec_ids: Sequence[int] | None = None,
+        tune: bool = False,
+    ) -> dict[str, Any]:
+        """Explicit event-boundary training; never called by recommendation clicks.
+
+        A UI event may use this after a saved coding/teaching/Apply batch. It
+        reuses current fitted classifiers, trains only models made stale by the
+        changed evidence/configuration, and does nothing before both classes
+        exist. The caller owns progress reporting and batching; this method
+        does not enqueue background work or alter recommendation semantics.
+        """
+        self.database.get_code(int(code_id))
+        selected = (
+            [
+                int(row["classifier_spec_id"])
+                for row in self.database.list_classifier_specs(code_id=int(code_id))
+            ]
+            if classifier_spec_ids is None
+            else list(dict.fromkeys(int(value) for value in classifier_spec_ids))
+        )
+        for spec_id in selected:
+            spec = self.database.get_classifier_spec(spec_id)
+            if int(spec["code_id"]) != int(code_id):
+                raise ValueError("A selected classifier belongs to another code.")
+        if not selected:
+            return {
+                "status": "no_classifiers", "trained_fit_ids": {},
+                "reused_classifier_spec_ids": [], "requested_classifier_spec_ids": [],
+            }
+        # An event that leaves just one training class must not fail or fit.
+        labels = self.training_label_counts(int(code_id))
+        if not (labels["positive"] and labels["negative"]):
+            return {
+                "status": "awaiting_two_classes", "trained_fit_ids": {},
+                "reused_classifier_spec_ids": [],
+                "requested_classifier_spec_ids": selected,
+            }
+        classifier_rows = self.classifier_status(
+            code_id=int(code_id), classifier_spec_ids=selected
+        )["classifiers"]
+        pending_ids = [
+            int(row["classifier_spec_id"])
+            for row in classifier_rows
+            if str(row["status"]) != "current"
+        ]
+        if not pending_ids:
+            return {
+                "status": "already_current", "trained_fit_ids": {},
+                "reused_classifier_spec_ids": selected,
+                "requested_classifier_spec_ids": selected,
+            }
+        fits = self.train_classifiers(
+            code_id=int(code_id),
+            classifier_spec_ids=pending_ids,
+            tune=bool(tune),
+            retune_current=False,
+        )
+        return {
+            "status": "trained", "trained_fit_ids": {
+                int(spec_id): int(fit["classifier_fit_id"])
+                for spec_id, fit in fits.items()
+            },
+            "reused_classifier_spec_ids": [
+                spec_id for spec_id in selected if spec_id not in pending_ids
+            ],
+            "requested_classifier_spec_ids": selected,
+        }
+
     def classifier_status(
         self, *, code_id: int, classifier_spec_ids: Sequence[int] | None = None
     ) -> dict[str, Any]:
