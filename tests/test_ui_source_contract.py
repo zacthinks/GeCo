@@ -136,7 +136,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     # Cross-validation remains opt-in at the explicit training boundary, not
     # on recommendation clicks (which must only use frozen predictions).
     assert '"tune": "tune" in set(tune_values or [])' in app_source
-    assert 'tune=bool(request["tune"])' in app_source
+    assert 'tune=bool(next_request["tune"])' in app_source
     assert 'auto_retrain=False' in app_source
 
 
