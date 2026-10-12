@@ -1110,3 +1110,43 @@ def test_post_judgment_training_inbox_keeps_work_after_failure() -> None:
     assert len(result) == 2
     assert isinstance(result[0][2], ValueError)
     assert result[1][1] == 2
+
+
+def test_teaching_example_event_training_is_scoped_and_has_no_fake_annotation(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.ui.app import _post_saved_teaching_example_training_request
+
+    project = _project(tmp_path)
+    code_id = project.create_code("teaching target")
+    other_code = project.create_code("other teaching code")
+    selected_spec = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observation_id = project.create_teaching_example(
+        code_id=code_id, text="A deliberate teaching example",
+        label="positive"
+    )
+    kwargs = {
+        "project": project, "code_id": code_id,
+        "observation_id": observation_id, "develop_code_id": code_id,
+        "auto_train_values": ["auto"], "train_scope_values": [],
+        "tune_values": [], "recommendation_source": "classifier",
+        "active_classifier_spec_id": selected_spec, "committee_id": None,
+    }
+    request, message = _post_saved_teaching_example_training_request(**kwargs)
+    assert request is not None
+    assert request["origin"] == "teaching_example"
+    assert request["teaching_observation_id"] == observation_id
+    assert "annotation_event_id" not in request
+    assert request["classifier_spec_ids"] == [selected_spec]
+    assert "Teaching example saved" in message
+
+    request, message = _post_saved_teaching_example_training_request(
+        **{**kwargs, "develop_code_id": other_code}
+    )
+    assert request is None
+    assert "Teaching example saved" in message
+    request, message = _post_saved_teaching_example_training_request(
+        **{**kwargs, "auto_train_values": []}
+    )
+    assert request is None
+    assert "Teaching example saved" in message
