@@ -1,0 +1,41 @@
+name: Phase 1E Benchmarks
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - benchmarks/phase1e_recommendations.py
+      - tests/test_phase1e_closure.py
+      - .github/workflows/phase1e-benchmarks.yml
+  workflow_dispatch:
+    inputs:
+      full_scale:
+        description: "Run 1k and 10k corpus sizes"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  backend-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Seeded backend timing measurements (no pass/fail latency threshold)
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_scale }}" == "true" ]]; then
+            uv run python benchmarks/phase1e_recommendations.py --sizes 1000 10000 --repeats 25 --output phase1e-results.json
+          else
+            uv run python benchmarks/phase1e_recommendations.py --sizes 1000 --repeats 20 --output phase1e-results.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase1e-benchmark-results
+          path: phase1e-results.json
+          if-no-files-found: ignore
