@@ -293,3 +293,103 @@ def test_develop_summary_tab_return_skips_expensive_hidden_refreshes(
     )
     after = summary(code, 0, 0, "focus")
     assert "Unsure 1" in str(after[1])
+
+
+@pytest.mark.parametrize("source", ["classifier", "fixed", "learned"])
+def test_nearly_exhausted_session_preserves_rank_order_without_refitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str,
+) -> None:
+    """A heavily visited session must reach its final eligible candidate."""
+    project, code, spec, fit_id = _trained(tmp_path)
+    session = project.create_session("near exhaustion")
+    committee_id = None
+
+    if source != "classifier":
+        observations = project.database.list_observations()
+        project.annotate(int(observations[2]["observation_id"]), code, "positive")
+        project.annotate(int(observations[8]["observation_id"]), code, "negative")
+        fit = project.train_classifier(code_id=code, classifier_spec_id=spec)
+        fit_id = int(fit["classifier_fit_id"])
+        geometry_id = int(project.database.get_classifier_spec(spec)["geometry_id"])
+        member_id = project.create_classifier_spec(
+            code_id=code, name="phase1e member", geometry_id=geometry_id,
+            algorithm="decision_tree",
+        )
+        project.train_classifier(code_id=code, classifier_spec_id=member_id)
+        committee_id = project.create_classifier_committee(
+            code_id=code, name="phase1e near-exhaustion committee",
+            classifier_spec_ids=[spec, member_id],
+            aggregation="mean" if source == "fixed" else "logistic_stack",
+        )
+        if source == "fixed":
+            project.prepare_selected_committee(code_id=code, committee_id=committee_id)
+        else:
+            project.train_classifier_committee(code_id=code, committee_id=committee_id)
+
+    if source == "classifier":
+        ranked_rows = project.database.classifier_predictions(fit_id, atomic_only=True)
+    elif source == "fixed":
+        with project.database.connect() as conn:
+            ranked_rows = [
+                dict(row) for row in conn.execute(
+                    """SELECT pcs.observation_id, u.unit_id, pcs.probability
+                    FROM prepared_committee_scores AS pcs
+                    JOIN units AS u ON u.observation_id = pcs.observation_id
+                    WHERE pcs.committee_id = ?""",
+                    (committee_id,),
+                )
+            ]
+    else:
+        fitted = project.database.latest_classifier_committee_fit(
+            committee_id=int(committee_id), code_id=code
+        )
+        assert fitted is not None
+        ranked_rows = project.database.classifier_committee_predictions(
+            int(fitted["committee_fit_id"])
+        )
+
+    annotated = {
+        int(row["observation_id"]) for row in project.current_annotations(code)
+        if row["unit_id"] is not None
+    }
+    eligible = sorted(
+        (
+            row for row in ranked_rows
+            if row["unit_id"] is not None
+            and row["probability"] is not None
+            and int(row["observation_id"]) not in annotated
+        ),
+        key=lambda row: (-float(row["probability"]), int(row["observation_id"])),
+    )
+    assert len(eligible) >= 3
+    for row in eligible[:-1]:
+        project.record_visit(session, int(row["unit_id"]), method="phase1e exhausted")
+
+    def forbid_fit(*args, **kwargs):
+        raise AssertionError("Recommendation clicked a training path")
+
+    monkeypatch.setattr(project, "train_classifier", forbid_fit)
+    monkeypatch.setattr(project, "train_classifiers", forbid_fit)
+    monkeypatch.setattr(project, "train_classifier_committee", forbid_fit)
+
+    options = dict(
+        code_id=code, session_id=session, strategy="likely_positive",
+        auto_retrain=False,
+    )
+    if source == "classifier":
+        options["active_classifier_spec_id"] = spec
+    else:
+        options["committee_id"] = committee_id
+        options["recommendation_source"] = "committee"
+
+    last = project.focus_recommendation(**options)
+    assert last is not None
+    assert int(last["unit_id"]) == int(eligible[-1]["unit_id"])
+    project.record_visit(session, int(last["unit_id"]), method="phase1e exhausted")
+    assert project.focus_recommendation(**options) is None
+
+    # Exhaustion is per session, not persistent global censorship.
+    fresh_session = project.create_session("fresh")
+    first = project.focus_recommendation(**{**options, "session_id": fresh_session})
+    assert first is not None
+    assert int(first["unit_id"]) == int(eligible[0]["unit_id"])
