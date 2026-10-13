@@ -27,7 +27,12 @@ from geometric_coder import GeometricCoder
 from geometric_coder.ui import create_app
 
 
-def _sample(fn: Callable[[], Any], repeats: int) -> dict[str, Any]:
+def _sample(
+    fn: Callable[[], Any],
+    repeats: int,
+    *,
+    validate: Callable[[Any], None] | None = None,
+) -> dict[str, Any]:
     wall: list[float] = []
     cpu: list[float] = []
     for _ in range(repeats):
@@ -36,6 +41,10 @@ def _sample(fn: Callable[[], Any], repeats: int) -> dict[str, Any]:
         assert value is not None
         wall.append((time.perf_counter() - before_wall) * 1000)
         cpu.append((time.process_time() - before_cpu) * 1000)
+        # Validate outside the measured interval so the reported time remains
+        # callback/HTTP work rather than JSON parsing or assertion overhead.
+        if validate is not None:
+            validate(value)
     ordered = sorted(wall)
     return {
         "first_ms": round(wall[0], 3),
@@ -122,6 +131,85 @@ def _exercise_focus_render(app: Any, session_id: int, unit_id: int) -> bytes:
             f"{response.get_data(as_text=True)[:1000]}"
         )
     return response.get_data()
+
+
+def _judgment_ids(root: Any) -> set[tuple[int, str]]:
+    """Collect concrete code/label buttons from serialized Dash response."""
+    found: set[tuple[int, str]] = set()
+
+    def walk(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                walk(child)
+        elif isinstance(item, dict):
+            component_id = item.get("id")
+            if isinstance(component_id, dict) and component_id.get("type") == "focus-coding-judgment":
+                found.add((int(component_id["code_id"]), str(component_id["value"])))
+            for child in item.values():
+                walk(child)
+
+    walk(root)
+    return found
+
+
+def _component_text(node: Any) -> str:
+    """Flatten Dash component props.children into text for key verification."""
+    if isinstance(node, (str, int, float)):
+        return str(node)
+    if isinstance(node, list):
+        return "".join(_component_text(item) for item in node)
+    if isinstance(node, dict):
+        if "props" in node:
+            return _component_text(node["props"].get("children"))
+        if "children" in node:
+            return _component_text(node["children"])
+    return ""
+
+
+def _validate_focus_response(
+    payload: bytes,
+    *,
+    task_units: int,
+    resolved_judgments: int,
+    selected_text: str,
+    code_ids: tuple[int, int],
+) -> None:
+    """Ensure HTTP 200 actually produced the configured research task's UI."""
+    decoded = json.loads(payload)
+    assert decoded.get("multi") is True, "Expected Dash multi-output response"
+    response = decoded["response"]
+
+    def value(component: str, prop: str) -> Any:
+        return response[component][prop]
+
+    assert task_units == 200
+    assert len(code_ids) == 2 and len(set(code_ids)) == 2
+    assert value("focus-coding-progress-summary", "children") == (
+        "0 / 200 documents complete"
+    )
+    assert value("focus-coding-progress-bar", "value") == 0
+    assert value("focus-coding-progress-bar", "max") == 200
+    assert value("focus-coding-judgment-summary", "children") == (
+        f"{resolved_judgments} / 400 required judgments resolved"
+    )
+    assert value("focus-coding-position", "children") == "Document 1 of 200"
+    assert value("focus-coding-text", "children") == selected_text
+    # The fixture's first unit has user key row_id=0; do not merely accept
+    # a successful callback that displays the wrong document.
+    key_text = _component_text(value("focus-coding-key", "children"))
+    assert "row_id: " in key_text and "0" in key_text, key_text
+    cards = value("focus-coding-code-cards", "children")
+    assert len(cards) == 2
+    actual_buttons = _judgment_ids(cards)
+    expected_buttons = {
+        (int(code_id), label)
+        for code_id in code_ids
+        for label in ("positive", "negative")
+    }
+    assert actual_buttons == expected_buttons, (
+        f"Incorrect Focus buttons: {actual_buttons!r} != {expected_buttons!r}"
+    )
+    assert _count_ids(cards)["judgment"] == 4, "Exactly four judgment buttons required"
 
 
 def _sql_plan(project: GeometricCoder) -> list[str]:
@@ -213,7 +301,15 @@ def _case(size: int, repeats: int, seed: int) -> dict[str, Any]:
         focus_client = focus_app.server.test_client()
         focus_layout = _http(focus_client, "/_dash-layout")
         focus_deps = _http(focus_client, "/_dash-dependencies")
+        verify_focus = lambda payload: _validate_focus_response(
+            payload,
+            task_units=task_size,
+            resolved_judgments=min(annotate_count, task_size),
+            selected_text=texts[0],
+            code_ids=(code_a, code_b),
+        )
         focus_initial = _exercise_focus_render(focus_app, session_id, 1)
+        verify_focus(focus_initial)
         focus_decoded = json.loads(focus_initial)
         focus_http = {
             "route_layout_bytes": len(focus_layout),
@@ -223,9 +319,16 @@ def _case(size: int, repeats: int, seed: int) -> dict[str, Any]:
             "initial_layout_ids": _count_ids(json.loads(focus_layout)),
             "render_response_bytes": len(focus_initial),
             "render_dynamic_ids": _count_ids(focus_decoded),
+            "validated_response": {
+                "task_units": task_size,
+                "required_judgments": task_size * 2,
+                "selected_unit_id": 1,
+                "judgment_buttons": 4,
+            },
             "render_callback_http": _sample(
                 lambda: _exercise_focus_render(focus_app, session_id, 1),
                 repeats,
+                validate=verify_focus,
             ),
         }
         output = {
@@ -238,6 +341,9 @@ def _case(size: int, repeats: int, seed: int) -> dict[str, Any]:
             "focus_dash": focus_http,
             "current_annotations_query_plan": baseline_sql_plan,
             "process_peak_rss_kib": _peak_rss_kib(),
+            # The 1k fixture is built before 10k in the SAME interpreter.
+            # App build includes first-use global Dash/Flask import/setup
+            # work; this single first-call timing is NOT corpus-size scaling.
             "standard_app_build": std_initial,
         }
     gc.collect()
@@ -268,6 +374,7 @@ def main() -> None:
             "Setup ingestion and seeded human judgments are excluded from samples",
             "No low-power laptop, historical baseline, concurrent user or remote provider",
             "This pilot samples a few operations, not the exhaustive Phase 2B register",
+            "Standard app builds run 1k then 10k in one process; 1k first-use initialization can dominate. Never interpret those one-shot app-build values as size scaling; a cold-process benchmark is needed.",
         ],
         "runs": [_case(size, args.repeats, args.seed) for size in args.sizes],
     }
