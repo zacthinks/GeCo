@@ -1336,16 +1336,15 @@ def test_develop_summary_reconciles_apply_and_explore_on_tab_return(tmp_path: Pa
 
     # Explore writes a judgment to the same code, using a separate refresh
     # store. Returning to Develop sees it even without an automatic fit.
-    remaining = [
-        row for row in project.database.list_observations()
-        if row["kind"] == "atomic"
-        and not any(
-            int(a["observation_id"]) == int(row["observation_id"])
-            for a in project.current_annotations(code_id)
-        )
-    ]
-    if remaining:
-        project.annotate(int(remaining[0]["observation_id"]), code_id, "unsure", origin="human_direct")
-        assert summary(code_id, 0, 0, "explore") == (no_update, no_update, no_update)
-        after_explore = summary(code_id, 0, 0, "focus")
-        assert after_explore[1] != after_apply[1]
+    committed_assignment = next(
+        row for row in project.current_annotations(code_id)
+        if row["origin"] == "model_committed"
+    )
+    project.annotate(
+        int(committed_assignment["observation_id"]), code_id, "unsure",
+        origin="human_direct",
+    )
+    assert summary(code_id, 0, 0, "explore") == (no_update, no_update, no_update)
+    after_explore = summary(code_id, 0, 0, "focus")
+    assert after_explore[1] != after_apply[1]
+    assert "Unsure 1" in str(after_explore[1])
