@@ -1237,6 +1237,29 @@ class ProjectDatabase:
             ).fetchall()
         return [_unit_row(row) for row in rows]
 
+    def missing_unit_ids(self, unit_ids: Sequence[int]) -> list[int]:
+        """Validate only requested atomic unit IDs without reading all units.
+
+        Batch indexed PRIMARY KEY lookups under SQLite's historical 999-variable
+        limit. Preserve the original input order and repeated missing IDs, which
+        matches the previous full-corpus Focus validation error semantics.
+        """
+        requested = [int(value) for value in unit_ids]
+        if not requested:
+            return []
+        unique_ids = list(dict.fromkeys(requested))
+        present: set[int] = set()
+        with self.connect() as connection:
+            for start in range(0, len(unique_ids), 900):
+                batch = unique_ids[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT unit_id FROM units WHERE unit_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                present.update(int(row["unit_id"]) for row in rows)
+        return [unit_id for unit_id in requested if unit_id not in present]
+
     def get_unit(self, unit_id: int) -> dict[str, Any]:
         """Return one atomic unit."""
         with self.connect() as connection:
