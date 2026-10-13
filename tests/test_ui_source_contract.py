@@ -389,10 +389,15 @@ def test_develop_code_summary_does_not_refresh_on_focal_navigation() -> None:
     assert 'Input("focus-code-dropdown", "value")' in callback
     assert 'Input("focus-refresh-store", "data")' in callback
     assert 'Input("teaching-example-refresh-store", "data")' in callback
+    assert 'Input("workspace-tabs", "value")' in callback
     assert 'Input("focus-focal-unit-store", "data")' not in callback
+    assert 'Input("apply-refresh-store", "data")' not in callback
+    assert 'Input("explore-annotation-refresh-store", "data")' not in callback
     function_body = app_source[start:app_source.index("    @app.callback(", start)]
     assert "project.current_annotations(int(code_id))" in function_body
     assert "project.training_label_counts(int(code_id))" in function_body
+    assert 'if workspace != "focus":' in function_body
+    assert "return no_update, no_update, no_update" in function_body
 
 
 def test_training_and_recommendation_callbacks_preserve_explicit_boundaries() -> None:
