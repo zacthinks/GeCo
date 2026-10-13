@@ -1,0 +1,32 @@
+name: Phase 2B Focus Factors
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - benchmarks/phase2b_focus_factors.py
+      - .github/workflows/phase2b-focus-factors.yml
+
+jobs:
+  focus-factors:
+    name: Controlled Focus factor measurements
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install GeCo
+        run: uv sync --all-extras
+      - name: Run matched Focus benchmark
+        run: uv run python benchmarks/phase2b_focus_factors.py --repeats 20 --output phase2b-focus-factors.json
+      - name: Upload non-gating evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2b-focus-factors
+          path: phase2b-focus-factors.json
+          if-no-files-found: warn
