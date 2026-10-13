@@ -5899,6 +5899,7 @@ def create_app(
         Output("apply-status", "children", allow_duplicate=True),
         Output("apply-refresh-store", "data", allow_duplicate=True),
         Output("apply-table", "selectedRows"),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         *apply_action_inputs,
         State("apply-run-dropdown", "value"),
         State("apply-table", "rowData"),
@@ -5908,6 +5909,13 @@ def create_app(
         State("apply-bulk-decision", "value"),
         State("apply-bulk-scope", "value"),
         State("apply-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def apply_action(
@@ -5925,7 +5933,14 @@ def create_app(
         bulk_decision: str | None,
         bulk_scope: str | None,
         refresh: int | None,
-    ) -> tuple[Any, int, Any]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[Any, int, Any, Any]:
         del (
             bulk_apply_clicks,
             clear_clicks,
@@ -5935,7 +5950,7 @@ def create_app(
             undo_clicks,
         )
         if draft_id is None:
-            return "Select a draft first.", int(refresh or 0), no_update
+            return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
         current_page_rows = _apply_current_page_rows(
             virtual_rows if virtual_rows is not None else (rows or []),
@@ -5943,6 +5958,7 @@ def create_app(
         )
         current_page_ids = [int(row["unit_id"]) for row in current_page_rows]
         clear_selection: Any = no_update
+        training_request: Any = no_update
         try:
             if triggered == "apply-bulk-apply":
                 decision = _normalize_apply_decision(bulk_decision)
@@ -5955,7 +5971,7 @@ def create_app(
                     return (
                         "Select at least one proposal before applying a selected-row action.",
                         int(refresh or 0),
-                        no_update,
+                        no_update, no_update,
                     )
                 count = project.bulk_review_apply_proposals(
                     apply_run_id=int(draft_id),
@@ -6002,6 +6018,18 @@ def create_app(
                         f", skipped {result['skipped_conflicts']:,} existing assignments"
                     )
                 message += f". {result['left_pending']:,} pending proposals remain."
+                request, note = _post_saved_apply_batch_training_request(
+                    project, apply_run_id=int(draft_id), mutation="commit",
+                    changed_assignment_count=int(result["committed"]),
+                    commit_operation_id=int(result["commit_operation_id"]),
+                    develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+                    train_scope_values=train_scope_values, tune_values=tune_values,
+                    recommendation_source=recommendation_source,
+                    active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+                )
+                message += f" {note}"
+                if request is not None:
+                    training_request = training_inbox.enqueue(request)
             elif triggered == "apply-undo-last-commit":
                 result = project.undo_last_apply_commit(int(draft_id))
                 message = (
@@ -6009,11 +6037,23 @@ def create_app(
                     f"proposals and retracted {result['retracted_assignments']:,} "
                     "assignments created by that commit."
                 )
+                request, note = _post_saved_apply_batch_training_request(
+                    project, apply_run_id=int(draft_id), mutation="undo",
+                    changed_assignment_count=int(result["retracted_assignments"]),
+                    commit_operation_id=int(result["commit_operation_id"]),
+                    develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+                    train_scope_values=train_scope_values, tune_values=tune_values,
+                    recommendation_source=recommendation_source,
+                    active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+                )
+                message += f" {note}"
+                if request is not None:
+                    training_request = training_inbox.enqueue(request)
             else:
-                return no_update, int(refresh or 0), no_update
+                return no_update, int(refresh or 0), no_update, no_update
         except (KeyError, ValueError) as error:
-            return str(error), int(refresh or 0), no_update
-        return message, int(refresh or 0) + 1, clear_selection
+            return str(error), int(refresh or 0), no_update, no_update
+        return message, int(refresh or 0) + 1, clear_selection, training_request
 
     @app.callback(
         Output("apply-undo-last-commit", "disabled"),
