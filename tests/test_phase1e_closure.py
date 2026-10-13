@@ -187,3 +187,109 @@ def test_warm_recommendations_never_fit_or_load_full_score_vectors(
         )
         assert result is not None
         project.record_visit(session, int(result["unit_id"]), method="warm")
+
+
+def test_dash_training_inbox_routes_success_reuse_and_failure_by_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the *registered* six-output callback, not just a request helper."""
+    import inspect
+
+    from dash import no_update
+
+    from geometric_coder.ui.app import create_app
+
+    project, code, spec, _fit = _trained(tmp_path)
+    app = create_app(project)
+    candidates = [
+        entry["callback"].__wrapped__
+        for output, entry in app.callback_map.items()
+        if "focus-auto-training-status.children" in output
+        and "apply-training-status.children" in output
+    ]
+    assert len(candidates) == 1
+    dispatch = candidates[0]
+    inbox = inspect.getclosurevars(dispatch).nonlocals["training_inbox"]
+
+    def request(origin: str) -> dict:
+        return {
+            "code_id": code,
+            "classifier_spec_ids": [spec],
+            "tune": False,
+            "origin": origin,
+        }
+
+    # A current model is reused and Apply receives its own saved acknowledgment.
+    inbox.enqueue(request("apply"))
+    reused = dispatch({"nonce": "apply"}, 0)
+    assert len(reused) == 6
+    assert "Apply batch saved" in reused[5]
+    assert "current" in reused[5]
+    assert reused[1] is no_update
+    assert reused[2] is no_update
+
+    # A new eligible Explore judgment makes the fit stale. Its request trains
+    # the selected classifier and advances the model refresh exactly once.
+    obs = project.database.list_observations()
+    project.annotate(int(obs[2]["observation_id"]), code, "positive")
+    inbox.enqueue(request("explore"))
+    trained = dispatch({"nonce": "explore"}, 0)
+    assert "trained 1 selected classifier" in trained[2]
+    assert trained[1] == 1
+    assert trained[5] is no_update
+
+    # Training errors may not erase a saved Code Center decision, nor claim
+    # a successful model refresh. The origin-specific feedback remains visible.
+    def fail_fit(**kwargs):
+        raise RuntimeError("simulated fitter failure")
+
+    monkeypatch.setattr(project, "train_classifiers_after_evidence_change", fail_fit)
+    inbox.enqueue(request("code_center"))
+    failed = dispatch({"nonce": "error"}, 1)
+    assert "Saved judgment. Automatic training failed:" in failed[3]
+    assert "simulated fitter failure" in failed[3]
+    assert failed[1] is no_update
+    assert failed[5] is no_update
+
+
+def test_develop_summary_tab_return_skips_expensive_hidden_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply drafts and Explore navigation cannot force hidden code-wide scans."""
+    from dash import no_update
+
+    from geometric_coder.ui.app import create_app
+
+    project, code, _spec, _fit = _trained(tmp_path)
+    app = create_app(project)
+    summaries = [
+        entry["callback"].__wrapped__
+        for output, entry in app.callback_map.items()
+        if "focus-code-definition.children" in output
+        and "focus-label-counts.children" in output
+    ]
+    assert len(summaries) == 1
+    summary = summaries[0]
+    first = summary(code, 0, 0, "focus")
+    assert "Positive 2" in str(first[1])
+
+    def forbid(*args, **kwargs):
+        raise AssertionError("Hidden Develop scanned all code assignments")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(project.database, "annotation_counts", forbid)
+        patch.setattr(project, "current_annotations", forbid)
+        patch.setattr(project, "training_label_counts", forbid)
+        for workspace in ("apply", "explore", "codes"):
+            assert summary(code, 0, 0, workspace) == (
+                no_update, no_update, no_update
+            )
+
+    # While the checkbox is off, Explore changes still become visible on
+    # returning to Develop. This does not involve any training request.
+    project.annotate(
+        int(project.database.list_observations()[2]["observation_id"]),
+        code, "unsure", origin="human_direct",
+    )
+    after = summary(code, 0, 0, "focus")
+    assert "Unsure 1" in str(after[1])
