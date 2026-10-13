@@ -5133,14 +5133,14 @@ def create_app(
         Input("focus-code-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
-        Input("focus-focal-unit-store", "data"),
     )
     def update_focus_code_summary(
         code_id: int | None,
         refresh: int,
         teaching_refresh: int | None,
-        focal_unit_id: int | None,
     ) -> tuple[Any, Any, Any]:
+        # Navigation changes the focal unit, not code-level assignment counts.
+        # Avoid two full current-annotation reads on every recommendation click.
         del refresh, teaching_refresh
         if code_id is None:
             return "No code selected.", "", ""
