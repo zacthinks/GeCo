@@ -263,6 +263,43 @@ def _teaching_example_for_code(
     ), None)
 
 
+def _post_saved_apply_batch_training_request(
+    project: GeometricCoder, *, apply_run_id: int,
+    mutation: str, changed_assignment_count: int, commit_operation_id: int,
+    develop_code_id: int | None, auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Optional training after one *committed* Apply batch or audited undo.
+
+    Proposal edits, bulk draft decisions, conflicts, leave-unreviewed and
+    zero-change commits never enqueue fitting. The affected code is read from
+    the persisted Apply run, not inferred from the currently selected UI code.
+    """
+    if mutation not in {"commit", "undo"}:
+        raise ValueError("Unknown Apply assignment mutation.")
+    if changed_assignment_count <= 0:
+        return None, "No assignments changed; no automatic training requested."
+    run = project.apply_run(int(apply_run_id))
+    request, status = _post_saved_external_judgment_training_request(
+        project, code_id=int(run["code_id"]),
+        develop_code_id=develop_code_id, annotation_event_id=None,
+        auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values, tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+    label = "Apply commit saved" if mutation == "commit" else "Apply undo saved"
+    if request is not None:
+        request["origin"] = "apply"
+        request["apply_run_id"] = int(apply_run_id)
+        request["apply_mutation"] = mutation
+        request["commit_operation_id"] = int(commit_operation_id)
+    return request, status.replace("Judgment saved", label)
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -4919,6 +4956,7 @@ def create_app(
         Output("explore-code-status", "children", allow_duplicate=True),
         Output("code-center-assignment-status", "children", allow_duplicate=True),
         Output("teaching-example-status", "children", allow_duplicate=True),
+        Output("apply-training-status", "children"),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4932,9 +4970,9 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any, Any, Any, Any]:
+    ) -> tuple[str, Any, Any, Any, Any, Any]:
         if not request:
-            return "", no_update, no_update, no_update, no_update
+            return "", no_update, no_update, no_update, no_update, no_update
 
         def fit(next_request: dict[str, Any]) -> dict[str, Any]:
             return project.train_classifiers_after_evidence_change(
@@ -4945,12 +4983,15 @@ def create_app(
 
         completed = training_inbox.drain(fit)
         if not completed:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
         messages: dict[str, str] = {}
         any_trained = False
         for task, result, error in completed:
             origin = str(task.get("origin", "develop"))
-            saved_label = "Teaching example saved" if origin == "teaching_example" else "Saved judgment"
+            saved_label = (
+                "Teaching example saved" if origin == "teaching_example"
+                else ("Apply batch saved" if origin == "apply" else "Saved judgment")
+            )
             if error is not None:
                 message = f"{saved_label}. Automatic training failed: {error}"
             elif str(result["status"]) == "trained":
@@ -4970,6 +5011,7 @@ def create_app(
             messages.get("explore", no_update),
             messages.get("code_center", no_update),
             messages.get("teaching_example", no_update),
+            messages.get("apply", no_update),
         )
 
     @app.callback(
@@ -5857,6 +5899,7 @@ def create_app(
         Output("apply-status", "children", allow_duplicate=True),
         Output("apply-refresh-store", "data", allow_duplicate=True),
         Output("apply-table", "selectedRows"),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         *apply_action_inputs,
         State("apply-run-dropdown", "value"),
         State("apply-table", "rowData"),
@@ -5866,6 +5909,13 @@ def create_app(
         State("apply-bulk-decision", "value"),
         State("apply-bulk-scope", "value"),
         State("apply-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def apply_action(
@@ -5883,7 +5933,14 @@ def create_app(
         bulk_decision: str | None,
         bulk_scope: str | None,
         refresh: int | None,
-    ) -> tuple[Any, int, Any]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[Any, int, Any, Any]:
         del (
             bulk_apply_clicks,
             clear_clicks,
@@ -5893,7 +5950,7 @@ def create_app(
             undo_clicks,
         )
         if draft_id is None:
-            return "Select a draft first.", int(refresh or 0), no_update
+            return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
         current_page_rows = _apply_current_page_rows(
             virtual_rows if virtual_rows is not None else (rows or []),
@@ -5901,6 +5958,7 @@ def create_app(
         )
         current_page_ids = [int(row["unit_id"]) for row in current_page_rows]
         clear_selection: Any = no_update
+        training_request: Any = no_update
         try:
             if triggered == "apply-bulk-apply":
                 decision = _normalize_apply_decision(bulk_decision)
@@ -5913,7 +5971,7 @@ def create_app(
                     return (
                         "Select at least one proposal before applying a selected-row action.",
                         int(refresh or 0),
-                        no_update,
+                        no_update, no_update,
                     )
                 count = project.bulk_review_apply_proposals(
                     apply_run_id=int(draft_id),
@@ -5960,6 +6018,18 @@ def create_app(
                         f", skipped {result['skipped_conflicts']:,} existing assignments"
                     )
                 message += f". {result['left_pending']:,} pending proposals remain."
+                request, note = _post_saved_apply_batch_training_request(
+                    project, apply_run_id=int(draft_id), mutation="commit",
+                    changed_assignment_count=int(result["committed"]),
+                    commit_operation_id=int(result["commit_operation_id"]),
+                    develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+                    train_scope_values=train_scope_values, tune_values=tune_values,
+                    recommendation_source=recommendation_source,
+                    active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+                )
+                message += f" {note}"
+                if request is not None:
+                    training_request = training_inbox.enqueue(request)
             elif triggered == "apply-undo-last-commit":
                 result = project.undo_last_apply_commit(int(draft_id))
                 message = (
@@ -5967,11 +6037,23 @@ def create_app(
                     f"proposals and retracted {result['retracted_assignments']:,} "
                     "assignments created by that commit."
                 )
+                request, note = _post_saved_apply_batch_training_request(
+                    project, apply_run_id=int(draft_id), mutation="undo",
+                    changed_assignment_count=int(result["retracted_assignments"]),
+                    commit_operation_id=int(result["commit_operation_id"]),
+                    develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+                    train_scope_values=train_scope_values, tune_values=tune_values,
+                    recommendation_source=recommendation_source,
+                    active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+                )
+                message += f" {note}"
+                if request is not None:
+                    training_request = training_inbox.enqueue(request)
             else:
-                return no_update, int(refresh or 0), no_update
+                return no_update, int(refresh or 0), no_update, no_update
         except (KeyError, ValueError) as error:
-            return str(error), int(refresh or 0), no_update
-        return message, int(refresh or 0) + 1, clear_selection
+            return str(error), int(refresh or 0), no_update, no_update
+        return message, int(refresh or 0) + 1, clear_selection, training_request
 
     @app.callback(
         Output("apply-undo-last-commit", "disabled"),
@@ -8217,7 +8299,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Auto-train selected models after saved judgments or teaching changes",
+                                                        "label": "Automatically train selected models after saved coding changes",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -8235,16 +8317,17 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "With auto-training enabled, saved Develop judgments can train selected models. "
-                                        "Explore and Code Center judgments do so only when coding the code currently "
-                                        "selected in Develop. The scope is the active classifier or selected committee "
-                                        "members, unless Train All is explicitly chosen. Teaching-example additions and "
-                                        "changes can trigger training for the selected Develop code. Apply reviews "
-                                        "are not yet connected. Recommendation/navigation clicks never "
-                                        "train; if no fit exists, use Train (or Train committee for learned aggregation). "
-                                        "Fixed committees require Prepare selected committee. With auto mode off, "
-                                        "frozen predictions remain available but may be stale. Optional cross-validation "
-                                        "tuning can be slower.",
+                                        "With automatic training off, only explicit Train actions fit models; "
+                                        "saved changes can leave frozen predictions stale but usable. With it on, "
+                                        "saved judgments in Develop, Explore, or Code Center, teaching-example changes, "
+                                        "and Apply commits or undos that change assignments can request training only "
+                                        "when the affected code matches the code selected in Develop. Apply draft "
+                                        "decisions, proposal generation, zero-assignment commits, and recommendation "
+                                        "or navigation clicks never start training. The scope is the active classifier "
+                                        "or selected committee members, unless Train All is explicitly chosen. "
+                                        "Training waits for both Present and Absent evidence; optional cross-validation "
+                                        "tuning can be slower. Learned committees require explicit Train committee; "
+                                        "fixed committees require Prepare selected committee.",
                                         className="focus-help",
                                     ),
                                     html.Div(
@@ -8920,6 +9003,7 @@ def _apply_layout(
                         ], className="apply-actions",
                     ),
                     html.Div(id="apply-status", className="control-status"),
+                    html.Div(id="apply-training-status", className="control-status", role="status"),
                 ], className="apply-main",
             ),
         ], className="apply-workspace",
