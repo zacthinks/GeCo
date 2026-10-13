@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       full_scale:
-        description: "Run 1k and 10k corpus sizes"
+        description: "Include 10k corpus size (PRs also run 1k and 10k)"
         required: false
         type: boolean
         default: false
@@ -31,7 +31,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_scale }}" == "true" ]]; then
             uv run python benchmarks/phase1e_recommendations.py --sizes 1000 10000 --repeats 25 --output phase1e-results.json
           else
-            uv run python benchmarks/phase1e_recommendations.py --sizes 1000 --repeats 20 --output phase1e-results.json
+            uv run python benchmarks/phase1e_recommendations.py --sizes 1000 10000 --repeats 12 --output phase1e-results.json
           fi
       - uses: actions/upload-artifact@v4
         if: always()
