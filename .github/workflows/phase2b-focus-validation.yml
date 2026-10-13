@@ -1,0 +1,34 @@
+name: Phase 2B Focus Validation Comparison
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - src/geometric_coder/project.py
+      - src/geometric_coder/storage/database.py
+      - tests/test_focus_coding.py
+      - .github/workflows/phase2b-focus-validation.yml
+
+jobs:
+  focus-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Focus regression tests
+        run: uv run pytest tests/test_focus_coding.py -q
+      - name: Existing controlled factor benchmark
+        run: uv run python benchmarks/phase2b_focus_factors.py --repeats 20 --output phase2b-focus-validation.json
+      - name: Archive benchmark output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2b-focus-validation
+          path: phase2b-focus-validation.json
+          if-no-files-found: warn
