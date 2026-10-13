@@ -1,0 +1,29 @@
+name: Phase 1E Final Diagnostics
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - benchmarks/phase1e_diagnostics.py
+      - tests/test_phase1e_closure.py
+      - .github/workflows/phase1e-final-diagnostics.yml
+  workflow_dispatch:
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Benchmark fresh and near-exhausted session selection
+        run: uv run python benchmarks/phase1e_diagnostics.py --sizes 200 1000 --repeats 10
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase1e-final-diagnostics
+          path: phase1e-diagnostics.json
+          if-no-files-found: ignore
