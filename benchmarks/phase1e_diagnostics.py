@@ -91,11 +91,12 @@ def _case(size: int, seed: int, repeats: int) -> dict:
             # A nearly exhausted session has only one eligible recommendation.
             # Repeated visits are setup, not part of measured click latency.
             all_units = [int(row["unit_id"]) for row in project.database.list_units()]
+            annotated = {
+                int(a["observation_id"]) for a in project.current_annotations(code)
+            }
             eligible = [
                 unit for unit in all_units
-                if int(project.observation_id_for_unit(unit)) not in {
-                    int(a["observation_id"]) for a in project.current_annotations(code)
-                }
+                if int(project.observation_id_for_unit(unit)) not in annotated
             ]
             for unit in eligible[:-1]:
                 project.record_visit(session, unit, method="phase1e benchmark")
@@ -112,7 +113,7 @@ def _case(size: int, seed: int, repeats: int) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sizes", nargs="+", type=int, default=[1000])
+    parser.add_argument("--sizes", nargs="+", type=int, default=[200, 1000])
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--output", type=Path, default=Path("phase1e-diagnostics.json"))
