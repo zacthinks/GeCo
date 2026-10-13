@@ -85,17 +85,28 @@ def test_indexed_scores_match_independent_oracle_across_visits_and_sessions(
     assert independent is not None
     assert independent["unit_id"] == int(ordered[0]["unit_id"])
 
-    # A new saved coding judgment invalidates eligibility for both sessions,
-    # without refitting or overwriting either session's frozen score snapshot.
-    newly_coded = ordered[3]
-    project.annotate(int(newly_coded["observation_id"]), code, "unsure")
-    next_a = project.focus_recommendation(
+    # Unsure is a saved assignment and excludes a recommendation candidate,
+    # but is *not* eligible positive/negative training evidence. It must not
+    # misreport a still-current classifier as stale.
+    project.annotate(int(ordered[3]["observation_id"]), code, "unsure")
+    after_unsure = project.focus_recommendation(
         code_id=code, session_id=a, strategy=strategy,
         active_classifier_spec_id=spec, auto_retrain=False,
     )
-    assert next_a is not None
-    assert next_a["unit_id"] == int(ordered[4]["unit_id"])
-    assert next_a["stale_classifiers"]
+    assert after_unsure is not None
+    assert after_unsure["unit_id"] == int(ordered[4]["unit_id"])
+    assert after_unsure["stale_classifiers"] == []
+
+    # A later eligible Present judgment genuinely changes the training
+    # snapshot, excludes that candidate and keeps the previous fit available.
+    project.annotate(int(ordered[4]["observation_id"]), code, "positive")
+    after_present = project.focus_recommendation(
+        code_id=code, session_id=a, strategy=strategy,
+        active_classifier_spec_id=spec, auto_retrain=False,
+    )
+    assert after_present is not None
+    assert after_present["unit_id"] == int(ordered[5]["unit_id"])
+    assert after_present["stale_classifiers"]
     assert int(project.database.latest_classifier_fit(
         code_id=code, classifier_spec_id=spec
     )["classifier_fit_id"]) == fit
