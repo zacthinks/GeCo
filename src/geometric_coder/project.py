@@ -712,8 +712,7 @@ class GeometricCoder:
         code_specs = list(task.get("required_codes", []))
         if not unit_ids or not code_specs:
             raise ConfigurationError("The configured focus task is incomplete.")
-        available_units = {int(row["unit_id"]) for row in self.units()}
-        missing_units = [value for value in unit_ids if value not in available_units]
+        missing_units = self.database.missing_unit_ids(unit_ids)
         if missing_units:
             raise ConfigurationError(
                 f"Focus task refers to unavailable atomic units: {missing_units[:5]}"
