@@ -1225,3 +1225,71 @@ def test_apply_batch_training_request_uses_committed_code_and_scope(tmp_path: Pa
     assert "Apply undo saved" in message
     with pytest.raises(ValueError, match="Unknown Apply"):
         _post_saved_apply_batch_training_request(**{**kwargs, "mutation": "review"})
+
+
+def test_apply_bulk_model_commits_preserve_training_eligibility_and_undo(tmp_path: Path) -> None:
+    """Bulk-accepted model labels remain eligible; auto mode controls *when*, not *which*."""
+    from geometric_coder.ui.app import _post_saved_apply_batch_training_request
+
+    project = _project(tmp_path)
+    code_id = project.create_code("apply model evidence")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    project.train_classifiers(code_id=code_id, classifier_spec_ids=[spec_id])
+    run_id = project.create_apply_run(
+        code_id=code_id, source_kind="classifier", source_id=spec_id
+    )
+    assert project.bulk_review_apply_proposals(apply_run_id=run_id, decision="accept") > 0
+
+    options = dict(
+        project=project, apply_run_id=run_id, mutation="commit",
+        develop_code_id=code_id, train_scope_values=[], tune_values=[],
+        recommendation_source="classifier", active_classifier_spec_id=spec_id,
+        committee_id=None,
+    )
+    before = len(project._eligible_training_annotations(
+        code_id, project.current_annotations(code_id)
+    ))
+    result = project.commit_apply_run(run_id)
+    assert result["committed"] > 0
+    current = project.current_annotations(code_id)
+    committed = [row for row in current if row["origin"] == "model_committed"]
+    assert len(committed) == result["committed"]
+    assert len(project._eligible_training_annotations(code_id, current)) == before + result["committed"]
+
+    disabled, _ = _post_saved_apply_batch_training_request(
+        **options, changed_assignment_count=result["committed"],
+        commit_operation_id=result["commit_operation_id"], auto_train_values=[],
+    )
+    assert disabled is None
+    enabled, _ = _post_saved_apply_batch_training_request(
+        **options, changed_assignment_count=result["committed"],
+        commit_operation_id=result["commit_operation_id"], auto_train_values=["auto"],
+    )
+    assert enabled is not None
+    assert enabled["origin"] == "apply"
+    assert enabled["commit_operation_id"] == result["commit_operation_id"]
+    assert enabled["classifier_spec_ids"] == [spec_id]
+    assert enabled["apply_mutation"] == "commit"
+    assert "annotation_event_id" not in enabled
+    assert project.classifier_status(code_id=code_id, classifier_spec_ids=[spec_id])["classifiers"][0]["status"] == "stale"
+
+    undone = project.undo_last_apply_commit(run_id)
+    assert undone["retracted_assignments"] == result["committed"]
+    assert len(project._eligible_training_annotations(
+        code_id, project.current_annotations(code_id)
+    )) == before
+    undo_request, _ = _post_saved_apply_batch_training_request(
+        **{**options, "mutation": "undo"},
+        changed_assignment_count=undone["retracted_assignments"],
+        commit_operation_id=undone["commit_operation_id"], auto_train_values=["auto"],
+    )
+    assert undo_request is not None
+    assert undo_request["apply_mutation"] == "undo"
+    zero, _ = _post_saved_apply_batch_training_request(
+        **options, changed_assignment_count=0,
+        commit_operation_id=0, auto_train_values=["auto"],
+    )
+    assert zero is None
