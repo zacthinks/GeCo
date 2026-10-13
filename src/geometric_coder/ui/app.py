@@ -8299,7 +8299,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Auto-train selected models after saved judgments or teaching changes",
+                                                        "label": "Automatically train selected models after saved coding changes",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -8317,16 +8317,17 @@ def _focus_layout(
                                         className="classifier-training-options",
                                     ),
                                     html.Small(
-                                        "With auto-training enabled, saved Develop judgments can train selected models. "
-                                        "Explore and Code Center judgments do so only when coding the code currently "
-                                        "selected in Develop. The scope is the active classifier or selected committee "
-                                        "members, unless Train All is explicitly chosen. Teaching-example additions and "
-                                        "changes can trigger training for the selected Develop code. Apply reviews "
-                                        "are not yet connected. Recommendation/navigation clicks never "
-                                        "train; if no fit exists, use Train (or Train committee for learned aggregation). "
-                                        "Fixed committees require Prepare selected committee. With auto mode off, "
-                                        "frozen predictions remain available but may be stale. Optional cross-validation "
-                                        "tuning can be slower.",
+                                        "With automatic training off, only explicit Train actions fit models; "
+                                        "saved changes can leave frozen predictions stale but usable. With it on, "
+                                        "saved judgments in Develop, Explore, or Code Center, teaching-example changes, "
+                                        "and Apply commits or undos that change assignments can request training only "
+                                        "when the affected code matches the code selected in Develop. Apply draft "
+                                        "decisions, proposal generation, zero-assignment commits, and recommendation "
+                                        "or navigation clicks never start training. The scope is the active classifier "
+                                        "or selected committee members, unless Train All is explicitly chosen. "
+                                        "Training waits for both Present and Absent evidence; optional cross-validation "
+                                        "tuning can be slower. Learned committees require explicit Train committee; "
+                                        "fixed committees require Prepare selected committee.",
                                         className="focus-help",
                                     ),
                                     html.Div(
