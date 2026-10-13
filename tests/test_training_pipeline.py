@@ -1293,3 +1293,58 @@ def test_apply_bulk_model_commits_preserve_training_eligibility_and_undo(tmp_pat
         commit_operation_id=0, auto_train_values=["auto"],
     )
     assert zero is None
+
+
+def test_develop_summary_reconciles_apply_and_explore_on_tab_return(tmp_path: Path) -> None:
+    """Auto-off cross-workspace saves are visible on return, without focal scans."""
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    code_id = project.create_code("cross-workspace summary")
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    project.train_classifiers(code_id=code_id, classifier_spec_ids=[spec_id])
+    app = create_app(project)
+    summaries = [
+        entry["callback"].__wrapped__
+        for output, entry in app.callback_map.items()
+        if "focus-code-definition.children" in output
+        and "focus-label-counts.children" in output
+    ]
+    assert len(summaries) == 1
+    summary = summaries[0]
+
+    before = summary(code_id, 0, 0, "focus")
+    assert "Positive 1" in str(before[1])
+    assert "Negative 1" in str(before[1])
+
+    # Apply's bulk accept saves actual assignments but deliberately leaves
+    # focus-refresh-store unchanged, including when auto-training is off.
+    run_id = project.create_apply_run(code_id=code_id, source_kind="classifier", source_id=spec_id)
+    project.bulk_review_apply_proposals(apply_run_id=run_id, decision="accept")
+    committed = project.commit_apply_run(run_id)
+    assert committed["committed"] > 0
+
+    hidden = summary(code_id, 0, 0, "apply")
+    from dash import no_update
+    assert hidden == (no_update, no_update, no_update)
+    after_apply = summary(code_id, 0, 0, "focus")
+    assert after_apply[1] != before[1]
+    assert f"Positive " in str(after_apply[1])
+
+    # Explore writes a judgment to the same code, using a separate refresh
+    # store. Returning to Develop sees it even without an automatic fit.
+    committed_assignment = next(
+        row for row in project.current_annotations(code_id)
+        if row["origin"] == "model_committed"
+    )
+    project.annotate(
+        int(committed_assignment["observation_id"]), code_id, "unsure",
+        origin="human_direct",
+    )
+    assert summary(code_id, 0, 0, "explore") == (no_update, no_update, no_update)
+    after_explore = summary(code_id, 0, 0, "focus")
+    assert after_explore[1] != after_apply[1]
+    assert "Unsure 1" in str(after_explore[1])

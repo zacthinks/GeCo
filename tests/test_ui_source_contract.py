@@ -375,3 +375,50 @@ def test_teaching_examples_help_describes_save_and_training_timing() -> None:
     assert "the selected models after a change when automatic training is enabled." in app_source
     assert "Otherwise, use Train to include active examples in the next manual fit." in app_source
     assert "Active examples join corpus assignments at the next manual retrain." not in app_source
+
+
+def test_develop_code_summary_does_not_refresh_on_focal_navigation() -> None:
+    """Reading a new recommendation must not rescan code-wide labels."""
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    start = app_source.index('    def update_focus_code_summary(')
+    decorator = app_source.rfind("    @app.callback(", 0, start)
+    callback = app_source[decorator:start]
+    assert 'Input("focus-code-dropdown", "value")' in callback
+    assert 'Input("focus-refresh-store", "data")' in callback
+    assert 'Input("teaching-example-refresh-store", "data")' in callback
+    assert 'Input("workspace-tabs", "value")' in callback
+    assert 'Input("focus-focal-unit-store", "data")' not in callback
+    assert 'Input("apply-refresh-store", "data")' not in callback
+    assert 'Input("explore-annotation-refresh-store", "data")' not in callback
+    function_body = app_source[start:app_source.index("    @app.callback(", start)]
+    assert "project.current_annotations(int(code_id))" in function_body
+    assert "project.training_label_counts(int(code_id))" in function_body
+    assert 'if workspace != "focus":' in function_body
+    assert "return no_update, no_update, no_update" in function_body
+
+
+def test_training_and_recommendation_callbacks_preserve_explicit_boundaries() -> None:
+    """Protect the core Dash UI contract across coding sources."""
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'auto_retrain=False,' in app_source
+    recommend = app_source[app_source.index("    def focus_recommend("):]
+    recommend = recommend[:recommend.index("    @app.callback(")]
+    assert "_recommend_without_fitting(" in recommend
+    assert "train_classifiers_after_evidence_change" not in recommend
+
+    training = app_source[app_source.index("    def train_after_develop_judgment("):]
+    training = training[:training.index("    @app.callback(")]
+    assert 'messages.get("develop", no_update)' in training
+    assert 'messages.get("explore", no_update)' in training
+    assert 'messages.get("code_center", no_update)' in training
+    assert 'messages.get("teaching_example", no_update)' in training
+    assert 'messages.get("apply", no_update)' in training
+    assert 'if not request:' in training
+    assert 'if not completed:' in training
+    assert "training_inbox.drain(fit)" in training
