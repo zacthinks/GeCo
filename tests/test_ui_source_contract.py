@@ -352,10 +352,23 @@ def test_auto_training_ui_describes_cross_workspace_triggers() -> None:
         Path(__file__).resolve().parents[1]
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
-    assert '"label": "Auto-train selected models after saved judgments"' in app_source
+    assert '"label": "Auto-train selected models after saved judgments or teaching changes"' in app_source
     assert "Explore and Code Center judgments do so only when coding the code currently " in app_source
     assert "selected in Develop." in app_source
-    assert "Teaching-example changes and " in app_source
-    assert "Apply reviews are not yet connected." in app_source
+    assert "Teaching-example additions and " in app_source
+    assert "changes can trigger training for the selected Develop code. Apply reviews " in app_source
+    assert "are not yet connected. Recommendation/navigation clicks never " in app_source
     assert "Recommendation/navigation clicks never " in app_source
     assert "The scope is the active classifier or selected committee " in app_source
+
+
+def test_teaching_examples_help_describes_save_and_training_timing() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert "Saving a teaching example updates the evidence, not the fitted model." in app_source
+    assert "For the code selected in Develop, active examples can trigger training of " in app_source
+    assert "the selected models after a change when automatic training is enabled." in app_source
+    assert "Otherwise, use Train to include active examples in the next manual fit." in app_source
+    assert "Active examples join corpus assignments at the next manual retrain." not in app_source

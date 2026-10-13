@@ -142,7 +142,7 @@ def _auto_training_spec_scope(
 
 
 def _post_saved_develop_judgment_training_request(
-    project: GeometricCoder, *, code_id: int, annotation_event_id: int,
+    project: GeometricCoder, *, code_id: int, annotation_event_id: int | None,
     auto_train_values: list[str] | None,
     train_scope_values: list[str] | None, tune_values: list[str] | None,
     recommendation_source: str | None,
@@ -180,7 +180,8 @@ def _post_saved_develop_judgment_training_request(
             "code_id": int(code_id),
             "classifier_spec_ids": selected_ids,
             "tune": "tune" in set(tune_values or []),
-            "annotation_event_id": int(annotation_event_id),
+            **({"annotation_event_id": int(annotation_event_id)}
+               if annotation_event_id is not None else {}),
         },
         "Judgment saved; automatic training requested for the selected classifier(s).",
     )
@@ -188,7 +189,7 @@ def _post_saved_develop_judgment_training_request(
 
 def _post_saved_external_judgment_training_request(
     project: GeometricCoder, *, code_id: int,
-    develop_code_id: int | None, annotation_event_id: int,
+    develop_code_id: int | None, annotation_event_id: int | None,
     auto_train_values: list[str] | None,
     train_scope_values: list[str] | None, tune_values: list[str] | None,
     recommendation_source: str | None,
@@ -210,7 +211,7 @@ def _post_saved_external_judgment_training_request(
         )
     return _post_saved_develop_judgment_training_request(
         project, code_id=int(code_id),
-        annotation_event_id=int(annotation_event_id),
+        annotation_event_id=annotation_event_id,
         auto_train_values=auto_train_values,
         train_scope_values=train_scope_values,
         tune_values=tune_values,
@@ -218,6 +219,48 @@ def _post_saved_external_judgment_training_request(
         active_classifier_spec_id=active_classifier_spec_id,
         committee_id=committee_id,
     )
+
+
+def _post_saved_teaching_example_training_request(
+    project: GeometricCoder, *, code_id: int, observation_id: int,
+    develop_code_id: int | None, auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """A saved teaching example is evidence, not an annotation event.
+
+    Only the currently selected Develop code and selected model scope are
+    eligible for automatic training. Retain teaching-observation provenance
+    without fabricating an annotation-event ID.
+    """
+    request, status = _post_saved_external_judgment_training_request(
+        project, code_id=int(code_id), develop_code_id=develop_code_id,
+        annotation_event_id=None, auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values, tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+    if request is not None:
+        request["origin"] = "teaching_example"
+        request["teaching_observation_id"] = int(observation_id)
+    return request, status.replace("Judgment saved", "Teaching example saved")
+
+
+def _teaching_example_for_code(
+    project: GeometricCoder, *, code_id: int, observation_id: int,
+) -> dict[str, Any] | None:
+    """Validate a teaching table row against its owning code before mutation.
+
+    The modal code and selected table row can become desynchronized after a
+    code change or a preceding edit. Never write using a stale selection.
+    """
+    return next((
+        row
+        for row in project.teaching_examples(int(code_id), include_deleted=True)
+        if int(row["observation_id"]) == int(observation_id)
+    ), None)
 
 
 def _recommend_without_fitting(
@@ -2868,6 +2911,7 @@ def create_app(
         Output("teaching-example-text", "value"),
         Output("teaching-example-note", "value"),
         Output("teaching-example-code-store", "data"),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("code-center-teaching-button", "n_clicks"),
         Input("focus-teaching-button", "n_clicks"),
         Input("teaching-example-close", "n_clicks"),
@@ -2880,6 +2924,13 @@ def create_app(
         State("teaching-example-note", "value"),
         State("teaching-example-assess-before-training", "value"),
         State("teaching-example-refresh-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def manage_teaching_example_modal(
@@ -2895,13 +2946,20 @@ def create_app(
         note: str | None,
         assess_values: list[str] | None,
         refresh: int | None,
-    ) -> tuple[dict[str, str], str, int, Any, Any, Any]:
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[dict[str, str], str, int, Any, Any, Any, Any]:
         del code_center_open_clicks, focus_open_clicks, close_clicks, save_clicks
         triggered = callback_context.triggered_id
         if triggered == "teaching-example-close":
             return (
                 {"display": "none"}, "", int(refresh or 0),
-                no_update, no_update, modal_code_id,
+                no_update, no_update, modal_code_id, no_update,
             )
         if triggered == "code-center-teaching-button":
             selected_code_id = code_center_id
@@ -2912,21 +2970,21 @@ def create_app(
         if selected_code_id is None:
             return (
                 {"display": "none"}, "Select a code first.", int(refresh or 0),
-                no_update, no_update, no_update,
+                no_update, no_update, no_update, no_update,
             )
         if triggered in {"code-center-teaching-button", "focus-teaching-button"}:
             return (
                 {"display": "flex"}, "", int(refresh or 0),
-                no_update, no_update, int(selected_code_id),
+                no_update, no_update, int(selected_code_id), no_update,
             )
         clean_text = (text or "").strip()
         if not clean_text:
             return (
                 {"display": "flex"}, "Enter example text.", int(refresh or 0),
-                no_update, no_update, int(selected_code_id),
+                no_update, no_update, int(selected_code_id), no_update,
             )
         try:
-            project.create_teaching_example(
+            observation_id = project.create_teaching_example(
                 code_id=int(selected_code_id), text=clean_text,
                 label=str(label or "positive"), note=(note or "").strip(),
                 assess_before_training="assess" in set(assess_values or []),
@@ -2934,11 +2992,19 @@ def create_app(
         except Exception as error:
             return (
                 {"display": "flex"}, str(error), int(refresh or 0),
-                no_update, no_update, int(selected_code_id),
+                no_update, no_update, int(selected_code_id), no_update,
             )
+        request, note = _post_saved_teaching_example_training_request(
+            project, code_id=int(selected_code_id), observation_id=int(observation_id),
+            develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values, tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+        )
         return (
-            {"display": "flex"}, "Added an active teaching example.",
+            {"display": "flex"}, f"Added an active teaching example. {note}",
             int(refresh or 0) + 1, "", "", int(selected_code_id),
+            training_inbox.enqueue(request) if request is not None else no_update,
         )
 
     @app.callback(
@@ -2968,54 +3034,126 @@ def create_app(
     @app.callback(
         Output("teaching-example-status", "children", allow_duplicate=True),
         Output("teaching-example-refresh-store", "data", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("teaching-example-apply-status", "n_clicks"),
         State("teaching-example-table", "selected_rows"),
         State("teaching-example-table", "data"),
         State("teaching-example-status-action", "value"),
         State("teaching-example-refresh-store", "data"),
+        State("teaching-example-code-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def change_teaching_example_status(
         clicks: int, selected_rows: list[int] | None, rows: list[dict[str, Any]] | None,
         status: str | None, refresh: int | None,
-    ) -> tuple[str, int]:
+        selected_code_id: int | None,
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[str, int, Any]:
         del clicks
+        if selected_code_id is None:
+            return "Select a teaching-example code first.", int(refresh or 0), no_update
         if not selected_rows or not rows:
-            return "Select an example first.", int(refresh or 0)
+            return "Select an example first.", int(refresh or 0), no_update
         index = int(selected_rows[0])
         if index < 0 or index >= len(rows):
-            return "Select an example first.", int(refresh or 0)
-        project.set_teaching_example_status(
-            int(rows[index]["observation_id"]), str(status or "inactive")
+            return "Select an example first.", int(refresh or 0), no_update
+        observation_id = int(rows[index]["observation_id"])
+        existing = _teaching_example_for_code(
+            project, code_id=int(selected_code_id), observation_id=observation_id
         )
-        action = "Deleted" if status == "deleted" else str(status or "inactive").title()
-        return f"{action} the selected teaching example.", int(refresh or 0) + 1
+        if existing is None:
+            return (
+                "This teaching example is no longer in the selected code. Refresh the list.",
+                int(refresh or 0), no_update,
+            )
+        selected_status = str(status or "inactive")
+        if str(existing["teaching_status"]) == selected_status:
+            return "Teaching example status is already current.", int(refresh or 0), no_update
+        project.set_teaching_example_status(observation_id, selected_status)
+        action = "Deleted" if selected_status == "deleted" else selected_status.title()
+        request, note = _post_saved_teaching_example_training_request(
+            project, code_id=int(selected_code_id), observation_id=observation_id,
+            develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values, tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+        )
+        return f"{action} the selected teaching example. {note}", int(refresh or 0) + 1, (training_inbox.enqueue(request) if request is not None else no_update)
 
     @app.callback(
         Output("teaching-example-status", "children", allow_duplicate=True),
         Output("teaching-example-refresh-store", "data", allow_duplicate=True),
+        Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         Input("teaching-example-apply-label", "n_clicks"),
         State("teaching-example-table", "selected_rows"),
         State("teaching-example-table", "data"),
         State("teaching-example-label-action", "value"),
         State("teaching-example-refresh-store", "data"),
+        State("teaching-example-code-store", "data"),
+        State("focus-code-dropdown", "value"),
+        State("focus-auto-retrain", "value"),
+        State("focus-train-scope", "value"),
+        State("focus-tune-hyperparameters", "value"),
+        State("focus-recommendation-source", "value"),
+        State("focus-active-classifier-dropdown", "value"),
+        State("focus-committee-dropdown", "value"),
         prevent_initial_call=True,
     )
     def change_teaching_example_label(
         clicks: int, selected_rows: list[int] | None, rows: list[dict[str, Any]] | None,
         label: str | None, refresh: int | None,
-    ) -> tuple[str, int]:
+        selected_code_id: int | None,
+        develop_code_id: int | None,
+        auto_train_values: list[str] | None,
+        train_scope_values: list[str] | None,
+        tune_values: list[str] | None,
+        recommendation_source: str | None,
+        active_classifier_spec_id: int | None,
+        committee_id: int | None,
+    ) -> tuple[str, int, Any]:
         del clicks
+        if selected_code_id is None:
+            return "Select a teaching-example code first.", int(refresh or 0), no_update
         if not selected_rows or not rows:
-            return "Select an example first.", int(refresh or 0)
+            return "Select an example first.", int(refresh or 0), no_update
         index = int(selected_rows[0])
         if index < 0 or index >= len(rows):
-            return "Select an example first.", int(refresh or 0)
+            return "Select an example first.", int(refresh or 0), no_update
         observation_id = int(rows[index]["observation_id"])
+        existing = _teaching_example_for_code(
+            project, code_id=int(selected_code_id), observation_id=observation_id
+        )
+        if existing is None:
+            return (
+                "This teaching example is no longer in the selected code. Refresh the list.",
+                int(refresh or 0), no_update,
+            )
         selected_label = str(label or "positive")
+        if str(existing["teaching_label"]) == selected_label:
+            return "Teaching example label is already current.", int(refresh or 0), no_update
         project.set_teaching_example_label(observation_id, selected_label)
         display = "Present" if selected_label == "positive" else "Absent"
-        return f"Changed the selected teaching example to {display}.", int(refresh or 0) + 1
+        request, note = _post_saved_teaching_example_training_request(
+            project, code_id=int(selected_code_id), observation_id=int(observation_id),
+            develop_code_id=develop_code_id, auto_train_values=auto_train_values,
+            train_scope_values=train_scope_values, tune_values=tune_values,
+            recommendation_source=recommendation_source,
+            active_classifier_spec_id=active_classifier_spec_id, committee_id=committee_id,
+        )
+        return f"Changed the selected teaching example to {display}. {note}", int(refresh or 0) + 1, (training_inbox.enqueue(request) if request is not None else no_update)
 
     @app.callback(
         Output("code-center-units-table", "data"),
@@ -4780,6 +4918,7 @@ def create_app(
         Output("focus-model-refresh-store", "data", allow_duplicate=True),
         Output("explore-code-status", "children", allow_duplicate=True),
         Output("code-center-assignment-status", "children", allow_duplicate=True),
+        Output("teaching-example-status", "children", allow_duplicate=True),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4793,9 +4932,9 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any, Any, Any]:
+    ) -> tuple[str, Any, Any, Any, Any]:
         if not request:
-            return "", no_update, no_update, no_update
+            return "", no_update, no_update, no_update, no_update
 
         def fit(next_request: dict[str, Any]) -> dict[str, Any]:
             return project.train_classifiers_after_evidence_change(
@@ -4806,29 +4945,31 @@ def create_app(
 
         completed = training_inbox.drain(fit)
         if not completed:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
         messages: dict[str, str] = {}
         any_trained = False
         for task, result, error in completed:
             origin = str(task.get("origin", "develop"))
+            saved_label = "Teaching example saved" if origin == "teaching_example" else "Saved judgment"
             if error is not None:
-                message = f"Saved judgment. Automatic training failed: {error}"
+                message = f"{saved_label}. Automatic training failed: {error}"
             elif str(result["status"]) == "trained":
                 any_trained = True
                 message = (
-                    f"Saved judgment; trained {len(result['trained_fit_ids'])} "
+                    f"{saved_label}; trained {len(result['trained_fit_ids'])} "
                     "selected classifier(s)."
                 )
             elif str(result["status"]) == "awaiting_two_classes":
-                message = "Saved judgment; training awaits both positive and negative evidence."
+                message = f"{saved_label}; training awaits both positive and negative evidence."
             else:
-                message = "Saved judgment; selected classifier(s) are current."
+                message = f"{saved_label}; selected classifier(s) are current."
             messages[origin] = message
         return (
             messages.get("develop", no_update),
             int(refresh or 0) + 1 if any_trained else no_update,
             messages.get("explore", no_update),
             messages.get("code_center", no_update),
+            messages.get("teaching_example", no_update),
         )
 
     @app.callback(
@@ -7979,7 +8120,10 @@ def _focus_layout(
                                 disabled=initial_code_id is None,
                             ),
                             html.Small(
-                                "Active examples join corpus assignments at the next manual retrain.",
+                                "Saving a teaching example updates the evidence, not the fitted model. "
+                                "For the code selected in Develop, active examples can trigger training of "
+                                "the selected models after a change when automatic training is enabled. "
+                                "Otherwise, use Train to include active examples in the next manual fit.",
                                 className="focus-help",
                             ),
                         ],
@@ -8073,7 +8217,7 @@ def _focus_layout(
                                                 id="focus-auto-retrain",
                                                 options=[
                                                     {
-                                                        "label": "Auto-train selected models after saved judgments",
+                                                        "label": "Auto-train selected models after saved judgments or teaching changes",
                                                         "value": "auto",
                                                     }
                                                 ],
@@ -8094,8 +8238,9 @@ def _focus_layout(
                                         "With auto-training enabled, saved Develop judgments can train selected models. "
                                         "Explore and Code Center judgments do so only when coding the code currently "
                                         "selected in Develop. The scope is the active classifier or selected committee "
-                                        "members, unless Train All is explicitly chosen. Teaching-example changes and "
-                                        "Apply reviews are not yet connected. Recommendation/navigation clicks never "
+                                        "members, unless Train All is explicitly chosen. Teaching-example additions and "
+                                        "changes can trigger training for the selected Develop code. Apply reviews "
+                                        "are not yet connected. Recommendation/navigation clicks never "
                                         "train; if no fit exists, use Train (or Train committee for learned aggregation). "
                                         "Fixed committees require Prepare selected committee. With auto mode off, "
                                         "frozen predictions remain available but may be stale. Optional cross-validation "
