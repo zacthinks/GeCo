@@ -4956,6 +4956,7 @@ def create_app(
         Output("explore-code-status", "children", allow_duplicate=True),
         Output("code-center-assignment-status", "children", allow_duplicate=True),
         Output("teaching-example-status", "children", allow_duplicate=True),
+        Output("apply-training-status", "children"),
         Input("focus-auto-training-request-store", "data"),
         State("focus-model-refresh-store", "data"),
         prevent_initial_call=True,
@@ -4969,9 +4970,9 @@ def create_app(
     )
     def train_after_develop_judgment(
         request: dict[str, Any] | None, refresh: int | None
-    ) -> tuple[str, Any, Any, Any, Any]:
+    ) -> tuple[str, Any, Any, Any, Any, Any]:
         if not request:
-            return "", no_update, no_update, no_update, no_update
+            return "", no_update, no_update, no_update, no_update, no_update
 
         def fit(next_request: dict[str, Any]) -> dict[str, Any]:
             return project.train_classifiers_after_evidence_change(
@@ -4982,12 +4983,15 @@ def create_app(
 
         completed = training_inbox.drain(fit)
         if not completed:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
         messages: dict[str, str] = {}
         any_trained = False
         for task, result, error in completed:
             origin = str(task.get("origin", "develop"))
-            saved_label = "Teaching example saved" if origin == "teaching_example" else "Saved judgment"
+            saved_label = (
+                "Teaching example saved" if origin == "teaching_example"
+                else ("Apply batch saved" if origin == "apply" else "Saved judgment")
+            )
             if error is not None:
                 message = f"{saved_label}. Automatic training failed: {error}"
             elif str(result["status"]) == "trained":
@@ -5007,6 +5011,7 @@ def create_app(
             messages.get("explore", no_update),
             messages.get("code_center", no_update),
             messages.get("teaching_example", no_update),
+            messages.get("apply", no_update),
         )
 
     @app.callback(
@@ -8957,6 +8962,7 @@ def _apply_layout(
                         ], className="apply-actions",
                     ),
                     html.Div(id="apply-status", className="control-status"),
+                    html.Div(id="apply-training-status", className="control-status", role="status"),
                 ], className="apply-main",
             ),
         ], className="apply-workspace",
