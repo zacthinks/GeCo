@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import statistics
+import tracemalloc
 import tempfile
 import time
 from pathlib import Path
@@ -60,6 +61,7 @@ def run(size: int, repeats: int, seed: int) -> dict:
         fit = project.train_classifier(code_id=code, classifier_spec_id=classifier)
         training_ms = (time.perf_counter() - t0) * 1000
         session = project.create_session("benchmark")
+        visited_session = project.create_session("visited benchmark")
         fit_id = int(fit["classifier_fit_id"])
         strategies = ["likely_positive", "likely_negative", "classifier_uncertainty"]
 
@@ -76,6 +78,80 @@ def run(size: int, repeats: int, seed: int) -> dict:
                 active_classifier_spec_id=classifier, auto_retrain=False,
             ), repeats)
 
+        # Realistic post-visit selection: advance through ranked candidates in
+        # a separate session, then measure lookups with accumulated exclusions.
+        visit_target = min(100, size // 10)
+        for _ in range(visit_target):
+            recommended = project.focus_recommendation(
+                code_id=code, session_id=visited_session,
+                strategy="likely_positive", active_classifier_spec_id=classifier,
+                auto_retrain=False,
+            )
+            if recommended is None:
+                break
+            project.record_visit(visited_session, int(recommended["unit_id"]), method="bench")
+        visited = _measure(lambda: project.focus_recommendation(
+            code_id=code, session_id=visited_session,
+            strategy="likely_positive", active_classifier_spec_id=classifier,
+            auto_retrain=False,
+        ), repeats)
+
+        # Check post-judgment stale snapshot in an unchanged session; do not
+        # accidentally benchmark a hidden retrain on the click path.
+        project.annotate(int(units[21]["observation_id"]), code, "positive")
+        stale_result = project.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            active_classifier_spec_id=classifier, auto_retrain=False,
+        )
+        assert stale_result is not None and stale_result["stale_classifiers"]
+        stale = _measure(lambda: project.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            active_classifier_spec_id=classifier, auto_retrain=False,
+        ), repeats)
+
+        # Reopen tests cold per-instance freshness state and supported saved
+        # snapshots without confusing it with another training operation.
+        reopened = GeometricCoder.open(project.project_dir)
+        reopened_first = _measure(lambda: reopened.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            active_classifier_spec_id=classifier, auto_retrain=False,
+        ), 1)
+
+        # Compare a prepared fixed committee against the single-classifier
+        # lookup. Member training/preparation is timed separately, never folded
+        # into recommendation click latency.
+        geometry_id = int(project.database.get_classifier_spec(classifier)["geometry_id"])
+        member = project.create_classifier_spec(
+            code_id=code, name="phase1e tree", geometry_id=geometry_id,
+            algorithm="decision_tree",
+        )
+        member_start = time.perf_counter()
+        project.train_classifiers(code_id=code, classifier_spec_ids=[classifier, member])
+        member_training_ms = (time.perf_counter() - member_start) * 1000
+        committee = project.create_classifier_committee(
+            code_id=code, name="phase1e fixed", classifier_spec_ids=[classifier, member],
+            aggregation="mean",
+        )
+        prepared_start = time.perf_counter()
+        project.prepare_selected_committee(code_id=code, committee_id=committee)
+        preparation_ms = (time.perf_counter() - prepared_start) * 1000
+        committee_first = _measure(lambda: project.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            committee_id=committee, recommendation_source="committee", auto_retrain=False,
+        ), 1)
+        committee_warm = _measure(lambda: project.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            committee_id=committee, recommendation_source="committee", auto_retrain=False,
+        ), repeats)
+
+        tracemalloc.start()
+        _measure(lambda: project.focus_recommendation(
+            code_id=code, session_id=session, strategy="likely_positive",
+            active_classifier_spec_id=classifier, auto_retrain=False,
+        ), repeats)
+        _current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
         with project.database.connect() as connection:
             indexes = [
                 str(row["name"])
@@ -89,6 +165,15 @@ def run(size: int, repeats: int, seed: int) -> dict:
             "fit_id": fit_id,
             "first": first,
             "warm": warm,
+            "visited_count": visit_target,
+            "visited_recommendation": visited,
+            "stale_snapshot": stale,
+            "reopened_first": reopened_first,
+            "committee_member_training_ms": round(member_training_ms, 3),
+            "fixed_committee_prepare_ms": round(preparation_ms, 3),
+            "fixed_committee_first": committee_first,
+            "fixed_committee_warm": committee_warm,
+            "tracemalloc_peak_bytes": peak,
             "indexes": indexes,
         }
     return result
@@ -115,6 +200,8 @@ def main() -> None:
             "backend project API only, not Dash click-to-focal-display",
             "GitHub-hosted runner results cannot represent constrained researcher laptops",
             "no historical pre-refactor baseline provided; compare revisions on same runner",
+            "fixed committee mean included; learned committee is tested separately",
+            "tracemalloc captures Python allocations, not total resident memory",
         ],
         "runs": [run(s, args.repeats, args.seed) for s in args.sizes],
     }
