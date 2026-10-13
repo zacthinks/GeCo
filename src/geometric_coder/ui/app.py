@@ -263,6 +263,43 @@ def _teaching_example_for_code(
     ), None)
 
 
+def _post_saved_apply_batch_training_request(
+    project: GeometricCoder, *, apply_run_id: int,
+    mutation: str, changed_assignment_count: int, commit_operation_id: int,
+    develop_code_id: int | None, auto_train_values: list[str] | None,
+    train_scope_values: list[str] | None, tune_values: list[str] | None,
+    recommendation_source: str | None,
+    active_classifier_spec_id: int | None, committee_id: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Optional training after one *committed* Apply batch or audited undo.
+
+    Proposal edits, bulk draft decisions, conflicts, leave-unreviewed and
+    zero-change commits never enqueue fitting. The affected code is read from
+    the persisted Apply run, not inferred from the currently selected UI code.
+    """
+    if mutation not in {"commit", "undo"}:
+        raise ValueError("Unknown Apply assignment mutation.")
+    if changed_assignment_count <= 0:
+        return None, "No assignments changed; no automatic training requested."
+    run = project.apply_run(int(apply_run_id))
+    request, status = _post_saved_external_judgment_training_request(
+        project, code_id=int(run["code_id"]),
+        develop_code_id=develop_code_id, annotation_event_id=None,
+        auto_train_values=auto_train_values,
+        train_scope_values=train_scope_values, tune_values=tune_values,
+        recommendation_source=recommendation_source,
+        active_classifier_spec_id=active_classifier_spec_id,
+        committee_id=committee_id,
+    )
+    label = "Apply commit saved" if mutation == "commit" else "Apply undo saved"
+    if request is not None:
+        request["origin"] = "apply"
+        request["apply_run_id"] = int(apply_run_id)
+        request["apply_mutation"] = mutation
+        request["commit_operation_id"] = int(commit_operation_id)
+    return request, status.replace("Judgment saved", label)
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
