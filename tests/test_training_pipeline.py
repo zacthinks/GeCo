@@ -1175,3 +1175,53 @@ def test_teaching_example_selection_rejects_other_code_and_stale_rows(tmp_path: 
     assert _teaching_example_for_code(
         project, code_id=first_code, observation_id=obs
     )["teaching_status"] == "inactive"
+
+
+def test_apply_batch_training_request_uses_committed_code_and_scope(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import _post_saved_apply_batch_training_request
+
+    project = _project(tmp_path)
+    code_id = project.create_code("apply scope")
+    other_code = project.create_code("other")
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observations = project.database.list_observations()
+    project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
+    project.train_classifiers(code_id=code_id, classifier_spec_ids=[spec_id])
+    run_id = project.create_apply_run(
+        code_id=code_id, source_kind="classifier", source_id=spec_id
+    )
+    kwargs = dict(
+        project=project, apply_run_id=run_id, mutation="commit",
+        changed_assignment_count=2, commit_operation_id=12,
+        develop_code_id=code_id, auto_train_values=["auto"],
+        train_scope_values=[], tune_values=[],
+        recommendation_source="classifier",
+        active_classifier_spec_id=spec_id, committee_id=None,
+    )
+    request, message = _post_saved_apply_batch_training_request(**kwargs)
+    assert request is not None
+    assert request["code_id"] == code_id
+    assert request["classifier_spec_ids"] == [spec_id]
+    assert request["apply_run_id"] == run_id
+    assert request["commit_operation_id"] == 12
+    assert request["apply_mutation"] == "commit"
+    assert request["origin"] == "apply"
+    assert "annotation_event_id" not in request
+    assert "Apply commit saved" in message
+
+    for changes in (
+        {"changed_assignment_count": 0},
+        {"develop_code_id": other_code},
+        {"auto_train_values": []},
+    ):
+        request, _ = _post_saved_apply_batch_training_request(**{**kwargs, **changes})
+        assert request is None
+    request, message = _post_saved_apply_batch_training_request(
+        **{**kwargs, "mutation": "undo", "changed_assignment_count": 1}
+    )
+    assert request is not None
+    assert request["apply_mutation"] == "undo"
+    assert "Apply undo saved" in message
+    with pytest.raises(ValueError, match="Unknown Apply"):
+        _post_saved_apply_batch_training_request(**{**kwargs, "mutation": "review"})
