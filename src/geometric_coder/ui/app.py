@@ -5133,15 +5133,20 @@ def create_app(
         Input("focus-code-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
     )
     def update_focus_code_summary(
         code_id: int | None,
         refresh: int,
         teaching_refresh: int | None,
+        workspace: str | None,
     ) -> tuple[Any, Any, Any]:
-        # Navigation changes the focal unit, not code-level assignment counts.
-        # Avoid two full current-annotation reads on every recommendation click.
+        # Return to Develop is the reconciliation point for evidence saved in
+        # Explore or Apply. Neither draft refreshes nor focal navigation should
+        # repeatedly scan all annotations. Hidden tabs need no summary work.
         del refresh, teaching_refresh
+        if workspace != "focus":
+            return no_update, no_update, no_update
         if code_id is None:
             return "No code selected.", "", ""
         code = project.database.get_code(int(code_id))
