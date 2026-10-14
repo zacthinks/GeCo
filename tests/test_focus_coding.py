@@ -236,3 +236,57 @@ def test_focus_launch_reopens_if_completed_matrix_becomes_unresolved(monkeypatch
     monkeypatch.setattr(ui, "launch_focus_coder", lambda *args, **kwargs: None)
     project.launch_focus_coder(session_id=session_id)
     assert project.focus_task(session_id)["status"] == "open"
+
+
+def test_focus_subset_validation_preserves_order_and_avoids_full_unit_scan(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    project = _project(tmp_path)
+    codes = [int(row["code_id"]) for row in project.codes()]
+    session_id = project.configure_focus(codes=codes, unit_ids=[3, 1, 2])
+    def forbidden():
+        raise AssertionError("focus_task must not read the full corpus")
+    monkeypatch.setattr(project, "units", forbidden)
+    task = project.focus_task(session_id)
+    assert task["required_unit_ids"] == [3, 1, 2]
+    assert [row["version_number"] for row in task["required_codes"]] == [1, 1]
+    assert project.focus_progress(session_id)["total_judgments"] == 6
+
+
+def test_missing_unit_ids_preserves_order_and_duplicates(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    assert project.database.missing_unit_ids([]) == []
+    assert project.database.missing_unit_ids([3, 999, 1, 998, 999]) == [999, 998, 999]
+    assert project.database.missing_unit_ids([1, 2, 3, 3]) == []
+
+
+def test_missing_unit_ids_across_sqlite_variable_batches(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    requested = list(range(1, 1500))
+    missing = project.database.missing_unit_ids(requested)
+    assert missing == list(range(4, 1500))
+    assert project.database.missing_unit_ids([9999] + [1] * 1200 + [9999]) == [
+        9999, 9999
+    ]
+
+
+def test_focus_task_reports_missing_saved_units_without_materializing_corpus(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from geometric_coder.exceptions import ConfigurationError
+    project = _project(tmp_path)
+    session_id = project.configure_focus(
+        codes=[int(project.codes()[0]["code_id"])], unit_ids=[3, 1]
+    )
+    session = project.database.get_session(session_id)
+    state = dict(session["state"])
+    task = dict(state["focus_task"])
+    task["required_unit_ids"] = [999, 3, 998, 999]
+    state["focus_task"] = task
+    project.update_session_state(session_id, state)
+    monkeypatch.setattr(project, "units", lambda: (_ for _ in ()).throw(
+        AssertionError("full unit scan")
+    ))
+    with pytest.raises(ConfigurationError, match=r"\[999, 998, 999\]"):
+        project.focus_task(session_id)
+
