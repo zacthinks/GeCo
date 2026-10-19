@@ -1,0 +1,23 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    GECO_DEMO_TEMPLATE=/app/demo_data/starter.geco \
+    GECO_DEMO_SEMANTIC=1 \
+    HF_HOME=/tmp/hf-cache \
+    PORT=7860
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv
+COPY pyproject.toml uv.lock .python-version ./
+COPY src/ ./src/
+COPY demo/ ./demo/
+RUN uv sync --frozen --no-dev --extra embeddings && uv pip install --python .venv/bin/python flask
+RUN .venv/bin/python -m demo.build_starter
+
+# Hugging Face runs containers under an unprivileged UID. Session directories
+# are created under /tmp; the template project remains read-only.
+USER 1000
+EXPOSE 7860
+CMD ["/app/.venv/bin/python", "-m", "demo.space"]
