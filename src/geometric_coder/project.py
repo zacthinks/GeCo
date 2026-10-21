@@ -1017,6 +1017,150 @@ class GeometricCoder:
             external_ref=ref,
         )
 
+    @staticmethod
+    def _topic_model_name(value: str, *, kind: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigurationError(f"{kind} must be a non-empty string.")
+        return value.strip()
+
+    def register_topic_model(
+        self,
+        *,
+        name: str,
+        membership_ref: Any,
+        membership_kind: str,
+        n_components: int,
+        description_ref: Any | None = None,
+        source_ref: Any | None = None,
+        component_ids: Sequence[str] | None = None,
+        topic_names: Sequence[str] | None = None,
+        if_exists: str = "error",
+    ) -> int:
+        """Register a provider-owned model as local GeCo exploratory metadata.
+
+        This R1 registration does *not* read model matrices or verify coverage.
+        R2 will validate that provider rows and component axes match this record.
+        """
+        if not self.is_external_backed:
+            raise ConfigurationError(
+                "External Topic Models require a provider-backed GeCo project."
+            )
+        model_name = self._topic_model_name(name, kind="Topic Model name")
+        if membership_ref is None:
+            raise ConfigurationError("Topic Model membership_ref is required.")
+        if membership_kind not in {
+            "hard_exclusive", "soft_probabilities", "soft_strengths"
+        }:
+            raise ConfigurationError(
+                "membership_kind must be hard_exclusive, soft_probabilities, or soft_strengths."
+            )
+        if isinstance(n_components, bool) or not isinstance(n_components, int) or n_components < 1:
+            raise ConfigurationError("n_components must be a positive integer.")
+        if component_ids is None:
+            ids = [f"topic_{index}" for index in range(n_components)]
+        else:
+            if isinstance(component_ids, (str, bytes)):
+                raise ConfigurationError("component_ids must be a sequence of strings.")
+            ids = [
+                self._topic_model_name(value, kind="Component ID")
+                for value in component_ids
+            ]
+            if len(ids) != n_components or len(set(ids)) != len(ids):
+                raise ConfigurationError(
+                    "component_ids must contain exactly n_components unique names."
+                )
+        if topic_names is None:
+            names = [f"Topic {index}" for index in range(n_components)]
+        else:
+            if isinstance(topic_names, (str, bytes)):
+                raise ConfigurationError("topic_names must be a sequence of strings.")
+            names = [
+                self._topic_model_name(value, kind="Topic name") for value in topic_names
+            ]
+            if len(names) != n_components:
+                raise ConfigurationError(
+                    "topic_names must contain exactly n_components names."
+                )
+        if if_exists not in {"error", "reuse"}:
+            raise ConfigurationError("if_exists must be 'error' or 'reuse'.")
+        ref = self._json_roundtrip_external_ref(membership_ref)
+        descriptor = (
+            self._json_roundtrip_external_ref(description_ref)
+            if description_ref is not None else None
+        )
+        source = (
+            self._json_roundtrip_external_ref(source_ref)
+            if source_ref is not None else None
+        )
+        try:
+            return self.database.register_topic_model(
+                name=model_name,
+                membership_ref=ref,
+                description_ref=descriptor,
+                source_ref=source,
+                source_key_columns=self.metadata["key_columns"],
+                membership_kind=membership_kind,
+                component_ids=ids,
+                topic_names=names,
+                if_exists=if_exists,
+            )
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from error
+
+    def topic_models(self) -> list[dict[str, Any]]:
+        """List registered models and editable labels without fetching matrices."""
+        return self.database.list_topic_models()
+
+    def topic_model(self, topic_model: int | str) -> dict[str, Any]:
+        """Look up a model by its stable local ID or local name."""
+        if isinstance(topic_model, int) and not isinstance(topic_model, bool):
+            return self.database.get_topic_model(topic_model)
+        if isinstance(topic_model, str):
+            return self.database.get_topic_model_by_name(topic_model)
+        raise TypeError("topic_model must be a local integer ID or a name.")
+
+    def rename_topic_model(self, topic_model_id: int, *, name: str) -> None:
+        """Rename the GeCo registration, never the underlying TeAL artifacts."""
+        model_name = self._topic_model_name(name, kind="Topic Model name")
+        existing = self.database.get_topic_model(topic_model_id)
+        if existing["name"] == model_name:
+            return
+        if any(row["name"] == model_name for row in self.topic_models()):
+            raise ConfigurationError(f"Topic Model {model_name!r} already exists.")
+        self.database.rename_topic_model(topic_model_id, model_name)
+
+    def rename_topic(
+        self, topic_model_id: int, *, component_index: int, name: str
+    ) -> None:
+        """Set one local topic display name; component IDs are immutable."""
+        label = self._topic_model_name(name, kind="Topic name")
+        if isinstance(component_index, bool) or not isinstance(component_index, int):
+            raise ConfigurationError("component_index must be an integer.")
+        self.database.rename_topic(topic_model_id, component_index, label)
+
+    def set_topic_model_display(
+        self,
+        topic_model_id: int,
+        *,
+        mode: str,
+        selected_component: int | None = None,
+    ) -> None:
+        """Store a future Topic Modeling panel's map mode and selected topic."""
+        model = self.database.get_topic_model(topic_model_id)
+        if mode not in {"categorical", "gradient"}:
+            raise ConfigurationError("mode must be 'categorical' or 'gradient'.")
+        if mode == "gradient" and model["membership_kind"] == "hard_exclusive":
+            raise ConfigurationError("Hard Topic Models do not have probability gradients.")
+        if mode == "gradient" and selected_component is None:
+            raise ConfigurationError("A selected_component is required for gradient mode.")
+        if selected_component is not None and (
+            isinstance(selected_component, bool) or not isinstance(selected_component, int)
+        ):
+            raise ConfigurationError("selected_component must be an integer index.")
+        self.database.set_topic_model_display(
+            topic_model_id, mode=mode, selected_component=selected_component
+        )
+
     def geometry_matrix(self, geometry: int | str) -> Matrix:
         """Load one local or provider-backed geometry matrix by ID or name."""
         record = (

@@ -11,7 +11,7 @@ from geometric_coder.storage import SCHEMA_VERSION
 
 
 def test_current_schema_is_clean_pre1_boundary() -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
     scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
     assert not list(scripts_dir.glob("*migrate*"))
 
@@ -27,7 +27,7 @@ def test_schema_mismatch_requires_recreation_not_migration(tmp_path: Path) -> No
     )
     database_path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(database_path) as connection:
-        connection.execute("UPDATE project SET schema_version = 12 WHERE project_id = 1")
+        connection.execute("UPDATE project SET schema_version = 13 WHERE project_id = 1")
         connection.commit()
 
     with pytest.raises(RuntimeError, match="does not carry backward-compatibility or migration architecture"):

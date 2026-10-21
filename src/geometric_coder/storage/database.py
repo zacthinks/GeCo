@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -159,6 +159,25 @@ CREATE TABLE views (
     supports_transform INTEGER NOT NULL DEFAULT 0 CHECK (supports_transform IN (0, 1)),
     storage_kind TEXT NOT NULL DEFAULT 'local' CHECK (storage_kind IN ('local', 'external')),
     external_ref_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE topic_models (
+    topic_model_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    membership_ref_json TEXT NOT NULL,
+    description_ref_json TEXT,
+    source_ref_json TEXT,
+    source_key_columns_json TEXT NOT NULL,
+    source_grain TEXT NOT NULL DEFAULT 'atomic' CHECK (source_grain = 'atomic'),
+    membership_kind TEXT NOT NULL CHECK (
+        membership_kind IN ('hard_exclusive', 'soft_probabilities', 'soft_strengths')
+    ),
+    component_ids_json TEXT NOT NULL,
+    topic_names_json TEXT NOT NULL,
+    display_mode TEXT NOT NULL DEFAULT 'categorical'
+        CHECK (display_mode IN ('categorical', 'gradient')),
+    selected_component INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -1136,6 +1155,164 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return a view ID.")
             return int(cursor.lastrowid)
 
+
+    def register_topic_model(
+        self,
+        *,
+        name: str,
+        membership_ref: Any,
+        description_ref: Any | None,
+        source_ref: Any | None,
+        source_key_columns: Sequence[str],
+        membership_kind: str,
+        component_ids: Sequence[str],
+        topic_names: Sequence[str],
+        if_exists: str = "error",
+    ) -> int:
+        """Persist a model specification without copying provider-owned matrices.
+
+        GeCo deliberately cannot inspect these opaque artifacts here. The
+        provider's keyed membership and optional descriptors are validated when
+        retrieved by a later integration layer.
+        """
+        if if_exists not in {"error", "reuse"}:
+            raise ValueError("if_exists must be 'error' or 'reuse'")
+        stored = {
+            "membership_ref_json": json.dumps(membership_ref, sort_keys=True),
+            "description_ref_json": (
+                json.dumps(description_ref, sort_keys=True)
+                if description_ref is not None else None
+            ),
+            "source_ref_json": (
+                json.dumps(source_ref, sort_keys=True)
+                if source_ref is not None else None
+            ),
+            "source_key_columns_json": json.dumps(list(source_key_columns)),
+            "membership_kind": membership_kind,
+            "component_ids_json": json.dumps(list(component_ids)),
+        }
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM topic_models WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                if if_exists == "reuse":
+                    compatible = all(existing[column] == value for column, value in stored.items())
+                    if compatible:
+                        return int(existing["topic_model_id"])
+                    raise ValueError(
+                        f"Topic Model {name!r} already exists with a different immutable specification."
+                    )
+                raise ValueError(f"Topic Model {name!r} is already registered.")
+            cursor = connection.execute(
+                """
+                INSERT INTO topic_models (
+                    name, membership_ref_json, description_ref_json, source_ref_json,
+                    source_key_columns_json, membership_kind,
+                    component_ids_json, topic_names_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    stored["membership_ref_json"],
+                    stored["description_ref_json"],
+                    stored["source_ref_json"],
+                    stored["source_key_columns_json"],
+                    membership_kind,
+                    stored["component_ids_json"],
+                    json.dumps(list(topic_names)),
+                    utc_now(),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("SQLite did not return a Topic Model ID.")
+            return int(cursor.lastrowid)
+
+    def list_topic_models(self) -> list[dict[str, Any]]:
+        """List GeCo-owned Topic Model metadata, without fetching artifacts."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM topic_models ORDER BY topic_model_id"
+            ).fetchall()
+        return [_topic_model_row(row) for row in rows]
+
+    def get_topic_model(self, topic_model_id: int) -> dict[str, Any]:
+        """Read one model registration by its stable local ID."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+        return _topic_model_row(row)
+
+    def get_topic_model_by_name(self, name: str) -> dict[str, Any]:
+        """Read one model registration by local name."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_models WHERE name = ?", (name,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown Topic Model name: {name!r}")
+        return _topic_model_row(row)
+
+    def rename_topic_model(self, topic_model_id: int, name: str) -> None:
+        """Rename a local model without modifying provider artifacts."""
+        with self.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+            connection.execute(
+                "UPDATE topic_models SET name = ? WHERE topic_model_id = ?",
+                (name, topic_model_id),
+            )
+
+    def rename_topic(self, topic_model_id: int, component_index: int, name: str) -> None:
+        """Change one GeCo-local component name while preserving artifact axes."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT topic_names_json FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+            names = json.loads(row["topic_names_json"])
+            if not 0 <= component_index < len(names):
+                raise IndexError(f"Unknown Topic Model component index: {component_index}")
+            names[component_index] = name
+            connection.execute(
+                "UPDATE topic_models SET topic_names_json = ? WHERE topic_model_id = ?",
+                (json.dumps(names), topic_model_id),
+            )
+
+    def set_topic_model_display(
+        self, topic_model_id: int, *, mode: str, selected_component: int | None
+    ) -> None:
+        """Persist only UI preferences, not model computations."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT component_ids_json FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+            width = len(json.loads(row["component_ids_json"]))
+            if selected_component is not None and not 0 <= selected_component < width:
+                raise IndexError(
+                    f"Unknown Topic Model component index: {selected_component}"
+                )
+            connection.execute(
+                """
+                UPDATE topic_models
+                SET display_mode = ?, selected_component = ?
+                WHERE topic_model_id = ?
+                """,
+                (mode, selected_component, topic_model_id),
+            )
 
     def list_geometries(self, *, public_only: bool = False) -> list[dict[str, Any]]:
         """List persisted geometries in computation order."""
@@ -4851,6 +5028,34 @@ def _classifier_evaluation_row(row: sqlite3.Row) -> dict[str, Any]:
             else None
         ),
         "added_to_training": bool(row["added_to_training"]),
+        "created_at": str(row["created_at"]),
+    }
+
+
+def _topic_model_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Return one saved GeCo Topic Model descriptor (never its matrix values)."""
+    return {
+        "topic_model_id": int(row["topic_model_id"]),
+        "name": str(row["name"]),
+        "membership_ref": json.loads(row["membership_ref_json"]),
+        "description_ref": (
+            json.loads(row["description_ref_json"])
+            if row["description_ref_json"] is not None else None
+        ),
+        "source_ref": (
+            json.loads(row["source_ref_json"])
+            if row["source_ref_json"] is not None else None
+        ),
+        "source_key_columns": json.loads(row["source_key_columns_json"]),
+        "source_grain": str(row["source_grain"]),
+        "membership_kind": str(row["membership_kind"]),
+        "component_ids": json.loads(row["component_ids_json"]),
+        "topic_names": json.loads(row["topic_names_json"]),
+        "display_mode": str(row["display_mode"]),
+        "selected_component": (
+            int(row["selected_component"])
+            if row["selected_component"] is not None else None
+        ),
         "created_at": str(row["created_at"]),
     }
 
