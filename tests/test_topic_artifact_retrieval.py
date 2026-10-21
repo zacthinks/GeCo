@@ -87,7 +87,7 @@ def test_subsets_and_description(tmp_path):
     project = make_project(tmp_path, provider)
     rows = project.topic_model_rows(1, positions=[3, 2, 1], include_description=True)
     assert rows.matched_positions == (0, 2)
-    assert rows.dominant["max_feature"].iloc[0] is None
+    assert pd.isna(rows.dominant["max_feature"].iloc[0])
     assert rows.descriptions is not None
     assert rows.descriptions.row_ids == [0, 1]
     assert provider.calls[-1] == ("description", None)
