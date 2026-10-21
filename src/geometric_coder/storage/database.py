@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -160,6 +160,15 @@ CREATE TABLE views (
     storage_kind TEXT NOT NULL DEFAULT 'local' CHECK (storage_kind IN ('local', 'external')),
     external_ref_json TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE topic_models (
+    topic_model_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    membership_artifact_id TEXT NOT NULL CHECK (length(trim(membership_artifact_id)) > 0),
+    dominant_artifact_id TEXT NOT NULL CHECK (length(trim(dominant_artifact_id)) > 0),
+    description_artifact_id TEXT,
+    topic_labels_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE sessions (
@@ -501,6 +510,27 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
+    """Add the Topic Model registry without touching existing project data."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS topic_models (
+    topic_model_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    membership_artifact_id TEXT NOT NULL CHECK (length(trim(membership_artifact_id)) > 0),
+    dominant_artifact_id TEXT NOT NULL CHECK (length(trim(dominant_artifact_id)) > 0),
+    description_artifact_id TEXT,
+    topic_labels_json TEXT NOT NULL DEFAULT '{}'
+);"""
+    )
+
+
+# Each forward step is a fixed historical change, not a rewrite of old schemas.
+# Add a new entry whenever SCHEMA_VERSION increases.
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    13: _migrate_13_to_14,
+}
+
+
 class ProjectDatabase:
     """Thin SQLite access layer for one GeCo project."""
 
@@ -570,6 +600,62 @@ class ProjectDatabase:
                 """,
                 ("Default session", now, now),
             )
+
+    def ensure_current_schema(self) -> None:
+        """Apply sequential forward migrations on project open, if necessary.
+
+        An already-current database takes the read-only fast path. For an old
+        schema, acquire SQLite's write lock and recheck the version, so two
+        processes opening the same project cannot race the migration.
+        DDL and each schema_version update commit together or roll back.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT schema_version FROM project WHERE project_id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Project metadata is missing.")
+            version = int(row["schema_version"])
+            if version == SCHEMA_VERSION:
+                return
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"This GeCo build supports project schema {SCHEMA_VERSION}, but "
+                    f"the workspace uses newer schema {version}. Open it with a "
+                    "compatible newer GeCo version."
+                )
+
+            connection.execute("BEGIN IMMEDIATE")
+            # A concurrent opener may already have upgraded while we waited.
+            row = connection.execute(
+                "SELECT schema_version FROM project WHERE project_id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Project metadata is missing.")
+            version = int(row["schema_version"])
+            while version < SCHEMA_VERSION:
+                upgrade = _MIGRATIONS.get(version)
+                if upgrade is None:
+                    raise RuntimeError(
+                        f"No supported GeCo schema migration from version {version} "
+                        f"to {SCHEMA_VERSION}. The workspace was not modified."
+                    )
+                upgrade(connection)
+                updated = connection.execute(
+                    """
+                    UPDATE project SET schema_version = ?
+                    WHERE project_id = 1 AND schema_version = ?
+                    """,
+                    (version + 1, version),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("Project schema version changed during migration.")
+                version += 1
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"This GeCo build supports schema {SCHEMA_VERSION}, "
+                    f"but the workspace uses newer schema {version}."
+                )
 
     def ensure_recommendation_indexes(self) -> None:
         """Install additive ranking indexes in already supported schema-13 databases.
@@ -1136,6 +1222,119 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return a view ID.")
             return int(cursor.lastrowid)
 
+
+    def register_topic_model(
+        self,
+        *,
+        name: str,
+        membership_artifact_id: str,
+        dominant_artifact_id: str,
+        description_artifact_id: str | None = None,
+        topic_labels: Mapping[str, str] | None = None,
+        if_exists: str = "error",
+    ) -> int:
+        """Register TeAL artifact IDs; preserve user labels on idempotent reuse.
+
+        Numerical matrices, argmax tables and topic descriptions remain TeAL
+        artifacts. No provider calls or scientific data are stored in SQLite.
+        """
+        if if_exists not in {"error", "reuse"}:
+            raise ValueError("if_exists must be 'error' or 'reuse'")
+        identity = (
+            membership_artifact_id, dominant_artifact_id, description_artifact_id
+        )
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM topic_models WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                if if_exists == "reuse":
+                    current = (
+                        existing["membership_artifact_id"],
+                        existing["dominant_artifact_id"],
+                        existing["description_artifact_id"],
+                    )
+                    if current == identity:
+                        return int(existing["topic_model_id"])
+                    raise ValueError(
+                        f"Topic Model {name!r} already exists with a different artifact registration."
+                    )
+                raise ValueError(f"Topic Model {name!r} is already registered.")
+
+            cursor = connection.execute(
+                """
+                INSERT INTO topic_models (
+                    name, membership_artifact_id, dominant_artifact_id,
+                    description_artifact_id, topic_labels_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    name, membership_artifact_id, dominant_artifact_id,
+                    description_artifact_id, json.dumps(dict(topic_labels or {})),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("SQLite did not return a Topic Model ID.")
+            return int(cursor.lastrowid)
+
+    def list_topic_models(self) -> list[dict[str, Any]]:
+        """List GeCo-owned Topic Model metadata, without fetching artifacts."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM topic_models ORDER BY topic_model_id"
+            ).fetchall()
+        return [_topic_model_row(row) for row in rows]
+
+    def get_topic_model(self, topic_model_id: int) -> dict[str, Any]:
+        """Read one model registration by its stable local ID."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+        return _topic_model_row(row)
+
+    def get_topic_model_by_name(self, name: str) -> dict[str, Any]:
+        """Read one model registration by local name."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_models WHERE name = ?", (name,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown Topic Model name: {name!r}")
+        return _topic_model_row(row)
+
+    def rename_topic_model(self, topic_model_id: int, name: str) -> None:
+        """Rename a local model without modifying provider artifacts."""
+        with self.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+            connection.execute(
+                "UPDATE topic_models SET name = ? WHERE topic_model_id = ?",
+                (name, topic_model_id),
+            )
+
+    def rename_topic(self, topic_model_id: int, component_id: str, name: str) -> None:
+        """Save a label override under its original TeAL feature identifier."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT topic_labels_json FROM topic_models WHERE topic_model_id = ?",
+                (topic_model_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
+            labels = json.loads(row["topic_labels_json"])
+            labels[component_id] = name
+            connection.execute(
+                "UPDATE topic_models SET topic_labels_json = ? WHERE topic_model_id = ?",
+                (json.dumps(labels, sort_keys=True), topic_model_id),
+            )
 
     def list_geometries(self, *, public_only: bool = False) -> list[dict[str, Any]]:
         """List persisted geometries in computation order."""
@@ -4852,6 +5051,18 @@ def _classifier_evaluation_row(row: sqlite3.Row) -> dict[str, Any]:
         ),
         "added_to_training": bool(row["added_to_training"]),
         "created_at": str(row["created_at"]),
+    }
+
+
+def _topic_model_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Return GeCo-owned labels and ordinary external artifact IDs only."""
+    return {
+        "topic_model_id": int(row["topic_model_id"]),
+        "name": str(row["name"]),
+        "membership_artifact_id": str(row["membership_artifact_id"]),
+        "dominant_artifact_id": str(row["dominant_artifact_id"]),
+        "description_artifact_id": row["description_artifact_id"],
+        "topic_labels": json.loads(row["topic_labels_json"]),
     }
 
 

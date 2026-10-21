@@ -293,19 +293,12 @@ class GeometricCoder:
             raise ProjectNotFoundError(f"No GeCo project database found at {database_path}")
         project = cls(root, external_provider=external_provider)
         metadata = project.database.project_metadata()
-        observed_schema = int(metadata["schema_version"])
-        if observed_schema != SCHEMA_VERSION:
-            raise RuntimeError(
-                f"This GeCo build requires project schema {SCHEMA_VERSION}, but the "
-                f"project uses schema {observed_schema}. Pre-1.0 GeCo does not carry "
-                "backward-compatibility or migration architecture. Recreate the workspace "
-                "from its source data and external-resource registrations."
-            )
         if bool(metadata.get("external_backed")) and external_provider is None:
             raise ConfigurationError(
                 "This GeCo project uses externally backed numerical resources. "
                 "Reopen it with external_provider=... ."
             )
+        project.database.ensure_current_schema()
         project.database.ensure_recommendation_indexes()
         project.ensure_default_classifier_specs()
         return project
@@ -1016,6 +1009,108 @@ class GeometricCoder:
             storage_kind="external",
             external_ref=ref,
         )
+
+    @staticmethod
+    def _topic_model_name(value: str, *, kind: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigurationError(f"{kind} must be a non-empty string.")
+        return value.strip()
+
+    def register_topic_model(
+        self,
+        *,
+        name: str,
+        membership_artifact_id: str,
+        dominant_artifact_id: str,
+        description_artifact_id: str | None = None,
+        topic_labels: Mapping[str, str] | None = None,
+        if_exists: str = "error",
+    ) -> int:
+        """Register one Topic Model over two required, one optional TeAL artifacts.
+
+        The original membership matrix is N x K; dominant assignments are
+        a keyed ArgMax *table* (max_feature/max_value), not an N x 1 matrix.
+        Description rows may correspond to its K topics, if available.
+        Actual artifact shape/key/axis validation belongs to the R2/R3 bridge.
+        """
+        if not self.is_external_backed:
+            raise ConfigurationError(
+                "External Topic Models require a provider-backed GeCo project."
+            )
+        model_name = self._topic_model_name(name, kind="Topic Model name")
+        membership_id = self._topic_model_name(
+            membership_artifact_id, kind="Membership artifact ID"
+        )
+        dominant_id = self._topic_model_name(
+            dominant_artifact_id, kind="ArgMax artifact ID"
+        )
+        if membership_id == dominant_id:
+            raise ConfigurationError(
+                "The ArgMax artifact must be distinct from the membership matrix."
+            )
+        descriptor_id = (
+            self._topic_model_name(
+                description_artifact_id, kind="Description artifact ID"
+            )
+            if description_artifact_id is not None else None
+        )
+        if descriptor_id is not None and descriptor_id in {membership_id, dominant_id}:
+            raise ConfigurationError("Description artifact must be a separate resource.")
+        if if_exists not in {"error", "reuse"}:
+            raise ConfigurationError("if_exists must be 'error' or 'reuse'.")
+
+        if topic_labels is not None and not isinstance(topic_labels, Mapping):
+            raise ConfigurationError("topic_labels must map original topic IDs to labels.")
+        labels: dict[str, str] = {}
+        for component_id, label in (topic_labels or {}).items():
+            if not isinstance(component_id, str) or not component_id.strip():
+                raise ConfigurationError("Original topic IDs must be non-empty strings.")
+            labels[component_id] = self._topic_model_name(
+                label, kind="Custom topic label"
+            )
+
+        try:
+            return self.database.register_topic_model(
+                name=model_name,
+                membership_artifact_id=membership_id,
+                dominant_artifact_id=dominant_id,
+                description_artifact_id=descriptor_id,
+                topic_labels=labels,
+                if_exists=if_exists,
+            )
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from error
+
+    def topic_models(self) -> list[dict[str, Any]]:
+        """List GeCo-local registrations without fetching TeAL artifacts."""
+        return self.database.list_topic_models()
+
+    def topic_model(self, topic_model: int | str) -> dict[str, Any]:
+        """Look up one registered model by local ID or name."""
+        if isinstance(topic_model, int) and not isinstance(topic_model, bool):
+            return self.database.get_topic_model(topic_model)
+        if isinstance(topic_model, str):
+            return self.database.get_topic_model_by_name(topic_model)
+        raise TypeError("topic_model must be a local integer ID or a name.")
+
+    def rename_topic_model(self, topic_model_id: int, *, name: str) -> None:
+        """Rename a GeCo model without mutating any external artifact."""
+        model_name = self._topic_model_name(name, kind="Topic Model name")
+        existing = self.database.get_topic_model(topic_model_id)
+        if existing["name"] == model_name:
+            return
+        if any(row["name"] == model_name for row in self.topic_models()):
+            raise ConfigurationError(f"Topic Model {model_name!r} already exists.")
+        self.database.rename_topic_model(topic_model_id, model_name)
+
+    def rename_topic(
+        self, topic_model_id: int, *, component_id: str, name: str
+    ) -> None:
+        """Override a topic's local display name, retaining its TeAL feature ID."""
+        if not isinstance(component_id, str) or not component_id.strip():
+            raise ConfigurationError("component_id must be a non-empty topic feature ID.")
+        label = self._topic_model_name(name, kind="Topic name")
+        self.database.rename_topic(topic_model_id, component_id, label)
 
     def geometry_matrix(self, geometry: int | str) -> Matrix:
         """Load one local or provider-backed geometry matrix by ID or name."""
