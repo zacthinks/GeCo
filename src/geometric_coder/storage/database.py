@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -520,6 +520,37 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
+    """Add the Topic Model registry without touching existing project data."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS topic_models (
+    topic_model_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    membership_ref_json TEXT NOT NULL,
+    description_ref_json TEXT,
+    source_ref_json TEXT,
+    source_key_columns_json TEXT NOT NULL,
+    source_grain TEXT NOT NULL DEFAULT 'atomic' CHECK (source_grain = 'atomic'),
+    membership_kind TEXT NOT NULL CHECK (
+        membership_kind IN ('hard_exclusive', 'soft_probabilities', 'soft_strengths')
+    ),
+    component_ids_json TEXT NOT NULL,
+    topic_names_json TEXT NOT NULL,
+    display_mode TEXT NOT NULL DEFAULT 'categorical'
+        CHECK (display_mode IN ('categorical', 'gradient')),
+    selected_component INTEGER,
+    created_at TEXT NOT NULL
+);"""
+    )
+
+
+# Each forward step is a fixed historical change, not a rewrite of old schemas.
+# Add a new entry whenever SCHEMA_VERSION increases.
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    13: _migrate_13_to_14,
+}
+
+
 class ProjectDatabase:
     """Thin SQLite access layer for one GeCo project."""
 
@@ -589,6 +620,62 @@ class ProjectDatabase:
                 """,
                 ("Default session", now, now),
             )
+
+    def ensure_current_schema(self) -> None:
+        """Apply sequential forward migrations on project open, if necessary.
+
+        An already-current database takes the read-only fast path. For an old
+        schema, acquire SQLite's write lock and recheck the version, so two
+        processes opening the same project cannot race the migration.
+        DDL and each schema_version update commit together or roll back.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT schema_version FROM project WHERE project_id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Project metadata is missing.")
+            version = int(row["schema_version"])
+            if version == SCHEMA_VERSION:
+                return
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"This GeCo build supports project schema {SCHEMA_VERSION}, but "
+                    f"the workspace uses newer schema {version}. Open it with a "
+                    "compatible newer GeCo version."
+                )
+
+            connection.execute("BEGIN IMMEDIATE")
+            # A concurrent opener may already have upgraded while we waited.
+            row = connection.execute(
+                "SELECT schema_version FROM project WHERE project_id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Project metadata is missing.")
+            version = int(row["schema_version"])
+            while version < SCHEMA_VERSION:
+                upgrade = _MIGRATIONS.get(version)
+                if upgrade is None:
+                    raise RuntimeError(
+                        f"No supported GeCo schema migration from version {version} "
+                        f"to {SCHEMA_VERSION}. The workspace was not modified."
+                    )
+                upgrade(connection)
+                updated = connection.execute(
+                    """
+                    UPDATE project SET schema_version = ?
+                    WHERE project_id = 1 AND schema_version = ?
+                    """,
+                    (version + 1, version),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("Project schema version changed during migration.")
+                version += 1
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"This GeCo build supports schema {SCHEMA_VERSION}, "
+                    f"but the workspace uses newer schema {version}."
+                )
 
     def ensure_recommendation_indexes(self) -> None:
         """Install additive ranking indexes in already supported schema-13 databases.

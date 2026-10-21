@@ -293,19 +293,12 @@ class GeometricCoder:
             raise ProjectNotFoundError(f"No GeCo project database found at {database_path}")
         project = cls(root, external_provider=external_provider)
         metadata = project.database.project_metadata()
-        observed_schema = int(metadata["schema_version"])
-        if observed_schema != SCHEMA_VERSION:
-            raise RuntimeError(
-                f"This GeCo build requires project schema {SCHEMA_VERSION}, but the "
-                f"project uses schema {observed_schema}. Pre-1.0 GeCo does not carry "
-                "backward-compatibility or migration architecture. Recreate the workspace "
-                "from its source data and external-resource registrations."
-            )
         if bool(metadata.get("external_backed")) and external_provider is None:
             raise ConfigurationError(
                 "This GeCo project uses externally backed numerical resources. "
                 "Reopen it with external_provider=... ."
             )
+        project.database.ensure_current_schema()
         project.database.ensure_recommendation_indexes()
         project.ensure_default_classifier_specs()
         return project
