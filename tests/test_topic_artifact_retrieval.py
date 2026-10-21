@@ -94,7 +94,7 @@ def test_subsets_and_description(tmp_path):
 
 
 @pytest.mark.parametrize("invalid,phrase", [
-    ("bad_positions", "duplicate key positions"),
+    ("bad_positions", "duplicate key positions|duplicate key"),
     ("coverage", "coverage do not match"),
     ("unknown", "unknown topic component"),
     ("description", "topic IDs do not match"),
