@@ -386,6 +386,8 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.topic_explore import normalize_color_mode, topic_point_colors
+
     metadata = project.metadata
     units = project.units()
     unit_ids = [int(unit["unit_id"]) for unit in units]
@@ -511,6 +513,7 @@ def create_app(
                     data=initial_focal_unit_id if initial_workspace == "focus" else None,
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
+                dcc.Store(id="topic-color-status-store", data=""),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -727,6 +730,32 @@ def create_app(
         style=GECO_DASH_THEME,
     )
 
+    @app.callback(
+        Output("topic-model-selector", "options"),
+        Input("session-dropdown", "value"),
+    )
+    def available_topic_models(_session_id: int) -> list[dict[str, Any]]:
+        return [
+            {"label": str(model["name"]), "value": int(model["topic_model_id"])}
+            for model in project.topic_models()
+        ]
+
+    @app.callback(
+        Output("topic-component-selector", "options"),
+        Input("topic-model-selector", "value"),
+    )
+    def available_topic_components(model_id: int | None) -> list[dict[str, str]]:
+        if model_id is None or not units:
+            return []
+        try:
+            rows = project.topic_model_rows(int(model_id), positions=[0])
+        except (ConfigurationError, ValueError, KeyError):
+            return []
+        return [
+            {"label": rows.topic_labels.get(topic, topic) + (f" ({topic})" if topic in rows.topic_labels else ""), "value": topic}
+            for topic in rows.topic_ids
+        ]
+
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
     # wake their server-side reading/model callbacks every time the global focal
     # unit changes in another workspace. Switching tabs copies the current focal
@@ -804,6 +833,9 @@ def create_app(
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
+        Output("topic-color-mode", "value"),
+        Output("topic-model-selector", "value"),
+        Output("topic-component-selector", "value"),
         Input("session-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -886,6 +918,9 @@ def create_app(
             focus_committee,
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
+            normalize_color_mode(state.get("topic_color_mode")),
+            state.get("topic_model_id"),
+            state.get("topic_component_id"),
         )
 
     @app.callback(
@@ -1547,6 +1582,9 @@ def create_app(
         Input("session-dropdown", "value"),
         Input("page-size", "value"),
         Input("page-number", "value"),
+        Input("topic-color-mode", "value"),
+        Input("topic-model-selector", "value"),
+        Input("topic-component-selector", "value"),
         State("geometry-map", "relayoutData"),
         State("explore-focal-unit-store", "data"),
         State("geometry-map-base-revision-store", "data"),
@@ -1565,6 +1603,9 @@ def create_app(
         session_id: int,
         page_size: Any,
         page_number: Any,
+        color_mode: str | None,
+        topic_model_id: int | None,
+        topic_component_id: str | None,
         relayout_data: dict[str, Any] | None,
         focal_unit_id: int | None,
         base_revision: int | None,
@@ -1621,6 +1662,25 @@ def create_app(
             if semantic_scores is not None
             else None
         )
+        selected_color_mode = normalize_color_mode(color_mode)
+        page_topics = None
+        color_status = ""
+        if selected_color_mode in {"dominant", "intensity"}:
+            if topic_model_id is None:
+                color_status = "Choose a registered Topic Model to color points."
+            else:
+                try:
+                    topic_rows = project.topic_model_rows(
+                        int(topic_model_id), positions=[int(i) for i in positions]
+                    )
+                    page_topics = topic_point_colors(
+                        topic_rows, mode=selected_color_mode,
+                        selected_topic=topic_component_id,
+                        requested_count=len(positions),
+                    )
+                    color_status = page_topics.status
+                except (ConfigurationError, KeyError, ValueError) as exc:
+                    color_status = f"Topic coloring unavailable: {exc}"
         seen = project.database.seen_unit_ids(int(session_id))
         view = project.database.get_view(int(view_id))
         figure = build_geometry_figure(
@@ -1629,7 +1689,8 @@ def create_app(
             eligible=page_eligible,
             seen_unit_ids=seen,
             focal_unit_id=int(focal_unit_id) if focal_unit_id is not None else None,
-            semantic_scores=page_semantic,
+            semantic_scores=page_semantic if selected_color_mode == "semantic" else None,
+            topic_colors=page_topics.colors if page_topics is not None else None,
             geometry_name=str(geometry_record["name"]),
             view_name=str(view["name"]),
             page_label=f"Page {page.page_index + 1} of {page.page_count}",
@@ -1648,6 +1709,8 @@ def create_app(
             f"{len(positions):,} points shown · "
             f"{filter_match_count:,} points match filters"
         )
+        if selected_color_mode in {"dominant", "intensity"}:
+            page_status += f" · {color_status}"
         return figure, literal_status, page_status, next_revision
 
     @app.callback(
@@ -6145,6 +6208,9 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
+        Input("topic-color-mode", "value"),
+        Input("topic-model-selector", "value"),
+        Input("topic-component-selector", "value"),
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
@@ -6175,6 +6241,9 @@ def create_app(
         page_number: Any,
         navigation_new_only: list[str] | None,
         workspace: str,
+        topic_color_mode: str | None,
+        topic_model_id: int | None,
+        topic_component_id: str | None,
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
@@ -6224,6 +6293,9 @@ def create_app(
                 "page_number": _coerce_positive_int(page_number, default=1),
                 "navigation_new_only": "new_only" in (navigation_new_only or []),
                 "workspace": workspace,
+                "topic_color_mode": normalize_color_mode(topic_color_mode),
+                "topic_model_id": topic_model_id,
+                "topic_component_id": topic_component_id,
                 "focus_code_id": focus_code_id,
                 "focus_classifier_spec_id": focus_classifier_spec_id,
                 "focus_committee_id": focus_committee_id,
@@ -6489,6 +6561,27 @@ def _explore_layout(
                             ),
                         ],
                         className="control-block combined-search-block",
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Map coloring", className="control-block-title"),
+                            dcc.RadioItems(
+                                id="topic-color-mode",
+                                options=[
+                                    {"label": "Plain", "value": "plain"},
+                                    {"label": "Semantic similarity", "value": "semantic"},
+                                    {"label": "Dominant topic", "value": "dominant"},
+                                    {"label": "Selected topic weight", "value": "intensity"},
+                                ],
+                                value=normalize_color_mode(initial_state.get("topic_color_mode", "plain")),
+                            ),
+                            html.Label("Topic Model"),
+                            dcc.Dropdown(id="topic-model-selector", clearable=False),
+                            html.Label("Topic"),
+                            dcc.Dropdown(id="topic-component-selector", clearable=False),
+                            html.P("Coloring does not change semantic search or filters.", className="control-status"),
+                        ],
+                        className="control-block",
                     ),
                     html.Div(
                         [
