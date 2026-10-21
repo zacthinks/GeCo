@@ -15,6 +15,12 @@ class ExternalDataProvider(Protocol):
     supplied stable user keys, and returning rows in the same order.
 
     ``transform_query`` and ``transform_texts`` are optional provider methods.
+
+    Providers may additionally implement read_artifact(artifact_id, ordered_user_keys)
+    returning an ArtifactRows packet. Keys are ordered original GeCo user-key
+    mappings or None for independent description matrices. Matched positions
+    are relative to the requested keys and may represent a coarser-key join.
+    This method is optional; existing geometry-only providers remain valid.
     Each registered external geometry separately persists whether query and new-text
     transformation are legal for that resource; GeCo checks both the per-geometry
     declaration and the runtime provider method before invoking either operation.

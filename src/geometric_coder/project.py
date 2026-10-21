@@ -29,6 +29,7 @@ from geometric_coder.classifiers import (
     tuning_candidates,
 )
 from geometric_coder.external import ExternalDataProvider
+from geometric_coder.topic_artifacts import ArtifactRows, TopicModelRows, validate_topic_model_rows
 from geometric_coder.exceptions import (
     ConfigurationError,
     ProjectExistsError,
@@ -1111,6 +1112,55 @@ class GeometricCoder:
             raise ConfigurationError("component_id must be a non-empty topic feature ID.")
         label = self._topic_model_name(name, kind="Topic name")
         self.database.rename_topic(topic_model_id, component_id, label)
+
+    def topic_model_rows(
+        self,
+        topic_model: int | str,
+        *,
+        positions: Sequence[int] | None = None,
+        include_description: bool = False,
+    ) -> TopicModelRows:
+        """Fetch memberships and ArgMax by key from an optional external provider.
+
+        Positions refer to GeCo's canonical atomic observations; the provider
+        may return only matched rows (or map coarser keyed artifacts to these
+        observations). Uncovered keys are never filled with fake topic scores.
+        """
+        model = self.topic_model(topic_model)
+        provider = self._require_external_provider()
+        reader = getattr(provider, "read_artifact", None)
+        if not callable(reader):
+            raise ConfigurationError(
+                "This external provider does not support reading keyed Topic Model artifacts."
+            )
+        all_keys = self._ordered_user_keys()
+        if positions is None:
+            requested = all_keys
+        else:
+            indices = list(positions)
+            if any(
+                isinstance(index, (bool, np.bool_))
+                or not isinstance(index, (int, np.integer))
+                or index < 0
+                or index >= len(all_keys)
+                for index in indices
+            ) or len(set(indices)) != len(indices):
+                raise ConfigurationError(
+                    "Topic Model requested positions must be unique valid indices."
+                )
+            requested = [all_keys[int(index)] for index in indices]
+
+        membership: ArtifactRows = reader(model["membership_artifact_id"], requested)
+        dominant: ArtifactRows = reader(model["dominant_artifact_id"], requested)
+        description: ArtifactRows | None = (
+            reader(model["description_artifact_id"], None)
+            if include_description and model["description_artifact_id"] is not None
+            else None
+        )
+        return validate_topic_model_rows(
+            model, membership, dominant, requested_count=len(requested),
+            description=description,
+        )
 
     def geometry_matrix(self, geometry: int | str) -> Matrix:
         """Load one local or provider-backed geometry matrix by ID or name."""
