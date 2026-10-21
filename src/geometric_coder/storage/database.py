@@ -165,20 +165,10 @@ CREATE TABLE views (
 CREATE TABLE topic_models (
     topic_model_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
-    membership_ref_json TEXT NOT NULL,
-    description_ref_json TEXT,
-    source_ref_json TEXT,
-    source_key_columns_json TEXT NOT NULL,
-    source_grain TEXT NOT NULL DEFAULT 'atomic' CHECK (source_grain = 'atomic'),
-    membership_kind TEXT NOT NULL CHECK (
-        membership_kind IN ('hard_exclusive', 'soft_probabilities', 'soft_strengths')
-    ),
-    component_ids_json TEXT NOT NULL,
-    topic_names_json TEXT NOT NULL,
-    display_mode TEXT NOT NULL DEFAULT 'categorical'
-        CHECK (display_mode IN ('categorical', 'gradient')),
-    selected_component INTEGER,
-    created_at TEXT NOT NULL
+    membership_artifact_id TEXT NOT NULL CHECK (length(trim(membership_artifact_id)) > 0),
+    dominant_artifact_id TEXT NOT NULL CHECK (length(trim(dominant_artifact_id)) > 0),
+    description_artifact_id TEXT,
+    topic_labels_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE sessions (
@@ -526,20 +516,10 @@ def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS topic_models (
     topic_model_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
-    membership_ref_json TEXT NOT NULL,
-    description_ref_json TEXT,
-    source_ref_json TEXT,
-    source_key_columns_json TEXT NOT NULL,
-    source_grain TEXT NOT NULL DEFAULT 'atomic' CHECK (source_grain = 'atomic'),
-    membership_kind TEXT NOT NULL CHECK (
-        membership_kind IN ('hard_exclusive', 'soft_probabilities', 'soft_strengths')
-    ),
-    component_ids_json TEXT NOT NULL,
-    topic_names_json TEXT NOT NULL,
-    display_mode TEXT NOT NULL DEFAULT 'categorical'
-        CHECK (display_mode IN ('categorical', 'gradient')),
-    selected_component INTEGER,
-    created_at TEXT NOT NULL
+    membership_artifact_id TEXT NOT NULL CHECK (length(trim(membership_artifact_id)) > 0),
+    dominant_artifact_id TEXT NOT NULL CHECK (length(trim(dominant_artifact_id)) > 0),
+    description_artifact_id TEXT,
+    topic_labels_json TEXT NOT NULL DEFAULT '{}'
 );"""
     )
 
@@ -1247,68 +1227,50 @@ class ProjectDatabase:
         self,
         *,
         name: str,
-        membership_ref: Any,
-        description_ref: Any | None,
-        source_ref: Any | None,
-        source_key_columns: Sequence[str],
-        membership_kind: str,
-        component_ids: Sequence[str],
-        topic_names: Sequence[str],
+        membership_artifact_id: str,
+        dominant_artifact_id: str,
+        description_artifact_id: str | None = None,
+        topic_labels: Mapping[str, str] | None = None,
         if_exists: str = "error",
     ) -> int:
-        """Persist a model specification without copying provider-owned matrices.
+        """Register TeAL artifact IDs; preserve user labels on idempotent reuse.
 
-        GeCo deliberately cannot inspect these opaque artifacts here. The
-        provider's keyed membership and optional descriptors are validated when
-        retrieved by a later integration layer.
+        Numerical matrices, argmax tables and topic descriptions remain TeAL
+        artifacts. No provider calls or scientific data are stored in SQLite.
         """
         if if_exists not in {"error", "reuse"}:
             raise ValueError("if_exists must be 'error' or 'reuse'")
-        stored = {
-            "membership_ref_json": json.dumps(membership_ref, sort_keys=True),
-            "description_ref_json": (
-                json.dumps(description_ref, sort_keys=True)
-                if description_ref is not None else None
-            ),
-            "source_ref_json": (
-                json.dumps(source_ref, sort_keys=True)
-                if source_ref is not None else None
-            ),
-            "source_key_columns_json": json.dumps(list(source_key_columns)),
-            "membership_kind": membership_kind,
-            "component_ids_json": json.dumps(list(component_ids)),
-        }
+        identity = (
+            membership_artifact_id, dominant_artifact_id, description_artifact_id
+        )
         with self.connect() as connection:
             existing = connection.execute(
                 "SELECT * FROM topic_models WHERE name = ?", (name,)
             ).fetchone()
             if existing is not None:
                 if if_exists == "reuse":
-                    compatible = all(existing[column] == value for column, value in stored.items())
-                    if compatible:
+                    current = (
+                        existing["membership_artifact_id"],
+                        existing["dominant_artifact_id"],
+                        existing["description_artifact_id"],
+                    )
+                    if current == identity:
                         return int(existing["topic_model_id"])
                     raise ValueError(
-                        f"Topic Model {name!r} already exists with a different immutable specification."
+                        f"Topic Model {name!r} already exists with a different artifact registration."
                     )
                 raise ValueError(f"Topic Model {name!r} is already registered.")
+
             cursor = connection.execute(
                 """
                 INSERT INTO topic_models (
-                    name, membership_ref_json, description_ref_json, source_ref_json,
-                    source_key_columns_json, membership_kind,
-                    component_ids_json, topic_names_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    name, membership_artifact_id, dominant_artifact_id,
+                    description_artifact_id, topic_labels_json
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    name,
-                    stored["membership_ref_json"],
-                    stored["description_ref_json"],
-                    stored["source_ref_json"],
-                    stored["source_key_columns_json"],
-                    membership_kind,
-                    stored["component_ids_json"],
-                    json.dumps(list(topic_names)),
-                    utc_now(),
+                    name, membership_artifact_id, dominant_artifact_id,
+                    description_artifact_id, json.dumps(dict(topic_labels or {})),
                 ),
             )
             if cursor.lastrowid is None:
@@ -1358,47 +1320,20 @@ class ProjectDatabase:
                 (name, topic_model_id),
             )
 
-    def rename_topic(self, topic_model_id: int, component_index: int, name: str) -> None:
-        """Change one GeCo-local component name while preserving artifact axes."""
+    def rename_topic(self, topic_model_id: int, component_id: str, name: str) -> None:
+        """Save a label override under its original TeAL feature identifier."""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT topic_names_json FROM topic_models WHERE topic_model_id = ?",
+                "SELECT topic_labels_json FROM topic_models WHERE topic_model_id = ?",
                 (topic_model_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
-            names = json.loads(row["topic_names_json"])
-            if not 0 <= component_index < len(names):
-                raise IndexError(f"Unknown Topic Model component index: {component_index}")
-            names[component_index] = name
+            labels = json.loads(row["topic_labels_json"])
+            labels[component_id] = name
             connection.execute(
-                "UPDATE topic_models SET topic_names_json = ? WHERE topic_model_id = ?",
-                (json.dumps(names), topic_model_id),
-            )
-
-    def set_topic_model_display(
-        self, topic_model_id: int, *, mode: str, selected_component: int | None
-    ) -> None:
-        """Persist only UI preferences, not model computations."""
-        with self.connect() as connection:
-            row = connection.execute(
-                "SELECT component_ids_json FROM topic_models WHERE topic_model_id = ?",
-                (topic_model_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"Unknown Topic Model ID: {topic_model_id}")
-            width = len(json.loads(row["component_ids_json"]))
-            if selected_component is not None and not 0 <= selected_component < width:
-                raise IndexError(
-                    f"Unknown Topic Model component index: {selected_component}"
-                )
-            connection.execute(
-                """
-                UPDATE topic_models
-                SET display_mode = ?, selected_component = ?
-                WHERE topic_model_id = ?
-                """,
-                (mode, selected_component, topic_model_id),
+                "UPDATE topic_models SET topic_labels_json = ? WHERE topic_model_id = ?",
+                (json.dumps(labels, sort_keys=True), topic_model_id),
             )
 
     def list_geometries(self, *, public_only: bool = False) -> list[dict[str, Any]]:
@@ -5120,30 +5055,14 @@ def _classifier_evaluation_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _topic_model_row(row: sqlite3.Row) -> dict[str, Any]:
-    """Return one saved GeCo Topic Model descriptor (never its matrix values)."""
+    """Return GeCo-owned labels and ordinary external artifact IDs only."""
     return {
         "topic_model_id": int(row["topic_model_id"]),
         "name": str(row["name"]),
-        "membership_ref": json.loads(row["membership_ref_json"]),
-        "description_ref": (
-            json.loads(row["description_ref_json"])
-            if row["description_ref_json"] is not None else None
-        ),
-        "source_ref": (
-            json.loads(row["source_ref_json"])
-            if row["source_ref_json"] is not None else None
-        ),
-        "source_key_columns": json.loads(row["source_key_columns_json"]),
-        "source_grain": str(row["source_grain"]),
-        "membership_kind": str(row["membership_kind"]),
-        "component_ids": json.loads(row["component_ids_json"]),
-        "topic_names": json.loads(row["topic_names_json"]),
-        "display_mode": str(row["display_mode"]),
-        "selected_component": (
-            int(row["selected_component"])
-            if row["selected_component"] is not None else None
-        ),
-        "created_at": str(row["created_at"]),
+        "membership_artifact_id": str(row["membership_artifact_id"]),
+        "dominant_artifact_id": str(row["dominant_artifact_id"]),
+        "description_artifact_id": row["description_artifact_id"],
+        "topic_labels": json.loads(row["topic_labels_json"]),
     }
 
 
