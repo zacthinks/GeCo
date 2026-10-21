@@ -386,6 +386,11 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.topic_modeling import (
+        register_topic_callbacks,
+        topic_model_layout,
+    )
+
     metadata = project.metadata
     units = project.units()
     unit_ids = [int(unit["unit_id"]) for unit in units]
@@ -577,6 +582,7 @@ def create_app(
                 dcc.Store(id="code-center-version-store", data=None),
                 dcc.Store(id="code-center-edit-store", data=False),
                 dcc.Store(id="code-center-focal-store", data=None),
+                dcc.Store(id="topic-model-refresh-store", data=0),
                     html.Header(
                         [
                             html.Div(
@@ -635,6 +641,13 @@ def create_app(
                         metadata_profiles=metadata_profiles,
                         allow_create_view=not project.is_external_backed,
                     )),
+                    dcc.Tab(
+                        label="Topic Modeling",
+                        value="topics",
+                        className="workflow-tab",
+                        selected_className="workflow-tab-selected",
+                        children=topic_model_layout(dcc=dcc, html=html),
+                    ),
                     dcc.Tab(
                         label="Develop",
                         value="focus",
@@ -725,6 +738,12 @@ def create_app(
         ],
         className="app-shell",
         style=GECO_DASH_THEME,
+    )
+
+    register_topic_callbacks(
+        app, project, dcc=dcc, html=html, Input=Input, Output=Output,
+        State=State, callback_context=callback_context, no_update=no_update,
+        units=units,
     )
 
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
