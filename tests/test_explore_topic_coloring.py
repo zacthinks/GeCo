@@ -144,3 +144,10 @@ def test_map_callback_has_explore_legend_output_and_provider_boundary():
     assert 'id="topic-color-legend"' in source
     assert "load_topic_page_colors(" in source
     assert 'except (ConfigurationError, RuntimeError, ValueError, KeyError)' in source
+
+
+def test_topic_explore_source_compiles():
+    """Explicit syntax guard for the dynamically rendered legend module."""
+    from pathlib import Path
+    source_path = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/topic_explore.py"
+    compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec")
