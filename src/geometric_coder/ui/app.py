@@ -729,7 +729,7 @@ def create_app(
                         html.Div([
                             html.Div([
                                 html.H2("Manage Topic Models"),
-                                html.Button("Close", id="topic-manager-close", n_clicks=0),
+                                html.Button("×", id="topic-manager-close", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"}),
                             ], className="modal-header"),
                             html.P("Model names and topic labels are local to GeCo. Fitted TeAL artifacts remain unchanged.", className="modal-help"),
                             html.Label("Registered model"),
@@ -751,7 +751,7 @@ def create_app(
 
                     html.Div([
                         html.Div([
-                            html.H2("New session"),
+                            html.Div([html.H2("New session"), html.Button("×", id="new-session-x", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"})], className="modal-header"),
                             html.Label("Session name", htmlFor="new-session-title"),
                             dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
                             html.Div([
@@ -778,6 +778,55 @@ def create_app(
             {"label": str(model["name"]), "value": int(model["topic_model_id"])}
             for model in project.topic_models()
         ]
+
+    @app.callback(
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
+        Output("semantic-query", "value", allow_duplicate=True),
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-range", "data", allow_duplicate=True),
+        Input("nav-clear-colors", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def clear_all_colors(_clicks: int) -> tuple[str, None, str, dict[str, Any], None]:
+        return "plain", None, "", {}, None
+
+    @app.callback(
+        Output("nav-clear-colors", "style"),
+        Input("topic-color-mode", "data"),
+    )
+    def show_clear_colors(mode: str | None) -> dict[str, str]:
+        return {"display": "inline-block"} if normalize_color_mode(mode) != "plain" else {"display": "none"}
+
+    @app.callback(
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Input("topic-model-selector", "value"),
+        Input("topic-display-mode", "value"),
+        Input("topic-component-selector", "value"),
+        State("topic-color-mode", "data"),
+        prevent_initial_call=True,
+    )
+    def activate_topic_colors(model_id: int | None, display: str | None, component: str | None, active: str | None) -> Any:
+        if model_id is None:
+            return no_update
+        triggered = callback_context.triggered_id
+        if triggered == "topic-component-selector" and display != "intensity":
+            return no_update
+        if triggered == "topic-component-selector" and component is None:
+            return no_update
+        return "intensity" if display == "intensity" else "dominant"
+
+    @app.callback(
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Input("semantic-scores-store", "data"),
+        State("topic-color-mode", "data"),
+        prevent_initial_call=True,
+    )
+    def activate_semantic_colors(scores: dict[str, Any] | None, current: str | None) -> Any:
+        # Score updates from session restoration are not fresh searches.
+        if callback_context.triggered_id != "semantic-scores-store":
+            return no_update
+        return "semantic" if scores else no_update
 
     @app.callback(
         Output("topic-component-wrap", "style"),
@@ -917,9 +966,10 @@ def create_app(
         Output("new-session-modal", "style", allow_duplicate=True),
         Input("new-session-button", "n_clicks"),
         Input("new-session-cancel", "n_clicks"),
+        Input("new-session-x", "n_clicks"),
         prevent_initial_call=True,
     )
-    def toggle_new_session_modal(_open: int, _cancel: int) -> dict[str, str]:
+    def toggle_new_session_modal(_open: int, _cancel: int, _x: int) -> dict[str, str]:
         return {"display": "flex"} if callback_context.triggered_id == "new-session-button" else {"display": "none"}
 
     @app.callback(
