@@ -387,6 +387,8 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
+
     metadata = project.metadata
     units = project.units()
     unit_ids = [int(unit["unit_id"]) for unit in units]
@@ -512,6 +514,7 @@ def create_app(
                     data=initial_focal_unit_id if initial_workspace == "focus" else None,
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
+                dcc.Store(id="topic-model-refresh-store", data=0),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -731,8 +734,9 @@ def create_app(
     @app.callback(
         Output("topic-model-selector", "options"),
         Input("session-dropdown", "value"),
+        Input("topic-model-refresh-store", "data"),
     )
-    def available_topic_models(_session_id: int) -> list[dict[str, Any]]:
+    def available_topic_models(_session_id: int, _revision: int) -> list[dict[str, Any]]:
         return [
             {"label": str(model["name"]), "value": int(model["topic_model_id"])}
             for model in project.topic_models()
@@ -741,8 +745,9 @@ def create_app(
     @app.callback(
         Output("topic-component-selector", "options"),
         Input("topic-model-selector", "value"),
+        Input("topic-model-refresh-store", "data"),
     )
-    def available_topic_components(model_id: int | None) -> list[dict[str, str]]:
+    def available_topic_components(model_id: int | None, _revision: int) -> list[dict[str, str]]:
         if model_id is None or not units:
             return []
         try:
@@ -753,6 +758,12 @@ def create_app(
             {"label": rows.topic_labels.get(topic, topic) + (f" ({topic})" if topic in rows.topic_labels else ""), "value": topic}
             for topic in rows.topic_ids
         ]
+
+    register_topic_details_callbacks(
+        app, project, html=html, Input=Input, Output=Output,
+        State=State, callback_context=callback_context,
+        no_update=no_update, units=units,
+    )
 
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
     # wake their server-side reading/model callbacks every time the global focal
@@ -1584,6 +1595,7 @@ def create_app(
         Input("topic-color-mode", "value"),
         Input("topic-model-selector", "value"),
         Input("topic-component-selector", "value"),
+        Input("topic-model-refresh-store", "data"),
         State("geometry-map", "relayoutData"),
         State("explore-focal-unit-store", "data"),
         State("geometry-map-base-revision-store", "data"),
@@ -1605,11 +1617,12 @@ def create_app(
         color_mode: str | None,
         topic_model_id: int | None,
         topic_component_id: str | None,
+        topic_revision: int | None,
         relayout_data: dict[str, Any] | None,
         focal_unit_id: int | None,
         base_revision: int | None,
     ) -> tuple[Any, str, str, Any, int]:
-        del map_filter_refresh
+        del map_filter_refresh, topic_revision
         next_revision = int(base_revision or 0) + 1
         if view_id is None or geometry_id is None:
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
@@ -6569,6 +6582,17 @@ def _explore_layout(
                             html.Label("Topic"),
                             dcc.Dropdown(id="topic-component-selector", clearable=False),
                             html.P("Coloring does not change semantic search or filters.", className="control-status"),
+                            html.Details([
+                                html.Summary("Model and topic labels"),
+                                html.Label("Model name"),
+                                dcc.Input(id="topic-model-new-name", type="text"),
+                                html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
+                                html.Label("Selected topic label"),
+                                dcc.Input(id="topic-component-new-label", type="text"),
+                                html.Button("Rename topic", id="topic-label-save", n_clicks=0),
+                                html.Div(id="topic-action-status", role="status"),
+                            ]),
+
                         ],
                         className="control-block",
                     ),
@@ -6737,6 +6761,13 @@ def _explore_layout(
                     html.Aside(
                         [
                             html.Div(id="focal-key", className="focal-key inspection-key"),
+                            html.Details([
+                                html.Summary("Topic Model interpretation"),
+                                html.Div(id="topic-focal-key"),
+                                html.Div(id="topic-memberships"),
+                                html.Div(id="topic-descriptors"),
+                            ]),
+
                             html.Div(
                                 [
                                     html.Div(
