@@ -84,3 +84,8 @@ def test_explore_only_no_new_tab():
     assert 'id="topic-color-mode"' in source
     assert 'label="Topic Modeling"' not in source
     assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' in source
+
+def test_layout_helper_resolves_at_module_scope():
+    from geometric_coder.ui import app as app_module
+    assert app_module.normalize_color_mode("dominant") == "dominant"
+    assert callable(app_module._explore_layout)
