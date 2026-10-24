@@ -22,7 +22,7 @@ from geometric_coder.classifiers import (
     hyperparameter_summary,
 )
 from geometric_coder.exceptions import ConfigurationError
-from geometric_coder.ui.topic_explore import normalize_color_mode, topic_point_colors
+from geometric_coder.ui.topic_explore import (load_topic_page_colors, normalize_color_mode, topic_legend_content)
 from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
@@ -512,7 +512,6 @@ def create_app(
                     data=initial_focal_unit_id if initial_workspace == "focus" else None,
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
-                dcc.Store(id="topic-color-status-store", data=""),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -748,7 +747,7 @@ def create_app(
             return []
         try:
             rows = project.topic_model_rows(int(model_id), positions=[0])
-        except (ConfigurationError, ValueError, KeyError):
+        except (ConfigurationError, RuntimeError, ValueError, KeyError):
             return []
         return [
             {"label": rows.topic_labels.get(topic, topic) + (f" ({topic})" if topic in rows.topic_labels else ""), "value": topic}
@@ -917,7 +916,7 @@ def create_app(
             focus_committee,
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
-            normalize_color_mode(state.get("topic_color_mode")),
+            normalize_color_mode(state.get("topic_color_mode"), has_semantic_query=bool(query)),
             state.get("topic_model_id"),
             state.get("topic_component_id"),
         )
@@ -1567,6 +1566,7 @@ def create_app(
         Output("geometry-map", "figure"),
         Output("literal-search-status", "children"),
         Output("page-status", "children"),
+        Output("topic-color-legend", "children"),
         Output("geometry-map-base-revision-store", "data"),
         Input("view-dropdown", "value"),
         Input("geometry-dropdown", "value"),
@@ -1608,11 +1608,11 @@ def create_app(
         relayout_data: dict[str, Any] | None,
         focal_unit_id: int | None,
         base_revision: int | None,
-    ) -> tuple[Any, str, str, int]:
+    ) -> tuple[Any, str, str, Any, int]:
         del map_filter_refresh
         next_revision = int(base_revision or 0) + 1
         if view_id is None or geometry_id is None:
-            return _empty_figure("No computed geometry view is available."), "", "", next_revision
+            return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
         semantic_scores = (all_semantic_scores or {}).get(str(geometry_record["name"]))
@@ -1665,21 +1665,10 @@ def create_app(
         page_topics = None
         color_status = ""
         if selected_color_mode in {"dominant", "intensity"}:
-            if topic_model_id is None:
-                color_status = "Choose a registered Topic Model to color points."
-            else:
-                try:
-                    topic_rows = project.topic_model_rows(
-                        int(topic_model_id), positions=[int(i) for i in positions]
-                    )
-                    page_topics = topic_point_colors(
-                        topic_rows, mode=selected_color_mode,
-                        selected_topic=topic_component_id,
-                        requested_count=len(positions),
-                    )
-                    color_status = page_topics.status
-                except (ConfigurationError, KeyError, ValueError) as exc:
-                    color_status = f"Topic coloring unavailable: {exc}"
+            page_topics, color_status = load_topic_page_colors(
+                project, model_id=topic_model_id, positions=positions,
+                mode=selected_color_mode, selected_topic=topic_component_id,
+            )
         seen = project.database.seen_unit_ids(int(session_id))
         view = project.database.get_view(int(view_id))
         figure = build_geometry_figure(
@@ -1710,7 +1699,8 @@ def create_app(
         )
         if selected_color_mode in {"dominant", "intensity"}:
             page_status += f" · {color_status}"
-        return figure, literal_status, page_status, next_revision
+        legend = topic_legend_content(html, page_topics) if page_topics is not None else ""
+        return figure, literal_status, page_status, legend, next_revision
 
     @app.callback(
         Output("geometry-map", "figure", allow_duplicate=True),
@@ -6572,7 +6562,7 @@ def _explore_layout(
                                     {"label": "Dominant topic", "value": "dominant"},
                                     {"label": "Selected topic weight", "value": "intensity"},
                                 ],
-                                value=normalize_color_mode(initial_state.get("topic_color_mode", "plain")),
+                                value=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_state.get("semantic_query"))),
                             ),
                             html.Label("Topic Model"),
                             dcc.Dropdown(id="topic-model-selector", clearable=False),
@@ -6703,6 +6693,7 @@ def _explore_layout(
                                 clear_on_unhover=True,
                                 className="geometry-map",
                             ),
+                            html.Div(id="topic-color-legend", className="map-encoding-key"),
                             html.Div(
                                 [
                                     html.Span(className="visited-outline-swatch"),
