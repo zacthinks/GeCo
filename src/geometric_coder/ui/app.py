@@ -515,6 +515,7 @@ def create_app(
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
+                dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
@@ -779,6 +780,13 @@ def create_app(
         ]
 
     @app.callback(
+        Output("topic-component-wrap", "style"),
+        Input("topic-display-mode", "value"),
+    )
+    def show_selected_topic(display: str | None) -> dict[str, str]:
+        return {"display": "block"} if display == "intensity" else {"display": "none"}
+
+    @app.callback(
         Output("topic-component-selector", "options"),
         Input("topic-model-selector", "value"),
         Input("topic-model-refresh-store", "data"),
@@ -940,9 +948,10 @@ def create_app(
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
-        Output("topic-color-mode", "value"),
+        Output("topic-color-mode", "data"),
         Output("topic-model-selector", "value"),
         Output("topic-component-selector", "value"),
+        Output("topic-display-mode", "value"),
         Input("session-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -1028,6 +1037,7 @@ def create_app(
             normalize_color_mode(state.get("topic_color_mode"), has_semantic_query=bool(query)),
             state.get("topic_model_id"),
             state.get("topic_component_id"),
+            "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
         )
 
     @app.callback(
@@ -1180,22 +1190,17 @@ def create_app(
         Output("semantic-range", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
-        Input("semantic-clear-button", "n_clicks"),
         State("semantic-query", "value"),
         prevent_initial_call=True,
         running=[
             (Output("semantic-search-button", "disabled"), True, False),
-            (Output("semantic-clear-button", "disabled"), True, False),
         ],
     )
     def run_semantic_search(
         search_clicks: int,
-        clear_clicks: int,
         query: str | None,
     ) -> tuple[dict[str, list[float]], str, Any, None, None]:
-        del search_clicks, clear_clicks
-        if callback_context.triggered_id == "semantic-clear-button":
-            return {}, "Semantic search cleared.", "", None, None
+        del search_clicks
         clean_query = (query or "").strip()
         if not clean_query:
             return {}, "Semantic search cleared.", "", None, None
@@ -1223,7 +1228,6 @@ def create_app(
         Output("semantic-range-slider", "value"),
         Output("semantic-range-slider", "marks"),
         Output("semantic-range-wrap", "style"),
-        Output("semantic-clear-button", "style"),
         Output("nav-most-similar", "style"),
         Output("nav-least-similar", "style"),
         Input("semantic-scores-store", "data"),
@@ -1243,15 +1247,14 @@ def create_app(
         dict[str, Any],
         dict[str, Any],
         dict[str, Any],
-        dict[str, Any],
     ]:
         hidden = {"display": "none"}
         if geometry_id is None or not all_scores:
-            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden, hidden
+            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
         scores = all_scores.get(geometry_name)
         if not scores:
-            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden, hidden
+            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
         lower = float(np.nanmin(values))
         upper = float(np.nanmax(values))
@@ -1274,7 +1277,6 @@ def create_app(
             selected,
             marks,
             {"display": "block"},
-            {"display": "inline-block"},
             {"display": "inline-block"},
             {"display": "inline-block"},
         )
@@ -1690,7 +1692,7 @@ def create_app(
         Input("session-dropdown", "value"),
         Input("page-size", "value"),
         Input("page-number", "value"),
-        Input("topic-color-mode", "value"),
+        Input("topic-color-mode", "data"),
         Input("topic-model-selector", "value"),
         Input("topic-component-selector", "value"),
         Input("topic-model-refresh-store", "data"),
@@ -6308,7 +6310,7 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
-        Input("topic-color-mode", "value"),
+        Input("topic-color-mode", "data"),
         Input("topic-model-selector", "value"),
         Input("topic-component-selector", "value"),
         Input("focus-code-dropdown", "value"),
@@ -6590,20 +6592,7 @@ def _explore_layout(
                                                     className="semantic-range-wrap",
                                                     style=semantic_style,
                                                 ),
-                                                html.Button(
-                                                    "Clear semantic search",
-                                                    id="semantic-clear-button",
-                                                    n_clicks=0,
-                                                    className=(
-                                                        "secondary-action "
-                                                        "semantic-clear-action"
-                                                    ),
-                                                    style=(
-                                                        {"display": "inline-block"}
-                                                        if initial_semantic_scores
-                                                        else {"display": "none"}
-                                                    ),
-                                                ),
+
                                             ]
                                         ),
                                     ),
@@ -6722,20 +6711,13 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Topic Models", className="control-block-title"),
-                            dcc.RadioItems(
-                                id="topic-color-mode",
-                                options=[
-                                    {"label": "Plain", "value": "plain"},
-                                    {"label": "Semantic similarity", "value": "semantic"},
-                                    {"label": "Dominant topic", "value": "dominant"},
-                                    {"label": "Selected topic weight", "value": "intensity"},
-                                ],
-                                value=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_state.get("semantic_query"))),
-                            ),
                             html.Label("Topic Model"),
-                            dcc.Dropdown(id="topic-model-selector", clearable=False),
-                            html.Label("Topic"),
-                            dcc.Dropdown(id="topic-component-selector", clearable=False),
+                            dcc.Dropdown(id="topic-model-selector", clearable=True, placeholder="Select a Topic Model"),
+                            html.Div([html.Label("Selected topic"), dcc.Dropdown(id="topic-component-selector", clearable=False)], id="topic-component-wrap"),
+                            dcc.RadioItems(id="topic-display-mode", options=[
+                                {"label": "Dominant topic", "value": "dominant"},
+                                {"label": "Selected topic weight", "value": "intensity"},
+                            ], value="intensity" if initial_state.get("topic_color_mode") == "intensity" else "dominant"),
                             html.P("Coloring does not change semantic search or filters.", className="control-status"),
                             html.Button("Manage Topic Models", id="topic-manager-open", n_clicks=0, className="secondary-action"),
 
@@ -6782,6 +6764,7 @@ def _explore_layout(
                         inline=True,
                         className="navigation-repeat-control",
                     ),
+                    html.Button("Clear colors", id="nav-clear-colors", n_clicks=0, style={"display": "none"}),
                     html.Div(id="navigation-status", className="sr-only"),
                 ],
                 className="navigation-bar",
