@@ -22,6 +22,7 @@ from geometric_coder.classifiers import (
     hyperparameter_summary,
 )
 from geometric_coder.exceptions import ConfigurationError
+from geometric_coder.ui.topic_explore import normalize_color_mode, topic_point_colors
 from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
@@ -385,8 +386,6 @@ def create_app(
             "UI dependency could not be imported. Reinstall geometric-coder with its "
             "default dependencies."
         ) from error
-
-    from geometric_coder.ui.topic_explore import normalize_color_mode, topic_point_colors
 
     metadata = project.metadata
     units = project.units()
