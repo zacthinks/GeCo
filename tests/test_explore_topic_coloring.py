@@ -89,3 +89,58 @@ def test_layout_helper_resolves_at_module_scope():
     from geometric_coder.ui import app as app_module
     assert app_module.normalize_color_mode("dominant") == "dominant"
     assert callable(app_module._explore_layout)
+
+
+class _MissingTeALProvider:
+    def topic_model_rows(self, model_id, positions):
+        raise RuntimeError("Topic artifact 'missing-id' is not available.")
+
+
+def test_missing_provider_artifact_degrades_to_uncolored_map():
+    from geometric_coder.ui.topic_explore import load_topic_page_colors
+    palette, message = load_topic_page_colors(
+        _MissingTeALProvider(), model_id=1, positions=[0, 2],
+        mode="dominant", selected_topic=None,
+    )
+    assert palette is None
+    assert "missing-id" in message
+    assert "unavailable" in message
+    # Geometry remains independent and renderable despite missing topics.
+    fig = build_geometry_figure(
+        coordinates=np.asarray([[0.0, 0.0], [1.0, 1.0]]),
+        units=[{"unit_id": 1, "user_key": {"id": 1}},
+               {"unit_id": 2, "user_key": {"id": 2}}],
+        eligible=[True, True], topic_colors=palette,
+    )
+    assert len(fig.data) == 4
+
+
+def test_topic_legend_display_includes_alias_and_color():
+    from dash import html
+    from geometric_coder.ui.topic_explore import topic_legend_content
+    data = topic_point_colors(
+        packet(), mode="dominant", selected_topic=None, requested_count=4,
+    )
+    content = topic_legend_content(html, data).to_plotly_json()
+    import json
+    serialized = json.dumps(content)
+    assert "Interpretation (topic_1)" in serialized
+    assert component_color("topic_1") in serialized
+    assert "Outside Topic Model coverage" in serialized
+    assert "Covered, unassigned/noise" in serialized
+
+
+def test_legacy_semantic_search_session_preserves_coloring():
+    assert normalize_color_mode(None, has_semantic_query=True) == "semantic"
+    assert normalize_color_mode(None, has_semantic_query=False) == "plain"
+    assert normalize_color_mode("plain", has_semantic_query=True) == "plain"
+    assert normalize_color_mode("dominant", has_semantic_query=True) == "dominant"
+
+
+def test_map_callback_has_explore_legend_output_and_provider_boundary():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert 'Output("topic-color-legend", "children")' in source
+    assert 'id="topic-color-legend"' in source
+    assert "load_topic_page_colors(" in source
+    assert 'except (ConfigurationError, RuntimeError, ValueError, KeyError)' in source
