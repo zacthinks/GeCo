@@ -7583,7 +7583,7 @@ def _teaching_example_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         [
                             html.H3("Teaching Examples"),
                             html.Button(
-                                "Close", id="teaching-example-close", n_clicks=0
+                                "×", id="teaching-example-close", className="modal-close-icon", title="Close", **{"aria-label": "Close"}, n_clicks=0
                             ),
                         ],
                         className="modal-heading-row",
@@ -8000,7 +8000,7 @@ def _testing_center_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                     html.Div(
                         [
                             html.H3("Classifier Testing Center"),
-                            html.Button("Close", id="testing-center-close", n_clicks=0),
+                            html.Button("×", id="testing-center-close", className="modal-close-icon", title="Close", **{"aria-label": "Close"}, n_clicks=0),
                         ],
                         className="modal-heading-row",
                     ),
