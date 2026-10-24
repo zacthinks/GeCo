@@ -29,6 +29,7 @@ def build_geometry_figure(
     seen_unit_ids: Collection[int] = (),
     focal_unit_id: int | None = None,
     semantic_scores: Sequence[float] | None = None,
+    topic_colors: Sequence[str] | None = None,
     geometry_name: str = "Geometry",
     view_name: str = "View",
     page_label: str | None = None,
@@ -37,7 +38,7 @@ def build_geometry_figure(
     """Build a click-responsive Explore map with stable trace structure.
 
     The base geometry is deliberately independent of navigation state. Point fill
-    is reserved for filtering and semantic similarity. Two fixed overlay traces
+    is reserved for filtering and one active analytic coloring mode. Two fixed overlay traces
     carry visited and focal outlines. Keeping those overlay traces present even
     when empty lets Dash update navigation highlighting with a tiny partial
     figure update instead of rebuilding and retransmitting the full map.
@@ -61,6 +62,11 @@ def build_geometry_figure(
     semantic = None if semantic_scores is None else np.asarray(semantic_scores, dtype=float)
     if semantic is not None and semantic.shape != (len(units),):
         raise ValueError("semantic_scores must contain one value per unit")
+    if topic_colors is not None:
+        if semantic is not None:
+            raise ValueError("Semantic and topic colors are mutually exclusive.")
+        if len(topic_colors) != len(units):
+            raise ValueError("topic_colors must contain one color per unit")
     focal_mask = (
         unit_ids == int(focal_unit_id)
         if focal_unit_id is not None
@@ -109,7 +115,9 @@ def build_geometry_figure(
         outline_width=0.7,
     )
     active_fill: str | np.ndarray
-    if semantic is None:
+    if topic_colors is not None:
+        active_fill = np.asarray(topic_colors, dtype=str)[active_positions]
+    elif semantic is None:
         active_fill = "#111111"
     else:
         active_fill = semantic[active_positions]

@@ -1219,3 +1219,11 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .focus-coding-completion-actions > button { min-height: 44px; flex: 0 0 auto; }
   .focus-coding-done { min-width: 76px; }
 }
+
+
+/* Six-panel Explore workspace: three equal-width cards per row. */
+.explore-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.explore-controls > .control-block { min-width: 0; overflow-wrap: anywhere; }
+.explore-controls .Select, .explore-controls .Select-control, .explore-controls input { max-width: 100%; min-width: 0; }
+@media (max-width: 1150px) { .explore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .explore-controls { grid-template-columns: minmax(0, 1fr); } }

@@ -22,6 +22,7 @@ from geometric_coder.classifiers import (
     hyperparameter_summary,
 )
 from geometric_coder.exceptions import ConfigurationError
+from geometric_coder.ui.topic_explore import (load_topic_page_colors, normalize_color_mode, topic_legend_content)
 from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
@@ -386,6 +387,8 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
+
     metadata = project.metadata
     units = project.units()
     unit_ids = [int(unit["unit_id"]) for unit in units]
@@ -511,6 +514,9 @@ def create_app(
                     data=initial_focal_unit_id if initial_workspace == "focus" else None,
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
+                dcc.Store(id="topic-model-refresh-store", data=0),
+                dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
+                dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -719,12 +725,177 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.H2("Manage Topic Models"),
+                                html.Button("×", id="topic-manager-close", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"}),
+                            ], className="modal-header"),
+                            html.P("Model names and topic labels are local to GeCo. Fitted TeAL artifacts remain unchanged.", className="modal-help"),
+                            html.Label("Registered model"),
+                            dcc.Dropdown(id="topic-manager-model", clearable=False),
+                            html.Label("Model name"),
+                            dcc.Input(id="topic-model-new-name", type="text", className="text-input"),
+                            html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
+                            html.H3("Edit topic labels"),
+                            html.P("Original TeAL component IDs remain stable when labels change."),
+                            dcc.Dropdown(id="topic-manager-component", clearable=False),
+                            html.Label("Selected topic label"),
+                            dcc.Input(id="topic-component-new-label", type="text", className="text-input"),
+                            html.Button("Rename topic", id="topic-label-save", n_clicks=0),
+                            html.Div(id="topic-action-status", role="status"),
+                            html.H3("Create Topic Model"),
+                            html.P("Creating models requires TeAL recipe integration. Register fitted models using the linked TeAL API for now.", className="control-status"),
+                        ], className="modal-card"),
+                    ], id="topic-manager-modal", className="modal-overlay", style={"display": "none"}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([html.H2("New session"), html.Button("×", id="new-session-x", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"})], className="modal-header"),
+                            html.Label("Session name", htmlFor="new-session-title"),
+                            dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
+                            html.Div([
+                                html.Button("Cancel", id="new-session-cancel", n_clicks=0),
+                                html.Button("Save", id="new-session-save", n_clicks=0, className="primary-action"),
+                            ], className="modal-actions"),
+                        ], className="modal-card", role="dialog", **{"aria-modal": "true"}),
+                    ], id="new-session-modal", className="modal-overlay", style={"display": "none"}),
                 ],
             ),
             html.Div(id="session-state-status", className="sr-only"),
         ],
         className="app-shell",
         style=GECO_DASH_THEME,
+    )
+
+    @app.callback(
+        Output("topic-model-selector", "options"),
+        Input("session-dropdown", "value"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def available_topic_models(_session_id: int, _revision: int) -> list[dict[str, Any]]:
+        return [
+            {"label": str(model["name"]), "value": int(model["topic_model_id"])}
+            for model in project.topic_models()
+        ]
+
+    @app.callback(
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
+        Output("semantic-query", "value", allow_duplicate=True),
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-range", "data", allow_duplicate=True),
+        Input("nav-clear-colors", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def clear_all_colors(_clicks: int) -> tuple[str, None, str, dict[str, Any], None]:
+        return "plain", None, "", {}, None
+
+    @app.callback(
+        Output("nav-clear-colors", "style"),
+        Input("topic-color-mode", "data"),
+    )
+    def show_clear_colors(mode: str | None) -> dict[str, str]:
+        return {"display": "inline-block"} if normalize_color_mode(mode) != "plain" else {"display": "none"}
+
+    @app.callback(
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Input("topic-model-selector", "value"),
+        Input("topic-display-mode", "value"),
+        Input("topic-component-selector", "value"),
+        State("topic-color-mode", "data"),
+        prevent_initial_call=True,
+    )
+    def activate_topic_colors(model_id: int | None, display: str | None, component: str | None, active: str | None) -> Any:
+        if model_id is None:
+            return no_update
+        triggered = callback_context.triggered_id
+        if triggered == "topic-component-selector" and display != "intensity":
+            return no_update
+        if triggered == "topic-component-selector" and component is None:
+            return no_update
+        return "intensity" if display == "intensity" else "dominant"
+
+    @app.callback(
+        Output("topic-component-wrap", "style"),
+        Input("topic-display-mode", "value"),
+    )
+    def show_selected_topic(display: str | None) -> dict[str, str]:
+        return {"display": "block"} if display == "intensity" else {"display": "none"}
+
+    @app.callback(
+        Output("topic-component-selector", "options"),
+        Input("topic-model-selector", "value"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def available_topic_components(model_id: int | None, _revision: int) -> list[dict[str, str]]:
+        if model_id is None or not units:
+            return []
+        try:
+            rows = project.topic_model_rows(int(model_id), positions=[0])
+        except (ConfigurationError, RuntimeError, ValueError, KeyError):
+            return []
+        return [
+            {"label": rows.topic_labels.get(topic, topic) + (f" ({topic})" if topic in rows.topic_labels else ""), "value": topic}
+            for topic in rows.topic_ids
+        ]
+
+    @app.callback(
+        Output("topic-manager-modal", "style"),
+        Input("topic-manager-open", "n_clicks"),
+        Input("topic-manager-close", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_topic_manager(_open: int, _close: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "topic-manager-open" else {"display": "none"}
+
+    @app.callback(
+        Output("topic-manager-model", "options"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def manager_models(_revision: int) -> list[dict[str, Any]]:
+        return [{"label": str(m["name"]), "value": int(m["topic_model_id"])} for m in project.topic_models()]
+
+    @app.callback(
+        Output("topic-manager-model", "value"),
+        Input("topic-manager-open", "n_clicks"),
+        State("topic-model-selector", "value"),
+        prevent_initial_call=True,
+    )
+    def choose_manager_model(_n_clicks: int, selected: int | None) -> int | None:
+        models = project.topic_models()
+        ids = {int(m["topic_model_id"]) for m in models}
+        return selected if selected in ids else (min(ids) if ids else None)
+
+    @app.callback(
+        Output("topic-manager-component", "value"),
+        Input("topic-manager-component", "options"),
+        State("topic-manager-component", "value"),
+    )
+    def choose_manager_topic(
+        options: list[dict[str, str]] | None, selected: str | None,
+    ) -> str | None:
+        valid = [str(o["value"]) for o in (options or [])]
+        return selected if selected in valid else (valid[0] if valid else None)
+
+    @app.callback(
+        Output("topic-manager-component", "options"),
+        Input("topic-manager-model", "value"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def manager_components(model_id: int | None, _revision: int) -> list[dict[str, str]]:
+        if model_id is None or not units:
+            return []
+        try:
+            rows = project.topic_model_rows(int(model_id), positions=[0])
+        except (ConfigurationError, RuntimeError, KeyError, ValueError):
+            return []
+        return [{"label": rows.topic_labels.get(t, t) + (f" ({t})" if t in rows.topic_labels else ""), "value": t} for t in rows.topic_ids]
+
+    register_topic_details_callbacks(
+        app, project, html=html, Input=Input, Output=Output,
+        State=State, callback_context=callback_context,
+        no_update=no_update, units=units,
     )
 
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
@@ -768,15 +939,26 @@ def create_app(
         Output("session-dropdown", "options"),
         Output("session-dropdown", "value"),
         Output("new-session-title", "value"),
-        Input("new-session-button", "n_clicks"),
+        Output("new-session-modal", "style"),
+        Input("new-session-save", "n_clicks"),
         State("new-session-title", "value"),
         prevent_initial_call=True,
     )
-    def create_session(n_clicks: int, title: str | None) -> tuple[list[dict[str, Any]], int, str]:
+    def create_session(n_clicks: int, title: str | None) -> tuple[list[dict[str, Any]], int, str, dict[str, str]]:
         del n_clicks
         clean_title = (title or "").strip() or f"Session {len(project.sessions()) + 1}"
         session_id = project.create_session(clean_title)
-        return _session_options(project.sessions()), session_id, ""
+        return _session_options(project.sessions()), session_id, "", {"display": "none"}
+
+    @app.callback(
+        Output("new-session-modal", "style", allow_duplicate=True),
+        Input("new-session-button", "n_clicks"),
+        Input("new-session-cancel", "n_clicks"),
+        Input("new-session-x", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_new_session_modal(_open: int, _cancel: int, _x: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "new-session-button" else {"display": "none"}
 
     @app.callback(
         Output("active-session-store", "data"),
@@ -804,6 +986,10 @@ def create_app(
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
+        Output("topic-color-mode", "data"),
+        Output("topic-model-selector", "value"),
+        Output("topic-component-selector", "value"),
+        Output("topic-display-mode", "value"),
         Input("session-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -886,6 +1072,10 @@ def create_app(
             focus_committee,
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
+            normalize_color_mode(state.get("topic_color_mode"), has_semantic_query=bool(query)),
+            state.get("topic_model_id"),
+            state.get("topic_component_id"),
+            "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
         )
 
     @app.callback(
@@ -1037,26 +1227,22 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-range", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("topic-color-mode", "data", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
-        Input("semantic-clear-button", "n_clicks"),
         State("semantic-query", "value"),
         prevent_initial_call=True,
         running=[
             (Output("semantic-search-button", "disabled"), True, False),
-            (Output("semantic-clear-button", "disabled"), True, False),
         ],
     )
     def run_semantic_search(
         search_clicks: int,
-        clear_clicks: int,
         query: str | None,
-    ) -> tuple[dict[str, list[float]], str, Any, None, None]:
-        del search_clicks, clear_clicks
-        if callback_context.triggered_id == "semantic-clear-button":
-            return {}, "Semantic search cleared.", "", None, None
+    ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
+        del search_clicks
         clean_query = (query or "").strip()
         if not clean_query:
-            return {}, "Semantic search cleared.", "", None, None
+            return {}, "Semantic search cleared.", "", None, None, "plain"
         scores = project.semantic_search(clean_query)
         if not scores:
             return (
@@ -1065,6 +1251,7 @@ def create_app(
                 no_update,
                 None,
                 None,
+                no_update,
             )
         return (
             scores,
@@ -1072,6 +1259,7 @@ def create_app(
             no_update,
             None,
             None,
+            "semantic",
         )
 
     @app.callback(
@@ -1081,7 +1269,6 @@ def create_app(
         Output("semantic-range-slider", "value"),
         Output("semantic-range-slider", "marks"),
         Output("semantic-range-wrap", "style"),
-        Output("semantic-clear-button", "style"),
         Output("nav-most-similar", "style"),
         Output("nav-least-similar", "style"),
         Input("semantic-scores-store", "data"),
@@ -1101,15 +1288,14 @@ def create_app(
         dict[str, Any],
         dict[str, Any],
         dict[str, Any],
-        dict[str, Any],
     ]:
         hidden = {"display": "none"}
         if geometry_id is None or not all_scores:
-            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden, hidden
+            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
         scores = all_scores.get(geometry_name)
         if not scores:
-            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden, hidden
+            return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
         lower = float(np.nanmin(values))
         upper = float(np.nanmax(values))
@@ -1132,7 +1318,6 @@ def create_app(
             selected,
             marks,
             {"display": "block"},
-            {"display": "inline-block"},
             {"display": "inline-block"},
             {"display": "inline-block"},
         )
@@ -1533,6 +1718,7 @@ def create_app(
         Output("geometry-map", "figure"),
         Output("literal-search-status", "children"),
         Output("page-status", "children"),
+        Output("topic-color-legend", "children"),
         Output("geometry-map-base-revision-store", "data"),
         Input("view-dropdown", "value"),
         Input("geometry-dropdown", "value"),
@@ -1547,6 +1733,10 @@ def create_app(
         Input("session-dropdown", "value"),
         Input("page-size", "value"),
         Input("page-number", "value"),
+        Input("topic-color-mode", "data"),
+        Input("topic-model-selector", "value"),
+        Input("topic-component-selector", "value"),
+        Input("topic-model-refresh-store", "data"),
         State("geometry-map", "relayoutData"),
         State("explore-focal-unit-store", "data"),
         State("geometry-map-base-revision-store", "data"),
@@ -1565,14 +1755,18 @@ def create_app(
         session_id: int,
         page_size: Any,
         page_number: Any,
+        color_mode: str | None,
+        topic_model_id: int | None,
+        topic_component_id: str | None,
+        topic_revision: int | None,
         relayout_data: dict[str, Any] | None,
         focal_unit_id: int | None,
         base_revision: int | None,
-    ) -> tuple[Any, str, str, int]:
-        del map_filter_refresh
+    ) -> tuple[Any, str, str, Any, int]:
+        del map_filter_refresh, topic_revision
         next_revision = int(base_revision or 0) + 1
         if view_id is None or geometry_id is None:
-            return _empty_figure("No computed geometry view is available."), "", "", next_revision
+            return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
         semantic_scores = (all_semantic_scores or {}).get(str(geometry_record["name"]))
@@ -1621,6 +1815,14 @@ def create_app(
             if semantic_scores is not None
             else None
         )
+        selected_color_mode = normalize_color_mode(color_mode)
+        page_topics = None
+        color_status = ""
+        if selected_color_mode in {"dominant", "intensity"}:
+            page_topics, color_status = load_topic_page_colors(
+                project, model_id=topic_model_id, positions=positions,
+                mode=selected_color_mode, selected_topic=topic_component_id,
+            )
         seen = project.database.seen_unit_ids(int(session_id))
         view = project.database.get_view(int(view_id))
         figure = build_geometry_figure(
@@ -1629,7 +1831,8 @@ def create_app(
             eligible=page_eligible,
             seen_unit_ids=seen,
             focal_unit_id=int(focal_unit_id) if focal_unit_id is not None else None,
-            semantic_scores=page_semantic,
+            semantic_scores=page_semantic if selected_color_mode == "semantic" else None,
+            topic_colors=page_topics.colors if page_topics is not None else None,
             geometry_name=str(geometry_record["name"]),
             view_name=str(view["name"]),
             page_label=f"Page {page.page_index + 1} of {page.page_count}",
@@ -1648,7 +1851,10 @@ def create_app(
             f"{len(positions):,} points shown · "
             f"{filter_match_count:,} points match filters"
         )
-        return figure, literal_status, page_status, next_revision
+        if selected_color_mode in {"dominant", "intensity"}:
+            page_status += f" · {color_status}"
+        legend = topic_legend_content(html, page_topics) if page_topics is not None else ""
+        return figure, literal_status, page_status, legend, next_revision
 
     @app.callback(
         Output("geometry-map", "figure", allow_duplicate=True),
@@ -6145,6 +6351,9 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
+        Input("topic-color-mode", "data"),
+        Input("topic-model-selector", "value"),
+        Input("topic-component-selector", "value"),
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
@@ -6175,6 +6384,9 @@ def create_app(
         page_number: Any,
         navigation_new_only: list[str] | None,
         workspace: str,
+        topic_color_mode: str | None,
+        topic_model_id: int | None,
+        topic_component_id: str | None,
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
@@ -6224,6 +6436,9 @@ def create_app(
                 "page_number": _coerce_positive_int(page_number, default=1),
                 "navigation_new_only": "new_only" in (navigation_new_only or []),
                 "workspace": workspace,
+                "topic_color_mode": normalize_color_mode(topic_color_mode),
+                "topic_model_id": topic_model_id,
+                "topic_component_id": topic_component_id,
                 "focus_code_id": focus_code_id,
                 "focus_classifier_spec_id": focus_classifier_spec_id,
                 "focus_committee_id": focus_committee_id,
@@ -6304,19 +6519,9 @@ def _explore_layout(
                                 clearable=False,
                                 searchable=False,
                             ),
-                            html.Div(
-                                [
-                                    dcc.Input(
-                                        id="new-session-title",
-                                        type="text",
-                                        placeholder="New session name",
-                                        className="compact-text-input",
-                                    ),
-                                    html.Button(
-                                        "New session", id="new-session-button", n_clicks=0
-                                    ),
-                                ],
-                                className="session-create-row",
+                            html.Button(
+                                "New session", id="new-session-button", n_clicks=0,
+                                className="secondary-action",
                             ),
                             html.Div(
                                 f"Visited {int(initial_seen_count):,} of {int(total_units):,}",
@@ -6328,52 +6533,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Geometry and View", className="control-block-title"),
-                            html.Label("Geometry"),
-                            dcc.Dropdown(
-                                id="geometry-dropdown",
-                                options=[
-                                    {
-                                        "label": record["name"],
-                                        "value": int(record["geometry_id"]),
-                                    }
-                                    for record in geometries
-                                ],
-                                value=initial_geometry_id,
-                                clearable=False,
-                            ),
-                            html.Label("2D view", className="stacked-control-label"),
-                            dcc.Dropdown(
-                                id="view-dropdown",
-                                options=[
-                                    {
-                                        "label": view["name"],
-                                        "value": int(view["view_id"]),
-                                    }
-                                    for view in views
-                                ],
-                                value=initial_view_id,
-                                clearable=False,
-                                searchable=False,
-                            ),
-                            html.Button(
-                                "Create 2D view",
-                                id="projection-open-button",
-                                n_clicks=0,
-                                className="secondary-action",
-                                disabled=not allow_create_view,
-                                title=(
-                                    None
-                                    if allow_create_view
-                                    else "Create views in the external provider and register them with GeCo."
-                                ),
-                            ),
-                        ],
-                        className="control-block geometry-view-control-block",
-                    ),
-                    html.Div(
-                        [
-                            html.H3("Search", className="control-block-title"),
+                            html.H3("Keyword search", className="control-block-title"),
                             html.Div(
                                 [
                                     html.Label("Literal search"),
@@ -6400,6 +6560,12 @@ def _explore_layout(
                                 ],
                                 className="search-section",
                             ),
+                        ],
+                        className="control-block keyword-search-control-block",
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Semantic search", className="control-block-title"),
                             html.Div(
                                 [
                                     html.Label("Semantic search"),
@@ -6467,20 +6633,7 @@ def _explore_layout(
                                                     className="semantic-range-wrap",
                                                     style=semantic_style,
                                                 ),
-                                                html.Button(
-                                                    "Clear semantic search",
-                                                    id="semantic-clear-button",
-                                                    n_clicks=0,
-                                                    className=(
-                                                        "secondary-action "
-                                                        "semantic-clear-action"
-                                                    ),
-                                                    style=(
-                                                        {"display": "inline-block"}
-                                                        if initial_semantic_scores
-                                                        else {"display": "none"}
-                                                    ),
-                                                ),
+
                                             ]
                                         ),
                                     ),
@@ -6488,7 +6641,52 @@ def _explore_layout(
                                 className="search-section semantic-search-section",
                             ),
                         ],
-                        className="control-block combined-search-block",
+                        className="control-block semantic-search-control-block",
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Geometry and View", className="control-block-title"),
+                            html.Label("Geometry"),
+                            dcc.Dropdown(
+                                id="geometry-dropdown",
+                                options=[
+                                    {
+                                        "label": record["name"],
+                                        "value": int(record["geometry_id"]),
+                                    }
+                                    for record in geometries
+                                ],
+                                value=initial_geometry_id,
+                                clearable=False,
+                            ),
+                            html.Label("2D view", className="stacked-control-label"),
+                            dcc.Dropdown(
+                                id="view-dropdown",
+                                options=[
+                                    {
+                                        "label": view["name"],
+                                        "value": int(view["view_id"]),
+                                    }
+                                    for view in views
+                                ],
+                                value=initial_view_id,
+                                clearable=False,
+                                searchable=False,
+                            ),
+                            html.Button(
+                                "Create 2D view",
+                                id="projection-open-button",
+                                n_clicks=0,
+                                className="secondary-action",
+                                disabled=not allow_create_view,
+                                title=(
+                                    None
+                                    if allow_create_view
+                                    else "Create views in the external provider and register them with GeCo."
+                                ),
+                            ),
+                        ],
+                        className="control-block geometry-view-control-block",
                     ),
                     html.Div(
                         [
@@ -6551,6 +6749,22 @@ def _explore_layout(
                         ],
                         className="control-block metadata-filter-block",
                     ),
+                    html.Div(
+                        [
+                            html.H3("Topic Models", className="control-block-title"),
+                            html.Label("Topic Model"),
+                            dcc.Dropdown(id="topic-model-selector", clearable=True, placeholder="Select a Topic Model"),
+                            html.Div([html.Label("Selected topic"), dcc.Dropdown(id="topic-component-selector", clearable=False)], id="topic-component-wrap"),
+                            dcc.RadioItems(id="topic-display-mode", options=[
+                                {"label": "Dominant topic", "value": "dominant"},
+                                {"label": "Selected topic weight", "value": "intensity"},
+                            ], value="intensity" if initial_state.get("topic_color_mode") == "intensity" else "dominant"),
+                            html.P("Coloring does not change semantic search or filters.", className="control-status"),
+                            html.Button("Manage Topic Models", id="topic-manager-open", n_clicks=0, className="secondary-action"),
+
+                        ],
+                        className="control-block",
+                    ),
                 ],
                 className="explore-controls",
             ),
@@ -6591,6 +6805,7 @@ def _explore_layout(
                         inline=True,
                         className="navigation-repeat-control",
                     ),
+                    html.Button("Clear colors", id="nav-clear-colors", n_clicks=0, style={"display": "none"}),
                     html.Div(id="navigation-status", className="sr-only"),
                 ],
                 className="navigation-bar",
@@ -6611,6 +6826,7 @@ def _explore_layout(
                                 clear_on_unhover=True,
                                 className="geometry-map",
                             ),
+                            html.Div(id="topic-color-legend", className="map-encoding-key"),
                             html.Div(
                                 [
                                     html.Span(className="visited-outline-swatch"),
@@ -6654,6 +6870,13 @@ def _explore_layout(
                     html.Aside(
                         [
                             html.Div(id="focal-key", className="focal-key inspection-key"),
+                            html.Details([
+                                html.Summary("Topic Model interpretation"),
+                                html.Div(id="topic-focal-key"),
+                                html.Div(id="topic-memberships"),
+                                html.Div(id="topic-descriptors"),
+                            ]),
+
                             html.Div(
                                 [
                                     html.Div(
@@ -7360,7 +7583,7 @@ def _teaching_example_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         [
                             html.H3("Teaching Examples"),
                             html.Button(
-                                "Close", id="teaching-example-close", n_clicks=0
+                                "×", id="teaching-example-close", className="modal-close-icon", title="Close", **{"aria-label": "Close"}, n_clicks=0
                             ),
                         ],
                         className="modal-heading-row",
@@ -7777,7 +8000,7 @@ def _testing_center_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                     html.Div(
                         [
                             html.H3("Classifier Testing Center"),
-                            html.Button("Close", id="testing-center-close", n_clicks=0),
+                            html.Button("×", id="testing-center-close", className="modal-close-icon", title="Close", **{"aria-label": "Close"}, n_clicks=0),
                         ],
                         className="modal-heading-row",
                     ),
