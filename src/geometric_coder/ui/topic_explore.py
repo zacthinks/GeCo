@@ -182,8 +182,7 @@ def load_topic_page_colors(
 def topic_legend_content(html: Any, palette: TopicPointColors) -> Any:
     """Display the exact topic-to-color mapping used on the current page."""
     return html.Div(
-        [
-            html.Strong("Map colors"),
+        [html.Strong("Map colors")] + [
             html.Div(
                 [
                     html.Span(
