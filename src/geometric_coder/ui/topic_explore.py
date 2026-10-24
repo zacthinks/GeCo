@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.topic_artifacts import TopicModelRows
 
 ColorMode = Literal["plain", "semantic", "dominant", "intensity"]
@@ -30,8 +31,14 @@ class TopicPointColors:
     status: str
 
 
-def normalize_color_mode(value: Any) -> ColorMode:
-    """Do not restore unknown session modes from newer or broken versions."""
+def normalize_color_mode(value: Any, *, has_semantic_query: bool = False) -> ColorMode:
+    """Preserve pre-topic sessions' semantic point coloring on reopen.
+
+    Explicit modes, including explicit plain, always win. Only an absent
+    (None) mode from an older session inherits its existing semantic search.
+    """
+    if value is None and has_semantic_query:
+        return "semantic"
     return value if value in {"plain", "semantic", "dominant", "intensity"} else "plain"
 
 
@@ -141,4 +148,62 @@ def topic_point_colors(
     )
     return TopicPointColors(
         tuple(colors), legend, f"{len(observed)} dominant topics shown on this page."
+    )
+
+
+def load_topic_page_colors(
+    project: Any,
+    *,
+    model_id: int | None,
+    positions: Any,
+    mode: Literal["dominant", "intensity"],
+    selected_topic: str | None,
+) -> tuple[TopicPointColors | None, str]:
+    """Boundary for optional external topic providers, never for map geometry.
+
+    A missing TeAL artifact raises its provider-specific GeCoIntegrationError,
+    which is a RuntimeError. Do not import TeAL just to catch that type:
+    GeCo deliberately supports provider implementations other than TeAL.
+    """
+    if model_id is None:
+        return None, "Choose a registered Topic Model to color points."
+    try:
+        requested = [int(i) for i in positions]
+        rows = project.topic_model_rows(int(model_id), positions=requested)
+        result = topic_point_colors(
+            rows, mode=mode, selected_topic=selected_topic,
+            requested_count=len(requested),
+        )
+        return result, result.status
+    except (ConfigurationError, RuntimeError, KeyError, ValueError) as exc:
+        return None, f"Topic coloring unavailable: {exc}"
+
+
+def topic_legend_content(html: Any, palette: TopicPointColors) -> Any:
+    """Display the exact topic-to-color mapping used on the current page."""
+    return html.Div(
+        [
+            html.Strong("Map colors"),
+            html.Div(
+                [
+                    html.Span(
+                        style={
+                            "display": "inline-block",
+                            "width": "13px",
+                            "height": "13px",
+                            "backgroundColor": color,
+                            "border": "1px solid #77808a",
+                            "borderRadius": "3px",
+                            "flexShrink": 0,
+                        },
+                        **{"aria-hidden": "true"},
+                    ),
+                    html.Span(label),
+                ],
+                style={"display": "flex", "alignItems": "center", "gap": "7px"},
+            )
+            for color, label in palette.legend
+        ],
+        className="topic-color-legend",
+        style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "alignItems": "center"},
     )
