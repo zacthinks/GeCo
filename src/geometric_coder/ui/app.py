@@ -817,18 +817,6 @@ def create_app(
         return "intensity" if display == "intensity" else "dominant"
 
     @app.callback(
-        Output("topic-color-mode", "data", allow_duplicate=True),
-        Input("semantic-scores-store", "data"),
-        State("topic-color-mode", "data"),
-        prevent_initial_call=True,
-    )
-    def activate_semantic_colors(scores: dict[str, Any] | None, current: str | None) -> Any:
-        # Score updates from session restoration are not fresh searches.
-        if callback_context.triggered_id != "semantic-scores-store":
-            return no_update
-        return "semantic" if scores else no_update
-
-    @app.callback(
         Output("topic-component-wrap", "style"),
         Input("topic-display-mode", "value"),
     )
@@ -1239,6 +1227,7 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-range", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("topic-color-mode", "data", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
         State("semantic-query", "value"),
         prevent_initial_call=True,
@@ -1249,11 +1238,11 @@ def create_app(
     def run_semantic_search(
         search_clicks: int,
         query: str | None,
-    ) -> tuple[dict[str, list[float]], str, Any, None, None]:
+    ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
         del search_clicks
         clean_query = (query or "").strip()
         if not clean_query:
-            return {}, "Semantic search cleared.", "", None, None
+            return {}, "Semantic search cleared.", "", None, None, "plain"
         scores = project.semantic_search(clean_query)
         if not scores:
             return (
@@ -1262,6 +1251,7 @@ def create_app(
                 no_update,
                 None,
                 None,
+                no_update,
             )
         return (
             scores,
@@ -1269,6 +1259,7 @@ def create_app(
             no_update,
             None,
             None,
+            "semantic",
         )
 
     @app.callback(
