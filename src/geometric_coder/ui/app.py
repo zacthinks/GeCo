@@ -6402,52 +6402,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Geometry and View", className="control-block-title"),
-                            html.Label("Geometry"),
-                            dcc.Dropdown(
-                                id="geometry-dropdown",
-                                options=[
-                                    {
-                                        "label": record["name"],
-                                        "value": int(record["geometry_id"]),
-                                    }
-                                    for record in geometries
-                                ],
-                                value=initial_geometry_id,
-                                clearable=False,
-                            ),
-                            html.Label("2D view", className="stacked-control-label"),
-                            dcc.Dropdown(
-                                id="view-dropdown",
-                                options=[
-                                    {
-                                        "label": view["name"],
-                                        "value": int(view["view_id"]),
-                                    }
-                                    for view in views
-                                ],
-                                value=initial_view_id,
-                                clearable=False,
-                                searchable=False,
-                            ),
-                            html.Button(
-                                "Create 2D view",
-                                id="projection-open-button",
-                                n_clicks=0,
-                                className="secondary-action",
-                                disabled=not allow_create_view,
-                                title=(
-                                    None
-                                    if allow_create_view
-                                    else "Create views in the external provider and register them with GeCo."
-                                ),
-                            ),
-                        ],
-                        className="control-block geometry-view-control-block",
-                    ),
-                    html.Div(
-                        [
-                            html.H3("Search", className="control-block-title"),
+                            html.H3("Keyword search", className="control-block-title"),
                             html.Div(
                                 [
                                     html.Label("Literal search"),
@@ -6474,6 +6429,12 @@ def _explore_layout(
                                 ],
                                 className="search-section",
                             ),
+                        ],
+                        className="control-block keyword-search-control-block",
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Semantic search", className="control-block-title"),
                             html.Div(
                                 [
                                     html.Label("Semantic search"),
@@ -6562,39 +6523,52 @@ def _explore_layout(
                                 className="search-section semantic-search-section",
                             ),
                         ],
-                        className="control-block combined-search-block",
+                        className="control-block semantic-search-control-block",
                     ),
                     html.Div(
                         [
-                            html.H3("Map coloring", className="control-block-title"),
-                            dcc.RadioItems(
-                                id="topic-color-mode",
+                            html.H3("Geometry and View", className="control-block-title"),
+                            html.Label("Geometry"),
+                            dcc.Dropdown(
+                                id="geometry-dropdown",
                                 options=[
-                                    {"label": "Plain", "value": "plain"},
-                                    {"label": "Semantic similarity", "value": "semantic"},
-                                    {"label": "Dominant topic", "value": "dominant"},
-                                    {"label": "Selected topic weight", "value": "intensity"},
+                                    {
+                                        "label": record["name"],
+                                        "value": int(record["geometry_id"]),
+                                    }
+                                    for record in geometries
                                 ],
-                                value=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_state.get("semantic_query"))),
+                                value=initial_geometry_id,
+                                clearable=False,
                             ),
-                            html.Label("Topic Model"),
-                            dcc.Dropdown(id="topic-model-selector", clearable=False),
-                            html.Label("Topic"),
-                            dcc.Dropdown(id="topic-component-selector", clearable=False),
-                            html.P("Coloring does not change semantic search or filters.", className="control-status"),
-                            html.Details([
-                                html.Summary("Model and topic labels"),
-                                html.Label("Model name"),
-                                dcc.Input(id="topic-model-new-name", type="text"),
-                                html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
-                                html.Label("Selected topic label"),
-                                dcc.Input(id="topic-component-new-label", type="text"),
-                                html.Button("Rename topic", id="topic-label-save", n_clicks=0),
-                                html.Div(id="topic-action-status", role="status"),
-                            ]),
-
+                            html.Label("2D view", className="stacked-control-label"),
+                            dcc.Dropdown(
+                                id="view-dropdown",
+                                options=[
+                                    {
+                                        "label": view["name"],
+                                        "value": int(view["view_id"]),
+                                    }
+                                    for view in views
+                                ],
+                                value=initial_view_id,
+                                clearable=False,
+                                searchable=False,
+                            ),
+                            html.Button(
+                                "Create 2D view",
+                                id="projection-open-button",
+                                n_clicks=0,
+                                className="secondary-action",
+                                disabled=not allow_create_view,
+                                title=(
+                                    None
+                                    if allow_create_view
+                                    else "Create views in the external provider and register them with GeCo."
+                                ),
+                            ),
                         ],
-                        className="control-block",
+                        className="control-block geometry-view-control-block",
                     ),
                     html.Div(
                         [
@@ -6656,6 +6630,38 @@ def _explore_layout(
                             html.Div(id="metadata-filter-status", className="control-status"),
                         ],
                         className="control-block metadata-filter-block",
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Topic Models", className="control-block-title"),
+                            dcc.RadioItems(
+                                id="topic-color-mode",
+                                options=[
+                                    {"label": "Plain", "value": "plain"},
+                                    {"label": "Semantic similarity", "value": "semantic"},
+                                    {"label": "Dominant topic", "value": "dominant"},
+                                    {"label": "Selected topic weight", "value": "intensity"},
+                                ],
+                                value=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_state.get("semantic_query"))),
+                            ),
+                            html.Label("Topic Model"),
+                            dcc.Dropdown(id="topic-model-selector", clearable=False),
+                            html.Label("Topic"),
+                            dcc.Dropdown(id="topic-component-selector", clearable=False),
+                            html.P("Coloring does not change semantic search or filters.", className="control-status"),
+                            html.Details([
+                                html.Summary("Model and topic labels"),
+                                html.Label("Model name"),
+                                dcc.Input(id="topic-model-new-name", type="text"),
+                                html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
+                                html.Label("Selected topic label"),
+                                dcc.Input(id="topic-component-new-label", type="text"),
+                                html.Button("Rename topic", id="topic-label-save", n_clicks=0),
+                                html.Div(id="topic-action-status", role="status"),
+                            ]),
+
+                        ],
+                        className="control-block",
                     ),
                 ],
                 className="explore-controls",
