@@ -153,3 +153,15 @@ def test_topic_explore_source_compiles():
     from pathlib import Path
     source_path = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/topic_explore.py"
     compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec")
+
+
+def test_topic_panel_has_only_topic_color_choices_and_global_clear():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert 'id="topic-display-mode"' in source
+    assert '{"label": "Dominant topic", "value": "dominant"}' in source
+    assert '{"label": "Selected topic weight", "value": "intensity"}' in source
+    assert 'id="topic-component-wrap"' in source
+    assert 'id="nav-clear-colors"' in source
+    assert 'id="semantic-clear-button"' not in source
+    assert 'id="topic-manager-close", n_clicks=0, className="modal-close-icon"' in source
