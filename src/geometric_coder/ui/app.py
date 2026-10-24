@@ -726,6 +726,30 @@ def create_app(
                     _load_filter_set_modal(dcc=dcc, html=html),
                     html.Div([
                         html.Div([
+                            html.Div([
+                                html.H2("Manage Topic Models"),
+                                html.Button("Close", id="topic-manager-close", n_clicks=0),
+                            ], className="modal-header"),
+                            html.P("Model names and topic labels are local to GeCo. Fitted TeAL artifacts remain unchanged.", className="modal-help"),
+                            html.Label("Registered model"),
+                            dcc.Dropdown(id="topic-manager-model", clearable=False),
+                            html.Label("Model name"),
+                            dcc.Input(id="topic-model-new-name", type="text", className="text-input"),
+                            html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
+                            html.H3("Edit topic labels"),
+                            html.P("Original TeAL component IDs remain stable when labels change."),
+                            dcc.Dropdown(id="topic-manager-component", clearable=False),
+                            html.Label("Selected topic label"),
+                            dcc.Input(id="topic-component-new-label", type="text", className="text-input"),
+                            html.Button("Rename topic", id="topic-label-save", n_clicks=0),
+                            html.Div(id="topic-action-status", role="status"),
+                            html.H3("Create Topic Model"),
+                            html.P("Creating models requires TeAL recipe integration. Register fitted models using the linked TeAL API for now.", className="control-status"),
+                        ], className="modal-card"),
+                    ], id="topic-manager-modal", className="modal-overlay", style={"display": "none"}),
+
+                    html.Div([
+                        html.Div([
                             html.H2("New session"),
                             html.Label("Session name", htmlFor="new-session-title"),
                             dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
@@ -770,6 +794,36 @@ def create_app(
             {"label": rows.topic_labels.get(topic, topic) + (f" ({topic})" if topic in rows.topic_labels else ""), "value": topic}
             for topic in rows.topic_ids
         ]
+
+    @app.callback(
+        Output("topic-manager-modal", "style"),
+        Input("topic-manager-open", "n_clicks"),
+        Input("topic-manager-close", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_topic_manager(_open: int, _close: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "topic-manager-open" else {"display": "none"}
+
+    @app.callback(
+        Output("topic-manager-model", "options"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def manager_models(_revision: int) -> list[dict[str, Any]]:
+        return [{"label": str(m["name"]), "value": int(m["topic_model_id"])} for m in project.topic_models()]
+
+    @app.callback(
+        Output("topic-manager-component", "options"),
+        Input("topic-manager-model", "value"),
+        Input("topic-model-refresh-store", "data"),
+    )
+    def manager_components(model_id: int | None, _revision: int) -> list[dict[str, str]]:
+        if model_id is None or not units:
+            return []
+        try:
+            rows = project.topic_model_rows(int(model_id), positions=[0])
+        except (ConfigurationError, RuntimeError, KeyError, ValueError):
+            return []
+        return [{"label": rows.topic_labels.get(t, t) + (f" ({t})" if t in rows.topic_labels else ""), "value": t} for t in rows.topic_ids]
 
     register_topic_details_callbacks(
         app, project, html=html, Input=Input, Output=Output,
@@ -6661,16 +6715,7 @@ def _explore_layout(
                             html.Label("Topic"),
                             dcc.Dropdown(id="topic-component-selector", clearable=False),
                             html.P("Coloring does not change semantic search or filters.", className="control-status"),
-                            html.Details([
-                                html.Summary("Model and topic labels"),
-                                html.Label("Model name"),
-                                dcc.Input(id="topic-model-new-name", type="text"),
-                                html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
-                                html.Label("Selected topic label"),
-                                dcc.Input(id="topic-component-new-label", type="text"),
-                                html.Button("Rename topic", id="topic-label-save", n_clicks=0),
-                                html.Div(id="topic-action-status", role="status"),
-                            ]),
+                            html.Button("Manage Topic Models", id="topic-manager-open", n_clicks=0, className="secondary-action"),
 
                         ],
                         className="control-block",
