@@ -121,13 +121,15 @@ def test_topic_legend_display_includes_alias_and_color():
     data = topic_point_colors(
         packet(), mode="dominant", selected_topic=None, requested_count=4,
     )
-    content = topic_legend_content(html, data).to_plotly_json()
-    import json
-    serialized = json.dumps(content)
-    assert "Interpretation (topic_1)" in serialized
-    assert component_color("topic_1") in serialized
-    assert "Outside Topic Model coverage" in serialized
-    assert "Covered, unassigned/noise" in serialized
+    content = topic_legend_content(html, data)
+    assert content.children[0].children == "Map colors"
+    swatches = {
+        row.children[1].children: row.children[0].style["backgroundColor"]
+        for row in content.children[1:]
+    }
+    assert swatches["Interpretation (topic_1)"] == component_color("topic_1")
+    assert swatches["Outside Topic Model coverage"] == UNCOVERED_COLOR
+    assert swatches["Covered, unassigned/noise"] == UNASSIGNED_COLOR
 
 
 def test_legacy_semantic_search_session_preserves_coloring():
