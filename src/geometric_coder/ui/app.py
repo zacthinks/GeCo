@@ -515,6 +515,7 @@ def create_app(
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
+                dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
@@ -723,6 +724,17 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    html.Div([
+                        html.Div([
+                            html.H2("New session"),
+                            html.Label("Session name", htmlFor="new-session-title"),
+                            dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
+                            html.Div([
+                                html.Button("Cancel", id="new-session-cancel", n_clicks=0),
+                                html.Button("Save", id="new-session-save", n_clicks=0, className="primary-action"),
+                            ], className="modal-actions"),
+                        ], className="modal-card", role="dialog", **{"aria-modal": "true"}),
+                    ], id="new-session-modal", className="modal-overlay", style={"display": "none"}),
                 ],
             ),
             html.Div(id="session-state-status", className="sr-only"),
@@ -806,15 +818,25 @@ def create_app(
         Output("session-dropdown", "options"),
         Output("session-dropdown", "value"),
         Output("new-session-title", "value"),
-        Input("new-session-button", "n_clicks"),
+        Output("new-session-modal", "style"),
+        Input("new-session-save", "n_clicks"),
         State("new-session-title", "value"),
         prevent_initial_call=True,
     )
-    def create_session(n_clicks: int, title: str | None) -> tuple[list[dict[str, Any]], int, str]:
+    def create_session(n_clicks: int, title: str | None) -> tuple[list[dict[str, Any]], int, str, dict[str, str]]:
         del n_clicks
         clean_title = (title or "").strip() or f"Session {len(project.sessions()) + 1}"
         session_id = project.create_session(clean_title)
-        return _session_options(project.sessions()), session_id, ""
+        return _session_options(project.sessions()), session_id, "", {"display": "none"}
+
+    @app.callback(
+        Output("new-session-modal", "style", allow_duplicate=True),
+        Input("new-session-button", "n_clicks"),
+        Input("new-session-cancel", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_new_session_modal(_open: int, _cancel: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "new-session-button" else {"display": "none"}
 
     @app.callback(
         Output("active-session-store", "data"),
@@ -6378,19 +6400,9 @@ def _explore_layout(
                                 clearable=False,
                                 searchable=False,
                             ),
-                            html.Div(
-                                [
-                                    dcc.Input(
-                                        id="new-session-title",
-                                        type="text",
-                                        placeholder="New session name",
-                                        className="compact-text-input",
-                                    ),
-                                    html.Button(
-                                        "New session", id="new-session-button", n_clicks=0
-                                    ),
-                                ],
-                                className="session-create-row",
+                            html.Button(
+                                "New session", id="new-session-button", n_clicks=0,
+                                className="secondary-action",
                             ),
                             html.Div(
                                 f"Visited {int(initial_seen_count):,} of {int(total_units):,}",
