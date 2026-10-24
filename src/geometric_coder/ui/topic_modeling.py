@@ -104,7 +104,7 @@ def register_topic_details_callbacks(
 
     @app.callback(
         Output("topic-model-new-name", "value"),
-        Input("topic-model-selector", "value"),
+        Input("topic-manager-model", "value"),
         Input("topic-model-refresh-store", "data"),
     )
     def model_name(model_id: int | None, _revision: int) -> str:
@@ -112,8 +112,8 @@ def register_topic_details_callbacks(
 
     @app.callback(
         Output("topic-component-new-label", "value"),
-        Input("topic-model-selector", "value"),
-        Input("topic-component-selector", "value"),
+        Input("topic-manager-model", "value"),
+        Input("topic-manager-component", "value"),
         Input("topic-model-refresh-store", "data"),
     )
     def topic_label(model_id: int | None, component: str | None, _revision: int) -> str:
@@ -221,9 +221,9 @@ def register_topic_details_callbacks(
         Output("topic-action-status", "children"),
         Input("topic-model-rename-save", "n_clicks"),
         Input("topic-label-save", "n_clicks"),
-        State("topic-model-selector", "value"),
+        State("topic-manager-model", "value"),
         State("topic-model-new-name", "value"),
-        State("topic-component-selector", "value"),
+        State("topic-manager-component", "value"),
         State("topic-component-new-label", "value"),
         State("topic-model-refresh-store", "data"),
         prevent_initial_call=True,
