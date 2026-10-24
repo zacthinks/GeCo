@@ -812,6 +812,28 @@ def create_app(
         return [{"label": str(m["name"]), "value": int(m["topic_model_id"])} for m in project.topic_models()]
 
     @app.callback(
+        Output("topic-manager-model", "value"),
+        Input("topic-manager-open", "n_clicks"),
+        State("topic-model-selector", "value"),
+        prevent_initial_call=True,
+    )
+    def choose_manager_model(_n_clicks: int, selected: int | None) -> int | None:
+        models = project.topic_models()
+        ids = {int(m["topic_model_id"]) for m in models}
+        return selected if selected in ids else (min(ids) if ids else None)
+
+    @app.callback(
+        Output("topic-manager-component", "value"),
+        Input("topic-manager-component", "options"),
+        State("topic-manager-component", "value"),
+    )
+    def choose_manager_topic(
+        options: list[dict[str, str]] | None, selected: str | None,
+    ) -> str | None:
+        valid = [str(o["value"]) for o in (options or [])]
+        return selected if selected in valid else (valid[0] if valid else None)
+
+    @app.callback(
         Output("topic-manager-component", "options"),
         Input("topic-manager-model", "value"),
         Input("topic-model-refresh-store", "data"),
