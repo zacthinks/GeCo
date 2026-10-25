@@ -746,7 +746,7 @@ def create_app(
                             html.Div(id="topic-action-status", role="status"),
                             html.H3("Create Topic Model"),
                             html.P("Creating models requires TeAL recipe integration. Register fitted models using the linked TeAL API for now.", className="control-status"),
-                        ], className="modal-card"),
+                        ], className="modal-card topic-manager-card"),
                     ], id="topic-manager-modal", className="modal-overlay", style={"display": "none"}),
 
                     html.Div([
@@ -6512,17 +6512,19 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Session", className="control-block-title"),
-                            dcc.Dropdown(
-                                id="session-dropdown",
-                                options=_session_options(sessions),
-                                value=initial_session_id,
-                                clearable=False,
-                                searchable=False,
-                            ),
-                            html.Button(
-                                "New session", id="new-session-button", n_clicks=0,
-                                className="secondary-action",
-                            ),
+                            html.Div([
+                                dcc.Dropdown(
+                                    id="session-dropdown",
+                                    options=_session_options(sessions),
+                                    value=initial_session_id,
+                                    clearable=False,
+                                    searchable=False,
+                                ),
+                                html.Button(
+                                    "New session", id="new-session-button", n_clicks=0,
+                                    className="secondary-action",
+                                ),
+                            ], className="session-select-row"),
                             html.Div(
                                 f"Visited {int(initial_seen_count):,} of {int(total_units):,}",
                                 id="session-progress",
@@ -6533,10 +6535,9 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Keyword search", className="control-block-title"),
+                            html.H3("Literal Search", className="control-block-title"),
                             html.Div(
                                 [
-                                    html.Label("Literal search"),
                                     dcc.Input(
                                         id="literal-query",
                                         type="text",
@@ -6568,7 +6569,6 @@ def _explore_layout(
                             html.H3("Semantic search", className="control-block-title"),
                             html.Div(
                                 [
-                                    html.Label("Semantic search"),
                                     html.Div(
                                         [
                                             dcc.Input(
@@ -6752,14 +6752,12 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Topic Models", className="control-block-title"),
-                            html.Label("Topic Model"),
                             dcc.Dropdown(id="topic-model-selector", clearable=True, placeholder="Select a Topic Model"),
                             html.Div([html.Label("Selected topic"), dcc.Dropdown(id="topic-component-selector", clearable=False)], id="topic-component-wrap"),
                             dcc.RadioItems(id="topic-display-mode", options=[
                                 {"label": "Dominant topic", "value": "dominant"},
                                 {"label": "Selected topic weight", "value": "intensity"},
                             ], value="intensity" if initial_state.get("topic_color_mode") == "intensity" else "dominant"),
-                            html.P("Coloring does not change semantic search or filters.", className="control-status"),
                             html.Button("Manage Topic Models", id="topic-manager-open", n_clicks=0, className="secondary-action"),
 
                         ],
