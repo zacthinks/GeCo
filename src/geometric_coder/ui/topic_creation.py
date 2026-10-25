@@ -257,7 +257,7 @@ def _parse_parameter(name: str, raw: Any, spec: Mapping[str, Any]) -> Any:
     kind = spec["kind"]
     annotation = str(spec["annotation"])
     if kind == "boolean":
-        return bool(raw)
+        return raw is True or raw == "true"
     if kind == "integer":
         return int(raw)
     if kind == "number":
