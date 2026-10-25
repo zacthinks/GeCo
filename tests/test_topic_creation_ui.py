@@ -52,9 +52,22 @@ def test_ui_creation_uses_public_teal_pipeline():
     "dbscan", "optics", "hdbscan",
 ])
 def test_teal_recipe_inventory_has_parameter_contract(recipe):
-    from geometric_coder.ui.topic_creation import recipe_fields, recipe_options, parameter_specs
+    from geometric_coder.ui.topic_creation import recipe_options, PRIMARY_PARAMETERS
     assert recipe in {row["value"] for row in recipe_options()}
-    assert set(recipe_fields(recipe)) == {s["name"] for s in parameter_specs(recipe)}
+    assert recipe in PRIMARY_PARAMETERS
+
+
+def test_installed_teal_signature_is_complete_when_available():
+    pytest.importorskip("text_analysis_lab")
+    from geometric_coder.ui.topic_creation import (
+        recipe_fields, parameter_specs, split_parameter_specs, MODEL_CLASSES,
+    )
+    for recipe, _, _ in MODEL_CLASSES:
+        names = set(recipe_fields(recipe))
+        common, advanced = split_parameter_specs(recipe)
+        assert names == {entry["name"] for entry in parameter_specs(recipe)}
+        assert names == {entry["name"] for entry in common + advanced}
+        assert not {entry["name"] for entry in common} & {entry["name"] for entry in advanced}
 
 
 def test_identity_has_no_fit_parameters():
@@ -89,6 +102,7 @@ def test_geometry_options_include_standalone_registrations():
 
 
 def test_kmeans_metric_is_fixed_and_other_parameters_visible():
+    pytest.importorskip("text_analysis_lab")
     from geometric_coder.ui.topic_creation import recipe_fields
     assert "metric" not in recipe_fields("kmeans")
     assert {"n_init", "init", "tol", "random_state"}.issubset(recipe_fields("kmeans"))
@@ -97,3 +111,10 @@ def test_kmeans_metric_is_fixed_and_other_parameters_visible():
     )
     assert {"n_init", "init", "tol"}.issubset(recipe_fields("spherical_kmeans"))
     assert "metric" in recipe_fields("kmedoids")
+
+
+def test_creation_wizard_has_collapsed_advanced_controls():
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert 'html.Summary("Advanced parameters")' in source
+    assert 'id="topic-create-advanced"' in source
+    assert "split_parameter_specs(algorithm or \"identity\")" in source
