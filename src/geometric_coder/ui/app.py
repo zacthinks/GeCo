@@ -388,7 +388,7 @@ def create_app(
         ) from error
 
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
-    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, teal_linked_project
+    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, standalone_primary_specs, teal_linked_project
 
     metadata = project.metadata
     units = project.units()
@@ -764,7 +764,7 @@ def create_app(
                             html.Details([
                                 html.Summary("Advanced parameters"),
                                 html.Div(id="topic-create-advanced", className="topic-create-parameters"),
-                            ], className="topic-create-advanced"),
+                            ], id="topic-create-advanced-wrap", className="topic-create-advanced", style={"display": "none"}),
                             html.Div([
                                 html.Button("Cancel", id="topic-create-cancel", n_clicks=0),
                                 html.Button("Create", id="topic-create-submit", n_clicks=0, disabled=teal_linked_project(project) is None or not bool(topic_geometry_options(project)), className="primary-action"),
@@ -929,14 +929,15 @@ def create_app(
     @app.callback(
         Output("topic-create-parameters", "children"),
         Output("topic-create-advanced", "children"),
+        Output("topic-create-advanced-wrap", "style"),
         Input("topic-create-algorithm", "value"),
     )
-    def show_recipe_parameters(algorithm: str | None) -> tuple[list[Any], list[Any]]:
+    def show_recipe_parameters(algorithm: str | None) -> tuple[list[Any], list[Any], dict[str, str]]:
         try:
             common, advanced = split_parameter_specs(algorithm or "identity")
         except ImportError:
             # TeAL is an optional dependency of standalone GeCo.
-            return [], []
+            common, advanced = standalone_primary_specs(algorithm or "identity"), []
 
         def controls_for(specs: list[dict[str, Any]]) -> list[Any]:
             controls = []
@@ -957,7 +958,7 @@ def create_app(
                 controls.append(html.Div([html.Label(spec["label"]), field], className="topic-parameter-field"))
             return controls
 
-        return controls_for(common), controls_for(advanced)
+        return controls_for(common), controls_for(advanced), ({"display": "block"} if advanced else {"display": "none"})
 
     @app.callback(
         Output("topic-model-refresh-store", "data", allow_duplicate=True),
