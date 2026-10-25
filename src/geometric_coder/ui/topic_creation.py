@@ -141,102 +141,152 @@ def create_lda_topic_model(
         )
 
 
-# An explicit *UI* catalog of TeAL translators, not a duplicated scientific
-# eligibility engine. TeAL remains responsible for validating matrix inputs.
-# Supported creation fields intentionally expose common parameters rather than
-# every low-level estimator knob.
-MODEL_RECIPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("identity", "Identity (existing geometry)", ()),
-    ("lda", "Latent Dirichlet allocation (LDA)", ("count", "max_iter")),
-    ("gaussian_mixture", "Gaussian mixture (GMM)", ("count", "max_iter", "covariance_type")),
-    ("kmeans", "K-means", ("count", "max_iter")),
-    ("minibatch_kmeans", "MiniBatch K-means", ("count", "max_iter", "batch_size")),
-    ("spherical_kmeans", "Spherical K-means", ("count", "max_iter")),
-    ("kmedoids", "K-medoids", ("count", "max_iter", "metric")),
-    ("spectral", "Spectral clustering", ("count", "n_neighbors", "affinity")),
-    ("agglomerative", "Agglomerative clustering", ("count", "metric", "linkage")),
-    ("dbscan", "DBSCAN", ("eps", "min_samples", "metric")),
-    ("optics", "OPTICS", ("min_samples", "xi", "metric")),
-    ("hdbscan", "HDBSCAN", ("min_cluster_size", "min_samples", "metric")),
+# TeAL's translator constructors are the authority for parameter names,
+# signatures, and defaults. Only the algorithm inventory lives in GeCo.
+# "operator_id" is TeAL's internal operation identity, not a fit hyperparameter.
+MODEL_CLASSES: tuple[tuple[str, str, str], ...] = (
+    ("identity", "Identity (existing geometry)", ""),
+    ("lda", "Latent Dirichlet allocation (LDA)", "LDA"),
+    ("gaussian_mixture", "Gaussian mixture (GMM)", "GaussianMixture"),
+    ("kmeans", "K-means (Euclidean)", "KMeans"),
+    ("minibatch_kmeans", "MiniBatch K-means (Euclidean)", "MiniBatchKMeans"),
+    ("spherical_kmeans", "Spherical K-means (directional)", "SphericalKMeans"),
+    ("kmedoids", "K-medoids", "KMedoids"),
+    ("spectral", "Spectral clustering", "SpectralClustering"),
+    ("agglomerative", "Agglomerative clustering", "AgglomerativeClustering"),
+    ("dbscan", "DBSCAN", "DBSCAN"),
+    ("optics", "OPTICS", "OPTICS"),
+    ("hdbscan", "HDBSCAN", "HDBSCAN"),
 )
-RECIPE_FIELDS: tuple[tuple[str, str, str, Any], ...] = (
-    ("count", "Number of topics / clusters", "int", 10),
-    ("max_iter", "Maximum iterations", "int", 100),
-    ("batch_size", "Batch size", "int", 1024),
-    ("min_cluster_size", "Minimum cluster size", "int", 10),
-    ("min_samples", "Minimum samples", "int", 5),
-    ("eps", "Neighborhood radius (eps)", "float", 0.5),
-    ("xi", "OPTICS steepness (xi)", "float", 0.05),
-    ("n_neighbors", "Neighbors", "int", 10),
-    ("metric", "Distance metric", "choice", "euclidean"),
-    ("covariance_type", "Covariance type", "choice", "full"),
-    ("affinity", "Spectral affinity", "choice", "rbf"),
-    ("linkage", "Agglomerative linkage", "choice", "ward"),
-)
-FIELD_CHOICES: dict[str, tuple[str, ...]] = {
-    "metric": ("euclidean", "manhattan", "cosine"),
-    "covariance_type": ("full", "tied", "diag", "spherical"),
-    "affinity": ("rbf", "nearest_neighbors"),
-    "linkage": ("ward", "complete", "average", "single"),
-}
 
 
 def recipe_options() -> list[dict[str, str]]:
-    return [{"label": title, "value": key} for key, title, _ in MODEL_RECIPES]
-
-
-def recipe_fields(recipe: str) -> tuple[str, ...]:
-    for key, _, fields in MODEL_RECIPES:
-        if recipe == key:
-            return fields
-    raise ValueError(f"Unknown TeAL Topic Model algorithm {recipe!r}.")
+    return [{"label": name, "value": key} for key, name, _ in MODEL_CLASSES]
 
 
 def topic_geometry_options(coder: GeometricCoder) -> list[dict[str, Any]]:
-    """Offer TeAL-linked registered geometries, without duplicating eligibility."""
-    return lda_geometry_options(coder)
+    """List *all* registered GeCo geometries, including standalone projects.
+
+    TeAL fitting availability is a separate capability; hiding geometry names
+    misleads researchers into believing their registered resources are missing.
+    """
+    return [
+        {"label": str(row["name"]), "value": int(row["geometry_id"])}
+        for row in coder.geometries(public_only=True)
+    ]
+
+
+def lda_geometry_options(coder: GeometricCoder) -> list[dict[str, Any]]:
+    """Backward-compatible alias; scientific eligibility is evaluated by TeAL."""
+    return topic_geometry_options(coder)
+
+
+def _recipe_class(recipe: str) -> Any:
+    for key, _, class_name in MODEL_CLASSES:
+        if key == recipe:
+            if key == "identity":
+                return None
+            from text_analysis_lab import translators
+            return getattr(translators, class_name)
+    raise ValueError(f"Unknown TeAL Topic Model algorithm {recipe!r}.")
+
+
+def recipe_fields(recipe: str) -> tuple[str, ...]:
+    """Read the full public constructor signature from the installed TeAL."""
+    operator = _recipe_class(recipe)
+    if operator is None:
+        return ()
+    from inspect import signature
+    return tuple(
+        name for name, parameter in signature(operator).parameters.items()
+        if name != "operator_id"
+        and parameter.kind.name not in {"VAR_POSITIONAL", "VAR_KEYWORD"}
+    )
+
+
+def _annotation_text(parameter: Any) -> str:
+    return str(parameter.annotation).replace("typing.", "").replace(" ", "")
+
+
+def parameter_specs(recipe: str) -> list[dict[str, Any]]:
+    """Expose all TeAL constructor hyperparameters with original defaults."""
+    operator = _recipe_class(recipe)
+    if operator is None:
+        return []
+    from inspect import signature
+    specs: list[dict[str, Any]] = []
+    for name, param in signature(operator).parameters.items():
+        if name == "operator_id":
+            continue
+        annotation = _annotation_text(param)
+        default = param.default
+        if isinstance(default, bool) or "bool" in annotation:
+            kind = "boolean"
+        elif ("int" in annotation and "str" in annotation):
+            kind = "text"  # e.g. sklearn n_init='auto'
+        elif "float" in annotation and "str" in annotation:
+            kind = "text"  # e.g. eigen_tol='auto'
+        elif "int" in annotation:
+            kind = "integer"
+        elif "float" in annotation:
+            kind = "number"
+        elif isinstance(default, str):
+            kind = "text"
+        else:
+            kind = "text"
+        # Dash/JSON cannot encode +/-inf numeric input values.
+        if isinstance(default, float) and not __import__("math").isfinite(default):
+            kind = "text"
+            default = str(default)
+        if default is None:
+            default = "" if kind == "text" else None
+        specs.append({
+            "name": name,
+            "label": name.replace("_", " ").capitalize(),
+            "kind": kind,
+            "default": default,
+            "annotation": annotation,
+        })
+    return specs
+
+
+def _parse_parameter(name: str, raw: Any, spec: Mapping[str, Any]) -> Any:
+    """Only decode input widgets; the translator validates scientific inputs."""
+    if raw is None or raw == "":
+        return None
+    kind = spec["kind"]
+    annotation = str(spec["annotation"])
+    if kind == "boolean":
+        return bool(raw)
+    if kind == "integer":
+        return int(raw)
+    if kind == "number":
+        return float(raw)
+    if "int" in annotation and "str" in annotation and str(raw).lstrip("+-").isdigit():
+        return int(raw)
+    if "float" in annotation and "str" in annotation:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return str(raw)
+    return str(raw)
 
 
 def _operator_for_recipe(recipe: str, parameters: Mapping[str, Any]) -> Any:
-    """Construct one existing TeAL translator, leaving numerical checks to TeAL."""
-    from text_analysis_lab import translators as tr
-
-    fields = recipe_fields(recipe)
-    args: dict[str, Any] = {}
-    field_types = {field: kind for field, _, kind, _ in RECIPE_FIELDS}
-    for key in fields:
-        value = parameters.get(key)
-        if value is None or value == "":
-            continue
-        kind = field_types[key]
-        if kind == "int":
-            if isinstance(value, bool) or int(value) != float(value):
-                raise ValueError(f"{key} must be a whole number.")
-            value = int(value)
-        elif kind == "float":
-            value = float(value)
-        elif kind == "choice":
-            if value not in FIELD_CHOICES[key]:
-                raise ValueError(f"Invalid {key}: {value!r}.")
-        args[key] = value
-
-    if "count" in args:
-        args["n_components" if recipe in {"lda", "gaussian_mixture"} else "n_clusters"] = args.pop("count")
-
-    classes = {
-        "lda": tr.LDA,
-        "gaussian_mixture": tr.GaussianMixture,
-        "kmeans": tr.KMeans,
-        "minibatch_kmeans": tr.MiniBatchKMeans,
-        "spherical_kmeans": tr.SphericalKMeans,
-        "kmedoids": tr.KMedoids,
-        "spectral": tr.SpectralClustering,
-        "agglomerative": tr.AgglomerativeClustering,
-        "dbscan": tr.DBSCAN,
-        "optics": tr.OPTICS,
-        "hdbscan": tr.HDBSCAN,
+    """Instantiate the actual TeAL translator using its complete public API."""
+    operator = _recipe_class(recipe)
+    if operator is None:
+        raise ValueError("Identity reuses the existing TeAL matrix without fitting.")
+    specs = {spec["name"]: spec for spec in parameter_specs(recipe)}
+    unknown = set(parameters) - set(specs)
+    if unknown:
+        raise ValueError(f"Unexpected TeAL hyperparameters: {sorted(unknown)!r}")
+    args = {
+        name: parsed
+        for name, raw in parameters.items()
+        if (parsed := _parse_parameter(name, raw, specs[name])) is not None
     }
-    return classes[recipe](**args)
+    return operator(**args)
 
 
 def create_topic_model(
@@ -252,7 +302,7 @@ def create_topic_model(
     No algorithmic fitting is performed here. Identity preserves the source
     artifact ID exactly. Existing TeAL scientific source validation is retained.
     """
-    recipe_fields(recipe)  # Validate the algorithm before doing any work.
+    _recipe_class(recipe)  # Validate selection against the installed TeAL catalog.
     clean_name = str(name).strip()
     if not clean_name:
         raise ValueError("Enter a name for the Topic Model.")
