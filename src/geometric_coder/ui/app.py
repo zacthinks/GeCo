@@ -388,6 +388,7 @@ def create_app(
         ) from error
 
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
+    from geometric_coder.ui.topic_creation import create_lda_topic_model, lda_geometry_options
 
     metadata = project.metadata
     units = project.units()
@@ -745,7 +746,30 @@ def create_app(
                             html.Button("Rename topic", id="topic-label-save", n_clicks=0),
                             html.Div(id="topic-action-status", role="status"),
                             html.H3("Create Topic Model"),
-                            html.P("Creating models requires TeAL recipe integration. Register fitted models using the linked TeAL API for now.", className="control-status"),
+                            html.P("Fit LDA on a TeAL count matrix. Nonnegative integer counts are required.", className="modal-help"),
+                            html.Label("New model name"),
+                            dcc.Input(id="topic-create-name", type="text", className="text-input", placeholder="Name this model"),
+                            html.Label("Count representation"),
+                            dcc.Dropdown(
+                                id="topic-create-geometry",
+                                options=lda_geometry_options(project),
+                                placeholder="Select a TeAL count representation",
+                                clearable=False,
+                            ),
+                            html.Label("Number of topics"),
+                            dcc.Input(id="topic-create-n-topics", type="number", min=2, step=1, value=10),
+                            html.Label("Maximum iterations"),
+                            dcc.Input(id="topic-create-max-iter", type="number", min=1, step=1, value=10),
+                            html.Button(
+                                "Create Topic Model", id="topic-create-submit", n_clicks=0,
+                                disabled=not bool(lda_geometry_options(project)),
+                                className="primary-action",
+                            ),
+                            html.Div(
+                                "Creation is unavailable in standalone GeCo or unsupported external providers."
+                                if not lda_geometry_options(project) else "",
+                                id="topic-create-status", role="status", className="control-status",
+                            ),
                         ], className="modal-card topic-manager-card"),
                     ], id="topic-manager-modal", className="modal-overlay", style={"display": "none"}),
 
@@ -891,6 +915,37 @@ def create_app(
         except (ConfigurationError, RuntimeError, KeyError, ValueError):
             return []
         return [{"label": rows.topic_labels.get(t, t) + (f" ({t})" if t in rows.topic_labels else ""), "value": t} for t in rows.topic_ids]
+
+    @app.callback(
+        Output("topic-model-refresh-store", "data", allow_duplicate=True),
+        Output("topic-create-status", "children"),
+        Input("topic-create-submit", "n_clicks"),
+        State("topic-create-name", "value"),
+        State("topic-create-geometry", "value"),
+        State("topic-create-n-topics", "value"),
+        State("topic-create-max-iter", "value"),
+        State("topic-model-refresh-store", "data"),
+        prevent_initial_call=True,
+        running=[(Output("topic-create-submit", "disabled"), True, False)],
+    )
+    def create_topic_from_teal(
+        clicks: int, name: str | None, geometry: int | None,
+        count: int | None, iterations: int | None, revision: int | None,
+    ) -> tuple[Any, str]:
+        del clicks
+        if geometry is None:
+            return no_update, "Choose a TeAL count representation."
+        try:
+            result = create_lda_topic_model(
+                project, name=name or "", geometry_id=int(geometry),
+                n_topics=count, max_iter=iterations,
+            )
+        except (ConfigurationError, RuntimeError, KeyError, TypeError, ValueError) as exc:
+            return no_update, f"Could not create Topic Model: {exc}"
+        return int(revision or 0) + 1, (
+            f"Created Topic Model {name.strip()!r} (ID {result.topic_model_id}). "
+            "It is now available in Explore."
+        )
 
     register_topic_details_callbacks(
         app, project, html=html, Input=Input, Output=Output,
