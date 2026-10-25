@@ -118,3 +118,17 @@ def test_creation_wizard_has_collapsed_advanced_controls():
     assert 'html.Summary("Advanced parameters")' in source
     assert 'id="topic-create-advanced"' in source
     assert "split_parameter_specs(algorithm or \"identity\")" in source
+
+
+def test_standalone_wizard_shows_common_parameters_without_teal():
+    from geometric_coder.ui.topic_creation import standalone_primary_specs
+    specs = standalone_primary_specs("kmeans")
+    assert {p["name"] for p in specs} == {"n_clusters", "init", "max_iter"}
+    assert standalone_primary_specs("identity") == []
+
+
+def test_advanced_accordion_is_conditionally_visible():
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert 'id="topic-create-advanced-wrap"' in source
+    assert 'if advanced else {"display": "none"}' in source
+    assert 'standalone_primary_specs(algorithm or "identity")' in source
