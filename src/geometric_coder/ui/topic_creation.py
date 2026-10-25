@@ -160,6 +160,34 @@ MODEL_CLASSES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# These are presentation defaults only, not TeAL scientific eligibility rules.
+# Every other constructor parameter remains editable under Advanced parameters.
+PRIMARY_PARAMETERS: dict[str, tuple[str, ...]] = {
+    "identity": (),
+    "lda": ("n_components", "learning_method", "max_iter"),
+    "gaussian_mixture": ("n_components", "covariance_type", "max_iter"),
+    "kmeans": ("n_clusters", "init", "max_iter"),
+    "minibatch_kmeans": ("n_clusters", "batch_size", "max_iter"),
+    "spherical_kmeans": ("n_clusters", "n_init", "max_iter"),
+    "kmedoids": ("n_clusters", "metric", "max_iter"),
+    "spectral": ("n_clusters", "affinity", "n_neighbors"),
+    "agglomerative": ("n_clusters", "linkage", "metric"),
+    "dbscan": ("eps", "min_samples", "metric"),
+    "optics": ("min_samples", "metric", "xi"),
+    "hdbscan": ("min_cluster_size", "min_samples", "metric"),
+}
+
+
+def split_parameter_specs(recipe: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Divide *all* actual constructor parameters into prominent and advanced."""
+    specs = parameter_specs(recipe)
+    important = set(PRIMARY_PARAMETERS[recipe])
+    return (
+        [spec for spec in specs if spec["name"] in important],
+        [spec for spec in specs if spec["name"] not in important],
+    )
+
+
 def recipe_options() -> list[dict[str, str]]:
     return [{"label": name, "value": key} for key, name, _ in MODEL_CLASSES]
 
@@ -177,8 +205,8 @@ def topic_geometry_options(coder: GeometricCoder) -> list[dict[str, Any]]:
 
 
 def lda_geometry_options(coder: GeometricCoder) -> list[dict[str, Any]]:
-    """Backward-compatible alias; scientific eligibility is evaluated by TeAL."""
-    return topic_geometry_options(coder)
+    """Legacy TeAL-only geometry selector (retained for older callers)."""
+    return topic_geometry_options(coder) if teal_linked_project(coder) is not None else []
 
 
 def _recipe_class(recipe: str) -> Any:
@@ -216,7 +244,7 @@ def parameter_specs(recipe: str) -> list[dict[str, Any]]:
     from inspect import signature
     specs: list[dict[str, Any]] = []
     for name, param in signature(operator).parameters.items():
-        if name == "operator_id":
+        if name == "operator_id" or param.kind.name in {"VAR_POSITIONAL", "VAR_KEYWORD"}:
             continue
         annotation = _annotation_text(param)
         default = param.default
@@ -264,11 +292,12 @@ def _parse_parameter(name: str, raw: Any, spec: Mapping[str, Any]) -> Any:
         return float(raw)
     if "int" in annotation and "str" in annotation and str(raw).lstrip("+-").isdigit():
         return int(raw)
-    if "float" in annotation and "str" in annotation:
+    if "float" in annotation:
         try:
             return float(raw)
         except (ValueError, TypeError):
-            return str(raw)
+            if "str" not in annotation:
+                raise
     return str(raw)
 
 
