@@ -388,7 +388,7 @@ def create_app(
         ) from error
 
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
-    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, recipe_fields, RECIPE_FIELDS, FIELD_CHOICES
+    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, parameter_specs, teal_linked_project
 
     metadata = project.metadata
     units = project.units()
@@ -760,18 +760,10 @@ def create_app(
                             dcc.Dropdown(id="topic-create-geometry", options=topic_geometry_options(project), clearable=False),
                             html.Label("Algorithm"),
                             dcc.Dropdown(id="topic-create-algorithm", options=recipe_options(), value="identity", clearable=False),
-                            html.Div([
-                                html.Div([
-                                    html.Label(label),
-                                    dcc.Dropdown(id=f"topic-param-{key}", options=[{"label": v, "value": v} for v in FIELD_CHOICES[key]], value=default, clearable=False)
-                                    if kind == "choice" else
-                                    dcc.Input(id=f"topic-param-{key}", type="number", value=default, step=1 if kind == "int" else "any"),
-                                ], id=f"topic-param-wrap-{key}")
-                                for key, label, kind, default in RECIPE_FIELDS
-                            ], className="topic-create-parameters"),
+                            html.Div(id="topic-create-parameters", className="topic-create-parameters"),
                             html.Div([
                                 html.Button("Cancel", id="topic-create-cancel", n_clicks=0),
-                                html.Button("Create", id="topic-create-submit", n_clicks=0, disabled=not bool(topic_geometry_options(project)), className="primary-action"),
+                                html.Button("Create", id="topic-create-submit", n_clicks=0, disabled=teal_linked_project(project) is None or not bool(topic_geometry_options(project)), className="primary-action"),
                             ], className="modal-actions"),
                             html.Div(id="topic-create-status", role="status", className="control-status"),
                         ], className="modal-card topic-manager-card"),
@@ -931,23 +923,27 @@ def create_app(
         return {"display": "flex"} if callback_context.triggered_id == "topic-create-open" else {"display": "none"}
 
     @app.callback(
-        Output("topic-param-wrap-count", "style"),
-        Output("topic-param-wrap-max_iter", "style"),
-        Output("topic-param-wrap-batch_size", "style"),
-        Output("topic-param-wrap-min_cluster_size", "style"),
-        Output("topic-param-wrap-min_samples", "style"),
-        Output("topic-param-wrap-eps", "style"),
-        Output("topic-param-wrap-xi", "style"),
-        Output("topic-param-wrap-n_neighbors", "style"),
-        Output("topic-param-wrap-metric", "style"),
-        Output("topic-param-wrap-covariance_type", "style"),
-        Output("topic-param-wrap-affinity", "style"),
-        Output("topic-param-wrap-linkage", "style"),
+        Output("topic-create-parameters", "children"),
         Input("topic-create-algorithm", "value"),
     )
-    def reveal_recipe_parameters(algorithm: str | None) -> tuple[dict[str, str], ...]:
-        selected = set(recipe_fields(algorithm or "identity"))
-        return tuple({"display": "block" if key in selected else "none"} for key, *_ in RECIPE_FIELDS)
+    def show_recipe_parameters(algorithm: str | None) -> list[Any]:
+        controls = []
+        for spec in parameter_specs(algorithm or "identity"):
+            param_id = {"type": "topic-hyperparameter", "name": spec["name"]}
+            if spec["kind"] == "boolean":
+                field = dcc.Dropdown(
+                    id=param_id,
+                    options=[{"label": "True", "value": "true"}, {"label": "False", "value": "false"}],
+                    value="true" if spec["default"] else "false", clearable=False,
+                )
+            else:
+                field = dcc.Input(
+                    id=param_id, value=spec["default"],
+                    type="number" if spec["kind"] in {"integer", "number"} else "text",
+                    step=1 if spec["kind"] == "integer" else "any",
+                )
+            controls.append(html.Div([html.Label(spec["label"]), field], className="topic-parameter-field"))
+        return controls
 
     @app.callback(
         Output("topic-model-refresh-store", "data", allow_duplicate=True),
@@ -956,31 +952,25 @@ def create_app(
         State("topic-create-name", "value"),
         State("topic-create-geometry", "value"),
         State("topic-create-algorithm", "value"),
-        State("topic-param-count", "value"),
-        State("topic-param-max_iter", "value"),
-        State("topic-param-batch_size", "value"),
-        State("topic-param-min_cluster_size", "value"),
-        State("topic-param-min_samples", "value"),
-        State("topic-param-eps", "value"),
-        State("topic-param-xi", "value"),
-        State("topic-param-n_neighbors", "value"),
-        State("topic-param-metric", "value"),
-        State("topic-param-covariance_type", "value"),
-        State("topic-param-affinity", "value"),
-        State("topic-param-linkage", "value"),
+        State({"type": "topic-hyperparameter", "name": ALL}, "value"),
+        State({"type": "topic-hyperparameter", "name": ALL}, "id"),
         State("topic-model-refresh-store", "data"),
         prevent_initial_call=True,
         running=[(Output("topic-create-submit", "disabled"), True, False)],
     )
-    def create_topic_from_teal(clicks: int, name: str | None, geometry: int | None,
-        algorithm: str | None, count: Any, max_iter: Any, batch_size: Any, min_cluster_size: Any, min_samples: Any, eps: Any, xi: Any, n_neighbors: Any, metric: Any, covariance_type: Any, affinity: Any, linkage: Any, revision: int | None) -> tuple[Any, str]:
+    def create_topic_from_teal(
+        clicks: int, name: str | None, geometry: int | None,
+        algorithm: str | None, values: list[Any], ids: list[dict[str, str]],
+        revision: int | None,
+    ) -> tuple[Any, str]:
         del clicks
         if geometry is None:
-            return no_update, "Choose a TeAL geometry."
+            return no_update, "Choose a registered geometry."
+        params = {item["name"]: value for item, value in zip(ids, values, strict=True)}
         try:
             result = create_topic_model(
                 project, name=name or "", geometry_id=int(geometry),
-                recipe=algorithm or "identity", parameters=dict(count=count, max_iter=max_iter, batch_size=batch_size, min_cluster_size=min_cluster_size, min_samples=min_samples, eps=eps, xi=xi, n_neighbors=n_neighbors, metric=metric, covariance_type=covariance_type, affinity=affinity, linkage=linkage),
+                recipe=algorithm or "identity", parameters=params,
             )
         except Exception as exc:
             return no_update, f"Topic Model creation failed: {exc}"
