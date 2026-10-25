@@ -1245,6 +1245,15 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .explore-controls > .control-block > .RadioItems {
   margin-top: var(--field-gap, 0.55rem);
 }
+/* All vertically stacked fields: a label belongs to the control below it,
+   not to the preceding control. Avoid panel-specific dropdown padding. */
+.explore-controls > .control-block > label:not(:first-of-type) {
+  margin-top: 0.85rem;
+}
+.explore-controls > .control-block > label + .Select,
+.explore-controls > .control-block > label + .dash-dropdown {
+  margin-top: 0;
+}
 .explore-controls #topic-component-wrap { margin-top: 0.75rem; }
 .explore-controls #topic-component-wrap .Select { margin-bottom: 0; }
 .explore-controls #topic-display-mode { margin-top: 0.75rem; }
