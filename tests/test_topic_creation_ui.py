@@ -52,10 +52,9 @@ def test_ui_creation_uses_public_teal_pipeline():
     "dbscan", "optics", "hdbscan",
 ])
 def test_teal_recipe_inventory_has_parameter_contract(recipe):
-    from geometric_coder.ui.topic_creation import recipe_fields, recipe_options, RECIPE_FIELDS
+    from geometric_coder.ui.topic_creation import recipe_fields, recipe_options, parameter_specs
     assert recipe in {row["value"] for row in recipe_options()}
-    allowed = {row[0] for row in RECIPE_FIELDS}
-    assert set(recipe_fields(recipe)).issubset(allowed)
+    assert set(recipe_fields(recipe)) == {s["name"] for s in parameter_specs(recipe)}
 
 
 def test_identity_has_no_fit_parameters():
@@ -70,4 +69,31 @@ def test_creation_wizard_is_separate_and_always_uses_existing_geometry():
     assert 'id="topic-create-geometry"' in source
     assert 'id="topic-create-open"' in source
     assert 'id="topic-create-close"' in source
-    assert "recipe_fields(algorithm or \"identity\")" in source
+    assert 'parameter_specs(algorithm or "identity")' in source
+
+
+
+def test_geometry_options_include_standalone_registrations():
+    from geometric_coder.ui.topic_creation import topic_geometry_options
+    coder = SimpleNamespace(
+        is_external_backed=False,
+        geometries=lambda **_: [
+            {"geometry_id": 1, "name": "Counts"},
+            {"geometry_id": 2, "name": "SVD coordinates"},
+        ],
+    )
+    assert topic_geometry_options(coder) == [
+        {"label": "Counts", "value": 1},
+        {"label": "SVD coordinates", "value": 2},
+    ]
+
+
+def test_kmeans_metric_is_fixed_and_other_parameters_visible():
+    from geometric_coder.ui.topic_creation import recipe_fields
+    assert "metric" not in recipe_fields("kmeans")
+    assert {"n_init", "init", "tol", "random_state"}.issubset(recipe_fields("kmeans"))
+    assert {"batch_size", "reassignment_ratio", "max_no_improvement"}.issubset(
+        recipe_fields("minibatch_kmeans")
+    )
+    assert {"n_init", "init", "tol"}.issubset(recipe_fields("spherical_kmeans"))
+    assert "metric" in recipe_fields("kmedoids")
