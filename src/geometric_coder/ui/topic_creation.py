@@ -178,6 +178,36 @@ PRIMARY_PARAMETERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Display-only fallback for standalone GeCo: no TeAL fit is offered, but
+# researchers can still inspect the wizard's primary controls.
+# These defaults are NOT a substitute for TeAL's installed constructor API.
+STANDALONE_PRIMARY_DEFAULTS: dict[str, Any] = {
+    "n_components": 10, "n_clusters": 10, "learning_method": "batch",
+    "max_iter": 100, "covariance_type": "full", "init": "k-means++",
+    "batch_size": 1024, "n_init": 10, "metric": "euclidean",
+    "affinity": "rbf", "n_neighbors": 10, "linkage": "ward",
+    "eps": 0.5, "min_samples": 5, "xi": 0.05,
+    "min_cluster_size": 10,
+}
+
+
+def standalone_primary_specs(recipe: str) -> list[dict[str, Any]]:
+    """Illustrative fields for an unavailable optional TeAL integration."""
+    if recipe not in PRIMARY_PARAMETERS:
+        raise ValueError(f"Unknown Topic Model algorithm {recipe!r}.")
+    specs = []
+    for name in PRIMARY_PARAMETERS[recipe]:
+        default = STANDALONE_PRIMARY_DEFAULTS[name]
+        kind = "integer" if isinstance(default, int) else (
+            "number" if isinstance(default, float) else "text"
+        )
+        specs.append({
+            "name": name, "label": name.replace("_", " ").capitalize(),
+            "kind": kind, "default": default, "annotation": type(default).__name__,
+        })
+    return specs
+
+
 def split_parameter_specs(recipe: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Divide *all* actual constructor parameters into prominent and advanced."""
     specs = parameter_specs(recipe)
