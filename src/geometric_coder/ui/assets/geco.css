@@ -1227,3 +1227,47 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .explore-controls .Select, .explore-controls .Select-control, .explore-controls input { max-width: 100%; min-width: 0; }
 @media (max-width: 1150px) { .explore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .explore-controls { grid-template-columns: minmax(0, 1fr); } }
+
+
+/* Shared vertical rhythm for Explore controls and manager dialogs. */
+.explore-controls > .control-block { --field-gap: 0.55rem; }
+.explore-controls > .control-block > label,
+.explore-controls > .control-block > .stacked-control-label,
+.explore-controls #topic-component-wrap > label,
+.topic-manager-card label {
+  display: block;
+  margin: 0 0 0.3rem;
+}
+.explore-controls > .control-block > .Select,
+.explore-controls > .control-block > .dash-dropdown,
+.explore-controls > .control-block > #topic-component-wrap,
+.explore-controls > .control-block > .secondary-action,
+.explore-controls > .control-block > .RadioItems {
+  margin-top: var(--field-gap, 0.55rem);
+}
+.explore-controls #topic-component-wrap { margin-top: 0.75rem; }
+.explore-controls #topic-component-wrap .Select { margin-bottom: 0; }
+.explore-controls #topic-display-mode { margin-top: 0.75rem; }
+.explore-controls #topic-manager-open { margin-top: 0.75rem; }
+.session-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+.session-select-row > .Select { min-width: 0; }
+.session-select-row #new-session-button {
+  margin: 0;
+  width: auto;
+  white-space: nowrap;
+  min-height: 36px;
+}
+.topic-manager-card > label { margin-top: 0.85rem; }
+.topic-manager-card > label:first-of-type { margin-top: 0.7rem; }
+.topic-manager-card > .Select,
+.topic-manager-card > .dash-dropdown,
+.topic-manager-card > .text-input { width: 100%; min-width: 0; }
+.topic-manager-card > button:not(.modal-close-icon) { margin-top: 0.5rem; }
+.topic-manager-card > h3 { margin: 1.15rem 0 0.4rem; }
+.topic-manager-card > p { margin: 0.4rem 0 0.65rem; }
+.topic-manager-card > .control-status { margin-top: 0.4rem; }
