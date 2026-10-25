@@ -932,7 +932,11 @@ def create_app(
         Input("topic-create-algorithm", "value"),
     )
     def show_recipe_parameters(algorithm: str | None) -> tuple[list[Any], list[Any]]:
-        common, advanced = split_parameter_specs(algorithm or "identity")
+        try:
+            common, advanced = split_parameter_specs(algorithm or "identity")
+        except ImportError:
+            # TeAL is an optional dependency of standalone GeCo.
+            return [], []
 
         def controls_for(specs: list[dict[str, Any]]) -> list[Any]:
             controls = []
