@@ -82,7 +82,7 @@ def test_creation_wizard_is_separate_and_always_uses_existing_geometry():
     assert 'id="topic-create-geometry"' in source
     assert 'id="topic-create-open"' in source
     assert 'id="topic-create-close"' in source
-    assert 'parameter_specs(algorithm or "identity")' in source
+    assert 'split_parameter_specs(algorithm or "identity")' in source
 
 
 
