@@ -388,7 +388,7 @@ def create_app(
         ) from error
 
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
-    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, parameter_specs, teal_linked_project
+    from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, teal_linked_project
 
     metadata = project.metadata
     units = project.units()
@@ -761,6 +761,10 @@ def create_app(
                             html.Label("Algorithm"),
                             dcc.Dropdown(id="topic-create-algorithm", options=recipe_options(), value="identity", clearable=False),
                             html.Div(id="topic-create-parameters", className="topic-create-parameters"),
+                            html.Details([
+                                html.Summary("Advanced parameters"),
+                                html.Div(id="topic-create-advanced", className="topic-create-parameters"),
+                            ], className="topic-create-advanced"),
                             html.Div([
                                 html.Button("Cancel", id="topic-create-cancel", n_clicks=0),
                                 html.Button("Create", id="topic-create-submit", n_clicks=0, disabled=teal_linked_project(project) is None or not bool(topic_geometry_options(project)), className="primary-action"),
@@ -924,26 +928,32 @@ def create_app(
 
     @app.callback(
         Output("topic-create-parameters", "children"),
+        Output("topic-create-advanced", "children"),
         Input("topic-create-algorithm", "value"),
     )
-    def show_recipe_parameters(algorithm: str | None) -> list[Any]:
-        controls = []
-        for spec in parameter_specs(algorithm or "identity"):
-            param_id = {"type": "topic-hyperparameter", "name": spec["name"]}
-            if spec["kind"] == "boolean":
-                field = dcc.Dropdown(
-                    id=param_id,
-                    options=[{"label": "True", "value": "true"}, {"label": "False", "value": "false"}],
-                    value="true" if spec["default"] else "false", clearable=False,
-                )
-            else:
-                field = dcc.Input(
-                    id=param_id, value=spec["default"],
-                    type="number" if spec["kind"] in {"integer", "number"} else "text",
-                    step=1 if spec["kind"] == "integer" else "any",
-                )
-            controls.append(html.Div([html.Label(spec["label"]), field], className="topic-parameter-field"))
-        return controls
+    def show_recipe_parameters(algorithm: str | None) -> tuple[list[Any], list[Any]]:
+        common, advanced = split_parameter_specs(algorithm or "identity")
+
+        def controls_for(specs: list[dict[str, Any]]) -> list[Any]:
+            controls = []
+            for spec in specs:
+                param_id = {"type": "topic-hyperparameter", "name": spec["name"]}
+                if spec["kind"] == "boolean":
+                    field = dcc.Dropdown(
+                        id=param_id,
+                        options=[{"label": "True", "value": "true"}, {"label": "False", "value": "false"}],
+                        value="true" if spec["default"] else "false", clearable=False,
+                    )
+                else:
+                    field = dcc.Input(
+                        id=param_id, value=spec["default"],
+                        type="number" if spec["kind"] in {"integer", "number"} else "text",
+                        step=1 if spec["kind"] == "integer" else "any",
+                    )
+                controls.append(html.Div([html.Label(spec["label"]), field], className="topic-parameter-field"))
+            return controls
+
+        return controls_for(common), controls_for(advanced)
 
     @app.callback(
         Output("topic-model-refresh-store", "data", allow_duplicate=True),
