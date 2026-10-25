@@ -165,3 +165,22 @@ def test_topic_panel_has_only_topic_color_choices_and_global_clear():
     assert 'id="nav-clear-colors"' in source
     assert 'id="semantic-clear-button"' not in source
     assert 'id="topic-manager-close", n_clicks=0, className="modal-close-icon"' in source
+
+
+def test_compact_explore_controls_and_shared_spacing_contract():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    source = (root / "app.py").read_text(encoding="utf-8")
+    css = (root / "assets/geco.css").read_text(encoding="utf-8")
+    assert 'className="session-select-row"' in source
+    assert 'html.H3("Literal Search", className="control-block-title")' in source
+    assert 'html.H3("Semantic search", className="control-block-title")' in source
+    assert 'html.Label("Literal search")' not in source
+    assert 'html.Label("Semantic search")' not in source
+    assert 'html.Label("Topic Model")' not in source
+    assert 'Coloring does not change semantic search or filters.' not in source
+    assert 'className="modal-card topic-manager-card"' in source
+    assert '.session-select-row {' in css
+    assert '.topic-manager-card > label {' in css
+    assert '.explore-controls #topic-component-wrap {' in css
+    assert 'normalize_color_mode(mode) != "plain"' in source
