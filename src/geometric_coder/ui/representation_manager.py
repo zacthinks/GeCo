@@ -228,14 +228,29 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                     record["artifact_id"] = str(artifact.artifact_id)
                     # TeAL lineage is authoritative; do not infer chains from names.
                     from text_analysis_lab.core.lineage import basis_artifact_ids
-                    bases = basis_artifact_ids(artifact)
+                    try:
+                        bases = basis_artifact_ids(artifact)
+                    except Exception:
+                        bases = ()
                     record["source"] = ", ".join(
                         by_artifact.get(str(parent), str(parent)) for parent in bases
                     ) or "TeAL artifact"
                     probe = [0] if (artifact.n_rows or 0) > 0 else []
                     record["dimensions"] = int(artifact.get_matrix(positions=probe).shape[1])
                 elif g.get("storage_kind") == "local":
-                    record["dimensions"] = int(coder.geometry_matrix(int(g["geometry_id"])).shape[1])
+                    import numpy as np
+                    from scipy import sparse
+
+                    file_path = coder.project_dir / str(g["matrix_path"])
+                    if g.get("matrix_sparse"):
+                        # Read only the compressed matrix shape metadata.
+                        with np.load(file_path, allow_pickle=False) as packet:
+                            shape = packet["shape"]
+                            record["dimensions"] = int(shape[1])
+                    else:
+                        record["dimensions"] = int(
+                            np.load(file_path, mmap_mode="r", allow_pickle=False).shape[1]
+                        )
             except Exception as exc:
                 record["error"] = str(exc)
             rows.append(record)
