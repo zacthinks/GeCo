@@ -89,8 +89,13 @@ def create_focus_coding_app(
                         ],
                         className="app-brand",
                     ),
-                    html.Div(id="focus-coding-progress-summary", className="focus-coding-progress-summary"),
-                    html.Button("Close GeCo", id="geco-close-button", n_clicks=0, className="geco-close-button"),
+                    html.Div(
+                        [
+                            html.Button("Close GeCo", id="geco-close-button", n_clicks=0, className="geco-close-button"),
+                            html.Div(id="focus-coding-progress-summary", className="focus-coding-progress-summary"),
+                        ],
+                        className="app-header-right",
+                    ),
                 ],
                 className="app-header",
             ),
