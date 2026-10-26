@@ -4681,7 +4681,7 @@ class GeometricCoder:
         port: int = 8050,
         debug: bool = False,
         use_reloader: bool = False,
-    ) -> None:
+    ) -> Any:
         """Launch the ordinary local Dash interface.
 
         ``debug=True`` enables Dash/Flask debug validation and developer tools.
@@ -4692,7 +4692,7 @@ class GeometricCoder:
         """
         from geometric_coder.ui import launch_app
 
-        launch_app(
+        return launch_app(
             self,
             host=host,
             port=port,
@@ -4710,7 +4710,7 @@ class GeometricCoder:
         session_id: int | None = None,
         codes: Sequence[int | str] | None = None,
         allow_unsure: bool | None = None,
-    ) -> None:
+    ) -> Any:
         """Launch Focus Coding over one finite configured session.
 
         ``configure_focus(...)`` is the canonical creation-time API.  For older
@@ -4767,7 +4767,7 @@ class GeometricCoder:
 
         from geometric_coder.ui import launch_focus_coder
 
-        launch_focus_coder(
+        return launch_focus_coder(
             self,
             host=host,
             port=port,
@@ -4776,9 +4776,9 @@ class GeometricCoder:
             session_id=int(session_id),
         )
 
-    def launch_focus(self, **kwargs: Any) -> None:
+    def launch_focus(self, **kwargs: Any) -> Any:
         """Convenience alias for :meth:`launch_focus_coder`."""
-        self.launch_focus_coder(**kwargs)
+        return self.launch_focus_coder(**kwargs)
 
 
 __all__ = ["GeometricCoder", "Geometry"]

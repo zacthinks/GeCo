@@ -45,8 +45,25 @@ def create_focus_coding_app(
         suppress_callback_exceptions=True,
     )
 
+    app.clientside_callback(
+        """function(clicks) {
+            if (!clicks) return window.dash_clientside.no_update;
+            fetch('/_geco/close', {method: 'POST', credentials: 'same-origin'})
+                .then(response => {
+                    if (!response.ok) throw new Error('Close request failed');
+                    document.body.innerHTML = '<main style="font:16px system-ui;padding:3rem">'
+                      + '<h2>GeCo closed</h2><p>You can close this tab or relaunch GeCo from Python.</p></main>';
+                })
+                .catch(error => window.alert('Unable to close GeCo: ' + error.message));
+            return '';
+        }""",
+        Output("geco-close-status", "children"),
+        Input("geco-close-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
     app.layout = html.Div(
         [
+            html.Div(id="geco-close-status", className="sr-only"),
             dcc.Store(id="focus-coding-session-store", data=session_id),
             dcc.Store(id="focus-coding-current-unit-store", data=first_unit_id),
             dcc.Store(id="focus-coding-refresh-store", data=0),
@@ -64,7 +81,7 @@ def create_focus_coding_app(
                                 [
                                     html.H1("GeCo", className="app-title"),
                                     html.P(
-                                        "Geometric Coder — A geometric coding platform for qualitative inquiry",
+                                        "Geometric Coder: Scalable, computationally augmented exploration and coding",
                                         className="app-subtitle",
                                     ),
                                 ]
@@ -72,7 +89,13 @@ def create_focus_coding_app(
                         ],
                         className="app-brand",
                     ),
-                    html.Div(id="focus-coding-progress-summary", className="focus-coding-progress-summary"),
+                    html.Div(
+                        [
+                            html.Button("Close GeCo", id="geco-close-button", n_clicks=0, className="geco-close-button"),
+                            html.Div(id="focus-coding-progress-summary", className="focus-coding-progress-summary"),
+                        ],
+                        className="app-header-right",
+                    ),
                 ],
                 className="app-header",
             ),

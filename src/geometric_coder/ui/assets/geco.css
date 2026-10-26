@@ -38,6 +38,17 @@ button:hover:not(:disabled) { border-color: var(--geco-green); background: var(-
 button:disabled { cursor: not-allowed; opacity: 0.48; }
 label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight: 650; }
 
+/* Shared vertical rhythm for stacked form labels. Give successive fields
+   breathing room above the label, while keeping the label near its input.
+   Do not change checkbox/radio/inline label layouts. */
+.control-block > label:not(:first-of-type),
+.modal-card > label:not(:first-of-type),
+:is(.topic-parameter-field, .projection-base-fields > div, .projection-parameter-grid > div) > label {
+  margin-top: 0.72rem;
+  margin-bottom: 0.3rem;
+}
+
+
 .app-shell { max-width: 1780px; margin: 0 auto; padding: 1rem 1.35rem 2rem; }
 .app-header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
 .app-brand { display: flex; align-items: center; gap: 0.7rem; }
@@ -45,6 +56,13 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .app-title { margin: 0; font-size: 1.85rem; }
 .app-subtitle { margin: 0.2rem 0 0; color: #5b645e; }
 .project-summary { color: #4c5550; font-size: 0.9rem; }
+/* Close GeCo sits ABOVE the project summary in one right-aligned column;
+   it must never occupy a third slot in the header flex row. */
+.app-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.38rem; margin-left: auto; min-width: 0; text-align: right; }
+.app-header-right > .project-summary { justify-content: flex-end; text-align: right; }
+.app-header-right > .focus-coding-progress-summary { text-align: right; }
+.app-header-right > .geco-close-button { align-self: flex-end; }
+
 
 /* Dash tabs */
 .tab { border-color: var(--geco-border) !important; }
@@ -1218,4 +1236,78 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .focus-coding-nav-buttons > button,
   .focus-coding-completion-actions > button { min-height: 44px; flex: 0 0 auto; }
   .focus-coding-done { min-width: 76px; }
+}
+
+
+/* Six-panel Explore workspace: three equal-width cards per row. */
+.explore-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.explore-controls > .control-block { min-width: 0; overflow-wrap: anywhere; }
+.explore-controls .Select, .explore-controls .Select-control, .explore-controls input { max-width: 100%; min-width: 0; }
+@media (max-width: 1150px) { .explore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .explore-controls { grid-template-columns: minmax(0, 1fr); } }
+
+
+/* Shared vertical rhythm for Explore controls and manager dialogs. */
+.explore-controls > .control-block { --field-gap: 0.55rem; }
+.explore-controls > .control-block > label,
+.explore-controls > .control-block > .stacked-control-label,
+.explore-controls #topic-component-wrap > label,
+.topic-manager-card label {
+  display: block;
+  margin: 0 0 0.3rem;
+}
+.explore-controls > .control-block > .Select,
+.explore-controls > .control-block > .dash-dropdown,
+.explore-controls > .control-block > #topic-component-wrap,
+.explore-controls > .control-block > .secondary-action,
+.explore-controls > .control-block > .RadioItems {
+  margin-top: var(--field-gap, 0.55rem);
+}
+/* All vertically stacked fields: a label belongs to the control below it,
+   not to the preceding control. Avoid panel-specific dropdown padding. */
+.explore-controls > .control-block > label:not(:first-of-type) {
+  margin-top: 0.85rem;
+}
+.explore-controls > .control-block > label + .Select,
+.explore-controls > .control-block > label + .dash-dropdown {
+  margin-top: 0;
+}
+.explore-controls #topic-component-wrap { margin-top: 0.75rem; }
+.explore-controls #topic-component-wrap .Select { margin-bottom: 0; }
+.explore-controls #topic-display-mode { margin-top: 0.75rem; }
+.explore-controls #topic-manager-open { margin-top: 0.75rem; }
+.session-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+.session-select-row > .Select { min-width: 0; }
+.session-select-row #new-session-button {
+  margin: 0;
+  width: auto;
+  white-space: nowrap;
+  min-height: 36px;
+}
+.topic-manager-card > label { margin-top: 0.85rem; }
+.topic-manager-card > label:first-of-type { margin-top: 0.7rem; }
+.topic-manager-card > .Select,
+.topic-manager-card > .dash-dropdown,
+.topic-manager-card > .text-input { width: 100%; min-width: 0; }
+.topic-manager-card > button:not(.modal-close-icon) { margin-top: 0.5rem; }
+.topic-manager-card > h3 { margin: 1.15rem 0 0.4rem; }
+.topic-manager-card > p { margin: 0.4rem 0 0.65rem; }
+.topic-manager-card > .control-status { margin-top: 0.4rem; }
+
+/* Breathing room before the collapsible model settings. */
+.topic-manager-card .topic-create-advanced { margin-top: 0.9rem; }
+.topic-manager-card .topic-create-advanced > summary { padding: 0.25rem 0; cursor: pointer; }
+
+/* Explicit local-server lifecycle control, distinct from research sessions. */
+.geco-close-button { flex-shrink: 0; background: transparent; color: #4b5550; border: 1px solid #aebbb2; border-radius: 7px; padding: 0.45rem 0.75rem; font: inherit; cursor: pointer; white-space: nowrap; }
+.geco-close-button:hover { background: #edf3ef; }
+
+@media (max-width: 900px) {
+  /* The brand may wrap; project information still stays flush right. */
+  .app-header-right { align-self: flex-end; }
 }

@@ -285,34 +285,75 @@ def test_local_browser_url_normalizes_wildcard_bind_host() -> None:
     assert _local_browser_url("localhost", 8124) == "http://localhost:8124/"
 
 
-def test_launch_app_displays_url_before_running(monkeypatch) -> None:
+def test_launch_app_returns_closeable_server_and_shows_bound_url(monkeypatch) -> None:
     import geometric_coder.ui.app as app_module
+    import geometric_coder.ui.server as server_module
 
-    events: list[tuple[str, object]] = []
+    events = []
 
-    class FakeApp:
-        def run(self, **kwargs):
-            events.append(("run", kwargs))
+    class FakeServer:
+        port = 8125
 
-    monkeypatch.setattr(app_module, "create_app", lambda *args, **kwargs: FakeApp())
+        def __init__(self, app, *, host, port):
+            events.append(("bound", host, port))
+
+        def start(self):
+            events.append(("started",))
+            return self
+
+        def close(self):
+            events.append(("closed",))
+
+    monkeypatch.setattr(app_module, "create_app", lambda *args, **kwargs: object())
+    monkeypatch.setattr(server_module, "GeCoServer", FakeServer)
     monkeypatch.setattr(
         app_module,
         "_display_local_browser_url",
-        lambda host, port: events.append(("url", (host, port))),
+        lambda host, port: events.append(("url", host, port)),
     )
-
-    app_module.launch_app(
-        object(),
-        host="0.0.0.0",
-        port=8125,
-        debug=False,
-        use_reloader=False,
+    handle = app_module.launch_app(
+        object(), host="0.0.0.0", port=8125, debug=False,
     )
+    assert handle is not None
+    assert events == [
+        ("bound", "0.0.0.0", 8125),
+        ("started",),
+        ("url", "0.0.0.0", 8125),
+    ]
 
-    assert events[0] == ("url", ("0.0.0.0", 8125))
-    assert events[1][0] == "run"
-    assert events[1][1]["host"] == "0.0.0.0"
-    assert events[1][1]["port"] == 8125
+
+def test_geco_server_closes_without_killing_notebook_and_endpoint_is_available():
+    from unittest.mock import Mock, patch
+
+    from flask import Flask
+
+    from geometric_coder.ui.server import GeCoServer
+
+    flask_app = Flask(__name__)
+    wrapper = Mock(server=flask_app)
+    with patch("geometric_coder.ui.server.make_server") as make:
+        http = make.return_value
+        http.server_port = 8125
+        server = GeCoServer(wrapper, host="127.0.0.1", port=8125)
+        server.start()
+        response = flask_app.test_client().post("/_geco/close")
+        assert response.status_code == 200
+        assert response.json == {"status": "closing"}
+        server.close()
+        server.close()
+        assert server.closed
+        http.shutdown.assert_called_once()
+        http.server_close.assert_called_once()
+
+
+def test_geco_close_copy_in_both_workspaces():
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    for filename in ("app.py", "focus_coding.py"):
+        source = (root / filename).read_text(encoding="utf-8")
+        assert "Close GeCo" in source
+        assert "Geometric Coder: Scalable, computationally augmented exploration and coding" in source
+        assert "End session" not in source
+
 
 
 def test_focus_mobile_css_keeps_touch_targets_and_footer_available() -> None:

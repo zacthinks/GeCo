@@ -17,7 +17,7 @@ errors, audit-sample correction, or claims that machine-assisted measurements
 are population-valid. Confirmatory workflows should freeze and consume GeCo
 artifacts through an external system such as Text Analysis Lab.
 
-> Status: pre-alpha. GeCo 0.8.15 implements generalized observations,
+> Status: pre-alpha. GeCo 0.9.0 implements generalized observations,
 > observation-based assignments, contiguous span coding, teaching examples,
 > code-owned classifiers and committees sharing one project-wide active predictor-name namespace, with one retained
 > fitted state per classifier, seven geometry-based classifier families,
@@ -29,7 +29,7 @@ artifacts through an external system such as Text Analysis Lab.
 > finite Focus Coding tasks with protocol-aware completion,
 > TeAL-style externally backed numerical representations, a
 > prediction-geometry view in Develop, auditable/undoable Apply and Review bulk
-> commits, and the five functional development workspaces.
+> commits, and the five functional development workspaces, including Explore Topic Model management and provider-backed model creation.
 
 ## Installation
 
@@ -107,11 +107,12 @@ coder = GeometricCoder.create(
     },
 )
 
-# The same project object will power the notebook API and local web UI.
-# coder.launch()
+# The same project object powers the notebook API and local web UI.
+# server = coder.launch()  # starts a local server and returns a closeable handle
+# server.close()           # stop GeCo without stopping the notebook kernel
 ```
 
-When launched from IPython/Jupyter, GeCo keeps Dash's embedded notebook view and also displays a clickable **local browser URL** for opening the same running session in a full browser window. Outside IPython, that URL is printed as plain text. If GeCo binds to `host="0.0.0.0"`, the displayed local-browser link uses `127.0.0.1` instead of the wildcard address.
+When launched from IPython/Jupyter, GeCo displays a clickable **local browser URL** and returns a server handle. Use the **Close GeCo** button in the browser or call `server.close()` in the notebook to stop the web server without restarting the kernel; closing the browser tab alone does not stop the server. When launched through `geco launch`, the command stays active until GeCo is closed or interrupted. Outside IPython, the local URL is printed as plain text. If GeCo binds to `host="0.0.0.0"`, the displayed local-browser link uses `127.0.0.1` instead of the wildcard address.
 
 The supplied key columns may contain a single key (for example, `tweet_id`) or
 an arbitrary hierarchy from broadest to most specific. Input row order is

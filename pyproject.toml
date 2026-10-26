@@ -1,7 +1,7 @@
 [project]
 name = "geometric-coder"
-version = "0.8.15"
-description = "GeCo: explicit geometric coding for qualitative inquiry"
+version = "0.9.0"
+description = "Geometric Coder: Scalable, computationally augmented exploration and coding"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
