@@ -387,6 +387,7 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
     from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, standalone_primary_specs, teal_linked_project
 
@@ -533,6 +534,7 @@ def create_app(
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
+                dcc.Store(id="representation-refresh-store", data=0),
                 dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
@@ -753,6 +755,7 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    representation_modal(project, html=html, dcc=dcc),
                     html.Div([
                         html.Div([
                             html.Div([
@@ -817,6 +820,12 @@ def create_app(
         ],
         className="app-shell",
         style=GECO_DASH_THEME,
+    )
+
+    register_representation_callbacks(
+        app, project, html=html, dcc=dcc, Input=Input, Output=Output,
+        State=State, ALL=ALL, callback_context=callback_context,
+        no_update=no_update, geometries=geometries, geometry_by_id=geometry_by_id,
     )
 
     @app.callback(
@@ -6779,6 +6788,7 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Geometry and View", className="control-block-title"),
+                            html.Button("Manage Representations", id="representation-manager-open", n_clicks=0, className="secondary-action"),
                             html.Label("Geometry"),
                             dcc.Dropdown(
                                 id="geometry-dropdown",
