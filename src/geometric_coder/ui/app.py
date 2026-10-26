@@ -624,19 +624,24 @@ def create_app(
                                 className="app-brand",
                             ),
                             html.Div(
-                                _project_summary_children(
-                                    html=html,
-                                    modality=str(metadata["modality"]),
-                                    key_columns=[str(value) for value in metadata["key_columns"]],
-                                    hierarchy_summary=hierarchy_summary,
-                                    atomic_count=len(units),
-                                ),
-                                className="project-summary",
-                            ),
-                            html.Button(
-                                "Close GeCo", id="geco-close-button",
-                                n_clicks=0, className="geco-close-button",
-                                title="Stop this GeCo application",
+                                [
+                                    html.Button(
+                                        "Close GeCo", id="geco-close-button",
+                                        n_clicks=0, className="geco-close-button",
+                                        title="Stop this GeCo application",
+                                    ),
+                                    html.Div(
+                                        _project_summary_children(
+                                            html=html,
+                                            modality=str(metadata["modality"]),
+                                            key_columns=[str(value) for value in metadata["key_columns"]],
+                                            hierarchy_summary=hierarchy_summary,
+                                            atomic_count=len(units),
+                                        ),
+                                        className="project-summary",
+                                    ),
+                                ],
+                                className="app-header-right",
                             ),
                         ],
                         id="app-header",
