@@ -1284,3 +1284,7 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 /* Breathing room before the collapsible model settings. */
 .topic-manager-card .topic-create-advanced { margin-top: 0.9rem; }
 .topic-manager-card .topic-create-advanced > summary { padding: 0.25rem 0; cursor: pointer; }
+
+/* Explicit local-server lifecycle control, distinct from research sessions. */
+.geco-close-button { flex-shrink: 0; background: transparent; color: #4b5550; border: 1px solid #aebbb2; border-radius: 7px; padding: 0.45rem 0.75rem; font: inherit; cursor: pointer; white-space: nowrap; }
+.geco-close-button:hover { background: #edf3ef; }
