@@ -22,14 +22,12 @@ if TYPE_CHECKING:
 GEOMETRY_RECIPES: tuple[tuple[str, str, str], ...] = (
     ("tfidf", "TF-IDF weighting", "TfidfTransformer"),
     ("normalize", "Matrix normalization", "MatrixNormalizer"),
-    ("trim", "Feature trimming", "FeatureTrimmer"),
     ("svd", "Truncated SVD", "SVD"),
     ("umap", "UMAP", "UMAP"),
 )
 PRIMARY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "tfidf": ("norm", "use_idf", "sublinear_tf"),
     "normalize": ("axis", "norm"),
-    "trim": (),
     "svd": ("n_components", "random_state"),
     "umap": ("n_components", "n_neighbors", "min_dist", "metric", "reuse"),
 }
@@ -234,7 +232,8 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                     record["source"] = ", ".join(
                         by_artifact.get(str(parent), str(parent)) for parent in bases
                     ) or "TeAL artifact"
-                    record["dimensions"] = int(artifact.get_matrix(positions=[0]).shape[1])
+                    probe = [0] if (artifact.n_rows or 0) > 0 else []
+                    record["dimensions"] = int(artifact.get_matrix(positions=probe).shape[1])
                 elif g.get("storage_kind") == "local":
                     record["dimensions"] = int(coder.geometry_matrix(int(g["geometry_id"])).shape[1])
             except Exception as exc:
