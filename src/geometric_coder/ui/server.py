@@ -34,6 +34,13 @@ class GeCoServer:
         self._closed = False
         self._closed_event = threading.Event()
 
+        @app.server.post("/_geco/close")
+        def _close_geco() -> Any:
+            from flask import jsonify
+
+            self.request_close()
+            return jsonify({"status": "closing"})
+
     @property
     def port(self) -> int:
         """Actual bound port; also works with explicit port=0."""
