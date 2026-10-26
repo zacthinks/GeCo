@@ -243,7 +243,7 @@ def register_topic_details_callbacks(
         try:
             if action == "topic-model-rename-save":
                 project.rename_topic_model(int(model_id), name=name or "")
-                message = "Model name saved locally in GeCo."
+                message = "Model renamed."
             elif action == "topic-label-save":
                 if component is None or not units:
                     return no_update, "Select a topic first."
@@ -255,7 +255,7 @@ def register_topic_details_callbacks(
                 project.rename_topic(
                     int(model_id), component_id=component, name=label or ""
                 )
-                message = "Topic label saved locally; TeAL artifacts were not changed."
+                message = "Topic renamed."
             else:
                 return no_update, ""
         except (ConfigurationError, RuntimeError, ValueError, KeyError) as exc:
