@@ -274,7 +274,7 @@ def create_view(
         raise ValueError("Enter a 2D view name.")
     if coder.has_view(clean):
         raise ConfigurationError(f"2D view {clean!r} already exists.")
-        if method not in {"identity", "umap", "svd"}:
+    if method not in {"identity", "umap", "svd"}:
         raise ValueError(f"Unsupported 2D projection method {method!r}.")
     if method == "identity" and parameters:
         raise ValueError("Identity view does not accept fit parameters.")
