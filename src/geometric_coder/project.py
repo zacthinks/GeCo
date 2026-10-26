@@ -4776,9 +4776,9 @@ class GeometricCoder:
             session_id=int(session_id),
         )
 
-    def launch_focus(self, **kwargs: Any) -> None:
+    def launch_focus(self, **kwargs: Any) -> Any:
         """Convenience alias for :meth:`launch_focus_coder`."""
-        self.launch_focus_coder(**kwargs)
+        return self.launch_focus_coder(**kwargs)
 
 
 __all__ = ["GeometricCoder", "Geometry"]
