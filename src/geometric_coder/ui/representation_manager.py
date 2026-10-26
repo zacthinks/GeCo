@@ -274,6 +274,13 @@ def create_view(
         raise ValueError("Enter a 2D view name.")
     if coder.has_view(clean):
         raise ConfigurationError(f"2D view {clean!r} already exists.")
+        if method not in {"identity", "umap", "svd"}:
+        raise ValueError(f"Unsupported 2D projection method {method!r}.")
+    if method == "identity" and parameters:
+        raise ValueError("Identity view does not accept fit parameters.")
+    if method != "identity" and "n_components" in (parameters or {}):
+        # A view always has exactly two coordinate dimensions.
+        raise ValueError("2D view dimensionality is fixed at two.")
     path = teal_linked_project(coder)
     if path is None:
         raise ConfigurationError("Creating 2D views requires a TeAL-linked GeCo workspace.")
@@ -284,13 +291,6 @@ def create_view(
     ref = records[0].get("external_ref")
     if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
         raise ConfigurationError("The parent must reference a TeAL numerical artifact.")
-    if method not in {"identity", "umap", "svd"}:
-        raise ValueError(f"Unsupported 2D projection method {method!r}.")
-    if method == "identity" and parameters:
-        raise ValueError("Identity view does not accept fit parameters.")
-    if method != "identity" and "n_components" in (parameters or {}):
-        # A view always has exactly two coordinate dimensions.
-        raise ValueError("2D view dimensionality is fixed at two.")
 
     from text_analysis_lab.core.project import Project
     with Project.open(path) as teal:
