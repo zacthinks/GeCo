@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -38,7 +39,8 @@ def test_view_creation_rejects_non_2d_configuration_without_teal(monkeypatch):
 
 @pytest.fixture
 def fake_link(monkeypatch):
-    teal_project = pytest.importorskip("text_analysis_lab.core.project")
+    # Stub only the optional TeAL project import: routing tests must run in
+    # GeCo's ordinary CI even when TeAL is not installed.
     artifact = SimpleNamespace(
         artifact_id="base-matrix",
         artifact_type=SimpleNamespace(value="dense_matrix"),
@@ -67,7 +69,15 @@ def fake_link(monkeypatch):
             open=Mock(return_value=nullcontext(linked)),
         ),
     )
-    monkeypatch.setattr(teal_project.Project, "open", classmethod(lambda cls, path: nullcontext(project)))
+    pkg = ModuleType("text_analysis_lab")
+    pkg.__path__ = []
+    core = ModuleType("text_analysis_lab.core")
+    core.__path__ = []
+    module = ModuleType("text_analysis_lab.core.project")
+    module.Project = SimpleNamespace(open=Mock(return_value=nullcontext(project)))
+    monkeypatch.setitem(sys.modules, "text_analysis_lab", pkg)
+    monkeypatch.setitem(sys.modules, "text_analysis_lab.core", core)
+    monkeypatch.setitem(sys.modules, "text_analysis_lab.core.project", module)
     monkeypatch.setattr(rm, "teal_linked_project", lambda coder: Path("/fake/project"))
     monkeypatch.setattr(rm, "_operator_for_recipe", lambda recipe, parameters: ("operator", recipe, parameters))
     coder = SimpleNamespace(
@@ -99,6 +109,17 @@ def test_fit_only_geometry_is_navigation_only_and_does_not_claim_replay(fake_lin
     )
     linked.add_geometry.assert_not_called()
     project.translate.assert_called_once()
+
+
+def test_derived_observations_block_registration_before_teal_fit(fake_link):
+    coder, project, linked, artifact, derived = fake_link
+    coder.database.list_observations.return_value = [{"kind": "span"}]
+    with pytest.raises(ConfigurationError, match="backfill"):
+        rm.create_geometry(coder, name="Cannot register", source_geometry_id=3,
+                           recipe="umap", navigation_only=True)
+    project.translate.assert_not_called()
+    linked.add_geometry.assert_not_called()
+    coder.register_external_geometry.assert_not_called()
 
 
 def test_replayable_registration_uses_teal_link_validation(fake_link):
