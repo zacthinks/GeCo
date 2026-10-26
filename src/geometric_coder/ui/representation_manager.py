@@ -239,7 +239,6 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                     record["dimensions"] = int(artifact.get_matrix(positions=probe).shape[1])
                 elif g.get("storage_kind") == "local":
                     import numpy as np
-                    from scipy import sparse
 
                     file_path = coder.project_dir / str(g["matrix_path"])
                     if g.get("matrix_sparse"):
