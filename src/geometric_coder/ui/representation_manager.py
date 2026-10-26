@@ -145,6 +145,12 @@ def create_geometry(
     ]
     if len(records) != 1:
         raise ValueError("Choose a registered source geometry.")
+    # Reject unsupported derived-observation backfill *before* an expensive fit.
+    if coder.database.list_observations(kinds=["span", "teaching_example"]):
+        raise ConfigurationError(
+            "Create Geometry requires a workspace without existing spans or teaching "
+            "examples until safe geometry backfill is available."
+        )
     ref = records[0].get("external_ref")
     if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
         raise ConfigurationError("The source geometry is not a TeAL matrix artifact.")
