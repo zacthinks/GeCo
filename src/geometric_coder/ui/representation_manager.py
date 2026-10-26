@@ -243,3 +243,60 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
         if teal is not None:
             teal.close()
     return rows
+
+
+def create_view(
+    coder: GeometricCoder, *, name: str, geometry_id: int, method: str = "umap",
+    parameters: Mapping[str, Any] | None = None,
+) -> int:
+    """Persist a 2D display projection without changing analytic geometry.
+
+    Identity is available only when the existing geometry is already 2D.
+    Projection fits use TeAL translations, keeping transformation provenance
+    in TeAL and associating the resulting view with one GeCo geometry ID.
+    """
+    clean = str(name).strip()
+    if not clean:
+        raise ValueError("Enter a 2D view name.")
+    if coder.has_view(clean):
+        raise ConfigurationError(f"2D view {clean!r} already exists.")
+    path = teal_linked_project(coder)
+    if path is None:
+        raise ConfigurationError("Creating 2D views requires a TeAL-linked GeCo workspace.")
+    records = [g for g in coder.geometries(public_only=True)
+               if int(g["geometry_id"]) == int(geometry_id)]
+    if len(records) != 1:
+        raise ValueError("Choose a registered parent geometry.")
+    ref = records[0].get("external_ref")
+    if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
+        raise ConfigurationError("The parent must reference a TeAL numerical artifact.")
+    if method not in {"identity", "umap", "svd"}:
+        raise ValueError(f"Unsupported 2D projection method {method!r}.")
+    if method == "identity" and parameters:
+        raise ValueError("Identity view does not accept fit parameters.")
+    if method != "identity" and "n_components" in (parameters or {}):
+        # A view always has exactly two coordinate dimensions.
+        raise ValueError("2D view dimensionality is fixed at two.")
+
+    from text_analysis_lab.core.project import Project
+    with Project.open(path) as teal:
+        links = [row for row in teal.geco.list()
+                 if row.get("mode", "explore") == "explore"
+                 and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()]
+        if len(links) != 1:
+            raise ConfigurationError("Could not uniquely match this GeCo workspace to its TeAL link.")
+        source = teal.get_artifact(ref["artifact_id"])
+        if getattr(source.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
+            raise ValueError("A view source must be a numerical TeAL matrix.")
+        if method == "identity":
+            if int(source.get_matrix(positions=[0]).shape[1]) != 2:
+                raise ValueError("Identity view requires exactly two dimensions.")
+            output = source
+        else:
+            operator = _operator_for_recipe(method, {**(parameters or {}), "n_components": 2})
+            output = teal.translate(
+                operator, source,
+                memo=f"GeCo Create 2D View {clean!r}, method={method}, source={source.artifact_id}.",
+            )["output"]
+        with teal.geco.open(str(links[0]["name"])) as linked:
+            return int(linked.add_projection(clean, output, geometry=str(records[0]["name"])))
