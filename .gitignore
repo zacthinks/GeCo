@@ -11,6 +11,9 @@ htmlcov/
 build/
 dist/
 .venv/
+
+# Resolve dependencies per installation; keep generated uv locks out of Git.
+/uv.lock
 .env
 
 # Editors / OS
