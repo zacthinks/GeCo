@@ -732,14 +732,14 @@ def create_app(
                                 html.H2("Manage Topic Models"),
                                 html.Button("×", id="topic-manager-close", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"}),
                             ], className="modal-header"),
-                            html.P("Model names and topic labels are local to GeCo. Fitted TeAL artifacts remain unchanged.", className="modal-help"),
+                            html.P("Rename models and topics without changing their fitted results.", className="modal-help"),
                             html.Label("Registered model"),
                             dcc.Dropdown(id="topic-manager-model", clearable=False),
                             html.Label("Model name"),
                             dcc.Input(id="topic-model-new-name", type="text", className="text-input"),
                             html.Button("Rename model", id="topic-model-rename-save", n_clicks=0),
                             html.H3("Edit topic labels"),
-                            html.P("Original TeAL component IDs remain stable when labels change."),
+                            html.P("Original topic IDs stay the same when labels change."),
                             dcc.Dropdown(id="topic-manager-component", clearable=False),
                             html.Label("Selected topic label"),
                             dcc.Input(id="topic-component-new-label", type="text", className="text-input"),
@@ -948,6 +948,11 @@ def create_app(
                         id=param_id,
                         options=[{"label": "True", "value": "true"}, {"label": "False", "value": "false"}],
                         value="true" if spec["default"] else "false", clearable=False,
+                    )
+                elif spec["kind"] == "choice":
+                    field = dcc.Dropdown(
+                        id=param_id, options=spec["options"],
+                        value=spec["default"], clearable=False,
                     )
                 else:
                     field = dcc.Input(
