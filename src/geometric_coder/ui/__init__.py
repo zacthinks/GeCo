@@ -15,9 +15,9 @@ def launch_focus_coder(
     debug: bool = False,
     use_reloader: bool = False,
     session_id: int | None = None,
-) -> None:
+) -> Any:
     """Launch the dedicated Focus Coding mode over an existing GeCo session."""
-    launch_app(
+    return launch_app(
         project,
         host=host,
         port=port,
