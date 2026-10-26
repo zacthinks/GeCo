@@ -79,6 +79,7 @@ def fake_link(monkeypatch):
              "external_ref": {"artifact_id": "base-matrix"}}
         ]),
         register_external_geometry=Mock(return_value=49),
+        database=SimpleNamespace(list_observations=Mock(return_value=[])),
     )
     return coder, project, linked, artifact, derived
 
