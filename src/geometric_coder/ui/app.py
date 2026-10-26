@@ -451,6 +451,22 @@ def create_app(
         suppress_callback_exceptions=True,
     )
     app.index_string = _geco_index_string()
+    app.clientside_callback(
+        """function(clicks) {
+            if (!clicks) return window.dash_clientside.no_update;
+            fetch('/_geco/close', {method: 'POST', credentials: 'same-origin'})
+                .then(response => {
+                    if (!response.ok) throw new Error('Close request failed');
+                    document.body.innerHTML = '<main style="font:16px system-ui;padding:3rem">'
+                      + '<h2>GeCo closed</h2><p>You can close this tab or relaunch GeCo from Python.</p></main>';
+                })
+                .catch(error => window.alert('Unable to close GeCo: ' + error.message));
+            return '';
+        }""",
+        Output("geco-close-status", "children"),
+        Input("geco-close-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
 
     app.layout = html.Div(
         [
@@ -505,6 +521,7 @@ def create_app(
                     },
                 ),
                 children=[
+                html.Div(id="geco-close-status", className="sr-only"),
                 dcc.Store(id="focal-unit-store", data=initial_focal_unit_id),
                 dcc.Store(
                     id="explore-focal-unit-store",
@@ -598,7 +615,7 @@ def create_app(
                                         [
                                             html.H1("GeCo", className="app-title"),
                                             html.P(
-                                                "Geometric Coder — A geometric coding platform for qualitative inquiry",
+                                                "Geometric Coder: Scalable, computationally augmented exploration and coding",
                                                 className="app-subtitle",
                                             ),
                                         ]
@@ -615,6 +632,11 @@ def create_app(
                                     atomic_count=len(units),
                                 ),
                                 className="project-summary",
+                            ),
+                            html.Button(
+                                "Close GeCo", id="geco-close-button",
+                                n_clicks=0, className="geco-close-button",
+                                title="Stop this GeCo application",
                             ),
                         ],
                         id="app-header",
@@ -11014,13 +11036,24 @@ def launch_app(
     use_reloader: bool = False,
     mode: str = "standard",
     focus_session_id: int | None = None,
-) -> None:
-    """Create and run the local Dash app with a single-process default."""
+) -> Any:
+    """Start one closeable Dash server and return its notebook-friendly handle."""
+    if use_reloader:
+        raise ValueError("The closeable GeCo server does not support use_reloader=True.")
+    from geometric_coder.ui.server import GeCoServer
+
     app = create_app(project, mode=mode, focus_session_id=focus_session_id)
-    _display_local_browser_url(host, port)
-    app.run(
-        host=host,
-        port=port,
-        debug=debug,
-        use_reloader=use_reloader,
-    )
+    server = GeCoServer(app, host=host, port=port)
+    app.server.extensions = getattr(app.server, "extensions", {})
+    app.server.extensions["geco_server"] = server
+
+    @app.server.post("/_geco/close")
+    def _close_geco() -> Any:
+        from flask import jsonify
+
+        server.request_close()
+        return jsonify({"status": "closing"})
+
+    server.start()
+    _display_local_browser_url(host, server.port)
+    return server
