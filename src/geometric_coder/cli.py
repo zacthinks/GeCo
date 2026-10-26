@@ -33,6 +33,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{key}: {value}")
         return 0
     if args.command == "launch":
-        project.launch(host=args.host, port=args.port, debug=args.debug)
+        server = project.launch(host=args.host, port=args.port, debug=args.debug)
+        try:
+            server.wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.close()
         return 0
     raise AssertionError(f"Unhandled command: {args.command}")
