@@ -132,3 +132,60 @@ def test_advanced_accordion_is_conditionally_visible():
     assert 'id="topic-create-advanced-wrap"' in source
     assert 'if advanced else {"display": "none"}' in source
     assert 'standalone_primary_specs(algorithm or "identity")' in source
+
+
+def test_categorical_topic_parameters_use_documented_choices():
+    from geometric_coder.ui.topic_creation import (
+        CATEGORICAL_CHOICES, _parse_parameter, standalone_primary_specs,
+    )
+    assert CATEGORICAL_CHOICES["kmedoids"]["metric"] == (
+        "euclidean", "manhattan", "cosine",
+    )
+    for recipe, fields in CATEGORICAL_CHOICES.items():
+        for name, values in fields.items():
+            assert len(values) == len(set(values)), (recipe, name)
+            assert "precomputed" not in values
+
+    fields = {p["name"]: p for p in standalone_primary_specs("kmedoids")}
+    metric = fields["metric"]
+    assert metric["kind"] == "choice"
+    assert metric["label"] == "Distance metric"
+    assert metric["default"] == "euclidean"
+    assert {item["value"] for item in metric["options"]} == {
+        "euclidean", "manhattan", "cosine",
+    }
+    assert _parse_parameter("metric", "cosine", metric) == "cosine"
+    with pytest.raises(ValueError, match="valid value"):
+        _parse_parameter("metric", "unknown", metric)
+
+
+def test_categorical_defaults_and_complete_signatures_with_installed_teal():
+    pytest.importorskip("text_analysis_lab")
+    from geometric_coder.ui.topic_creation import (
+        MODEL_CLASSES, CATEGORICAL_CHOICES, parameter_specs, recipe_fields,
+    )
+    for recipe, _, _ in MODEL_CLASSES:
+        specs = {field["name"]: field for field in parameter_specs(recipe)}
+        assert set(specs) == set(recipe_fields(recipe))
+        for name in CATEGORICAL_CHOICES.get(recipe, {}):
+            field = specs[name]
+            assert field["kind"] == "choice"
+            assert field["default"] in {opt["value"] for opt in field["options"]}
+
+    # sklearn's n_init can be 'auto' OR a positive integer; do not turn it
+    # into an incorrectly finite categorical list.
+    assert next(p for p in parameter_specs("kmeans") if p["name"] == "n_init")["kind"] == "text"
+
+
+def test_topic_manager_copy_and_wizard_choice_rendering():
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    app = (root / "app.py").read_text()
+    modeling = (root / "topic_modeling.py").read_text()
+    css = (root / "assets/geco.css").read_text()
+    assert 'elif spec["kind"] == "choice":' in app
+    assert 'options=spec["options"]' in app
+    assert "Topic label saved locally" not in modeling
+    assert "Model name saved locally" not in modeling
+    assert "TeAL artifacts remain unchanged" not in app
+    assert "Original TeAL component IDs" not in app
+    assert ".topic-create-advanced { margin-top:" in css
