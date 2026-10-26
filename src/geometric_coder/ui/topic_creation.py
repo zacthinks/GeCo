@@ -178,6 +178,92 @@ PRIMARY_PARAMETERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# User-facing categorical controls. The model constructors remain the authority
+# for parameter names and defaults; GeCo supplies human-friendly choices for
+# well-known finite settings rather than asking researchers to guess strings.
+# Metric menus offer common *feature-vector* distances, not "precomputed".
+CATEGORICAL_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
+    "lda": {"learning_method": ("batch", "online")},
+    "gaussian_mixture": {
+        "covariance_type": ("full", "tied", "diag", "spherical"),
+        "init_params": ("kmeans", "k-means++", "random", "random_from_data"),
+    },
+    "kmeans": {"init": ("k-means++", "random")},
+    "minibatch_kmeans": {"init": ("k-means++", "random")},
+    "spherical_kmeans": {"init": ("k-means++", "random")},
+    "kmedoids": {
+        "metric": ("euclidean", "manhattan", "cosine"),
+        "init": ("build", "random", "first"),
+    },
+    "spectral": {
+        "affinity": ("rbf", "nearest_neighbors"),
+        "assign_labels": ("kmeans", "discretize", "cluster_qr"),
+        "eigen_solver": ("", "arpack", "lobpcg"),
+    },
+    "agglomerative": {
+        "metric": ("euclidean", "manhattan", "cosine"),
+        "linkage": ("ward", "complete", "average", "single"),
+    },
+    "dbscan": {
+        "metric": ("euclidean", "manhattan", "cosine", "minkowski", "chebyshev"),
+        "algorithm": ("auto", "ball_tree", "kd_tree", "brute"),
+    },
+    "optics": {
+        "metric": ("minkowski", "euclidean", "manhattan", "cosine", "chebyshev"),
+        "cluster_method": ("xi", "dbscan"),
+        "algorithm": ("auto", "ball_tree", "kd_tree", "brute"),
+    },
+    "hdbscan": {
+        "metric": ("euclidean", "manhattan", "cosine", "minkowski", "chebyshev"),
+        "cluster_selection_method": ("eom", "leaf"),
+        "algorithm": ("auto", "brute", "kd_tree", "ball_tree"),
+    },
+}
+
+# Some parameters are intentionally numeric or mixed numeric/string ("auto").
+# For those, retain the typed/text editor rather than presenting a misleading
+# finite list. This catalog is UI guidance, not a numerical eligibility checker.
+PARAMETER_LABELS = {"metric": "Distance metric"}
+
+
+def _choice_options(recipe: str, name: str) -> list[dict[str, str]] | None:
+    choices = CATEGORICAL_CHOICES.get(recipe, {}).get(name)
+    if choices is None:
+        return None
+    return [
+        {
+            "label": (
+                "Default" if choice == ""
+                else "Auto" if choice == "auto"
+                else "Euclidean" if choice == "euclidean"
+                else "Manhattan" if choice == "manhattan"
+                else "Cosine" if choice == "cosine"
+                else "Minkowski" if choice == "minkowski"
+                else "Chebyshev" if choice == "chebyshev"
+                else choice.replace("_", " ").capitalize()
+            ),
+            "value": choice,
+        }
+        for choice in choices
+    ]
+
+
+def _with_control_metadata(recipe: str, spec: dict[str, Any]) -> dict[str, Any]:
+    spec["label"] = PARAMETER_LABELS.get(spec["name"], spec["label"])
+    options = _choice_options(recipe, spec["name"])
+    if options is not None:
+        spec["kind"] = "choice"
+        spec["options"] = options
+        if spec["default"] is None:
+            spec["default"] = ""
+        elif str(spec["default"]) not in {option["value"] for option in options}:
+            raise ValueError(
+                f"Categorical choices for {recipe}.{spec['name']} omit "
+                f"its constructor default {spec['default']!r}."
+            )
+    return spec
+
+
 # Display-only fallback for standalone GeCo: no TeAL fit is offered, but
 # researchers can still inspect the wizard's primary controls.
 # These defaults are NOT a substitute for TeAL's installed constructor API.
@@ -201,10 +287,10 @@ def standalone_primary_specs(recipe: str) -> list[dict[str, Any]]:
         kind = "integer" if isinstance(default, int) else (
             "number" if isinstance(default, float) else "text"
         )
-        specs.append({
+        specs.append(_with_control_metadata(recipe, {
             "name": name, "label": name.replace("_", " ").capitalize(),
             "kind": kind, "default": default, "annotation": type(default).__name__,
-        })
+        }))
     return specs
 
 
@@ -298,13 +384,13 @@ def parameter_specs(recipe: str) -> list[dict[str, Any]]:
             default = str(default)
         if default is None:
             default = "" if kind == "text" else None
-        specs.append({
+        specs.append(_with_control_metadata(recipe, {
             "name": name,
             "label": name.replace("_", " ").capitalize(),
             "kind": kind,
             "default": default,
             "annotation": annotation,
-        })
+        }))
     return specs
 
 
@@ -316,6 +402,11 @@ def _parse_parameter(name: str, raw: Any, spec: Mapping[str, Any]) -> Any:
     annotation = str(spec["annotation"])
     if kind == "boolean":
         return raw is True or raw == "true"
+    if kind == "choice":
+        choices = {option["value"] for option in spec["options"]}
+        if raw not in choices:
+            raise ValueError(f"Choose a valid value for {spec['label']}.")
+        return str(raw)
     if kind == "integer":
         return int(raw)
     if kind == "number":
