@@ -6822,10 +6822,11 @@ def _explore_layout(
                                 n_clicks=0,
                                 className="secondary-action",
                                 disabled=not allow_create_view,
+                                style={} if allow_create_view else {"display": "none"},
                                 title=(
                                     None
                                     if allow_create_view
-                                    else "Create views in the external provider and register them with GeCo."
+                                    else "Use Manage Representations for TeAL-backed 2D views."
                                 ),
                             ),
                         ],
