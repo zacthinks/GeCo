@@ -38,6 +38,17 @@ button:hover:not(:disabled) { border-color: var(--geco-green); background: var(-
 button:disabled { cursor: not-allowed; opacity: 0.48; }
 label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight: 650; }
 
+/* Shared vertical rhythm for stacked form labels. Give successive fields
+   breathing room above the label, while keeping the label near its input.
+   Do not change checkbox/radio/inline label layouts. */
+.control-block > label:not(:first-of-type),
+.modal-card > label:not(:first-of-type),
+:is(.topic-parameter-field, .projection-base-fields > div, .projection-parameter-grid > div) > label {
+  margin-top: 0.72rem;
+  margin-bottom: 0.3rem;
+}
+
+
 .app-shell { max-width: 1780px; margin: 0 auto; padding: 1rem 1.35rem 2rem; }
 .app-header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
 .app-brand { display: flex; align-items: center; gap: 0.7rem; }
@@ -45,6 +56,13 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .app-title { margin: 0; font-size: 1.85rem; }
 .app-subtitle { margin: 0.2rem 0 0; color: #5b645e; }
 .project-summary { color: #4c5550; font-size: 0.9rem; }
+/* Close GeCo sits ABOVE the project summary in one right-aligned column;
+   it must never occupy a third slot in the header flex row. */
+.app-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.38rem; margin-left: auto; min-width: 0; text-align: right; }
+.app-header-right > .project-summary { justify-content: flex-end; text-align: right; }
+.app-header-right > .focus-coding-progress-summary { text-align: right; }
+.app-header-right > .geco-close-button { align-self: flex-end; }
+
 
 /* Dash tabs */
 .tab { border-color: var(--geco-border) !important; }
@@ -1288,3 +1306,8 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 /* Explicit local-server lifecycle control, distinct from research sessions. */
 .geco-close-button { flex-shrink: 0; background: transparent; color: #4b5550; border: 1px solid #aebbb2; border-radius: 7px; padding: 0.45rem 0.75rem; font: inherit; cursor: pointer; white-space: nowrap; }
 .geco-close-button:hover { background: #edf3ef; }
+
+@media (max-width: 900px) {
+  /* The brand may wrap; project information still stays flush right. */
+  .app-header-right { align-self: flex-end; }
+}
