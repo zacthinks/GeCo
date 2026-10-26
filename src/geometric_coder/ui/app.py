@@ -11044,16 +11044,6 @@ def launch_app(
 
     app = create_app(project, mode=mode, focus_session_id=focus_session_id)
     server = GeCoServer(app, host=host, port=port)
-    app.server.extensions = getattr(app.server, "extensions", {})
-    app.server.extensions["geco_server"] = server
-
-    @app.server.post("/_geco/close")
-    def _close_geco() -> Any:
-        from flask import jsonify
-
-        server.request_close()
-        return jsonify({"status": "closing"})
-
     server.start()
     _display_local_browser_url(host, server.port)
     return server
