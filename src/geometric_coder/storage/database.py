@@ -1265,7 +1265,27 @@ class ProjectDatabase:
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return a geometry ID.")
-            return int(cursor.lastrowid)
+            geometry_id = int(cursor.lastrowid)
+            deps = list(dependency_names)
+            parent = None
+            if len(deps) == 1:
+                parent_row = connection.execute(
+                    "SELECT r.representation_id FROM representations r "
+                    "JOIN geometries g ON r.legacy_kind='geometry' "
+                    "AND r.legacy_id=g.geometry_id WHERE g.name=?",
+                    (deps[0],),
+                ).fetchone()
+                if parent_row is not None:
+                    parent = int(parent_row["representation_id"])
+            connection.execute(
+                "INSERT INTO representations(legacy_kind, legacy_id, name, "
+                "analytic_enabled, parent_representation_id, storage_kind, "
+                "external_ref_json, created_at) "
+                "VALUES ('geometry', ?, ?, 1, ?, ?, ?, ?)",
+                (geometry_id, name, parent, storage_kind,
+                 json.dumps(external_ref) if external_ref is not None else None, utc_now()),
+            )
+            return geometry_id
 
     def register_view(
         self,
@@ -1307,7 +1327,23 @@ class ProjectDatabase:
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return a view ID.")
-            return int(cursor.lastrowid)
+            view_id = int(cursor.lastrowid)
+            parent = connection.execute(
+                "SELECT representation_id FROM representations "
+                "WHERE legacy_kind='geometry' AND legacy_id=?",
+                (int(geometry_id),),
+            ).fetchone()
+            if parent is None:
+                raise RuntimeError("Cannot register a view without its analytic parent.")
+            connection.execute(
+                "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+                "analytic_enabled, parent_representation_id, storage_kind, "
+                "external_ref_json, created_at) "
+                "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+                (view_id, name, int(parent["representation_id"]), storage_kind,
+                 json.dumps(external_ref) if external_ref is not None else None, utc_now()),
+            )
+            return view_id
 
 
     def register_topic_model(
