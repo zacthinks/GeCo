@@ -1311,3 +1311,30 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   /* The brand may wrap; project information still stays flush right. */
   .app-header-right { align-self: flex-end; }
 }
+
+/* Representation manager filters: consistent label rhythm and table separation. */
+.representation-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(180px, 1fr);
+  align-items: end;
+  gap: 0.85rem 1.1rem;
+  margin: 0.85rem 0 1.2rem;
+}
+.representation-filters > div { min-width: 0; }
+.representation-filters > div > label { display: block; margin-bottom: 0.45rem; }
+.representation-dimension-range {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.representation-dimension-range input {
+  width: 100%;
+  min-width: 0;
+  max-width: 115px;
+}
+.representation-dimension-range > span { flex: 0 0 auto; }
+.representation-source-filter .Select,
+.representation-source-filter .dash-dropdown { width: 100%; min-width: 0; }
+@media (max-width: 650px) {
+  .representation-filters { grid-template-columns: minmax(0, 1fr); }
+}
