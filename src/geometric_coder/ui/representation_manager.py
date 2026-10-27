@@ -83,6 +83,22 @@ def geometry_parameter_specs(recipe: str) -> tuple[list[dict[str, Any]], list[di
             "name": name, "label": name.replace("_", " ").capitalize(),
             "kind": kind, "default": default, "annotation": annotation,
         }
+        choices = {
+            "umap": {
+                "metric": ("euclidean", "cosine", "manhattan", "chebyshev", "minkowski"),
+                "storage": ("compact", "native"),
+            },
+            "normalize": {"axis": ("rows", "columns"), "norm": ("l1", "l2")},
+            "tfidf": {"norm": ("", "l1", "l2")},
+            "svd": {"algorithm": ("randomized", "arpack"),
+                    "power_iteration_normalizer": ("auto", "QR", "LU", "none")},
+        }.get(recipe, {}).get(name)
+        if choices is not None:
+            spec["kind"] = "choice"
+            spec["options"] = [{"label": option or "None", "value": option}
+                               for option in choices]
+            if spec["default"] is None:
+                spec["default"] = ""
         if recipe == "umap" and name == "reuse":
             spec.update(kind="choice", options=[
                 {"label": label, "value": value} for value, label in (
@@ -127,9 +143,8 @@ def create_geometry(
     """Save one TeAL translation, then register its immutable output in GeCo.
 
     The standard path delegates capability validation to linked.add_geometry.
-    Explicit navigation-only mode registers a full-key matrix without claiming
-    it can transform search text or derived observations. In particular, a
-    fit-only UMAP may be explored but cannot be used as a text-query geometry.
+    TeAL's recorded pipeline determines whether the output can transform
+    new text. A fit-only matrix remains usable for navigation without replay.
     """
     clean = str(name).strip()
     if not clean:
@@ -178,24 +193,37 @@ def create_geometry(
         if getattr(output.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
             raise ValueError("This TeAL transformation did not produce a numerical matrix.")
         with teal.geco.open(str(links[0]["name"])) as linked:
-            if navigation_only:
-                # TeAL's provider checks actual key correspondence and row coverage.
-                # No text_artifact_id or replay claims are stored for fit-only matrices.
+            text_source = teal.get_artifact(str(linked.manifest["text_artifact_id"]))
+            from text_analysis_lab.core.errors import PipelineError
+            try:
+                teal.pipeline(start=text_source, end=output)
+            except PipelineError:
+                replayable = False
+            else:
+                replayable = True
+            if replayable:
+                geometry_id = linked.add_geometry(clean, output)
+            else:
                 if output.primary_key != linked.documents.primary_key:
                     raise ConfigurationError(
-                        "Navigation-only geometry must use the linked document primary keys."
+                        "Navigation-only geometry must use linked document primary keys."
                     )
                 geometry_id = coder.register_external_geometry(
                     name=clean, external_ref={"artifact_id": str(output.artifact_id)},
                     supports_query=False, supports_text_transform=False,
                 )
-            else:
-                # This enforces TeAL's existing text-to-geometry Pipeline contract.
-                geometry_id = linked.add_geometry(clean, output)
+        # A 2D analytic geometry needs a display view under its own stable ID.
+        # Do not silently create a projection for higher-dimensional geometries.
+        probe = [0] if int(output.n_rows or 0) else []
+        if int(output.get_matrix(positions=probe).shape[1]) == 2:
+            _ensure_identity_display_view(
+                coder, geometry_id=int(geometry_id),
+                name=clean, artifact_id=str(output.artifact_id),
+            )
         return GeometryCreationResult(
             geometry_id=int(geometry_id),
             artifact_id=str(output.artifact_id),
-            replayable=not navigation_only,
+            replayable=replayable,
         )
 
 
