@@ -189,10 +189,16 @@ def test_unified_representation_filters():
 def test_unregistration_blocks_dependent_views():
     from geometric_coder.ui.representation_manager import unregister_representation
     connection = Mock()
-    connection.execute.return_value.fetchone.side_effect = [
-        None, {"view_id": 3}
-    ]
-    connection.execute.return_value.fetchall.return_value = []
+
+    def execute(sql, _params=()):
+        # SELECT sessions uses fetchall(), so positional fetchone mocks would
+        # accidentally assign the view dependency to classifier_specs.
+        result = Mock()
+        result.fetchall.return_value = []
+        result.fetchone.return_value = {"view_id": 3} if "FROM views" in sql else None
+        return result
+
+    connection.execute.side_effect = execute
     context = Mock()
     context.__enter__ = Mock(return_value=connection)
     context.__exit__ = Mock(return_value=False)
@@ -205,3 +211,7 @@ def test_unregistration_blocks_dependent_views():
     )
     with pytest.raises(ConfigurationError, match="views still references"):
         unregister_representation(coder, key="geometry:2")
+
+    connection.execute.assert_any_call(
+        "SELECT 1 FROM views WHERE geometry_id = ? LIMIT 1", (2,)
+    )
