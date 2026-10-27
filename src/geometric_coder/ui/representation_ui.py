@@ -116,7 +116,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                                 id="representation-detail-topic", n_clicks=0,
                                 className="secondary-action", disabled=not linked),
                     html.Button("Delete", id="representation-detail-delete",
-                                n_clicks=0, className="secondary-action"),
+                                n_clicks=0, className="danger-action"),
                 ], className="representation-detail-actions"),
                 html.Div(id="representation-detail-promote-status", role="status",
                          className="control-status"),
@@ -163,13 +163,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                              className="topic-create-parameters"),
                 ], id="representation-wizard-advanced-wrap",
                    style={"display": "none"}),
-                html.Div([
-                    dcc.Checklist(
-                        id="representation-wizard-navigation-only",
-                        options=[{"label": "Navigation only (cannot transform new text)",
-                                  "value": "yes"}], value=["yes"],
-                    ),
-                ], id="representation-wizard-navigation-wrap"),
+
                 html.Div([
                     html.Button("Cancel", id="representation-wizard-cancel",
                                 n_clicks=0),
@@ -285,12 +279,22 @@ def register_representation_callbacks(
         Output("representation-selected", "data"),
         Input("representation-table", "active_cell"),
         Input("representation-detail-close", "n_clicks"),
+        Input("representation-detail-delete-status", "children"),
+        Input("representation-detail-promote-status", "children"),
         State("representation-table", "data"),
         prevent_initial_call=True,
     )
-    def open_detail(active_cell: Any, _close: int, rows: list[dict[str, Any]] | None) -> tuple[Any, Any]:
-        if callback_context.triggered_id == "representation-detail-close":
+    def open_detail(active_cell: Any, _close: int, delete_status: str | None,
+                    promote_status: str | None, rows: list[dict[str, Any]] | None) -> tuple[Any, Any]:
+        trigger = callback_context.triggered_id
+        if trigger == "representation-detail-close":
             return {"display": "none"}, None
+        if trigger in {"representation-detail-delete-status", "representation-detail-promote-status"}:
+            if (trigger == "representation-detail-delete-status" and delete_status == "Deleted.") or (
+                trigger == "representation-detail-promote-status" and promote_status == "Registered."
+            ):
+                return {"display": "none"}, None
+            return no_update, no_update
         if not active_cell or not rows:
             return no_update, no_update
         position = active_cell.get("row")
@@ -374,7 +378,7 @@ def register_representation_callbacks(
         except Exception as exc:
             return f"Registration failed: {exc}", no_update
         refresh_geometry_cache()
-        return "Registered as Geometry / 2D view.", int(revision or 0) + 1
+        return "Registered.", int(revision or 0) + 1
 
     @app.callback(
         Output("representation-detail-delete-status", "children"),
@@ -392,7 +396,7 @@ def register_representation_callbacks(
         except Exception as exc:
             return f"Cannot delete: {exc}", no_update
         refresh_geometry_cache()
-        return "Unregistered from GeCo; TeAL artifacts are unchanged.", int(revision or 0) + 1
+        return "Deleted.", int(revision or 0) + 1
 
     @app.callback(
         Output("topic-create-modal", "style", allow_duplicate=True),
@@ -421,15 +425,20 @@ def register_representation_callbacks(
         Input("representation-detail-add-view", "n_clicks"),
         Input("representation-wizard-close", "n_clicks"),
         Input("representation-wizard-cancel", "n_clicks"),
+        Input("representation-wizard-status", "children"),
         State("representation-selected", "data"),
         State("representation-inventory-store", "data"),
         prevent_initial_call=True,
     )
     def toggle_wizard(
-        _add: int, _add_view: int, _close: int, _cancel: int,
+        _add: int, _add_view: int, _close: int, _cancel: int, status: str | None,
         selected: str | None, inventory: list[dict[str, Any]] | None,
     ) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
+        if trigger == "representation-wizard-status":
+            return ({"display": "none"}, no_update, no_update, no_update, no_update) if (
+                status == "Created."
+            ) else (no_update,) * 5
         if trigger in {"representation-wizard-close", "representation-wizard-cancel"}:
             return {"display": "none"}, no_update, no_update, no_update, no_update
         if trigger == "representation-detail-add-view":
@@ -442,18 +451,17 @@ def register_representation_callbacks(
 
     @app.callback(
         Output("representation-wizard-recipe", "options"),
-        Output("representation-wizard-navigation-wrap", "style"),
         Output("representation-wizard-dimension-note", "children"),
         Input("representation-wizard-mode", "value"),
     )
-    def wizard_mode(mode: str | None) -> tuple[Any, Any, str]:
+    def wizard_mode(mode: str | None) -> tuple[Any, str]:
         if mode == "view":
             return [
                 {"label": "UMAP", "value": "umap"},
                 {"label": "SVD", "value": "svd"},
                 {"label": "Identity (existing 2D geometry)", "value": "identity"},
-            ], {"display": "none"}, "2D views have exactly two coordinates."
-        return geometry_recipe_options(), {}, "Choose an analytic dimensionality in the transformation settings."
+            ], "2D views have exactly two coordinates."
+        return geometry_recipe_options(), "Replayability is detected automatically from the fitted TeAL pipeline."
 
     @app.callback(
         Output("representation-wizard-parameters", "children"),
@@ -491,7 +499,6 @@ def register_representation_callbacks(
         State("representation-wizard-recipe", "value"),
         State({"type": "representation-param", "name": ALL}, "value"),
         State({"type": "representation-param", "name": ALL}, "id"),
-        State("representation-wizard-navigation-only", "value"),
         State("representation-refresh-store", "data"),
         State("view-refresh-store", "data"),
         prevent_initial_call=True,
@@ -500,7 +507,7 @@ def register_representation_callbacks(
     def create(
         _clicks: int, mode: str | None, name: str | None, source: int | None,
         recipe: str | None, values: list[Any], ids: list[dict[str, str]],
-        navigation: list[str] | None, revision: int | None,
+        revision: int | None,
         view_revision: int | None,
     ) -> tuple[Any, Any, str]:
         if source is None:
@@ -517,7 +524,6 @@ def register_representation_callbacks(
                 created = create_geometry(
                     project, name=name or "", source_geometry_id=int(source),
                     recipe=recipe or "umap", parameters=params,
-                    navigation_only="yes" in (navigation or []),
                 )
                 result_id = created.geometry_id
                 label = "geometry"
@@ -527,7 +533,7 @@ def register_representation_callbacks(
         return (
             int(revision or 0) + 1,
             int(view_revision or 0) + 1 if mode == "view" else no_update,
-            f"Created {label} {(name or '').strip()!r} (ID {result_id}).",
+            "Created.",
         )
 
     @app.callback(
