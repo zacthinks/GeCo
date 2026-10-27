@@ -1237,6 +1237,7 @@ class ProjectDatabase:
         """Register a local or externally backed geometry and return its ID."""
         if storage_kind not in {"local", "external"}:
             raise ValueError("storage_kind must be 'local' or 'external'")
+        deps = list(dependency_names)
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -1252,7 +1253,7 @@ class ProjectDatabase:
                     modality,
                     int(public),
                     json.dumps(config, sort_keys=True),
-                    json.dumps(list(dependency_names)),
+                    json.dumps(deps),
                     matrix_path,
                     int(matrix_sparse),
                     state_path,
@@ -1266,7 +1267,6 @@ class ProjectDatabase:
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return a geometry ID.")
             geometry_id = int(cursor.lastrowid)
-            deps = list(dependency_names)
             parent = None
             if len(deps) == 1:
                 parent_row = connection.execute(
