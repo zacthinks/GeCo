@@ -28,6 +28,7 @@ def _simulate_existing_schema_13(path: Path) -> None:
     """A schema-13 database had no topic_models table."""
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE topic_models")
+        connection.execute("DROP TABLE representations")
         connection.execute(
             "UPDATE project SET schema_version = 13 WHERE project_id = 1"
         )
@@ -45,8 +46,8 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 
 def test_current_schema_and_upgrade_registry() -> None:
-    assert SCHEMA_VERSION == 14
-    assert set(storage_database._MIGRATIONS) == {13}
+    assert SCHEMA_VERSION == 15
+    assert set(storage_database._MIGRATIONS) == {13, 14}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -70,7 +71,7 @@ def test_open_schema_13_upgrades_and_preserves_research_state(
 
     provider = object() if external else None
     reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
-    assert _version_and_topics(path) == (14, True)
+    assert _version_and_topics(path) == (15, True)
     assert reopened.topic_models() == []
     with sqlite3.connect(path) as connection:
         for table, rows in baseline.items():
@@ -118,7 +119,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 15):
+    for version in (12, 16):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
@@ -136,3 +137,71 @@ def test_external_workspace_needs_provider_before_migrating(tmp_path: Path) -> N
     with pytest.raises(Exception, match="external_provider"):
         GeometricCoder.open(project.project_dir)
     assert _version_and_topics(path) == (13, False)
+
+
+def test_14_to_15_preserves_legacy_ids_and_view_parent(tmp_path: Path) -> None:
+    project = _make_workspace(tmp_path)
+    database = project.database
+    geometry_id = database.register_geometry(
+        name="base", class_name="CountGeometry", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="base.npz", matrix_sparse=True,
+        state_path=None, supports_query=True, supports_text_transform=True,
+    )
+    child_id = database.register_geometry(
+        name="reduced", class_name="SVDGeometry", modality="text", public=True,
+        config={}, dependency_names=["base"], matrix_path="reduced.npy",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False,
+    )
+    view_id = database.register_view(
+        geometry_id=child_id, name="map", method="umap", parameters={},
+        artifact_path="map.npy",
+    )
+    path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE representations")
+        con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
+    reopened = GeometricCoder.open(project.project_dir)
+    with reopened.database.connect() as con:
+        rows = con.execute(
+            "SELECT representation_id, legacy_kind, legacy_id, "
+            "parent_representation_id, analytic_enabled, dimensions "
+            "FROM representations ORDER BY representation_id"
+        ).fetchall()
+        assert len(rows) == 3
+        ids = {(r["legacy_kind"], r["legacy_id"]): r["representation_id"] for r in rows}
+        assert rows[0]["legacy_id"] == geometry_id
+        child = next(r for r in rows if r["legacy_kind"] == "geometry"
+                     and r["legacy_id"] == child_id)
+        view = next(r for r in rows if r["legacy_kind"] == "view"
+                    and r["legacy_id"] == view_id)
+        assert child["parent_representation_id"] == ids["geometry", geometry_id]
+        assert view["parent_representation_id"] == ids["geometry", child_id]
+        assert child["analytic_enabled"] == 1
+        assert view["analytic_enabled"] == 0 and view["dimensions"] == 2
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    GeometricCoder.open(project.project_dir)
+    with reopened.database.connect() as con:
+        assert con.execute("SELECT COUNT(*) FROM representations").fetchone()[0] == 3
+
+
+def test_14_to_15_migration_rolls_back_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_workspace(tmp_path)
+    path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE representations")
+        con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
+    original = storage_database._MIGRATIONS[14]
+    def fail_after_schema_change(con: sqlite3.Connection) -> None:
+        original(con)
+        raise RuntimeError("forced rollback")
+    monkeypatch.setitem(storage_database._MIGRATIONS, 14, fail_after_schema_change)
+    with pytest.raises(RuntimeError, match="forced rollback"):
+        GeometricCoder.open(project.project_dir)
+    with sqlite3.connect(path) as con:
+        assert con.execute("SELECT schema_version FROM project").fetchone()[0] == 14
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='representations'"
+        ).fetchone() is None
