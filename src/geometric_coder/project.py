@@ -458,6 +458,10 @@ class GeometricCoder:
                 supports_query=geometry.supports_query,
                 supports_text_transform=geometry.supports_text_transform,
             )
+            self.database.record_representation_dimensions(
+                self.database.representation_for_legacy("geometry", geometry_id)["representation_id"],
+                int(matrix.shape[1]),
+            )
             if registration.public:
                 view_spec = geometry.default_view
                 view_started = time.perf_counter()
@@ -944,6 +948,10 @@ class GeometricCoder:
             supports_text_transform=bool(supports_text_transform),
             storage_kind="external",
             external_ref=ref,
+        )
+        self.database.record_representation_dimensions(
+            self.database.representation_for_legacy("geometry", geometry_id)["representation_id"],
+            int(matrix.shape[1]),
         )
         self.ensure_default_classifier_specs()
         return geometry_id
