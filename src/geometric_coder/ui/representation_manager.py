@@ -284,10 +284,10 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
             and artifact_id is not None
             and row.get("artifact_id") == artifact_id
             and row["name"] == str(view["name"])
-            and row.get("dimensions") == 2
+            and row.get("dimensions") in {None, 2}
         ), None)
         if counterpart is not None:
-            counterpart.update(kind="both", view_id=int(view["view_id"]))
+            counterpart.update(kind="both", view_id=int(view["view_id"]), dimensions=2)
             counterpart["sources"] = sorted(
                 set(counterpart["sources"]) | {parent}, key=str.casefold
             )
