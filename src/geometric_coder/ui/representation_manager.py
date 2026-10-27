@@ -262,11 +262,37 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
     finally:
         if teal is not None:
             teal.close()
-    # A view is a 2D display resource, listed alongside analytic geometries,
-    # but its parent remains the source of any scientific geometry operations.
+    # Two registrations can share one exact provider artifact and display name,
+    # without collapsing other views or geometries that happen to look alike.
+    for row in rows:
+        row["kind"] = "geometry"
+        row["key"] = f"geometry:{row['geometry_id']}"
+        row["new_text"] = bool(row["queryable"] and row["text_transform"])
+        row["sources"] = [name.strip() for name in row["source"].split(",") if name.strip()]
+
     names = {int(row["geometry_id"]): str(row["name"]) for row in rows}
     for view in coder.views():
         parent = names.get(int(view["geometry_id"]), str(view["geometry_id"]))
+        ref = view.get("external_ref")
+        artifact_id = (
+            str(ref["artifact_id"]) if isinstance(ref, Mapping)
+            and isinstance(ref.get("artifact_id"), str) else None
+        )
+        counterpart = next((
+            row for row in rows
+            if row["kind"] == "geometry"
+            and artifact_id is not None
+            and row.get("artifact_id") == artifact_id
+            and row["name"] == str(view["name"])
+            and row.get("dimensions") == 2
+        ), None)
+        if counterpart is not None:
+            counterpart.update(kind="both", view_id=int(view["view_id"]))
+            counterpart["sources"] = sorted(
+                set(counterpart["sources"]) | {parent}, key=str.casefold
+            )
+            counterpart["source"] = ", ".join(counterpart["sources"])
+            continue
         rows.append({
             "kind": "view", "key": f"view:{int(view['view_id'])}",
             "view_id": int(view["view_id"]),
@@ -275,23 +301,16 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
             "sources": [parent], "new_text": False,
             "queryable": False, "text_transform": False,
             "storage_kind": view.get("storage_kind", "local"),
-            "method": view.get("method"),
+            "method": view.get("method"), "artifact_id": artifact_id,
             "error": None,
         })
-    for row in rows:
-        if "kind" not in row:
-            row["kind"] = "geometry"
-            row["key"] = f"geometry:{row['geometry_id']}"
-        if "new_text" not in row:
-            row["new_text"] = bool(row["queryable"] and row["text_transform"])
-        if "sources" not in row:
-            row["sources"] = [name.strip() for name in row["source"].split(",") if name.strip()]
     return rows
 
 
 def filter_representations(
     rows: list[dict[str, Any]], *, min_dimensions: int | None = None,
     max_dimensions: int | None = None, source: str | None = None,
+    role: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter registered resources; a blank bound means unbounded."""
     if min_dimensions is not None and min_dimensions < 1:
@@ -301,12 +320,15 @@ def filter_representations(
     if (min_dimensions is not None and max_dimensions is not None
             and min_dimensions > max_dimensions):
         raise ValueError("Minimum dimensions cannot exceed maximum dimensions.")
+    if role not in {None, "", "geometry", "view", "both"}:
+        raise ValueError("Unknown representation role filter.")
     return sorted([
         row for row in rows
         if (row.get("dimensions") is not None)
         and (min_dimensions is None or row["dimensions"] >= min_dimensions)
         and (max_dimensions is None or row["dimensions"] <= max_dimensions)
         and (not source or source in row.get("sources", []))
+        and (not role or row.get("kind") == role)
     ], key=lambda row: (str(row["name"]).casefold(), str(row["key"])))
 
 
@@ -317,6 +339,41 @@ def source_filter_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
                 {source for row in rows for source in row.get("sources", [])},
                 key=str.casefold,
             )]
+
+
+def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
+    """Register an existing 2D view as an analytic geometry, without a fit.
+
+    Reuses its saved provider artifact, conservatively disabling new-text and
+    semantic-query transformations until a replayable pipeline is proven.
+    """
+    view = coder.database.get_view(int(view_id))
+    if str(view.get("storage_kind")) != "external":
+        raise ConfigurationError(
+            "Register as Geometry currently requires a provider-backed 2D view."
+        )
+    ref = view.get("external_ref")
+    if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
+        raise ConfigurationError("The selected view has no registered matrix artifact.")
+    artifact_id = str(ref["artifact_id"])
+    name = str(view["name"])
+    for geometry in coder.geometries(public_only=False):
+        existing = geometry.get("external_ref")
+        if (isinstance(existing, Mapping)
+                and existing.get("artifact_id") == artifact_id):
+            if str(geometry["name"]) == name:
+                return int(geometry["geometry_id"])
+            raise ConfigurationError(
+                f"This artifact is already registered as geometry {geometry['name']!r}. "
+                "Rename the representation before assigning both roles."
+            )
+    if coder.has_geometry(name):
+        raise ConfigurationError(f"Geometry {name!r} is already registered.")
+    # GeCo's provider validates complete key coverage and numerical dimensions.
+    return int(coder.register_external_geometry(
+        name=name, external_ref={"artifact_id": artifact_id},
+        supports_query=False, supports_text_transform=False,
+    ))
 
 
 def _representation_record(coder: GeometricCoder, key: str) -> tuple[str, dict[str, Any]]:
