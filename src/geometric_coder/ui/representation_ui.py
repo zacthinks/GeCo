@@ -44,7 +44,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     columns=[
                         {"name": "Name", "id": "name"},
                         {"name": "Dimensions", "id": "dimensions", "type": "numeric"},
-                        {"name": "New text", "id": "new_text"},
+                        {"name": "New translations", "id": "new_text"},
                         {"name": "Role", "id": "role"},
                     ],
                     data=[], page_size=12, cell_selectable=True,
