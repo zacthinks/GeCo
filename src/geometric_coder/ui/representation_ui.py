@@ -9,7 +9,7 @@ from typing import Any
 from geometric_coder.ui.representation_manager import (
     create_geometry, create_view, filter_representations,
     geometry_parameter_specs, geometry_recipe_options, linked_geometry_options,
-    rename_representation, representation_inventory, source_filter_options,
+    register_view_as_geometry, rename_representation, representation_inventory, source_filter_options,
     unregister_representation,
 )
 from geometric_coder.ui.topic_creation import teal_linked_project
@@ -50,6 +50,15 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         dcc.Dropdown(id="representation-filter-source",
                                      clearable=True, placeholder="All sources"),
                     ], className="representation-source-filter"),
+                    html.Div([
+                        html.Label("Filter by role"),
+                        dcc.Dropdown(id="representation-filter-role", clearable=True,
+                            placeholder="All roles", options=[
+                                {"label": "Geometry", "value": "geometry"},
+                                {"label": "2D view", "value": "view"},
+                                {"label": "Geometry / 2D view", "value": "both"},
+                            ]),
+                    ], className="representation-role-filter"),
                 ], className="representation-filters"),
                 dash_table.DataTable(
                     id="representation-table",
@@ -101,12 +110,16 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                 html.Div([
                     html.Button("Add 2D View", id="representation-detail-add-view",
                                 n_clicks=0, className="secondary-action"),
+                    html.Button("Register as Geometry", id="representation-detail-promote",
+                                n_clicks=0, className="secondary-action"),
                     html.Button("Register as Topic Model",
                                 id="representation-detail-topic", n_clicks=0,
                                 className="secondary-action", disabled=not linked),
                     html.Button("Delete", id="representation-detail-delete",
                                 n_clicks=0, className="secondary-action"),
                 ], className="representation-detail-actions"),
+                html.Div(id="representation-detail-promote-status", role="status",
+                         className="control-status"),
                 html.Div(id="representation-detail-delete-status", role="status",
                          className="control-status"),
                 html.P("Delete unregisters the representation in GeCo only. "
@@ -236,10 +249,11 @@ def register_representation_callbacks(
         Input("representation-filter-min", "value"),
         Input("representation-filter-max", "value"),
         Input("representation-filter-source", "value"),
+        Input("representation-filter-role", "value"),
     )
     def list_representations(
         inventory: list[dict[str, Any]] | None, minimum: Any, maximum: Any,
-        source: str | None,
+        source: str | None, role: str | None,
     ) -> tuple[list[dict[str, Any]], str]:
         def bound(value: Any) -> int | None:
             if value is None or value == "":
@@ -252,7 +266,7 @@ def register_representation_callbacks(
         try:
             rows = filter_representations(
                 inventory or [], min_dimensions=bound(minimum),
-                max_dimensions=bound(maximum), source=source,
+                max_dimensions=bound(maximum), source=source, role=role,
             )
         except (ValueError, TypeError) as exc:
             return [], str(exc)
@@ -261,7 +275,8 @@ def register_representation_callbacks(
                 "key": row["key"], "name": row["name"],
                 "dimensions": row["dimensions"],
                 "new_text": "✓" if row["new_text"] else "✕",
-                "role": "Geometry" if row["kind"] == "geometry" else "2D view",
+                "role": {"geometry": "Geometry", "view": "2D view",
+                         "both": "Geometry / 2D view"}[row["kind"]],
             } for row in rows
         ], f"{len(rows)} representations. Click any row to manage it."
 
@@ -290,15 +305,16 @@ def register_representation_callbacks(
         Output("representation-detail-views-heading", "style"),
         Output("representation-detail-add-view", "style"),
         Output("representation-detail-topic", "style"),
+        Output("representation-detail-promote", "style"),
         Input("representation-selected", "data"),
         Input("representation-inventory-store", "data"),
     )
     def populate_detail(key: str | None, inventory: list[dict[str, Any]] | None) -> tuple[Any, ...]:
         matches = [r for r in (inventory or []) if r["key"] == key]
         if not matches:
-            return "", "", "", {"display": "none"}, {"display": "none"}, {"display": "none"}
+            return "", "", "", {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
         row = matches[0]
-        if row["kind"] == "geometry":
+        if row["kind"] in {"geometry", "both"}:
             views = [
                 html.Div(child["name"]) for child in inventory or []
                 if child["kind"] == "view"
@@ -306,15 +322,17 @@ def register_representation_callbacks(
             ]
         else:
             views = []
-        add_view = (row["kind"] == "geometry"
+        add_view = (row["kind"] in {"geometry", "both"}
                     and row.get("dimensions") is not None
                     and row["dimensions"] > 2)
         return (
             row["name"], row["name"],
             views or ["No 2D views registered."],
-            {} if row["kind"] == "geometry" else {"display": "none"},
+            {} if row["kind"] in {"geometry", "both"} else {"display": "none"},
             {} if add_view else {"display": "none"},
-            {} if row["kind"] == "geometry" else {"display": "none"},
+            {} if row["kind"] in {"geometry", "both"} else {"display": "none"},
+            {} if row["kind"] == "view" and row.get("storage_kind") == "external"
+            else {"display": "none"},
         )
 
     @app.callback(
@@ -335,6 +353,28 @@ def register_representation_callbacks(
             return f"Rename failed: {exc}", no_update
         refresh_geometry_cache()
         return "Renamed.", int(revision or 0) + 1
+
+    @app.callback(
+        Output("representation-detail-promote-status", "children"),
+        Output("representation-refresh-store", "data", allow_duplicate=True),
+        Input("representation-detail-promote", "n_clicks"),
+        State("representation-selected", "data"),
+        State("representation-inventory-store", "data"),
+        State("representation-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def promote_view(_clicks: int, key: str | None,
+                     inventory: list[dict[str, Any]] | None,
+                     revision: int | None) -> tuple[Any, Any]:
+        rows = [r for r in inventory or [] if r["key"] == key and r["kind"] == "view"]
+        if not rows:
+            return "Choose a 2D view.", no_update
+        try:
+            register_view_as_geometry(project, view_id=int(rows[0]["view_id"]))
+        except Exception as exc:
+            return f"Registration failed: {exc}", no_update
+        refresh_geometry_cache()
+        return "Registered as Geometry / 2D view.", int(revision or 0) + 1
 
     @app.callback(
         Output("representation-detail-delete-status", "children"),
@@ -365,7 +405,7 @@ def register_representation_callbacks(
         prevent_initial_call=True,
     )
     def register_topic(_clicks: int, key: str | None, inventory: list[dict[str, Any]] | None) -> tuple[Any, ...]:
-        rows = [r for r in inventory or [] if r["key"] == key and r["kind"] == "geometry"]
+        rows = [r for r in inventory or [] if r["key"] == key and r["kind"] in {"geometry", "both"}]
         if not rows:
             return (no_update,) * 4
         row = rows[0]
@@ -394,7 +434,7 @@ def register_representation_callbacks(
             return {"display": "none"}, no_update, no_update, no_update, no_update
         if trigger == "representation-detail-add-view":
             matches = [r for r in inventory or [] if r["key"] == selected
-                       and r["kind"] == "geometry" and (r.get("dimensions") or 0) > 2]
+                       and r["kind"] in {"geometry", "both"} and (r.get("dimensions") or 0) > 2]
             if not matches:
                 return (no_update,) * 5
             return {"display": "flex"}, "view", int(matches[0]["geometry_id"]), "umap", ""
