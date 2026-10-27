@@ -205,3 +205,59 @@ def test_14_to_15_migration_rolls_back_on_failure(
         assert con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='representations'"
         ).fetchone() is None
+
+
+def test_unified_registry_transitive_views_and_cycle_guards(tmp_path: Path) -> None:
+    project = _make_workspace(tmp_path)
+    db = project.database
+    a = db.register_geometry(
+        name="A", class_name="count", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=True, supports_text_transform=True,
+    )
+    b = db.register_geometry(
+        name="B", class_name="svd", modality="text", public=True,
+        config={}, dependency_names=["A"], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=True, supports_text_transform=True,
+    )
+    c = db.register_view(
+        geometry_id=b, name="C", method="umap", parameters={},
+        artifact_path="view.npy",
+    )
+    ra = db.representation_for_legacy("geometry", a)
+    rb = db.representation_for_legacy("geometry", b)
+    rc = db.representation_for_legacy("view", c)
+    assert rb["parent_representation_id"] == ra["representation_id"]
+    assert rc["parent_representation_id"] == rb["representation_id"]
+    db.record_representation_dimensions(ra["representation_id"], 50)
+    db.record_representation_dimensions(rb["representation_id"], 500)
+    assert db.get_representation(rc["representation_id"])["dimensions"] == 2
+    assert [x["name"] for x in db.eligible_view_representations(
+        ra["representation_id"]
+    )] == ["C"]
+    db.record_representation_dimensions(rb["representation_id"], 500)
+    with pytest.raises(ValueError, match="dimensions"):
+        db.record_representation_dimensions(rb["representation_id"], 499)
+    with pytest.raises(ValueError, match="parent"):
+        db.assign_representation_parent(ra["representation_id"], rc["representation_id"])
+    with pytest.raises(ValueError, match="parent"):
+        db.assign_representation_parent(rc["representation_id"], ra["representation_id"])
+
+
+def test_unified_registry_can_resolve_out_of_order_parent(tmp_path: Path) -> None:
+    db = _make_workspace(tmp_path).database
+    child_id = db.register_geometry(
+        name="child", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    parent_id = db.register_geometry(
+        name="parent", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    child = db.representation_for_legacy("geometry", child_id)
+    parent = db.representation_for_legacy("geometry", parent_id)
+    assert child["parent_representation_id"] is None
+    db.assign_representation_parent(child["representation_id"], parent["representation_id"])
+    assert db.get_representation(child["representation_id"])["parent_representation_id"] == parent["representation_id"]
