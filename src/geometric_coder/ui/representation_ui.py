@@ -303,6 +303,27 @@ def register_representation_callbacks(
         return {"display": "flex"}, rows[position]["key"]
 
     @app.callback(
+        Output("representation-detail-rename-status", "children", allow_duplicate=True),
+        Output("representation-detail-promote-status", "children", allow_duplicate=True),
+        Output("representation-detail-delete-status", "children", allow_duplicate=True),
+        Input("representation-selected", "data"),
+        prevent_initial_call=True,
+    )
+    def clear_detail_notices(_selection: str | None) -> tuple[str, str, str]:
+        return "", "", ""
+
+    @app.callback(
+        Output("representation-wizard-status", "children", allow_duplicate=True),
+        Input("representation-wizard-mode", "value"),
+        Input("representation-wizard-recipe", "value"),
+        Input("representation-wizard-source", "value"),
+        Input("representation-wizard-name", "value"),
+        prevent_initial_call=True,
+    )
+    def clear_wizard_notice(_mode: Any, _recipe: Any, _source: Any, _name: Any) -> str:
+        return ""
+
+    @app.callback(
         Output("representation-detail-title", "children"),
         Output("representation-detail-name", "value"),
         Output("representation-detail-views", "children"),
