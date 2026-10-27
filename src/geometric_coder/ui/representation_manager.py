@@ -262,7 +262,175 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
     finally:
         if teal is not None:
             teal.close()
+    # A view is a 2D display resource, listed alongside analytic geometries,
+    # but its parent remains the source of any scientific geometry operations.
+    names = {int(row["geometry_id"]): str(row["name"]) for row in rows}
+    for view in coder.views():
+        parent = names.get(int(view["geometry_id"]), str(view["geometry_id"]))
+        rows.append({
+            "kind": "view", "key": f"view:{int(view['view_id'])}",
+            "view_id": int(view["view_id"]),
+            "geometry_id": int(view["geometry_id"]),
+            "name": str(view["name"]), "dimensions": 2, "source": parent,
+            "sources": [parent], "new_text": False,
+            "queryable": False, "text_transform": False,
+            "storage_kind": view.get("storage_kind", "local"),
+            "method": view.get("method"),
+            "error": None,
+        })
+    for row in rows:
+        if "kind" not in row:
+            row["kind"] = "geometry"
+            row["key"] = f"geometry:{row['geometry_id']}"
+        if "new_text" not in row:
+            row["new_text"] = bool(row["queryable"] and row["text_transform"])
+        if "sources" not in row:
+            row["sources"] = [name.strip() for name in row["source"].split(",") if name.strip()]
     return rows
+
+
+def filter_representations(
+    rows: list[dict[str, Any]], *, min_dimensions: int | None = None,
+    max_dimensions: int | None = None, source: str | None = None,
+) -> list[dict[str, Any]]:
+    """Filter registered resources; a blank bound means unbounded."""
+    if min_dimensions is not None and min_dimensions < 1:
+        raise ValueError("Minimum dimensions must be positive.")
+    if max_dimensions is not None and max_dimensions < 1:
+        raise ValueError("Maximum dimensions must be positive.")
+    if (min_dimensions is not None and max_dimensions is not None
+            and min_dimensions > max_dimensions):
+        raise ValueError("Minimum dimensions cannot exceed maximum dimensions.")
+    return sorted([
+        row for row in rows
+        if (row.get("dimensions") is not None)
+        and (min_dimensions is None or row["dimensions"] >= min_dimensions)
+        and (max_dimensions is None or row["dimensions"] <= max_dimensions)
+        and (not source or source in row.get("sources", []))
+    ], key=lambda row: (str(row["name"]).casefold(), str(row["key"])))
+
+
+def source_filter_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Sorted human-facing source handles, never raw artifact identifiers."""
+    return [{"label": name, "value": name}
+            for name in sorted(
+                {source for row in rows for source in row.get("sources", [])},
+                key=str.casefold,
+            )]
+
+
+def _representation_record(coder: GeometricCoder, key: str) -> tuple[str, dict[str, Any]]:
+    try:
+        kind, identifier = str(key).split(":", 1)
+        if kind == "geometry":
+            return kind, coder.database.get_geometry(int(identifier))
+        if kind == "view":
+            return kind, coder.database.get_view(int(identifier))
+    except (KeyError, ValueError) as error:
+        raise ConfigurationError("Unknown representation.") from error
+    raise ConfigurationError("Unknown representation type.")
+
+
+def rename_representation(coder: GeometricCoder, *, key: str, name: str) -> None:
+    """Rename a registration and, when TeAL-linked, rotate its owned alias.
+
+    TeAL artifacts are referenced by immutable IDs; only the selected alias
+    is retired, never unrelated aliases belonging to the same artifact.
+    """
+    import json
+    from sqlite3 import IntegrityError
+
+    kind, record = _representation_record(coder, key)
+    old = str(record["name"])
+    clean = str(name).strip()
+    if not clean:
+        raise ValueError("Enter a representation name.")
+    if clean == old:
+        return
+    if coder.has_geometry(clean) or coder.has_view(clean):
+        raise ConfigurationError(f"A representation named {clean!r} already exists.")
+    path = teal_linked_project(coder)
+    ref = record.get("external_ref")
+    teal = None
+    artifact = None
+    added = False
+    try:
+        if path is not None and isinstance(ref, Mapping) and ref.get("artifact_id"):
+            from text_analysis_lab.core.project import Project
+            teal = Project.open(path)
+            artifact = teal.get_artifact(str(ref["artifact_id"]))
+            # The TeAL catalog validates both alias syntax and its uniqueness.
+            teal.catalog.validate_artifact_alias(clean)
+            if clean not in artifact.aliases:
+                artifact.add_alias(clean)
+                added = True
+        table = "geometries" if kind == "geometry" else "views"
+        id_column = "geometry_id" if kind == "geometry" else "view_id"
+        with coder.database.connect() as con:
+            con.execute(
+                f"UPDATE {table} SET name = ? WHERE {id_column} = ?",
+                (clean, int(record[id_column])),
+            )
+            # Native dependent geometries store their source by name.
+            if kind == "geometry":
+                for child in coder.geometries(public_only=False):
+                    deps = list(child.get("dependency_names") or [])
+                    if old in deps:
+                        con.execute(
+                            "UPDATE geometries SET dependency_names_json = ? "
+                            "WHERE geometry_id = ?",
+                            (json.dumps([clean if dep == old else dep for dep in deps]),
+                             int(child["geometry_id"])),
+                        )
+        if artifact is not None and old in artifact.aliases:
+            artifact.remove_alias(old)
+    except Exception:
+        if added and artifact is not None:
+            artifact.remove_alias(clean)
+        raise
+    finally:
+        if teal is not None:
+            teal.close()
+
+
+def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
+    """Remove only a GeCo registration when no known references remain.
+
+    Never removes TeAL artifacts or aliases. Conservative dependency checks
+    guard historical sessions and models, rather than silently orphaning them.
+    """
+    kind, record = _representation_record(coder, key)
+    identifier = int(record["geometry_id" if kind == "geometry" else "view_id"])
+    with coder.database.connect() as con:
+        sessions = con.execute("SELECT state_json FROM sessions").fetchall()
+        for row in sessions:
+            import json
+            state = json.loads(row["state_json"])
+            fields = ("geometry_id",) if kind == "geometry" else ("view_id",)
+            if any(str(state.get(field)) == str(identifier) for field in fields):
+                raise ConfigurationError(
+                    "This representation is used in a saved session. Select "
+                    "another representation in that session before removing it."
+                )
+        if kind == "geometry":
+            if len(coder.geometries(public_only=True)) <= 1:
+                raise ConfigurationError("Cannot unregister the last analytic geometry.")
+            for table in ("views", "classifier_specs", "classifier_fits",
+                          "navigation_events", "observation_geometry_vectors"):
+                if con.execute(
+                    f"SELECT 1 FROM {table} WHERE geometry_id = ? LIMIT 1",
+                    (identifier,),
+                ).fetchone():
+                    raise ConfigurationError(
+                        f"Cannot unregister geometry: {table} still references it."
+                    )
+            for child in coder.geometries(public_only=False):
+                if (int(child["geometry_id"]) != identifier
+                        and str(record["name"]) in child.get("dependency_names", [])):
+                    raise ConfigurationError("Cannot unregister a source of another geometry.")
+            con.execute("DELETE FROM geometries WHERE geometry_id = ?", (identifier,))
+        else:
+            con.execute("DELETE FROM views WHERE view_id = ?", (identifier,))
 
 
 def create_view(
