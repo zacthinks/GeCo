@@ -159,7 +159,49 @@ def test_manager_is_exposed_without_changing_topic_model_creation():
     ui = (root / "representation_ui.py").read_text()
     assert 'id="representation-manager-open"' in app
     assert "register_representation_callbacks(" in app
-    assert 'id="representation-create-submit"' in ui
-    assert 'id="representation-view-submit"' in ui
+    assert 'id="representation-wizard-submit"' in ui
+    assert 'id="representation-detail-add-view"' in ui
+    assert 'id="representation-filter-min"' in ui
+    assert 'id="representation-filter-source"' in ui
     assert 'Output("topic-create-geometry", "options")' in ui
     assert "create_topic_model(" in app
+
+
+def test_unified_representation_filters():
+    rows = [
+        {"key": "geometry:1", "name": "counts", "dimensions": 500, "sources": []},
+        {"key": "geometry:2", "name": "umap_8", "dimensions": 8, "sources": ["counts"]},
+        {"key": "view:1", "name": "umap_2", "dimensions": 2, "sources": ["umap_8"]},
+    ]
+    assert [r["name"] for r in rm.filter_representations(rows, min_dimensions=3)] == [
+        "counts", "umap_8",
+    ]
+    assert [r["name"] for r in rm.filter_representations(rows, min_dimensions=2, max_dimensions=2)] == ["umap_2"]
+    assert [r["name"] for r in rm.filter_representations(rows, source="counts")] == ["umap_8"]
+    assert rm.source_filter_options(rows) == [
+        {"label": "counts", "value": "counts"},
+        {"label": "umap_8", "value": "umap_8"},
+    ]
+    with pytest.raises(ValueError, match="exceed"):
+        rm.filter_representations(rows, min_dimensions=10, max_dimensions=2)
+
+
+def test_unregistration_blocks_dependent_views():
+    from geometric_coder.ui.representation_manager import unregister_representation
+    connection = Mock()
+    connection.execute.return_value.fetchone.side_effect = [
+        None, {"view_id": 3}
+    ]
+    connection.execute.return_value.fetchall.return_value = []
+    context = Mock()
+    context.__enter__ = Mock(return_value=connection)
+    context.__exit__ = Mock(return_value=False)
+    coder = SimpleNamespace(
+        database=SimpleNamespace(
+            get_geometry=Mock(return_value={"geometry_id": 2, "name": "source"}),
+            connect=Mock(return_value=context),
+        ),
+        geometries=lambda **_: [{"geometry_id": 1}, {"geometry_id": 2}],
+    )
+    with pytest.raises(ConfigurationError, match="views still references"):
+        unregister_representation(coder, key="geometry:2")
