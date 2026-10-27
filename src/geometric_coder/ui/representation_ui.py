@@ -361,24 +361,26 @@ def register_representation_callbacks(
     @app.callback(
         Output("representation-detail-promote-status", "children"),
         Output("representation-refresh-store", "data", allow_duplicate=True),
+        Output("view-refresh-store", "data", allow_duplicate=True),
         Input("representation-detail-promote", "n_clicks"),
         State("representation-selected", "data"),
         State("representation-inventory-store", "data"),
         State("representation-refresh-store", "data"),
+        State("view-refresh-store", "data"),
         prevent_initial_call=True,
     )
     def promote_view(_clicks: int, key: str | None,
                      inventory: list[dict[str, Any]] | None,
-                     revision: int | None) -> tuple[Any, Any]:
+                     revision: int | None, view_revision: int | None) -> tuple[Any, Any, Any]:
         rows = [r for r in inventory or [] if r["key"] == key and r["kind"] == "view"]
         if not rows:
-            return "Choose a 2D view.", no_update
+            return "Choose a 2D view.", no_update, no_update
         try:
             register_view_as_geometry(project, view_id=int(rows[0]["view_id"]))
         except Exception as exc:
-            return f"Registration failed: {exc}", no_update
+            return f"Registration failed: {exc}", no_update, no_update
         refresh_geometry_cache()
-        return "Registered.", int(revision or 0) + 1
+        return "Registered.", int(revision or 0) + 1, int(view_revision or 0) + 1
 
     @app.callback(
         Output("representation-detail-delete-status", "children"),
@@ -532,7 +534,7 @@ def register_representation_callbacks(
         refresh_geometry_cache()
         return (
             int(revision or 0) + 1,
-            int(view_revision or 0) + 1 if mode == "view" else no_update,
+            int(view_revision or 0) + 1,
             "Created.",
         )
 
