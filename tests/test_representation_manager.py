@@ -46,20 +46,24 @@ def fake_link(monkeypatch):
         artifact_type=SimpleNamespace(value="dense_matrix"),
         primary_key=["doc_id"],
         get_matrix=Mock(return_value=__import__("numpy").ones((1, 2))),
+        n_rows=1,
     )
     derived = SimpleNamespace(
         artifact_id="saved-matrix",
         artifact_type=SimpleNamespace(value="dense_matrix"),
         primary_key=["doc_id"],
-        get_matrix=Mock(return_value=__import__("numpy").ones((1, 2))),
+        get_matrix=Mock(return_value=__import__("numpy").ones((1, 8))),
+        n_rows=1,
     )
     linked = SimpleNamespace(
         documents=SimpleNamespace(primary_key=["doc_id"]),
+        manifest={"text_artifact_id": "source-text"},
         add_geometry=Mock(return_value=47),
         add_projection=Mock(return_value=48),
     )
     project = SimpleNamespace(
         get_artifact=Mock(return_value=artifact),
+        pipeline=Mock(),
         translate=Mock(return_value={"output": derived}),
         geco=SimpleNamespace(
             list=Mock(return_value=[
@@ -71,12 +75,15 @@ def fake_link(monkeypatch):
     )
     pkg = ModuleType("text_analysis_lab")
     pkg.__path__ = []
+    errors = ModuleType("text_analysis_lab.core.errors")
+    errors.PipelineError = type("PipelineError", (Exception,), {})
     core = ModuleType("text_analysis_lab.core")
     core.__path__ = []
     module = ModuleType("text_analysis_lab.core.project")
     module.Project = SimpleNamespace(open=Mock(return_value=nullcontext(project)))
     monkeypatch.setitem(sys.modules, "text_analysis_lab", pkg)
     monkeypatch.setitem(sys.modules, "text_analysis_lab.core", core)
+    monkeypatch.setitem(sys.modules, "text_analysis_lab.core.errors", errors)
     monkeypatch.setitem(sys.modules, "text_analysis_lab.core.project", module)
     monkeypatch.setattr(rm, "teal_linked_project", lambda coder: Path("/fake/project"))
     monkeypatch.setattr(rm, "_operator_for_recipe", lambda recipe, parameters: ("operator", recipe, parameters))
@@ -90,15 +97,19 @@ def fake_link(monkeypatch):
         ]),
         register_external_geometry=Mock(return_value=49),
         database=SimpleNamespace(list_observations=Mock(return_value=[])),
+        views=Mock(return_value=[]),
+        register_external_view=Mock(return_value=52),
     )
     return coder, project, linked, artifact, derived
 
 
 def test_fit_only_geometry_is_navigation_only_and_does_not_claim_replay(fake_link):
     coder, project, linked, artifact, derived = fake_link
+    from text_analysis_lab.core.errors import PipelineError
+    project.pipeline.side_effect = PipelineError("No reusable state")
     created = rm.create_geometry(
         coder, name="UMAP-8", source_geometry_id=3, recipe="umap",
-        parameters={"n_components": 8}, navigation_only=True,
+        parameters={"n_components": 8},
     )
     assert created.geometry_id == 49
     assert created.artifact_id == "saved-matrix"
@@ -116,7 +127,7 @@ def test_derived_observations_block_registration_before_teal_fit(fake_link):
     coder.database.list_observations.return_value = [{"kind": "span"}]
     with pytest.raises(ConfigurationError, match="backfill"):
         rm.create_geometry(coder, name="Cannot register", source_geometry_id=3,
-                           recipe="umap", navigation_only=True)
+                           recipe="umap")
     project.translate.assert_not_called()
     linked.add_geometry.assert_not_called()
     coder.register_external_geometry.assert_not_called()
@@ -126,7 +137,7 @@ def test_replayable_registration_uses_teal_link_validation(fake_link):
     coder, project, linked, artifact, derived = fake_link
     created = rm.create_geometry(
         coder, name="Normalized", source_geometry_id=3,
-        recipe="normalize", navigation_only=False,
+        recipe="normalize",
     )
     assert created.geometry_id == 47
     assert created.replayable
