@@ -261,3 +261,25 @@ def test_unified_registry_can_resolve_out_of_order_parent(tmp_path: Path) -> Non
     assert child["parent_representation_id"] is None
     db.assign_representation_parent(child["representation_id"], parent["representation_id"])
     assert db.get_representation(child["representation_id"])["parent_representation_id"] == parent["representation_id"]
+
+
+def test_one_dimensional_display_jitter_is_stable_and_nonanalytic() -> None:
+    import numpy as np
+    from geometric_coder.ui.figures import build_geometry_figure
+
+    units = [{"unit_id": 20, "user_key": {"id": 20}},
+             {"unit_id": 10, "user_key": {"id": 10}}]
+    original = np.array([[2.5], [4.5]], dtype=float)
+    figure = build_geometry_figure(
+        coordinates=original, units=units, eligible=[True, True]
+    )
+    active = figure.data[1]
+    assert list(active.x) == [2.5, 4.5]
+    jitter_by_unit = dict(zip(active.customdata, active.y, strict=True))
+    reversed_figure = build_geometry_figure(
+        coordinates=original[::-1], units=units[::-1], eligible=[True, True]
+    )
+    reversed_active = reversed_figure.data[1]
+    assert dict(zip(reversed_active.customdata, reversed_active.y, strict=True)) == jitter_by_unit
+    assert len(set(jitter_by_unit.values())) == 2
+    assert original.shape == (2, 1)
