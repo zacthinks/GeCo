@@ -269,11 +269,17 @@ def test_register_view_as_geometry_reuses_artifact_without_fitting():
         geometries=Mock(return_value=[]),
         has_geometry=Mock(return_value=False),
         register_external_geometry=Mock(return_value=21),
+        register_external_view=Mock(return_value=22),
+        views=Mock(return_value=[]),
     )
     assert rm.register_view_as_geometry(coder, view_id=11) == 21
     coder.register_external_geometry.assert_called_once_with(
         name="Map2D", external_ref={"artifact_id": "saved-2d"},
         supports_query=False, supports_text_transform=False,
+    )
+    coder.register_external_view.assert_called_once_with(
+        geometry_id=21, name="Map2D (identity)",
+        external_ref={"artifact_id": "saved-2d"},
     )
     coder.database.get_view.return_value["storage_kind"] = "local"
     with pytest.raises(ConfigurationError, match="provider-backed"):
