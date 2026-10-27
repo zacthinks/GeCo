@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from hashlib import blake2b
 from typing import Any
 
 import numpy as np
@@ -44,10 +45,20 @@ def build_geometry_figure(
     figure update instead of rebuilding and retransmitting the full map.
     """
     coordinates = np.asarray(coordinates, dtype=float)
-    if coordinates.ndim != 2 or coordinates.shape[1] != 2:
-        raise ValueError("coordinates must have shape (n, 2)")
+    if coordinates.ndim != 2 or coordinates.shape[1] not in (1, 2):
+        raise ValueError("coordinates must have shape (n, 1) or (n, 2)")
     if coordinates.shape[0] != len(units):
         raise ValueError("coordinates and units must contain the same number of rows")
+    if coordinates.shape[1] == 1:
+        # Display-only jitter: stable by observation ID, independent of page,
+        # filter, or order. Analytic distances always use the original 1D vector.
+        offsets = []
+        for unit in units:
+            key = str(int(unit["unit_id"])).encode("ascii")
+            digest = blake2b(key, digest_size=8, person=b"GeCoJit1").digest()
+            fraction = int.from_bytes(digest, "big") / (2**64 - 1)
+            offsets.append((fraction - 0.5) * 0.2)
+        coordinates = np.column_stack((coordinates[:, 0], offsets))
     eligible_array = np.asarray(eligible, dtype=bool)
     if eligible_array.shape != (len(units),):
         raise ValueError("eligible must contain one value per unit")
