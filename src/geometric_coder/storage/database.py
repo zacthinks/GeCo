@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -138,6 +138,25 @@ CREATE TABLE geometries (
     external_ref_json TEXT,
     created_at TEXT NOT NULL
 );
+
+-- Unified representation identity. Legacy registries remain available only
+-- during the compatibility transition; callers must not infer parenthood from
+-- shared document keys or arbitrary TeAL basis lineage.
+CREATE TABLE representations (
+    representation_id INTEGER PRIMARY KEY,
+    legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+    legacy_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    dimensions INTEGER CHECK (dimensions IS NULL OR dimensions > 0),
+    analytic_enabled INTEGER NOT NULL CHECK (analytic_enabled IN (0, 1)),
+    parent_representation_id INTEGER REFERENCES representations(representation_id),
+    storage_kind TEXT NOT NULL CHECK (storage_kind IN ('local', 'external')),
+    external_ref_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(legacy_kind, legacy_id),
+    CHECK (parent_representation_id IS NULL OR parent_representation_id != representation_id)
+);
+CREATE INDEX representations_parent_idx ON representations(parent_representation_id);
 
 CREATE TABLE observation_geometry_vectors (
     observation_id INTEGER NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
@@ -524,10 +543,78 @@ def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
     )
 
 
+
+def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
+    """Backfill unified IDs without discarding any legacy registration.
+
+    Parent relationships are recorded only where legacy GeCo directly
+    recorded numerical sources. Imported provider lineage is deliberately
+    unresolved until a provider provenance reconciliation pass. Keeping legacy
+    identity columns makes the transitional reader deterministic and reversible.
+    """
+    connection.execute("""CREATE TABLE representations (
+        representation_id INTEGER PRIMARY KEY,
+        legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+        legacy_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        dimensions INTEGER CHECK (dimensions IS NULL OR dimensions > 0),
+        analytic_enabled INTEGER NOT NULL CHECK (analytic_enabled IN (0, 1)),
+        parent_representation_id INTEGER REFERENCES representations(representation_id),
+        storage_kind TEXT NOT NULL CHECK (storage_kind IN ('local', 'external')),
+        external_ref_json TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(legacy_kind, legacy_id),
+        CHECK (parent_representation_id IS NULL OR parent_representation_id != representation_id)
+    )""")
+    connection.execute(
+        "CREATE INDEX representations_parent_idx ON representations(parent_representation_id)"
+    )
+    geometries = connection.execute(
+        "SELECT geometry_id, name, dependency_names_json, storage_kind, "
+        "external_ref_json, created_at FROM geometries ORDER BY geometry_id"
+    ).fetchall()
+    geometry_to_rep: dict[int, int] = {}
+    name_to_geometry = {str(g["name"]): int(g["geometry_id"]) for g in geometries}
+    for g in geometries:
+        cursor = connection.execute(
+            "INSERT INTO representations(legacy_kind, legacy_id, name, analytic_enabled, "
+            "storage_kind, external_ref_json, created_at) VALUES ('geometry', ?, ?, 1, ?, ?, ?)",
+            (int(g["geometry_id"]), str(g["name"]), str(g["storage_kind"]),
+             g["external_ref_json"], g["created_at"]),
+        )
+        geometry_to_rep[int(g["geometry_id"])] = int(cursor.lastrowid)
+    for g in geometries:
+        deps = json.loads(g["dependency_names_json"])
+        if len(deps) == 1 and deps[0] in name_to_geometry:
+            # Single numerical source is the only permissible parent edge.
+            source_id = name_to_geometry[deps[0]]
+            target_id = int(g["geometry_id"])
+            if source_id != target_id:
+                connection.execute(
+                    "UPDATE representations SET parent_representation_id = ? "
+                    "WHERE representation_id = ?",
+                    (geometry_to_rep[source_id], geometry_to_rep[target_id]),
+                )
+    for v in connection.execute(
+        "SELECT view_id, geometry_id, name, storage_kind, external_ref_json, "
+        "created_at FROM views ORDER BY view_id"
+    ).fetchall():
+        connection.execute(
+            "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+            "analytic_enabled, parent_representation_id, storage_kind, "
+            "external_ref_json, created_at) "
+            "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+            (int(v["view_id"]), str(v["name"]),
+             geometry_to_rep[int(v["geometry_id"])], str(v["storage_kind"]),
+             v["external_ref_json"], v["created_at"]),
+        )
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     13: _migrate_13_to_14,
+    14: _migrate_14_to_15,
 }
 
 
