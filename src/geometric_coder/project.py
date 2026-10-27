@@ -1162,6 +1162,28 @@ class GeometricCoder:
             description=description,
         )
 
+    def representations(self) -> list[dict[str, Any]]:
+        """One registry for numerical resources, independent of display role."""
+        return self.database.list_representations()
+
+    def representation_matrix(self, representation_id: int) -> Matrix:
+        """Get an artifact using its stable unified ID, without an implicit fit."""
+        record = self.database.get_representation(int(representation_id))
+        if record["legacy_kind"] == "geometry":
+            return self.geometry_matrix(record["legacy_id"])
+        return self.view_coordinates(record["legacy_id"])
+
+    def representation_display_candidates(
+        self, analytic_representation_id: int
+    ) -> list[dict[str, Any]]:
+        """Eligible 1D/2D visual descendants of an analytic representation."""
+        root = self.database.get_representation(int(analytic_representation_id))
+        if not root["analytic_enabled"]:
+            raise ConfigurationError("A view-only representation cannot be selected for analysis.")
+        return self.database.eligible_view_representations(
+            int(analytic_representation_id), dimensions=(1, 2)
+        )
+
     def geometry_matrix(self, geometry: int | str) -> Matrix:
         """Load one local or provider-backed geometry matrix by ID or name."""
         record = (
