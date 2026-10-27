@@ -755,7 +755,7 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
-                    representation_modal(project, html=html, dcc=dcc),
+                    representation_modal(project, html=html, dcc=dcc, dash_table=dash_table),
                     html.Div([
                         html.Div([
                             html.Div([
@@ -6788,7 +6788,6 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Geometry and View", className="control-block-title"),
-                            html.Button("Manage Representations", id="representation-manager-open", n_clicks=0, className="secondary-action"),
                             html.Label("Geometry"),
                             dcc.Dropdown(
                                 id="geometry-dropdown",
@@ -6829,6 +6828,7 @@ def _explore_layout(
                                     else "Use Manage Representations for TeAL-backed 2D views."
                                 ),
                             ),
+                            html.Button("Manage Representations", id="representation-manager-open", n_clicks=0, className="secondary-action"),
                         ],
                         className="control-block geometry-view-control-block",
                     ),
