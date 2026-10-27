@@ -225,7 +225,10 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                 "queryable": bool(g.get("supports_query")),
                 "text_transform": bool(g.get("supports_text_transform")),
                 "source": ", ".join(g.get("dependency_names") or []),
-                "artifact_id": None, "dimensions": None, "error": None,
+                "artifact_id": (
+                    g.get("external_ref", {}).get("artifact_id")
+                    if isinstance(g.get("external_ref"), Mapping) else None
+                ), "dimensions": None, "error": None,
             }
             try:
                 ref = g.get("external_ref")
@@ -278,6 +281,16 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
             str(ref["artifact_id"]) if isinstance(ref, Mapping)
             and isinstance(ref.get("artifact_id"), str) else None
         )
+        # Companion identity views exist to satisfy Explorer's per-geometry
+        # selector. They are not additional scientific representations.
+        if (artifact_id is not None and str(view["name"]).startswith(f"{parent} (identity)")
+                and any(
+                    row["kind"] in {"geometry", "both"}
+                    and row["geometry_id"] == int(view["geometry_id"])
+                    and row.get("artifact_id") == artifact_id
+                    for row in rows
+                )):
+            continue
         counterpart = next((
             row for row in rows
             if row["kind"] == "geometry"
@@ -341,6 +354,32 @@ def source_filter_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
             )]
 
 
+def _ensure_identity_display_view(
+    coder: GeometricCoder, *, geometry_id: int, name: str, artifact_id: str,
+) -> int:
+    """Give an existing 2D analytic matrix a selectable view under its own geometry.
+
+    An identity view reuses the saved coordinates. It does not fit a second
+    transformer, and can be recovered idempotently after interrupted promotion.
+    """
+    for view in coder.views(geometry_id=int(geometry_id)):
+        ref = view.get("external_ref")
+        if (isinstance(ref, Mapping)
+                and str(ref.get("artifact_id")) == str(artifact_id)):
+            return int(view["view_id"])
+    base = f"{name} (identity)"
+    taken = {str(view["name"]) for view in coder.views()}
+    candidate = base
+    suffix = 2
+    while candidate in taken:
+        candidate = f"{base} {suffix}"
+        suffix += 1
+    return int(coder.register_external_view(
+        geometry_id=int(geometry_id), name=candidate,
+        external_ref={"artifact_id": str(artifact_id)},
+    ))
+
+
 def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
     """Register an existing 2D view as an analytic geometry, without a fit.
 
@@ -362,18 +401,26 @@ def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
         if (isinstance(existing, Mapping)
                 and existing.get("artifact_id") == artifact_id):
             if str(geometry["name"]) == name:
-                return int(geometry["geometry_id"])
+                geometry_id = int(geometry["geometry_id"])
+                _ensure_identity_display_view(
+                    coder, geometry_id=geometry_id, name=name, artifact_id=artifact_id
+                )
+                return geometry_id
             raise ConfigurationError(
                 f"This artifact is already registered as geometry {geometry['name']!r}. "
                 "Rename the representation before assigning both roles."
             )
     if coder.has_geometry(name):
         raise ConfigurationError(f"Geometry {name!r} is already registered.")
-    # GeCo's provider validates complete key coverage and numerical dimensions.
-    return int(coder.register_external_geometry(
+    # The provider validates full keyed coverage. No fitting or new artifact.
+    geometry_id = int(coder.register_external_geometry(
         name=name, external_ref={"artifact_id": artifact_id},
         supports_query=False, supports_text_transform=False,
     ))
+    _ensure_identity_display_view(
+        coder, geometry_id=geometry_id, name=name, artifact_id=artifact_id
+    )
+    return geometry_id
 
 
 def _representation_record(coder: GeometricCoder, key: str) -> tuple[str, dict[str, Any]]:
