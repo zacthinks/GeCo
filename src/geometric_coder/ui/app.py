@@ -405,11 +405,17 @@ def create_app(
     geometries = project.geometries(public_only=True)
     geometry_by_id = {int(record["geometry_id"]): record for record in geometries}
     geometry_id_by_name = {str(record["name"]): int(record["geometry_id"]) for record in geometries}
-    views = project.views()
-    view_by_id = {int(record["view_id"]): record for record in views}
-    views_by_geometry: dict[int, list[dict[str, Any]]] = {}
-    for view in views:
-        views_by_geometry.setdefault(int(view["geometry_id"]), []).append(view)
+    # The display surfaces share one descendant-aware compatibility path.
+    views_by_geometry: dict[int, list[dict[str, Any]]] = {
+        int(geometry["geometry_id"]): _display_view_records(
+            project, int(geometry["geometry_id"])
+        )
+        for geometry in geometries
+    }
+    presentation_views = _presentation_view_records(project, geometries)
+    presentation_view_by_id = {
+        int(record["view_id"]): record for record in presentation_views
+    }
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
@@ -729,7 +735,7 @@ def create_app(
                     _memo_presentation_layout(
                         dcc=dcc,
                         html=html,
-                        views=views,
+                        views=presentation_views,
                         geometry_by_id=geometry_by_id,
                         initial_view_id=initial_view_id,
                         total_units=len(units),
@@ -2908,9 +2914,38 @@ def create_app(
         return page_count, current
 
     @app.callback(
+        Output("memo-presentation-view", "options"),
+        Output("memo-presentation-view", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
+        State("memo-presentation-view", "value"),
+    )
+    def refresh_presentation_views(
+        _representation_revision: int | None,
+        _view_revision: int | None,
+        current_view_id: int | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        current_geometries = project.geometries(public_only=True)
+        records = _presentation_view_records(project, current_geometries)
+        presentation_view_by_id.clear()
+        presentation_view_by_id.update({
+            int(row["view_id"]): row for row in records
+        })
+        options = _presentation_view_options(records, current_geometries)
+        valid_ids = {int(option["value"]) for option in options}
+        selected = (
+            int(current_view_id)
+            if current_view_id is not None and int(current_view_id) in valid_ids
+            else (int(options[0]["value"]) if options else None)
+        )
+        return options, selected
+
+    @app.callback(
         Output("memo-presentation-map", "figure"),
         Output("memo-presentation-page-status", "children"),
         Input("memo-presentation-view", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
         Input("memo-presentation-saved-filter", "value"),
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-page-number", "value"),
@@ -2919,15 +2954,17 @@ def create_app(
     )
     def update_memo_presentation_map(
         view_id: int | None,
+        _representation_revision: int | None,
+        _view_revision: int | None,
         saved_filter_id: str | None,
         page_size: Any,
         page_number: Any,
         location_hash: str | None,
         relayout_data: dict[str, Any] | None,
     ) -> tuple[Any, str]:
-        if view_id is None or int(view_id) not in view_by_id:
-            return _empty_figure("No computed 2D view is available."), ""
-        view_record = view_by_id[int(view_id)]
+        if view_id is None or int(view_id) not in presentation_view_by_id:
+            return _empty_figure("No compatible display representation is available."), ""
+        view_record = presentation_view_by_id[int(view_id)]
         geometry_id = int(view_record["geometry_id"])
         geometry_record = geometry_by_id.get(geometry_id)
         if geometry_record is None:
@@ -6823,7 +6860,7 @@ def _explore_layout(
                                 value=initial_geometry_id,
                                 clearable=False,
                             ),
-                            html.Label("2D view", className="stacked-control-label"),
+                            html.Label("View", className="stacked-control-label"),
                             dcc.Dropdown(
                                 id="view-dropdown",
                                 options=[
@@ -7354,15 +7391,9 @@ def _memo_presentation_layout(
     public_views = [
         view for view in views if int(view["geometry_id"]) in geometry_by_id
     ]
-    view_options = [
-        {
-            "label": (
-                f"{geometry_by_id[int(view['geometry_id'])]['name']} — {view['name']}"
-            ),
-            "value": int(view["view_id"]),
-        }
-        for view in public_views
-    ]
+    view_options = _presentation_view_options(
+        public_views, list(geometry_by_id.values())
+    )
     selected_view = (
         int(initial_view_id)
         if initial_view_id is not None
@@ -7408,7 +7439,7 @@ def _memo_presentation_layout(
                                 [
                                     html.Div(
                                         [
-                                            html.Label("2D view", htmlFor="memo-presentation-view"),
+                                            html.Label("View", htmlFor="memo-presentation-view"),
                                             dcc.Dropdown(
                                                 id="memo-presentation-view",
                                                 options=view_options,
@@ -7438,7 +7469,7 @@ def _memo_presentation_layout(
                                 [
                                     dcc.Graph(
                                         id="memo-presentation-map",
-                                        figure=_empty_figure("Choose a memo and 2D view."),
+                                        figure=_empty_figure("Choose a memo and view."),
                                         config={
                                             "displaylogo": False,
                                             "scrollZoom": True,
@@ -9522,6 +9553,46 @@ def _display_view_records(
 ) -> list[dict[str, Any]]:
     """Include numerical descendants, not just owned legacy 2D views."""
     return project.views(int(geometry_id), include_descendants=True)
+
+
+def _presentation_view_records(
+    project: GeometricCoder, geometries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """List distinct plot-ready view IDs under currently analytic geometries.
+
+    A descendant may visualize several ancestors; presentation offers one
+    selection per numerical view, deterministically choosing a public analytic
+    source rather than showing duplicate dropdown values.
+    """
+    result: dict[int, dict[str, Any]] = {}
+    for geometry in geometries:
+        geometry_id = int(geometry["geometry_id"])
+        for view in _display_view_records(project, geometry_id):
+            view_id = int(view["view_id"])
+            if view_id not in result:
+                result[view_id] = {
+                    "view_id": view_id,
+                    "geometry_id": geometry_id,
+                    "name": str(view["name"]),
+                }
+    return sorted(result.values(), key=lambda row: (
+        str(row["name"]).casefold(), int(row["view_id"]),
+    ))
+
+
+def _presentation_view_options(
+    views: list[dict[str, Any]], geometries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Provide labels with analytic source context and stable display IDs."""
+    names = {int(row["geometry_id"]): str(row["name"]) for row in geometries}
+    return [
+        {
+            "label": f"{names[int(view['geometry_id'])]} — {view['name']}",
+            "value": int(view["view_id"]),
+        }
+        for view in views
+        if int(view["geometry_id"]) in names
+    ]
 
 
 def _display_view_record(
