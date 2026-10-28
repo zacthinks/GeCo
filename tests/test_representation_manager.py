@@ -29,7 +29,7 @@ def test_creation_rejects_invalid_names_and_unlinked_projects(monkeypatch):
 
 
 def test_view_creation_rejects_non_2d_configuration_without_teal(monkeypatch):
-    coder = SimpleNamespace(has_view=lambda name: False)
+    coder = SimpleNamespace(has_geometry=lambda name: False, has_view=lambda name: False)
     with pytest.raises(ValueError, match="view representation name"):
         rm.create_view(coder, name=" ", geometry_id=1)
     monkeypatch.setattr(rm, "teal_linked_project", lambda coder: Path("/fake"))
