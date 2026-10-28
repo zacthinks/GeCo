@@ -268,6 +268,7 @@ def test_unified_inventory_shows_one_row_for_shared_artifact(monkeypatch):
     coder = SimpleNamespace(
         geometries=lambda **_: [{"geometry_id": 2, "name": "B"}],
         database=SimpleNamespace(
+            list_geometries=Mock(return_value=[{"geometry_id": 2, "name": "B"}]),
             list_representations=Mock(return_value=[{
                 "representation_id": 7, "legacy_kind": "geometry",
                 "legacy_id": 2, "name": "B", "dimensions": 2,
@@ -311,3 +312,26 @@ def test_register_view_as_geometry_reuses_artifact_without_fitting():
     coder.database.get_view.return_value["storage_kind"] = "local"
     with pytest.raises(ConfigurationError, match="provider-backed"):
         rm.register_view_as_geometry(coder, view_id=11)
+
+
+def test_inventory_includes_view_only_numeric_representation(monkeypatch):
+    coder = SimpleNamespace(
+        database=SimpleNamespace(
+            list_geometries=Mock(return_value=[{"geometry_id": 8, "name": "view_only"}]),
+            list_representations=Mock(return_value=[{
+                "representation_id": 28, "legacy_kind": "geometry",
+                "legacy_id": 8, "name": "view_only", "dimensions": 2,
+                "analytic_enabled": False, "parent_representation_id": None,
+                "storage_kind": "external", "external_ref": {"artifact_id": "view-only"},
+            }]),
+            get_geometry=Mock(return_value={
+                "supports_query": False, "supports_text_transform": False,
+            }),
+        ),
+    )
+    monkeypatch.setattr(rm, "teal_linked_project", lambda _coder: None)
+    inventory = rm.representation_inventory(coder)
+    assert len(inventory) == 1
+    assert inventory[0]["name"] == "view_only"
+    assert inventory[0]["analytic_enabled"] is False
+    assert inventory[0]["can_view"] is True
