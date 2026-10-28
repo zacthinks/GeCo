@@ -252,14 +252,6 @@ def create_geometry(
         coder.database.assign_representation_parent(
             int(child_representation["representation_id"]), source_id
         )
-        # A 2D analytic geometry needs a display view under its own stable ID.
-        # Do not silently create a projection for higher-dimensional geometries.
-        probe = [0] if int(output.n_rows or 0) else []
-        if int(output.get_matrix(positions=probe).shape[1]) == 2:
-            _ensure_identity_display_view(
-                coder, geometry_id=int(geometry_id),
-                name=clean, artifact_id=str(output.artifact_id),
-            )
         return GeometryCreationResult(
             geometry_id=int(geometry_id),
             artifact_id=str(output.artifact_id),
