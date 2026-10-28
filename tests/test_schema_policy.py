@@ -235,6 +235,9 @@ def test_unified_registry_transitive_views_and_cycle_guards(tmp_path: Path) -> N
     assert [x["name"] for x in db.eligible_view_representations(
         ra["representation_id"]
     )] == ["C"]
+    assert [view["name"] for view in project.views(a, include_descendants=True)] == ["C"]
+    assert project.views(a) == []
+    assert [view["name"] for view in project.views(b)] == ["C"]
     db.record_representation_dimensions(rb["representation_id"], 500)
     with pytest.raises(ValueError, match="dimensions"):
         db.record_representation_dimensions(rb["representation_id"], 499)
