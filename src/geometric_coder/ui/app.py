@@ -3579,13 +3579,25 @@ def create_app(
     @app.callback(
         Output("code-center-view", "options"), Output("code-center-view", "value"),
         Input("code-center-geometry", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
+        State("code-center-view", "value"),
     )
-    def update_code_center_views(geometry_id: int | None) -> tuple[list[dict[str, Any]], int | None]:
+    def update_code_center_views(
+        geometry_id: int | None, _revision: int | None,
+        _view_revision: int | None, current_view_id: int | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
         if geometry_id is None:
             return [], None
-        records = project.views(int(geometry_id))
+        records = _display_view_records(project, int(geometry_id))
         options = [{"label": row["name"], "value": int(row["view_id"])} for row in records]
-        return options, (int(records[0]["view_id"]) if records else None)
+        valid_ids = {int(row["view_id"]) for row in records}
+        selected = (
+            int(current_view_id)
+            if current_view_id is not None and int(current_view_id) in valid_ids
+            else (int(records[0]["view_id"]) if records else None)
+        )
+        return options, selected
 
     @app.callback(
         Output("code-center-map", "figure"),
@@ -3650,7 +3662,11 @@ def create_app(
         page_units = [units[int(position)] for position in positions]
         page_eligible = [int(unit["unit_id"]) in positive for unit in page_units]
         geometry_record = geometry_by_id[int(geometry_id)]
-        view_record = project.database.get_view(int(view_id))
+        view_record = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view_record is None:
+            return _empty_figure("This view is no longer available."), ""
         figure = build_geometry_figure(
             coordinates=project.view_coordinates(int(view_id))[positions],
             units=page_units,
@@ -9499,6 +9515,24 @@ def _valid_view_id(value: Any, views: list[dict[str, Any]]) -> int | None:
     except (TypeError, ValueError):
         candidate = -1
     return candidate if candidate in valid else (min(valid) if valid else None)
+
+
+def _display_view_records(
+    project: GeometricCoder, geometry_id: int,
+) -> list[dict[str, Any]]:
+    """Include numerical descendants, not just owned legacy 2D views."""
+    return project.views(int(geometry_id), include_descendants=True)
+
+
+def _display_view_record(
+    project: GeometricCoder, *, geometry_id: int, view_id: int,
+) -> dict[str, Any] | None:
+    """Resolve a selected legacy or canonical-only view within its geometry."""
+    return next(
+        (row for row in _display_view_records(project, geometry_id)
+         if int(row["view_id"]) == int(view_id)),
+        None,
+    )
 
 
 def _coerce_positive_int(value: Any, *, default: int) -> int:
