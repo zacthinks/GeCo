@@ -462,9 +462,12 @@ def filter_representations(
         raise ValueError("Minimum dimensions cannot exceed maximum dimensions.")
     return sorted([
         row for row in rows
-        if (row.get("dimensions") is not None)
-        and (min_dimensions is None or row["dimensions"] >= min_dimensions)
-        and (max_dimensions is None or row["dimensions"] <= max_dimensions)
+        if (min_dimensions is None or (
+            row.get("dimensions") is not None and row["dimensions"] >= min_dimensions
+        ))
+        and (max_dimensions is None or (
+            row.get("dimensions") is not None and row["dimensions"] <= max_dimensions
+        ))
         and (not source or source in row.get("sources", []))
     ], key=lambda row: (str(row["name"]).casefold(), str(row["key"])))
 
