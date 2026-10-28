@@ -1139,7 +1139,10 @@ def create_app(
         session = project.database.get_session(int(session_id))
         state = dict(session["state"])
         geometry_id = _valid_geometry_id(state.get("geometry_id"), geometries)
-        view_id = _valid_view_id(state.get("view_id"), project.views(geometry_id))
+        view_id = _valid_view_id(
+            state.get("view_id"),
+            project.views(geometry_id, include_descendants=True),
+        )
         query = str(state.get("semantic_query", ""))
         scores = project.semantic_search(query) if query else {}
         literal_options = []
