@@ -1631,9 +1631,15 @@ class ProjectDatabase:
                 )
 
     def assign_representation_parent(
-        self, representation_id: int, parent_representation_id: int
+        self, representation_id: int, parent_representation_id: int,
+        *, allow_refinement: bool = False,
     ) -> None:
-        """Link one-input numerical ancestry; never infer a multi-input edge."""
+        """Link numerical ancestry without cycles.
+
+        Refinement is allowed only when the proposed closer parent is already
+        a descendant of the old one. A provider integration must separately
+        establish the single-input numerical source chain.
+        """
         child = int(representation_id)
         parent = int(parent_representation_id)
         if child == parent:
@@ -1652,10 +1658,25 @@ class ProjectDatabase:
             }
             if child not in by_id or parent not in by_id:
                 raise KeyError("Unknown representation in parent assignment.")
-            if by_id[child] is not None:
-                if by_id[child] == parent:
+            existing_parent = by_id[child]
+            if existing_parent is not None:
+                if existing_parent == parent:
                     return
-                raise ValueError("A representation already has a numerical parent.")
+                if not allow_refinement:
+                    raise ValueError("A representation already has a numerical parent.")
+                # The new parent must demonstrably lie beneath the old parent
+                # in the persisted GeCo graph; arbitrary rewiring is forbidden.
+                ancestor = parent
+                known_ancestors: set[int] = set()
+                while ancestor is not None and ancestor not in known_ancestors:
+                    if ancestor == existing_parent:
+                        break
+                    known_ancestors.add(ancestor)
+                    ancestor = by_id[ancestor]
+                else:
+                    raise ValueError("A refined parent must descend from the previous parent.")
+                if ancestor != existing_parent:
+                    raise ValueError("A refined parent must descend from the previous parent.")
             visited = set()
             current: int | None = parent
             while current is not None:
