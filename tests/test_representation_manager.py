@@ -96,7 +96,13 @@ def fake_link(monkeypatch):
              "external_ref": {"artifact_id": "base-matrix"}}
         ]),
         register_external_geometry=Mock(return_value=49),
-        database=SimpleNamespace(list_observations=Mock(return_value=[])),
+        database=SimpleNamespace(
+            list_observations=Mock(return_value=[]),
+            representation_for_legacy=Mock(side_effect=lambda _kind, ident: {
+                "representation_id": 100 + int(ident)
+            }),
+            assign_representation_parent=Mock(),
+        ),
         views=Mock(return_value=[]),
         register_external_view=Mock(return_value=52),
     )
@@ -120,6 +126,7 @@ def test_fit_only_geometry_is_navigation_only_and_does_not_claim_replay(fake_lin
     )
     linked.add_geometry.assert_not_called()
     project.translate.assert_called_once()
+    coder.database.assign_representation_parent.assert_called_once_with(149, 103)
 
 
 def test_derived_observations_block_registration_before_teal_fit(fake_link):
