@@ -403,3 +403,26 @@ def test_numeric_lineage_reconciles_out_of_order_teal_artifacts(tmp_path: Path) 
     concat_id = register("concat")
     assert reconcile_teal_numeric_parents(project, teal) == 0
     assert db.get_representation(concat_id)["parent_representation_id"] is None
+
+
+def test_one_dimensional_representation_is_selectable_without_a_saved_view(tmp_path: Path) -> None:
+    import numpy as np
+
+    project = _make_workspace(tmp_path)
+    file_path = project.project_dir / "one_dimensional.npy"
+    np.save(file_path, np.array([[3.0], [7.0]], dtype=np.float32))
+    geometry_id = project.database.register_geometry(
+        name="one_dimensional", class_name="custom", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path="one_dimensional.npy",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False,
+    )
+    representation = project.database.representation_for_legacy("geometry", geometry_id)
+    project.database.record_representation_dimensions(representation["representation_id"], 1)
+    assert project.views(geometry_id) == []
+    eligible = project.views(geometry_id, include_descendants=True)
+    assert len(eligible) == 1
+    assert eligible[0]["view_id"] == -int(representation["representation_id"])
+    coordinates = project.view_coordinates(int(eligible[0]["view_id"]))
+    assert coordinates.shape == (2, 1)
+    assert list(coordinates[:, 0]) == [3.0, 7.0]
