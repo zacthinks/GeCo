@@ -474,3 +474,61 @@ def test_analytic_availability_is_independent_of_view_eligibility(tmp_path: Path
         project, representation_id=cr, enabled=True
     ) is True
     assert [g["name"] for g in project.geometries(public_only=True)] == ["root", "child_2d"]
+
+
+def test_view_only_representation_can_be_deleted_without_losing_last_analytic_root(tmp_path: Path) -> None:
+    from geometric_coder.ui.representation_manager import unregister_representation
+
+    project = _make_workspace(tmp_path)
+    db = project.database
+    root = db.register_geometry(
+        name="root", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    view_only = db.register_geometry(
+        name="display_only", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    rep_id = db.representation_for_legacy("geometry", view_only)["representation_id"]
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE representations SET analytic_enabled=0 WHERE representation_id=?",
+            (rep_id,),
+        )
+    assert [row["geometry_id"] for row in project.geometries()] == [root]
+    unregister_representation(project, key=f"representation:{rep_id}")
+    assert db.list_representations()[0]["legacy_id"] == root
+    assert len(db.list_representations()) == 1
+    assert [row["geometry_id"] for row in project.geometries()] == [root]
+
+
+def test_saved_canonical_display_prevents_unregistration(tmp_path: Path) -> None:
+    from geometric_coder.exceptions import ConfigurationError
+    from geometric_coder.ui.representation_manager import unregister_representation
+
+    project = _make_workspace(tmp_path)
+    db = project.database
+    db.register_geometry(
+        name="root", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    display_id = db.register_geometry(
+        name="display_only", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+    )
+    representation_id = db.representation_for_legacy("geometry", display_id)["representation_id"]
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE representations SET analytic_enabled=0 WHERE representation_id=?",
+            (representation_id,),
+        )
+    session_id = int(project.sessions()[0]["session_id"])
+    project.patch_session_state(session_id, {"view_id": -representation_id})
+    with pytest.raises(ConfigurationError, match="saved session"):
+        unregister_representation(project, key=f"representation:{representation_id}")
+    assert db.get_representation(representation_id)["legacy_id"] == display_id
+    assert db.get_geometry(display_id)["name"] == "display_only"
