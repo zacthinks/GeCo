@@ -286,3 +286,55 @@ def test_one_dimensional_display_jitter_is_stable_and_nonanalytic() -> None:
     assert dict(zip(reversed_active.customdata, reversed_active.y, strict=True)) == jitter_by_unit
     assert len(set(jitter_by_unit.values())) == 2
     assert original.shape == (2, 1)
+
+
+def test_unified_registry_deduplicates_same_provider_artifact(tmp_path: Path) -> None:
+    project = _make_workspace(tmp_path, external=True)
+    db = project.database
+    external_ref = {"artifact_id": "frozen-matrix-42"}
+    geometry_id = db.register_geometry(
+        name="two_dimensional", class_name="external", modality="text",
+        public=True, config={"type": "external"}, dependency_names=[],
+        matrix_path="", matrix_sparse=False, state_path=None,
+        supports_query=False, supports_text_transform=False,
+        storage_kind="external", external_ref=external_ref,
+    )
+    view_id = db.register_view(
+        geometry_id=geometry_id, name="same_matrix", method="external",
+        parameters={}, artifact_path="", storage_kind="external",
+        external_ref=external_ref,
+    )
+    geometry = db.representation_for_legacy("geometry", geometry_id)
+    view = db.representation_for_legacy("view", view_id)
+    assert geometry["representation_id"] == view["representation_id"]
+    assert len(db.list_representations()) == 1
+    assert db.list_representations()[0]["analytic_enabled"]
+    assert db.list_representations()[0]["dimensions"] == 2
+
+    # Recreate a genuine schema-14 database to test the migration separately.
+    with sqlite3.connect(project.project_dir / project.DATABASE_FILENAME) as con:
+        con.execute("DROP TABLE representation_legacy_refs")
+        con.execute("DROP TABLE representations")
+        con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
+    reopened = GeometricCoder.open(project.project_dir, external_provider=object())
+    migrated_geometry = reopened.database.representation_for_legacy("geometry", geometry_id)
+    migrated_view = reopened.database.representation_for_legacy("view", view_id)
+    assert migrated_view["representation_id"] == migrated_geometry["representation_id"]
+    assert len(reopened.database.list_representations()) == 1
+
+
+def test_native_identity_view_reuses_geometry_identity(tmp_path: Path) -> None:
+    db = _make_workspace(tmp_path).database
+    geometry_id = db.register_geometry(
+        name="native_2d", class_name="count", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="fitted.npy",
+        matrix_sparse=False, state_path=None, supports_query=True,
+        supports_text_transform=True,
+    )
+    view_id = db.register_view(
+        geometry_id=geometry_id, name="identity", method="identity",
+        parameters={}, artifact_path="identity.npy",
+    )
+    assert (db.representation_for_legacy("view", view_id)["representation_id"]
+            == db.representation_for_legacy("geometry", geometry_id)["representation_id"])
+    assert len(db.list_representations()) == 1
