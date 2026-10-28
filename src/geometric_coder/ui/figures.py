@@ -22,6 +22,13 @@ EXPLORE_TRACE_NAMES = (
 )
 
 
+def one_dimensional_display_y(unit_id: int) -> float:
+    """Return stable display-only jitter for one atomic observation."""
+    key = str(int(unit_id)).encode("ascii")
+    digest = blake2b(key, digest_size=8, person=b"GeCoJit1").digest()
+    return (int.from_bytes(digest, "big") / (2**64 - 1) - 0.5) * 0.2
+
+
 def build_geometry_figure(
     *,
     coordinates: np.ndarray,
@@ -52,12 +59,7 @@ def build_geometry_figure(
     if coordinates.shape[1] == 1:
         # Display-only jitter: stable by observation ID, independent of page,
         # filter, or order. Analytic distances always use the original 1D vector.
-        offsets = []
-        for unit in units:
-            key = str(int(unit["unit_id"])).encode("ascii")
-            digest = blake2b(key, digest_size=8, person=b"GeCoJit1").digest()
-            fraction = int.from_bytes(digest, "big") / (2**64 - 1)
-            offsets.append((fraction - 0.5) * 0.2)
+        offsets = [one_dimensional_display_y(int(unit["unit_id"])) for unit in units]
         coordinates = np.column_stack((coordinates[:, 0], offsets))
     eligible_array = np.asarray(eligible, dtype=bool)
     if eligible_array.shape != (len(units),):
