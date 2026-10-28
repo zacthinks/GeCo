@@ -431,7 +431,6 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
 def filter_representations(
     rows: list[dict[str, Any]], *, min_dimensions: int | None = None,
     max_dimensions: int | None = None, source: str | None = None,
-    role: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter registered resources; a blank bound means unbounded."""
     if min_dimensions is not None and min_dimensions < 1:
@@ -441,15 +440,12 @@ def filter_representations(
     if (min_dimensions is not None and max_dimensions is not None
             and min_dimensions > max_dimensions):
         raise ValueError("Minimum dimensions cannot exceed maximum dimensions.")
-    if role not in {None, "", "geometry", "view", "both"}:
-        raise ValueError("Unknown representation role filter.")
     return sorted([
         row for row in rows
         if (row.get("dimensions") is not None)
         and (min_dimensions is None or row["dimensions"] >= min_dimensions)
         and (max_dimensions is None or row["dimensions"] <= max_dimensions)
         and (not source or source in row.get("sources", []))
-        and (not role or row.get("kind") == role)
     ], key=lambda row: (str(row["name"]).casefold(), str(row["key"])))
 
 
