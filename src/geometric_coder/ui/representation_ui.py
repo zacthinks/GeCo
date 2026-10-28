@@ -50,15 +50,6 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         dcc.Dropdown(id="representation-filter-source",
                                      clearable=True, placeholder="All sources"),
                     ], className="representation-source-filter"),
-                    html.Div([
-                        html.Label("Filter by role"),
-                        dcc.Dropdown(id="representation-filter-role", clearable=True,
-                            placeholder="All roles", options=[
-                                {"label": "Geometry", "value": "geometry"},
-                                {"label": "2D view", "value": "view"},
-                                {"label": "Geometry / 2D view", "value": "both"},
-                            ]),
-                    ], className="representation-role-filter"),
                 ], className="representation-filters"),
                 dash_table.DataTable(
                     id="representation-table",
@@ -66,7 +57,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         {"name": "Name", "id": "name"},
                         {"name": "Dimensions", "id": "dimensions", "type": "numeric"},
                         {"name": "New translations", "id": "new_text"},
-                        {"name": "Role", "id": "role"},
+                        {"name": "Source", "id": "source"},
                     ],
                     data=[], page_size=12, cell_selectable=True,
                     style_table={"overflowX": "auto"},
@@ -104,13 +95,13 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                             className="secondary-action"),
                 html.Div(id="representation-detail-rename-status", role="status",
                          className="control-status"),
-                html.H3("2D views using this geometry",
+                html.H3("Visual descendants",
                         id="representation-detail-views-heading"),
                 html.Div(id="representation-detail-views"),
                 html.Div([
-                    html.Button("Add 2D View", id="representation-detail-add-view",
+                    html.Button("Add View", id="representation-detail-add-view",
                                 n_clicks=0, className="secondary-action"),
-                    html.Button("Register as Geometry", id="representation-detail-promote",
+                    html.Button("Enable for analysis", id="representation-detail-promote",
                                 n_clicks=0, className="secondary-action"),
                     html.Button("Register as Topic Model",
                                 id="representation-detail-topic", n_clicks=0,
@@ -243,11 +234,10 @@ def register_representation_callbacks(
         Input("representation-filter-min", "value"),
         Input("representation-filter-max", "value"),
         Input("representation-filter-source", "value"),
-        Input("representation-filter-role", "value"),
     )
     def list_representations(
         inventory: list[dict[str, Any]] | None, minimum: Any, maximum: Any,
-        source: str | None, role: str | None,
+        source: str | None,
     ) -> tuple[list[dict[str, Any]], str]:
         def bound(value: Any) -> int | None:
             if value is None or value == "":
@@ -260,7 +250,7 @@ def register_representation_callbacks(
         try:
             rows = filter_representations(
                 inventory or [], min_dimensions=bound(minimum),
-                max_dimensions=bound(maximum), source=source, role=role,
+                max_dimensions=bound(maximum), source=source,
             )
         except (ValueError, TypeError) as exc:
             return [], str(exc)
@@ -269,8 +259,7 @@ def register_representation_callbacks(
                 "key": row["key"], "name": row["name"],
                 "dimensions": row["dimensions"],
                 "new_text": "✓" if row["new_text"] else "✕",
-                "role": {"geometry": "Geometry", "view": "2D view",
-                         "both": "Geometry / 2D view"}[row["kind"]],
+                "source": row["source"],
             } for row in rows
         ], f"{len(rows)} representations. Click any row to manage it."
 
