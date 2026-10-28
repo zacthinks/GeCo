@@ -510,9 +510,8 @@ def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
                 and existing.get("artifact_id") == artifact_id):
             if str(geometry["name"]) == name:
                 geometry_id = int(geometry["geometry_id"])
-                _ensure_identity_display_view(
-                    coder, geometry_id=geometry_id, name=name, artifact_id=artifact_id
-                )
+                # The original view is already linked to the same canonical
+                # numerical ID, so Explorer can use it without a duplicate.
                 return geometry_id
             raise ConfigurationError(
                 f"This artifact is already registered as geometry {geometry['name']!r}. "
@@ -525,10 +524,65 @@ def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
         name=name, external_ref={"artifact_id": artifact_id},
         supports_query=False, supports_text_transform=False,
     ))
-    _ensure_identity_display_view(
-        coder, geometry_id=geometry_id, name=name, artifact_id=artifact_id
-    )
     return geometry_id
+
+
+def set_representation_analytic_enabled(
+    coder: GeometricCoder, *, representation_id: int, enabled: bool,
+) -> bool:
+    """Change analytic eligibility without deleting the numerical artifact.
+
+    Provider-backed view-only registrations gain an analytic reference to
+    their existing matrix. Demotion refuses roots and active dependent research
+    state; legacy geometry rows remain as durable compatibility references.
+    """
+    record = coder.database.get_representation(int(representation_id))
+    if bool(record["analytic_enabled"]) == bool(enabled):
+        return bool(enabled)
+    if enabled:
+        if record["legacy_kind"] == "view":
+            register_view_as_geometry(coder, view_id=int(record["legacy_id"]))
+        else:
+            with coder.database.connect() as connection:
+                connection.execute(
+                    "UPDATE representations SET analytic_enabled=1 "
+                    "WHERE representation_id=?",
+                    (int(representation_id),),
+                )
+        return True
+
+    if record["parent_representation_id"] is None:
+        raise ConfigurationError(
+            "A root numerical representation cannot be disabled for analysis."
+        )
+    if record["legacy_kind"] != "geometry":
+        raise ConfigurationError("Only analytic geometry registrations may be disabled.")
+    geometry_id = int(record["legacy_id"])
+    with coder.database.connect() as connection:
+        import json
+        for session in connection.execute("SELECT state_json FROM sessions"):
+            state = json.loads(session["state_json"])
+            if state.get("geometry_id") is not None and int(state["geometry_id"]) == geometry_id:
+                raise ConfigurationError(
+                    "Cannot disable analytic use while a saved session selects this geometry."
+                )
+        for table in (
+            "classifier_specs", "classifier_fits", "navigation_events",
+            "observation_geometry_vectors",
+        ):
+            if connection.execute(
+                f"SELECT 1 FROM {table} WHERE geometry_id=? LIMIT 1",
+                (geometry_id,),
+            ).fetchone() is not None:
+                raise ConfigurationError(
+                    f"Cannot disable analytic use while {table} references this geometry."
+                )
+        connection.execute(
+            "UPDATE representations SET analytic_enabled=0 "
+            "WHERE representation_id=?",
+            (int(representation_id),),
+        )
+    return False
 
 
 def _representation_record(coder: GeometricCoder, key: str) -> tuple[str, dict[str, Any]]:
