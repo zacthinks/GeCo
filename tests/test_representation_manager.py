@@ -259,6 +259,10 @@ def test_role_filter_and_dual_role_inventory(monkeypatch):
             {"view_id": 9, "geometry_id": 2, "name": "B",
              "storage_kind": "external", "external_ref": {"artifact_id": "shared"}},
         ],
+        database=SimpleNamespace(
+            list_representations=Mock(return_value=[]),
+            representation_for_legacy=Mock(return_value={"parent_representation_id": None}),
+        ),
     )
     monkeypatch.setattr(rm, "teal_linked_project", lambda _coder: None)
     inventory = rm.representation_inventory(coder)
