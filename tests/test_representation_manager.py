@@ -335,3 +335,13 @@ def test_inventory_includes_view_only_numeric_representation(monkeypatch):
     assert inventory[0]["name"] == "view_only"
     assert inventory[0]["analytic_enabled"] is False
     assert inventory[0]["can_view"] is True
+
+
+def test_unknown_dimensions_remain_in_unfiltered_inventory():
+    rows = [
+        {"key": "representation:1", "name": "Unknown", "dimensions": None, "sources": []},
+        {"key": "representation:2", "name": "Known", "dimensions": 2, "sources": []},
+    ]
+    assert len(rm.filter_representations(rows)) == 2
+    filtered = rm.filter_representations(rows, min_dimensions=1, max_dimensions=2)
+    assert [row["name"] for row in filtered] == ["Known"]
