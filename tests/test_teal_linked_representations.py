@@ -160,14 +160,12 @@ def test_live_teal_representations_survive_reopen_and_ui_callbacks(tmp_path: Pat
             }
             app = create_app(coder)
             assert _component_by_id(app.layout, "view-dropdown").value == -one_id
-            assert _component_by_id(app.layout, "representation-manager-modal")
-            assert _component_by_id(app.layout, "memo-presentation-view")
-            assert _component_by_id(app.layout, "code-center-view")
+            assert _component_by_id(app.layout, "representation-manager-modal") is not None
+            assert _component_by_id(app.layout, "memo-presentation-view").value == -one_id
+            assert _component_by_id(app.layout, "code-center-view") is not None
             client = app.server.test_client()
             for path in ("/", "/_dash-layout", "/_dash-dependencies"):
                 assert client.get(path).status_code == 200
-            np.testing.assert_allclose(
-                coder.view_coordinates(-one_id).shape, (12, 1)
-            )
+            assert coder.view_coordinates(-one_id).shape == (12, 1)
     finally:
         reopened.close()
