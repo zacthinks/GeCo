@@ -28,6 +28,7 @@ def _simulate_existing_schema_13(path: Path) -> None:
     """A schema-13 database had no topic_models table."""
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE topic_models")
+        connection.execute("DROP TABLE representation_legacy_refs")
         connection.execute("DROP TABLE representations")
         connection.execute(
             "UPDATE project SET schema_version = 13 WHERE project_id = 1"
@@ -159,6 +160,7 @@ def test_14_to_15_preserves_legacy_ids_and_view_parent(tmp_path: Path) -> None:
     )
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
     reopened = GeometricCoder.open(project.project_dir)
@@ -191,6 +193,7 @@ def test_14_to_15_migration_rolls_back_on_failure(
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
     original = storage_database._MIGRATIONS[14]
