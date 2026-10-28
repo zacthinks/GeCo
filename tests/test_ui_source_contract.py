@@ -463,3 +463,31 @@ def test_training_and_recommendation_callbacks_preserve_explicit_boundaries() ->
     assert 'if not request:' in training
     assert 'if not completed:' in training
     assert "training_inbox.drain(fit)" in training
+
+
+
+def test_code_center_uses_transitive_unified_display_candidates() -> None:
+    from geometric_coder.ui.app import _display_view_record, _display_view_records
+
+    class FakeProject:
+        def views(self, geometry_id, *, include_descendants=False):
+            assert geometry_id == 7
+            assert include_descendants is True
+            return [
+                {"view_id": 23, "name": "Legacy 2D view"},
+                {"view_id": -42, "name": "Canonical 1D descendant"},
+            ]
+
+    project = FakeProject()
+    records = _display_view_records(project, 7)
+    assert [item["view_id"] for item in records] == [23, -42]
+    assert _display_view_record(project, geometry_id=7, view_id=-42) == records[1]
+    assert _display_view_record(project, geometry_id=7, view_id=-99) is None
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'Input("representation-refresh-store", "data")' in source
+    assert '_display_view_records(project, int(geometry_id))' in source
+    assert '_display_view_record(' in source
