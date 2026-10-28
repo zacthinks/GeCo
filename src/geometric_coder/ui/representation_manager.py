@@ -516,6 +516,11 @@ def rename_representation(coder: GeometricCoder, *, key: str, name: str) -> None
                 f"UPDATE {table} SET name = ? WHERE {id_column} = ?",
                 (clean, int(record[id_column])),
             )
+            con.execute(
+                "UPDATE representations SET name = ? "
+                "WHERE legacy_kind = ? AND legacy_id = ?",
+                (clean, kind, int(record[id_column])),
+            )
             # Native dependent geometries store their source by name.
             if kind == "geometry":
                 for child in coder.geometries(public_only=False):
@@ -557,6 +562,20 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
                     "This representation is used in a saved session. Select "
                     "another representation in that session before removing it."
                 )
+        associated = con.execute(
+            "SELECT representation_id FROM representations "
+            "WHERE legacy_kind = ? AND legacy_id = ?",
+            (kind, identifier),
+        ).fetchone()
+        if associated is not None:
+            descendant = con.execute(
+                "SELECT 1 FROM representations WHERE parent_representation_id = ? LIMIT 1",
+                (int(associated["representation_id"]),),
+            ).fetchone()
+            if descendant is not None:
+                raise ConfigurationError(
+                    "Cannot unregister a representation while descendants depend on it."
+                )
         if kind == "geometry":
             if len(coder.geometries(public_only=True)) <= 1:
                 raise ConfigurationError("Cannot unregister the last analytic geometry.")
@@ -576,6 +595,11 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
             con.execute("DELETE FROM geometries WHERE geometry_id = ?", (identifier,))
         else:
             con.execute("DELETE FROM views WHERE view_id = ?", (identifier,))
+        if associated is not None:
+            con.execute(
+                "DELETE FROM representations WHERE representation_id = ?",
+                (int(associated["representation_id"]),),
+            )
 
 
 def create_view(
