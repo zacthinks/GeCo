@@ -240,6 +240,88 @@ def create_geometry(
         )
 
 
+def _teal_numeric_ancestors(teal: Any, artifact_id: str) -> tuple[str, ...]:
+    """Follow only unique, numerical, one-input operation sources.
+
+    TeAL artifact basis lineage is intentionally excluded: sharing document
+    identities does not establish a numerical visualization relationship.
+    Multi-input operations terminate the chain rather than inventing a parent.
+    """
+    seen = {str(artifact_id)}
+    current = str(artifact_id)
+    ancestry: list[str] = []
+    for _ in range(1024):
+        operation = teal.catalog.operation_for_artifact(current)
+        if not operation:
+            return tuple(ancestry)
+        sources = teal.catalog.operation_sources(str(operation["operation_id"]))
+        if len(sources) != 1:
+            return tuple(ancestry)
+        upstream = str(sources[0]["source_artifact_id"])
+        if upstream in seen:
+            raise ConfigurationError("A cycle was found in numerical artifact provenance.")
+        source_artifact = teal.get_artifact(upstream)
+        if getattr(source_artifact.artifact_type, "value", None) not in {
+            "dense_matrix", "sparse_matrix"
+        }:
+            return tuple(ancestry)
+        ancestry.append(upstream)
+        seen.add(upstream)
+        current = upstream
+    raise ConfigurationError("Numerical artifact provenance exceeded the supported depth.")
+
+
+def reconcile_teal_numeric_parents(coder: GeometricCoder, teal: Any) -> int:
+    """Resolve nearest registered numerical parents without import-order dependence.
+
+    This updates only the GeCo-owned parent pointers. It never edits TeAL's
+    operation graph, artifacts, aliases, or numerical payloads.
+    """
+    entries = coder.database.list_representations()
+    by_artifact: dict[str, set[int]] = {}
+    for row in entries:
+        ref = row.get("external_ref")
+        if isinstance(ref, Mapping) and isinstance(ref.get("artifact_id"), str):
+            by_artifact.setdefault(ref["artifact_id"], set()).add(
+                int(row["representation_id"])
+            )
+    traces: dict[int, tuple[str, ...]] = {}
+    for row in entries:
+        ref = row.get("external_ref")
+        if isinstance(ref, Mapping) and isinstance(ref.get("artifact_id"), str):
+            traces[int(row["representation_id"])] = _teal_numeric_ancestors(
+                teal, ref["artifact_id"]
+            )
+    # Establish short/root chains before attempting to refine a descendant's
+    # existing parent, so the newer immediate ancestor is itself linked.
+    count = 0
+    for child_id, ancestry in sorted(traces.items(), key=lambda item: len(item[1])):
+        parents = []
+        for upstream in ancestry:
+            matches = by_artifact.get(upstream, set()) - {child_id}
+            if len(matches) > 1:
+                break  # ambiguous owner; do not guess
+            if len(matches) == 1:
+                parents = list(matches)
+                break
+        if not parents:
+            continue
+        parent_id = parents[0]
+        previous = coder.database.get_representation(child_id)["parent_representation_id"]
+        if previous == parent_id:
+            continue
+        try:
+            coder.database.assign_representation_parent(
+                child_id, parent_id, allow_refinement=previous is not None
+            )
+        except ValueError:
+            # Retain recorded relationships if they disagree with inferred
+            # lineage. The operation remains safe to repeat after correction.
+            continue
+        count += 1
+    return count
+
+
 def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
     """Registry-centered inspection, with optional immutable TeAL provenance.
 
@@ -259,6 +341,11 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
         if path is not None:
             from text_analysis_lab.core.project import Project
             teal = Project.open(path)
+            reconcile_teal_numeric_parents(coder, teal)
+        registry = {
+            row["representation_id"]: row
+            for row in coder.database.list_representations()
+        }
         for g in coder.geometries(public_only=True):
             record = {
                 "geometry_id": int(g["geometry_id"]), "name": str(g["name"]),
@@ -276,15 +363,16 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                 if teal is not None and isinstance(ref, Mapping) and ref.get("artifact_id"):
                     artifact = teal.get_artifact(str(ref["artifact_id"]))
                     record["artifact_id"] = str(artifact.artifact_id)
-                    # TeAL lineage is authoritative; do not infer chains from names.
-                    from text_analysis_lab.core.lineage import basis_artifact_ids
-                    try:
-                        bases = basis_artifact_ids(artifact)
-                    except Exception:
-                        bases = ()
-                    record["source"] = ", ".join(
-                        by_artifact.get(str(parent), str(parent)) for parent in bases
-                    ) or "TeAL artifact"
+                    # Source is GeCo's own numerical parent, not TeAL's
+                    # (potentially multi-input) general artifact-basis lineage.
+                    representation = coder.database.representation_for_legacy(
+                        "geometry", int(g["geometry_id"])
+                    )
+                    parent_id = representation["parent_representation_id"]
+                    record["source"] = (
+                        registry[parent_id]["name"]
+                        if parent_id in registry else ""
+                    )
                     probe = [0] if (artifact.n_rows or 0) > 0 else []
                     record["dimensions"] = int(artifact.get_matrix(positions=probe).shape[1])
                 elif g.get("storage_kind") == "local":
@@ -302,6 +390,12 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
                         )
             except Exception as exc:
                 record["error"] = str(exc)
+            if not record["source"]:
+                representation = coder.database.representation_for_legacy(
+                    "geometry", int(g["geometry_id"])
+                )
+                parent_id = representation["parent_representation_id"]
+                record["source"] = registry[parent_id]["name"] if parent_id in registry else ""
             rows.append(record)
     finally:
         if teal is not None:
