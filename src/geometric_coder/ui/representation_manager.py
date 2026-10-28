@@ -135,10 +135,47 @@ def linked_geometry_options(coder: GeometricCoder) -> list[dict[str, Any]]:
     ]
 
 
+def linked_representation_options(coder: GeometricCoder) -> list[dict[str, Any]]:
+    """TeAL-backed numerical sources, whether or not available for analysis."""
+    if teal_linked_project(coder) is None:
+        return []
+    return [
+        {"label": str(row["name"]), "value": int(row["representation_id"])}
+        for row in coder.database.list_representations()
+        if isinstance(row.get("external_ref"), Mapping)
+        and isinstance(row["external_ref"].get("artifact_id"), str)
+    ]
+
+
+def _source_representation(
+    coder: GeometricCoder, *, source_geometry_id: int | None = None,
+    source_representation_id: int | None = None,
+) -> tuple[int, dict[str, Any]]:
+    if source_representation_id is not None:
+        record = coder.database.get_representation(int(source_representation_id))
+        rep_id = int(record["representation_id"])
+    else:
+        records = [
+            g for g in coder.geometries(public_only=True)
+            if int(g["geometry_id"]) == int(source_geometry_id or -1)
+        ]
+        if len(records) != 1:
+            raise ValueError("Choose a registered source geometry.")
+        record = dict(records[0])
+        rep_id = int(coder.database.representation_for_legacy(
+            "geometry", int(source_geometry_id)
+        )["representation_id"])
+    ref = record.get("external_ref")
+    if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
+        raise ConfigurationError("The selected source is not a TeAL numerical matrix.")
+    return rep_id, dict(ref)
+
+
 def create_geometry(
-    coder: GeometricCoder, *, name: str, source_geometry_id: int,
-    recipe: str, parameters: Mapping[str, Any] | None = None,
-    navigation_only: bool = False,
+    coder: GeometricCoder, *, name: str,
+    recipe: str, source_geometry_id: int | None = None,
+    source_representation_id: int | None = None,
+    parameters: Mapping[str, Any] | None = None,
 ) -> GeometryCreationResult:
     """Save one TeAL translation, then register its immutable output in GeCo.
 
@@ -154,22 +191,16 @@ def create_geometry(
     path = teal_linked_project(coder)
     if path is None:
         raise ConfigurationError("Creating geometries requires a TeAL-linked GeCo workspace.")
-    records = [
-        g for g in coder.geometries(public_only=True)
-        if int(g["geometry_id"]) == int(source_geometry_id)
-    ]
-    if len(records) != 1:
-        raise ValueError("Choose a registered source geometry.")
+    source_id, ref = _source_representation(
+        coder, source_geometry_id=source_geometry_id,
+        source_representation_id=source_representation_id,
+    )
     # Reject unsupported derived-observation backfill *before* an expensive fit.
     if coder.database.list_observations(kinds=["span", "teaching_example"]):
         raise ConfigurationError(
             "Create Geometry requires a workspace without existing spans or teaching "
             "examples until safe geometry backfill is available."
         )
-    ref = records[0].get("external_ref")
-    if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
-        raise ConfigurationError("The source geometry is not a TeAL matrix artifact.")
-
     from text_analysis_lab.core.project import Project
 
     # Construct/validate the operator before opening any mutable project state.
@@ -218,12 +249,8 @@ def create_geometry(
         child_representation = coder.database.representation_for_legacy(
             "geometry", int(geometry_id)
         )
-        source_representation = coder.database.representation_for_legacy(
-            "geometry", int(source_geometry_id)
-        )
         coder.database.assign_representation_parent(
-            int(child_representation["representation_id"]),
-            int(source_representation["representation_id"]),
+            int(child_representation["representation_id"]), source_id
         )
         # A 2D analytic geometry needs a display view under its own stable ID.
         # Do not silently create a projection for higher-dimensional geometries.
