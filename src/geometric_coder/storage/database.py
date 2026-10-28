@@ -1281,8 +1281,14 @@ class ProjectDatabase:
         supports_text_transform: bool,
         storage_kind: str = "local",
         external_ref: Any | None = None,
+        analytic_enabled: bool = True,
     ) -> int:
-        """Register a local or externally backed geometry and return its ID."""
+        """Register a local or externally backed geometry and return its ID.
+
+        A second legacy alias for the same artifact may grant analytic
+        eligibility, but must never revoke it from the existing identity.
+        Only the explicit eligibility operation can demote an artifact.
+        """
         if storage_kind not in {"local", "external"}:
             raise ValueError("storage_kind must be 'local' or 'external'")
         deps = list(dependency_names)
@@ -1338,8 +1344,9 @@ class ProjectDatabase:
             if shared is not None:
                 connection.execute(
                     "UPDATE representations SET legacy_kind='geometry', legacy_id=?, "
-                    "name=?, analytic_enabled=1 WHERE representation_id=?",
-                    (geometry_id, name, shared),
+                    "name=?, analytic_enabled=MAX(analytic_enabled, ?) "
+                    "WHERE representation_id=?",
+                    (geometry_id, name, int(bool(analytic_enabled)), shared),
                 )
                 rep_id = shared
             else:
@@ -1347,8 +1354,9 @@ class ProjectDatabase:
                     "INSERT INTO representations(legacy_kind, legacy_id, name, "
                     "analytic_enabled, parent_representation_id, storage_kind, "
                     "external_ref_json, created_at) "
-                    "VALUES ('geometry', ?, ?, 1, ?, ?, ?, ?)",
-                    (geometry_id, name, parent, storage_kind, ref_json, utc_now()),
+                    "VALUES ('geometry', ?, ?, ?, ?, ?, ?, ?)",
+                    (geometry_id, name, int(bool(analytic_enabled)), parent,
+                     storage_kind, ref_json, utc_now()),
                 )
                 rep_id = int(result.lastrowid)
             connection.execute(
