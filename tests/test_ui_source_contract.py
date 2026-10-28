@@ -21,6 +21,13 @@ def test_initial_geometry_and_view_selection_falls_back_to_registered_resources(
     views = [{"view_id": 23}, {"view_id": 31}]
     assert _valid_geometry_id(None, geometries) == 7
     assert _valid_view_id(None, views) == 23
+    # Legacy default remains selected even when a canonical-only view has a
+    # negative adapter ID; explicit saved canonical selections remain valid.
+    mixed = [{"view_id": 1}, {"view_id": -1}]
+    assert _valid_view_id(None, mixed) == 1
+    assert _valid_view_id(999, mixed) == 1
+    assert _valid_view_id(-1, mixed) == -1
+    assert _valid_view_id(None, [{"view_id": -42}]) == -42
 
 
 def test_code_center_patch_target_is_initialized_before_partial_updates() -> None:
