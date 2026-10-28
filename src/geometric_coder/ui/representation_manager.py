@@ -212,6 +212,19 @@ def create_geometry(
                     name=clean, external_ref={"artifact_id": str(output.artifact_id)},
                     supports_query=False, supports_text_transform=False,
                 )
+        # The wizard explicitly identifies one numerical source. Record that
+        # relationship independently of TeAL's broader artifact provenance,
+        # regardless of whether the transform expands or reduces dimensions.
+        child_representation = coder.database.representation_for_legacy(
+            "geometry", int(geometry_id)
+        )
+        source_representation = coder.database.representation_for_legacy(
+            "geometry", int(source_geometry_id)
+        )
+        coder.database.assign_representation_parent(
+            int(child_representation["representation_id"]),
+            int(source_representation["representation_id"]),
+        )
         # A 2D analytic geometry needs a display view under its own stable ID.
         # Do not silently create a projection for higher-dimensional geometries.
         probe = [0] if int(output.n_rows or 0) else []
