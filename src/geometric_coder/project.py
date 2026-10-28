@@ -2455,7 +2455,7 @@ class GeometricCoder:
             if code_id is not None
             else self.database.list_codes()
         )
-        geometries = self.database.list_geometries(public_only=True)
+        geometries = self.geometries(public_only=True)
         for code in codes:
             current_code_id = int(code["code_id"])
             existing = self.database.list_classifier_specs(
