@@ -916,6 +916,7 @@ class GeometricCoder:
         supports_query: bool = False,
         supports_text_transform: bool = False,
         public: bool = True,
+        analytic_enabled: bool = True,
         if_exists: str = "error",
     ) -> int:
         """Register a provider-backed geometry over the complete document universe.
@@ -991,11 +992,21 @@ class GeometricCoder:
             storage_kind="external",
             external_ref=ref,
         )
+        representation_id = self.database.representation_for_legacy(
+            "geometry", geometry_id
+        )["representation_id"]
         self.database.record_representation_dimensions(
-            self.database.representation_for_legacy("geometry", geometry_id)["representation_id"],
-            int(matrix.shape[1]),
+            representation_id, int(matrix.shape[1])
         )
-        self.ensure_default_classifier_specs()
+        if not analytic_enabled:
+            with self.database.connect() as connection:
+                connection.execute(
+                    "UPDATE representations SET analytic_enabled=0 "
+                    "WHERE representation_id=?",
+                    (int(representation_id),),
+                )
+        else:
+            self.ensure_default_classifier_specs()
         return geometry_id
 
     def register_external_view(
