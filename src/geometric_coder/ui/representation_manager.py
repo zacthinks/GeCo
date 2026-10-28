@@ -517,10 +517,29 @@ def rename_representation(coder: GeometricCoder, *, key: str, name: str) -> None
                 (clean, int(record[id_column])),
             )
             con.execute(
-                "UPDATE representations SET name = ? "
-                "WHERE legacy_kind = ? AND legacy_id = ?",
+                "UPDATE representations SET name = ? WHERE representation_id IN "
+                "(SELECT representation_id FROM representation_legacy_refs "
+                "WHERE legacy_kind = ? AND legacy_id = ?)",
                 (clean, kind, int(record[id_column])),
             )
+            # One canonical artifact may have both legacy geometry and view
+            # references; keep the transitional names coherent.
+            related = con.execute(
+                "SELECT l.legacy_kind, l.legacy_id FROM representation_legacy_refs l "
+                "JOIN representation_legacy_refs source "
+                "ON source.representation_id=l.representation_id "
+                "WHERE source.legacy_kind=? AND source.legacy_id=?",
+                (kind, int(record[id_column])),
+            ).fetchall()
+            for alias in related:
+                if alias["legacy_kind"] == kind and int(alias["legacy_id"]) == int(record[id_column]):
+                    continue
+                alias_table = "geometries" if alias["legacy_kind"] == "geometry" else "views"
+                alias_column = "geometry_id" if alias["legacy_kind"] == "geometry" else "view_id"
+                con.execute(
+                    f"UPDATE {alias_table} SET name=? WHERE {alias_column}=?",
+                    (clean, int(alias["legacy_id"])),
+                )
             # Native dependent geometries store their source by name.
             if kind == "geometry":
                 for child in coder.geometries(public_only=False):
@@ -563,7 +582,7 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
                     "another representation in that session before removing it."
                 )
         associated = con.execute(
-            "SELECT representation_id FROM representations "
+            "SELECT representation_id FROM representation_legacy_refs "
             "WHERE legacy_kind = ? AND legacy_id = ?",
             (kind, identifier),
         ).fetchone()
@@ -596,10 +615,38 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
         else:
             con.execute("DELETE FROM views WHERE view_id = ?", (identifier,))
         if associated is not None:
+            representation_id = int(associated["representation_id"])
             con.execute(
-                "DELETE FROM representations WHERE representation_id = ?",
-                (int(associated["representation_id"]),),
+                "DELETE FROM representation_legacy_refs "
+                "WHERE legacy_kind=? AND legacy_id=?",
+                (kind, identifier),
             )
+            remaining = con.execute(
+                "SELECT legacy_kind, legacy_id FROM representation_legacy_refs "
+                "WHERE representation_id=? "
+                "ORDER BY CASE legacy_kind WHEN 'geometry' THEN 0 ELSE 1 END, legacy_id",
+                (representation_id,),
+            ).fetchall()
+            if not remaining:
+                con.execute(
+                    "DELETE FROM representations WHERE representation_id = ?",
+                    (representation_id,),
+                )
+            else:
+                first = remaining[0]
+                retained_analytic = any(x["legacy_kind"] == "geometry" for x in remaining)
+                table_name = "geometries" if first["legacy_kind"] == "geometry" else "views"
+                column_name = "geometry_id" if first["legacy_kind"] == "geometry" else "view_id"
+                retained = con.execute(
+                    f"SELECT name FROM {table_name} WHERE {column_name}=?",
+                    (int(first["legacy_id"]),),
+                ).fetchone()
+                con.execute(
+                    "UPDATE representations SET legacy_kind=?, legacy_id=?, "
+                    "name=?, analytic_enabled=? WHERE representation_id=?",
+                    (first["legacy_kind"], int(first["legacy_id"]), str(retained["name"]),
+                     int(retained_analytic), representation_id),
+                )
 
 
 def create_view(
