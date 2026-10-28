@@ -1235,7 +1235,10 @@ def create_app(
         desired_view_id: int | None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         del refresh
-        candidates = project.views(int(geometry_id)) if geometry_id is not None else []
+        candidates = (
+            project.views(int(geometry_id), include_descendants=True)
+            if geometry_id is not None else []
+        )
         options = [{"label": view["name"], "value": int(view["view_id"])} for view in candidates]
         valid_ids = {option["value"] for option in options}
         if desired_view_id in valid_ids:
