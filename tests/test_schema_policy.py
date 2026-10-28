@@ -426,6 +426,17 @@ def test_one_dimensional_representation_is_selectable_without_a_saved_view(tmp_p
     coordinates = project.view_coordinates(int(eligible[0]["view_id"]))
     assert coordinates.shape == (2, 1)
     assert list(coordinates[:, 0]) == [3.0, 7.0]
+    from geometric_coder.ui.figures import one_dimensional_display_y
+    unit = project.database.list_units()[0]
+    atomic = project.database.observation_for_unit(int(unit["unit_id"]))
+    focal = project.observation_view_coordinates(
+        int(atomic), int(eligible[0]["view_id"])
+    )
+    assert focal.shape == (1, 2)
+    assert focal[0, 0] == 3.0
+    assert abs(float(focal[0, 1]) - one_dimensional_display_y(
+        int(unit["unit_id"])
+    )) < 1e-6
 
 
 def test_analytic_availability_is_independent_of_view_eligibility(tmp_path: Path) -> None:
