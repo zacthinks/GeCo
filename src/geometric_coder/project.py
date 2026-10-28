@@ -544,10 +544,26 @@ class GeometricCoder:
         view_ids = self.database.legacy_view_ids_for_representations(
             [int(row["representation_id"]) for row in candidates]
         )
-        return [
+        registered = [
             view for view in self.database.list_views()
             if int(view["view_id"]) in view_ids
         ]
+        # Until every Explorer consumer uses unified IDs directly, a negative
+        # view ID is a namespace-safe tag for a plot-ready representation that
+        # has no legacy view alias. No duplicate numerical artifact is created.
+        for representation in candidates:
+            rid = int(representation["representation_id"])
+            if self.database.legacy_view_ids_for_representations([rid]):
+                continue
+            registered.append({
+                "view_id": -rid,
+                "geometry_id": int(geometry_id),
+                "name": str(representation["name"]),
+                "method": "representation",
+                "storage_kind": "representation",
+                "representation_id": rid,
+            })
+        return registered
 
     def has_view(self, name: str) -> bool:
         """Return whether a two-dimensional view with ``name`` is registered."""
@@ -1419,7 +1435,19 @@ class GeometricCoder:
         }
 
     def view_coordinates(self, view_id: int) -> np.ndarray:
-        """Load one local or provider-backed two-dimensional view."""
+        """Load a view or one plot-ready 1D/2D unified representation."""
+        if int(view_id) < 0:
+            representation_id = -int(view_id)
+            registered = self.database.get_representation(representation_id)
+            if registered["dimensions"] not in (1, 2):
+                raise ValueError("Only 1D or 2D numerical representations are plot-ready.")
+            matrix = self.representation_matrix(representation_id)
+            coordinates = (
+                matrix.toarray() if sparse.issparse(matrix) else np.asarray(matrix)
+            )
+            if coordinates.ndim != 2 or coordinates.shape[1] not in (1, 2):
+                raise ValueError("The selected representation is not 1D or 2D.")
+            return coordinates.astype(np.float32, copy=False)
         view = self.database.get_view(view_id)
         if str(view.get("storage_kind", "local")) == "external":
             provider = self._require_external_provider()
