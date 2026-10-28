@@ -991,6 +991,7 @@ class GeometricCoder:
             supports_text_transform=bool(supports_text_transform),
             storage_kind="external",
             external_ref=ref,
+            analytic_enabled=bool(analytic_enabled),
         )
         representation_id = self.database.representation_for_legacy(
             "geometry", geometry_id
@@ -998,14 +999,7 @@ class GeometricCoder:
         self.database.record_representation_dimensions(
             representation_id, int(matrix.shape[1])
         )
-        if not analytic_enabled:
-            with self.database.connect() as connection:
-                connection.execute(
-                    "UPDATE representations SET analytic_enabled=0 "
-                    "WHERE representation_id=?",
-                    (int(representation_id),),
-                )
-        else:
+        if self.database.get_representation(representation_id)["analytic_enabled"]:
             self.ensure_default_classifier_specs()
         return geometry_id
 
@@ -2436,6 +2430,13 @@ class GeometricCoder:
         """Create one classifier owned by exactly one code."""
         self.database.get_code(int(code_id))
         self.database.get_geometry(int(geometry_id))
+        representation = self.database.representation_for_legacy(
+            "geometry", int(geometry_id)
+        )
+        if not representation["analytic_enabled"]:
+            raise ConfigurationError(
+                "A visualization-only representation cannot be a classifier geometry."
+            )
         parameters = normalize_hyperparameters(algorithm, dict(hyperparameters or {}))
         return self.database.create_classifier_spec(
             code_id=int(code_id),
