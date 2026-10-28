@@ -539,7 +539,7 @@ class GeometricCoder:
             return self.database.list_views(geometry_id=geometry_id)
         root = self.database.representation_for_legacy("geometry", int(geometry_id))
         candidates = self.database.eligible_view_representations(
-            root["representation_id"], dimensions=(2,)
+            root["representation_id"], dimensions=(1, 2)
         )
         view_ids = self.database.legacy_view_ids_for_representations(
             [int(row["representation_id"]) for row in candidates]
