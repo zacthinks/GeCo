@@ -532,3 +532,41 @@ def test_saved_canonical_display_prevents_unregistration(tmp_path: Path) -> None
         unregister_representation(project, key=f"representation:{representation_id}")
     assert db.get_representation(representation_id)["legacy_id"] == display_id
     assert db.get_geometry(display_id)["name"] == "display_only"
+
+
+def test_analytic_eligibility_survives_coalesced_view_only_alias(tmp_path: Path) -> None:
+    project = _make_workspace(tmp_path, external=True)
+    db = project.database
+    ref = {"artifact_id": "shared-2d"}
+    base = dict(
+        class_name="external", modality="text", public=True,
+        config={"type": "external"}, dependency_names=[], matrix_path="",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False, storage_kind="external", external_ref=ref,
+    )
+    analytic = db.register_geometry(name="analytic", **base)
+    view_alias = db.register_geometry(
+        name="visualization_alias", analytic_enabled=False, **base
+    )
+    first = db.representation_for_legacy("geometry", analytic)
+    second = db.representation_for_legacy("geometry", view_alias)
+    assert first["representation_id"] == second["representation_id"]
+    assert first["analytic_enabled"] and second["analytic_enabled"]
+
+
+def test_view_only_geometry_rejected_for_classifier_specs(tmp_path: Path) -> None:
+    from geometric_coder.exceptions import ConfigurationError
+
+    project = _make_workspace(tmp_path)
+    db = project.database
+    geometry_id = db.register_geometry(
+        name="visualization_only", class_name="external", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path="",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False, analytic_enabled=False,
+    )
+    code_id = project.create_code("example")
+    with pytest.raises(ConfigurationError, match="visualization-only"):
+        project.create_classifier_spec(
+            code_id=code_id, name="not_analytic", geometry_id=geometry_id
+        )
