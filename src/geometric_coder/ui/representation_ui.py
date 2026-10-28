@@ -9,7 +9,8 @@ from typing import Any
 from geometric_coder.ui.representation_manager import (
     create_geometry, create_view, filter_representations,
     geometry_parameter_specs, geometry_recipe_options, linked_geometry_options,
-    register_view_as_geometry, rename_representation, representation_inventory, source_filter_options,
+    set_representation_analytic_enabled, rename_representation,
+    representation_inventory, source_filter_options,
     unregister_representation,
 )
 from geometric_coder.ui.topic_creation import teal_linked_project
@@ -320,33 +321,45 @@ def register_representation_callbacks(
         Output("representation-detail-add-view", "style"),
         Output("representation-detail-topic", "style"),
         Output("representation-detail-promote", "style"),
+        Output("representation-detail-promote", "children"),
         Input("representation-selected", "data"),
         Input("representation-inventory-store", "data"),
     )
-    def populate_detail(key: str | None, inventory: list[dict[str, Any]] | None) -> tuple[Any, ...]:
+    def populate_detail(
+        key: str | None, inventory: list[dict[str, Any]] | None,
+    ) -> tuple[Any, ...]:
         matches = [r for r in (inventory or []) if r["key"] == key]
+        hidden = {"display": "none"}
         if not matches:
-            return "", "", "", {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+            return "", "", "", hidden, hidden, hidden, hidden, ""
         row = matches[0]
-        if row["kind"] in {"geometry", "both"}:
-            views = [
-                html.Div(child["name"]) for child in inventory or []
-                if child["kind"] == "view"
-                and child["geometry_id"] == row["geometry_id"]
+        descendants = []
+        try:
+            candidates = project.database.eligible_view_representations(
+                int(row["representation_id"]), dimensions=(1, 2)
+            )
+            names = {int(item["representation_id"]): item["name"]
+                     for item in inventory or []}
+            descendants = [
+                html.Div(names.get(int(item["representation_id"]), str(item["name"])))
+                for item in candidates
             ]
-        else:
-            views = []
-        add_view = (row["kind"] in {"geometry", "both"}
-                    and row.get("dimensions") is not None
-                    and row["dimensions"] > 2)
+        except (KeyError, ValueError):
+            pass
+        can_add_view = (
+            bool(row["analytic_enabled"]) and
+            teal_linked_project(project) is not None and bool(row["artifact_id"])
+        )
+        can_toggle = row["dimensions"] in (1, 2) and (
+            not row["analytic_enabled"] or row["parent_representation_id"] is not None
+        )
         return (
             row["name"], row["name"],
-            views or ["No 2D views registered."],
-            {} if row["kind"] in {"geometry", "both"} else {"display": "none"},
-            {} if add_view else {"display": "none"},
-            {} if row["kind"] in {"geometry", "both"} else {"display": "none"},
-            {} if row["kind"] == "view" and row.get("storage_kind") == "external"
-            else {"display": "none"},
+            descendants or ["No compatible 1D or 2D descendants yet."],
+            {}, {} if can_add_view else hidden,
+            {} if row["analytic_enabled"] else hidden,
+            {} if can_toggle else hidden,
+            "Disable for analysis" if row["analytic_enabled"] else "Enable for analysis",
         )
 
     @app.callback(
