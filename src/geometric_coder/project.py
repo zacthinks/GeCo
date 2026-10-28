@@ -533,10 +533,9 @@ class GeometricCoder:
         candidates = self.database.eligible_view_representations(
             root["representation_id"], dimensions=(2,)
         )
-        view_ids = {
-            int(row["legacy_id"]) for row in candidates
-            if row["legacy_kind"] == "view"
-        }
+        view_ids = self.database.legacy_view_ids_for_representations(
+            [int(row["representation_id"]) for row in candidates]
+        )
         return [
             view for view in self.database.list_views()
             if int(view["view_id"]) in view_ids
