@@ -1691,6 +1691,25 @@ class GeometricCoder:
     ) -> np.ndarray:
         """Place one atomic or derived observation in a persisted two-dimensional view."""
         observation = self.database.get_observation(observation_id)
+        if int(view_id) < 0:
+            # Canonical 1D/2D display representations need no fitted view
+            # object. Only atomic positions are guaranteed here; derived
+            # observations need separate frozen transform/backfill support.
+            if observation["kind"] != "atomic":
+                raise ValueError(
+                    "This numerical representation has no persisted coordinates "
+                    "for the derived observation."
+                )
+            position = int(observation["row_position"])
+            point = self.view_coordinates(view_id)[position : position + 1]
+            if point.shape[1] == 1:
+                from geometric_coder.ui.figures import one_dimensional_display_y
+                unit_id = int(observation["unit_id"])
+                return np.asarray(
+                    [[float(point[0, 0]), one_dimensional_display_y(unit_id)]],
+                    dtype=np.float32,
+                )
+            return point
         view = self.database.get_view(view_id)
         if observation["kind"] == "atomic":
             row_position = int(observation["row_position"])
