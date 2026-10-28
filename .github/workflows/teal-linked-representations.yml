@@ -1,0 +1,34 @@
+name: TeAL-linked representation integration
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  teal-linked:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out GeCo PR
+        uses: actions/checkout@v7
+
+      - name: Check out TeAL
+        uses: actions/checkout@v7
+        with:
+          repository: zacthinks/text-analysis-lab
+          path: _teal
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Install GeCo and TeAL
+        run: |
+          uv sync --all-extras
+          uv pip install --python .venv/bin/python -e ./_teal
+
+      - name: Run persisted TeAL-GeCo integration
+        run: uv run --no-sync pytest tests/test_teal_linked_representations.py -q -rs
