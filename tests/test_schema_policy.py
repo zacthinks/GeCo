@@ -426,3 +426,40 @@ def test_one_dimensional_representation_is_selectable_without_a_saved_view(tmp_p
     coordinates = project.view_coordinates(int(eligible[0]["view_id"]))
     assert coordinates.shape == (2, 1)
     assert list(coordinates[:, 0]) == [3.0, 7.0]
+
+
+def test_analytic_availability_is_independent_of_view_eligibility(tmp_path: Path) -> None:
+    from geometric_coder.ui.representation_manager import (
+        set_representation_analytic_enabled,
+    )
+    from geometric_coder.exceptions import ConfigurationError
+
+    project = _make_workspace(tmp_path, external=True)
+    db = project.database
+    root = db.register_geometry(
+        name="root", class_name="external", modality="text", public=True,
+        config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+        storage_kind="external", external_ref={"artifact_id": "root"},
+    )
+    child = db.register_geometry(
+        name="child_2d", class_name="external", modality="text", public=True,
+        config={}, dependency_names=["root"], matrix_path="", matrix_sparse=False,
+        state_path=None, supports_query=False, supports_text_transform=False,
+        storage_kind="external", external_ref={"artifact_id": "child_2d"},
+    )
+    rr = db.representation_for_legacy("geometry", root)["representation_id"]
+    cr = db.representation_for_legacy("geometry", child)["representation_id"]
+    db.record_representation_dimensions(rr, 50)
+    db.record_representation_dimensions(cr, 2)
+    with pytest.raises(ConfigurationError, match="root numerical"):
+        set_representation_analytic_enabled(project, representation_id=rr, enabled=False)
+    assert set_representation_analytic_enabled(
+        project, representation_id=cr, enabled=False
+    ) is False
+    assert [g["name"] for g in project.geometries(public_only=True)] == ["root"]
+    assert [v["name"] for v in project.views(root, include_descendants=True)] == ["child_2d"]
+    assert set_representation_analytic_enabled(
+        project, representation_id=cr, enabled=True
+    ) is True
+    assert [g["name"] for g in project.geometries(public_only=True)] == ["root", "child_2d"]
