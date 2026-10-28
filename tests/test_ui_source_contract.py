@@ -491,3 +491,31 @@ def test_code_center_uses_transitive_unified_display_candidates() -> None:
     assert 'Input("representation-refresh-store", "data")' in source
     assert '_display_view_records(project, int(geometry_id))' in source
     assert '_display_view_record(' in source
+
+
+def test_presentation_views_include_canonical_descendants_without_duplicate_ids() -> None:
+    from geometric_coder.ui.app import (
+        _presentation_view_options, _presentation_view_records,
+    )
+
+    class FakeProject:
+        def views(self, geometry_id, *, include_descendants=False):
+            assert include_descendants
+            return {
+                7: [
+                    {"view_id": 23, "name": "Legacy"},
+                    {"view_id": -42, "name": "1D child"},
+                ],
+                11: [{"view_id": -42, "name": "1D child"}],
+            }[geometry_id]
+
+    geometries = [
+        {"geometry_id": 7, "name": "Source A"},
+        {"geometry_id": 11, "name": "Source B"},
+    ]
+    records = _presentation_view_records(FakeProject(), geometries)
+    assert {row["view_id"] for row in records} == {23, -42}
+    assert len(records) == 2
+    options = _presentation_view_options(records, geometries)
+    assert {option["value"] for option in options} == {23, -42}
+    assert next(option for option in options if option["value"] == -42)["label"] == "Source A — 1D child"
