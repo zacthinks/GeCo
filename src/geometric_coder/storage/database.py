@@ -1325,13 +1325,35 @@ class ProjectDatabase:
                 ).fetchone()
                 if parent_row is not None:
                     parent = int(parent_row["representation_id"])
+            ref_json = json.dumps(external_ref) if external_ref is not None else None
+            shared = None
+            if storage_kind == "external" and ref_json is not None:
+                matches = connection.execute(
+                    "SELECT representation_id FROM representations "
+                    "WHERE storage_kind='external' AND external_ref_json=?",
+                    (ref_json,),
+                ).fetchall()
+                if len(matches) == 1:
+                    shared = int(matches[0]["representation_id"])
+            if shared is not None:
+                connection.execute(
+                    "UPDATE representations SET legacy_kind='geometry', legacy_id=?, "
+                    "name=?, analytic_enabled=1 WHERE representation_id=?",
+                    (geometry_id, name, shared),
+                )
+                rep_id = shared
+            else:
+                result = connection.execute(
+                    "INSERT INTO representations(legacy_kind, legacy_id, name, "
+                    "analytic_enabled, parent_representation_id, storage_kind, "
+                    "external_ref_json, created_at) "
+                    "VALUES ('geometry', ?, ?, 1, ?, ?, ?, ?)",
+                    (geometry_id, name, parent, storage_kind, ref_json, utc_now()),
+                )
+                rep_id = int(result.lastrowid)
             connection.execute(
-                "INSERT INTO representations(legacy_kind, legacy_id, name, "
-                "analytic_enabled, parent_representation_id, storage_kind, "
-                "external_ref_json, created_at) "
-                "VALUES ('geometry', ?, ?, 1, ?, ?, ?, ?)",
-                (geometry_id, name, parent, storage_kind,
-                 json.dumps(external_ref) if external_ref is not None else None, utc_now()),
+                "INSERT INTO representation_legacy_refs VALUES ('geometry', ?, ?)",
+                (geometry_id, rep_id),
             )
             return geometry_id
 
@@ -1383,13 +1405,38 @@ class ProjectDatabase:
             ).fetchone()
             if parent is None:
                 raise RuntimeError("Cannot register a view without its analytic parent.")
+            parent_id = int(parent["representation_id"])
+            ref_json = json.dumps(external_ref) if external_ref is not None else None
+            shared = None
+            if storage_kind == "external" and ref_json is not None:
+                matches = connection.execute(
+                    "SELECT representation_id FROM representations "
+                    "WHERE storage_kind='external' AND external_ref_json=?",
+                    (ref_json,),
+                ).fetchall()
+                if len(matches) == 1:
+                    shared = int(matches[0]["representation_id"])
+            elif method.lower() == "identity":
+                shared = parent_id
+            if shared is not None:
+                connection.execute(
+                    "UPDATE representations SET dimensions=2 "
+                    "WHERE representation_id=? AND dimensions IS NULL",
+                    (shared,),
+                )
+                rep_id = shared
+            else:
+                result = connection.execute(
+                    "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+                    "analytic_enabled, parent_representation_id, storage_kind, "
+                    "external_ref_json, created_at) "
+                    "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+                    (view_id, name, parent_id, storage_kind, ref_json, utc_now()),
+                )
+                rep_id = int(result.lastrowid)
             connection.execute(
-                "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
-                "analytic_enabled, parent_representation_id, storage_kind, "
-                "external_ref_json, created_at) "
-                "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
-                (view_id, name, int(parent["representation_id"]), storage_kind,
-                 json.dumps(external_ref) if external_ref is not None else None, utc_now()),
+                "INSERT INTO representation_legacy_refs VALUES ('view', ?, ?)",
+                (view_id, rep_id),
             )
             return view_id
 
@@ -1546,12 +1593,27 @@ class ProjectDatabase:
             raise ValueError("Legacy representation kind must be geometry or view.")
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM representations WHERE legacy_kind = ? AND legacy_id = ?",
+                "SELECT r.* FROM representations r "
+                "JOIN representation_legacy_refs l "
+                "ON l.representation_id = r.representation_id "
+                "WHERE l.legacy_kind = ? AND l.legacy_id = ?",
                 (kind, int(identifier)),
             ).fetchone()
         if row is None:
             raise KeyError(f"Unknown {kind} representation ID: {identifier}")
         return self._representation_row(row)
+
+    def legacy_view_ids_for_representations(self, representation_ids: Sequence[int]) -> set[int]:
+        if not representation_ids:
+            return set()
+        placeholders = ",".join("?" for _ in representation_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT legacy_id FROM representation_legacy_refs "
+                f"WHERE legacy_kind='view' AND representation_id IN ({placeholders})",
+                tuple(int(value) for value in representation_ids),
+            ).fetchall()
+        return {int(row["legacy_id"]) for row in rows}
 
     def record_representation_dimensions(self, representation_id: int, dimensions: int) -> None:
         """Cache validated numerical shape; a later shape change is an error."""
