@@ -323,136 +323,109 @@ def reconcile_teal_numeric_parents(coder: GeometricCoder, teal: Any) -> int:
 
 
 def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
-    """Registry-centered inspection, with optional immutable TeAL provenance.
+    """List each numerical representation once, regardless of its UI role.
 
-    An unavailable artifact is reported, not treated as a valid replacement.
-    Dimension counting reads only one row when TeAL is linked.
+    Source is GeCo's single-input numerical parent. The source label comes
+    from the same preferred-name lookup as the representation itself. TeAL
+    general basis ancestry must never be used as numerical parenthood.
     """
-    rows: list[dict[str, Any]] = []
+    registry = coder.database.list_representations()
     path = teal_linked_project(coder)
-    by_artifact: dict[str, str] = {
-        str(ref["artifact_id"]): str(g["name"])
-        for g in coder.geometries(public_only=True)
-        if isinstance((ref := g.get("external_ref")), Mapping)
-        and isinstance(ref.get("artifact_id"), str)
-    }
     teal = None
+    if path is not None:
+        from text_analysis_lab.core.project import Project
+        teal = Project.open(path)
     try:
-        if path is not None:
-            from text_analysis_lab.core.project import Project
-            teal = Project.open(path)
+        if teal is not None:
             reconcile_teal_numeric_parents(coder, teal)
-        registry = {
-            row["representation_id"]: row
-            for row in coder.database.list_representations()
-        }
-        for g in coder.geometries(public_only=True):
-            record = {
-                "geometry_id": int(g["geometry_id"]), "name": str(g["name"]),
-                "storage_kind": g.get("storage_kind", "local"),
-                "queryable": bool(g.get("supports_query")),
-                "text_transform": bool(g.get("supports_text_transform")),
-                "source": ", ".join(g.get("dependency_names") or []),
-                "artifact_id": (
-                    g.get("external_ref", {}).get("artifact_id")
-                    if isinstance(g.get("external_ref"), Mapping) else None
-                ), "dimensions": None, "error": None,
-            }
-            try:
-                ref = g.get("external_ref")
-                if teal is not None and isinstance(ref, Mapping) and ref.get("artifact_id"):
-                    artifact = teal.get_artifact(str(ref["artifact_id"]))
-                    record["artifact_id"] = str(artifact.artifact_id)
-                    # Source is GeCo's own numerical parent, not TeAL's
-                    # (potentially multi-input) general artifact-basis lineage.
-                    representation = coder.database.representation_for_legacy(
-                        "geometry", int(g["geometry_id"])
-                    )
-                    parent_id = representation["parent_representation_id"]
-                    record["source"] = (
-                        registry[parent_id]["name"]
-                        if parent_id in registry else ""
-                    )
-                    probe = [0] if (artifact.n_rows or 0) > 0 else []
-                    record["dimensions"] = int(artifact.get_matrix(positions=probe).shape[1])
-                elif g.get("storage_kind") == "local":
-                    import numpy as np
+            registry = coder.database.list_representations()
 
-                    file_path = coder.project_dir / str(g["matrix_path"])
-                    if g.get("matrix_sparse"):
-                        # Read only the compressed matrix shape metadata.
-                        with np.load(file_path, allow_pickle=False) as packet:
-                            shape = packet["shape"]
-                            record["dimensions"] = int(shape[1])
-                    else:
-                        record["dimensions"] = int(
-                            np.load(file_path, mmap_mode="r", allow_pickle=False).shape[1]
-                        )
+        by_id = {int(row["representation_id"]): row for row in registry}
+        public_geometry_ids = {
+            int(row["geometry_id"]) for row in coder.geometries(public_only=True)
+        }
+        names = {}
+        artifacts = {}
+        for row in registry:
+            rid = int(row["representation_id"])
+            display_name = str(row["name"])
+            ref = row.get("external_ref")
+            if teal is not None and isinstance(ref, Mapping) and ref.get("artifact_id"):
+                try:
+                    artifact = teal.get_artifact(str(ref["artifact_id"]))
+                    artifacts[rid] = artifact
+                    aliases = artifact.aliases
+                    display_name = str(aliases[0] if aliases else artifact.label)
+                except Exception:
+                    pass
+            names[rid] = display_name
+
+        rows = []
+        for record in registry:
+            rid = int(record["representation_id"])
+            kind = str(record["legacy_kind"])
+            legacy_id = int(record["legacy_id"])
+            # Hidden internal geometries are not researcher-visible entries.
+            if kind == "geometry" and legacy_id not in public_geometry_ids:
+                continue
+            dimensions = record.get("dimensions")
+            error = None
+            try:
+                if dimensions is None:
+                    if rid in artifacts:
+                        artifact = artifacts[rid]
+                        sample = [0] if int(artifact.n_rows or 0) > 0 else []
+                        dimensions = int(artifact.get_matrix(positions=sample).shape[1])
+                    elif record["storage_kind"] == "local":
+                        import numpy as np
+                        if kind == "geometry":
+                            geom = coder.database.get_geometry(legacy_id)
+                            filepath = coder.project_dir / str(geom["matrix_path"])
+                            if geom["matrix_sparse"]:
+                                with np.load(filepath, allow_pickle=False) as packet:
+                                    dimensions = int(packet["shape"][1])
+                            else:
+                                dimensions = int(np.load(filepath, mmap_mode="r").shape[1])
+                        else:
+                            view = coder.database.get_view(legacy_id)
+                            dimensions = int(
+                                np.load(coder.project_dir / str(view["artifact_path"]),
+                                        mmap_mode="r").shape[1]
+                            )
+                    if dimensions is not None:
+                        coder.database.record_representation_dimensions(rid, int(dimensions))
             except Exception as exc:
-                record["error"] = str(exc)
-            if not record["source"]:
-                representation = coder.database.representation_for_legacy(
-                    "geometry", int(g["geometry_id"])
+                error = str(exc)
+            parent_id = record.get("parent_representation_id")
+            source = names.get(int(parent_id), "") if parent_id is not None else ""
+            if kind == "geometry":
+                geometry = coder.database.get_geometry(legacy_id)
+                supports_new_text = bool(
+                    geometry["supports_query"] and geometry["supports_text_transform"]
+                    and record["analytic_enabled"]
                 )
-                parent_id = representation["parent_representation_id"]
-                record["source"] = registry[parent_id]["name"] if parent_id in registry else ""
-            rows.append(record)
+            else:
+                supports_new_text = False
+            ref = record.get("external_ref")
+            rows.append({
+                "key": f"representation:{rid}",
+                "representation_id": rid,
+                "name": names[rid],
+                "dimensions": dimensions,
+                "source": source,
+                "sources": [source] if source else [],
+                "new_text": supports_new_text,
+                "analytic_enabled": bool(record["analytic_enabled"]),
+                "can_view": dimensions in (1, 2),
+                "parent_representation_id": parent_id,
+                "artifact_id": ref.get("artifact_id") if isinstance(ref, Mapping) else None,
+                "storage_kind": record["storage_kind"],
+                "error": error,
+            })
+        return rows
     finally:
         if teal is not None:
             teal.close()
-    # Two registrations can share one exact provider artifact and display name,
-    # without collapsing other views or geometries that happen to look alike.
-    for row in rows:
-        row["kind"] = "geometry"
-        row["key"] = f"geometry:{row['geometry_id']}"
-        row["new_text"] = bool(row["queryable"] and row["text_transform"])
-        row["sources"] = [name.strip() for name in row["source"].split(",") if name.strip()]
-
-    names = {int(row["geometry_id"]): str(row["name"]) for row in rows}
-    for view in coder.views():
-        parent = names.get(int(view["geometry_id"]), str(view["geometry_id"]))
-        ref = view.get("external_ref")
-        artifact_id = (
-            str(ref["artifact_id"]) if isinstance(ref, Mapping)
-            and isinstance(ref.get("artifact_id"), str) else None
-        )
-        # Companion identity views exist to satisfy Explorer's per-geometry
-        # selector. They are not additional scientific representations.
-        if (artifact_id is not None and str(view["name"]).startswith(f"{parent} (identity)")
-                and any(
-                    row["kind"] in {"geometry", "both"}
-                    and row["geometry_id"] == int(view["geometry_id"])
-                    and row.get("artifact_id") == artifact_id
-                    for row in rows
-                )):
-            continue
-        counterpart = next((
-            row for row in rows
-            if row["kind"] == "geometry"
-            and artifact_id is not None
-            and row.get("artifact_id") == artifact_id
-            and row["name"] == str(view["name"])
-            and row.get("dimensions") in {None, 2}
-        ), None)
-        if counterpart is not None:
-            counterpart.update(kind="both", view_id=int(view["view_id"]), dimensions=2)
-            counterpart["sources"] = sorted(
-                set(counterpart["sources"]) | {parent}, key=str.casefold
-            )
-            counterpart["source"] = ", ".join(counterpart["sources"])
-            continue
-        rows.append({
-            "kind": "view", "key": f"view:{int(view['view_id'])}",
-            "view_id": int(view["view_id"]),
-            "geometry_id": int(view["geometry_id"]),
-            "name": str(view["name"]), "dimensions": 2, "source": parent,
-            "sources": [parent], "new_text": False,
-            "queryable": False, "text_transform": False,
-            "storage_kind": view.get("storage_kind", "local"),
-            "method": view.get("method"), "artifact_id": artifact_id,
-            "error": None,
-        })
-    return rows
 
 
 def filter_representations(
