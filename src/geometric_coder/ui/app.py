@@ -9540,12 +9540,23 @@ def _valid_geometry_id(value: Any, geometries: list[dict[str, Any]]) -> int | No
 
 
 def _valid_view_id(value: Any, views: list[dict[str, Any]]) -> int | None:
+    """Restore a saved view, preferring legacy views for an unset selection.
+
+    Canonical-only representation views use negative compatibility IDs; an
+    unset/invalid saved view must not suddenly prefer one merely because its
+    negative ID sorts before the original registered view.
+    """
     valid = {int(record["view_id"]) for record in views}
     try:
         candidate = int(value)
     except (TypeError, ValueError):
-        candidate = -1
-    return candidate if candidate in valid else (min(valid) if valid else None)
+        candidate = None
+    if candidate is not None and candidate in valid:
+        return candidate
+    legacy = [view_id for view_id in valid if view_id > 0]
+    if legacy:
+        return min(legacy)
+    return int(views[0]["view_id"]) if views else None
 
 
 def _display_view_records(
