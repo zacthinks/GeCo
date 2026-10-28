@@ -281,7 +281,7 @@ def register_representation_callbacks(
             return {"display": "none"}, None
         if trigger in {"representation-detail-delete-status", "representation-detail-promote-status"}:
             if (trigger == "representation-detail-delete-status" and delete_status == "Deleted.") or (
-                trigger == "representation-detail-promote-status" and promote_status == "Registered."
+                trigger == "representation-detail-promote-status" and promote_status == "Updated."
             ):
                 return {"display": "none"}, None
             return no_update, no_update
@@ -392,18 +392,24 @@ def register_representation_callbacks(
         State("view-refresh-store", "data"),
         prevent_initial_call=True,
     )
-    def promote_view(_clicks: int, key: str | None,
-                     inventory: list[dict[str, Any]] | None,
-                     revision: int | None, view_revision: int | None) -> tuple[Any, Any, Any]:
-        rows = [r for r in inventory or [] if r["key"] == key and r["kind"] == "view"]
-        if not rows:
-            return "Choose a 2D view.", no_update, no_update
+    def promote_view(
+        _clicks: int, key: str | None,
+        inventory: list[dict[str, Any]] | None,
+        revision: int | None, view_revision: int | None,
+    ) -> tuple[Any, Any, Any]:
+        matches = [r for r in inventory or [] if r["key"] == key]
+        if not matches:
+            return "Choose a representation.", no_update, no_update
+        record = matches[0]
         try:
-            register_view_as_geometry(project, view_id=int(rows[0]["view_id"]))
+            set_representation_analytic_enabled(
+                project, representation_id=int(record["representation_id"]),
+                enabled=not bool(record["analytic_enabled"]),
+            )
         except Exception as exc:
-            return f"Registration failed: {exc}", no_update, no_update
+            return f"Analytic eligibility unchanged: {exc}", no_update, no_update
         refresh_geometry_cache()
-        return "Registered.", int(revision or 0) + 1, int(view_revision or 0) + 1
+        return "Updated.", int(revision or 0) + 1, int(view_revision or 0) + 1
 
     @app.callback(
         Output("representation-detail-delete-status", "children"),
@@ -434,11 +440,16 @@ def register_representation_callbacks(
         prevent_initial_call=True,
     )
     def register_topic(_clicks: int, key: str | None, inventory: list[dict[str, Any]] | None) -> tuple[Any, ...]:
-        rows = [r for r in inventory or [] if r["key"] == key and r["kind"] in {"geometry", "both"}]
+        rows = [r for r in inventory or []
+                if r["key"] == key and r["analytic_enabled"]]
         if not rows:
             return (no_update,) * 4
         row = rows[0]
-        return {"display": "flex"}, int(row["geometry_id"]), "identity", f"{row['name']}_topics"
+        record = project.database.get_representation(int(row["representation_id"]))
+        if record["legacy_kind"] != "geometry":
+            return (no_update,) * 4
+        return ({"display": "flex"}, int(record["legacy_id"]), "identity",
+                f"{row['name']}_topics")
 
     @app.callback(
         Output("representation-wizard-modal", "style"),
@@ -467,11 +478,16 @@ def register_representation_callbacks(
         if trigger in {"representation-wizard-close", "representation-wizard-cancel"}:
             return {"display": "none"}, no_update, no_update, no_update, no_update
         if trigger == "representation-detail-add-view":
-            matches = [r for r in inventory or [] if r["key"] == selected
-                       and r["kind"] in {"geometry", "both"} and (r.get("dimensions") or 0) > 2]
+            matches = [r for r in inventory or []
+                       if r["key"] == selected and r["analytic_enabled"]]
             if not matches:
                 return (no_update,) * 5
-            return {"display": "flex"}, "view", int(matches[0]["geometry_id"]), "umap", ""
+            record = project.database.get_representation(
+                int(matches[0]["representation_id"])
+            )
+            if record["legacy_kind"] != "geometry":
+                return (no_update,) * 5
+            return {"display": "flex"}, "view", int(record["legacy_id"]), "umap", ""
         return {"display": "flex"}, "geometry", None, "umap", ""
 
     @app.callback(
