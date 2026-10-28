@@ -8,7 +8,7 @@ from typing import Any
 
 from geometric_coder.ui.representation_manager import (
     create_geometry, create_view, filter_representations,
-    geometry_parameter_specs, geometry_recipe_options, linked_geometry_options,
+    geometry_parameter_specs, geometry_recipe_options, linked_representation_options,
     set_representation_analytic_enabled, rename_representation,
     representation_inventory, source_filter_options,
     unregister_representation,
@@ -131,7 +131,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                 dcc.RadioItems(
                     id="representation-wizard-mode",
                     options=[{"label": "Analytic geometry", "value": "geometry"},
-                             {"label": "2D view", "value": "view"}],
+                             {"label": "View (1D or 2D)", "value": "view"}],
                     value="geometry", inline=True,
                 ),
                 html.Label("Name"),
@@ -139,8 +139,18 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                           className="text-input", placeholder="Choose a name"),
                 html.Label("Source"),
                 dcc.Dropdown(id="representation-wizard-source",
-                             options=linked_geometry_options(project),
+                             options=linked_representation_options(project),
                              clearable=False, placeholder="Select source geometry"),
+                html.Div([
+                    html.Label("Display dimensions"),
+                    dcc.Dropdown(
+                        id="representation-wizard-view-dimensions",
+                        options=[{"label": "1 dimension (with jitter)", "value": 1},
+                                 {"label": "2 dimensions", "value": 2}],
+                        value=2, clearable=False,
+                    ),
+                ], id="representation-wizard-view-dimensions-wrap",
+                   style={"display": "none"}),
                 html.Label("Transformation"),
                 dcc.Dropdown(id="representation-wizard-recipe",
                              options=geometry_recipe_options(),
@@ -226,7 +236,7 @@ def register_representation_callbacks(
     )
     def refresh_inventory(_open: int, _revision: int) -> tuple[Any, Any, Any]:
         inventory = representation_inventory(project)
-        return inventory, source_filter_options(inventory), linked_geometry_options(project)
+        return inventory, source_filter_options(inventory), linked_representation_options(project)
 
     @app.callback(
         Output("representation-table", "data"),
@@ -493,16 +503,20 @@ def register_representation_callbacks(
     @app.callback(
         Output("representation-wizard-recipe", "options"),
         Output("representation-wizard-dimension-note", "children"),
+        Output("representation-wizard-view-dimensions-wrap", "style"),
         Input("representation-wizard-mode", "value"),
     )
-    def wizard_mode(mode: str | None) -> tuple[Any, str]:
+    def wizard_mode(mode: str | None) -> tuple[Any, str, dict[str, str]]:
         if mode == "view":
             return [
                 {"label": "UMAP", "value": "umap"},
                 {"label": "SVD", "value": "svd"},
-                {"label": "Identity (existing 2D geometry)", "value": "identity"},
-            ], "2D views have exactly two coordinates."
-        return geometry_recipe_options(), "Replayability is detected automatically from the fitted TeAL pipeline."
+            ], "Views support 1D (jittered) or 2D coordinates.", {}
+        return (
+            geometry_recipe_options(),
+            "Replayability is detected automatically from the fitted TeAL pipeline.",
+            {"display": "none"},
+        )
 
     @app.callback(
         Output("representation-wizard-parameters", "children"),
@@ -512,8 +526,6 @@ def register_representation_callbacks(
         Input("representation-wizard-recipe", "value"),
     )
     def wizard_parameters(mode: str | None, recipe: str | None) -> tuple[Any, Any, Any]:
-        if mode == "view" and recipe == "identity":
-            return [], [], {"display": "none"}
         if not recipe:
             return [], [], {"display": "none"}
         try:
@@ -538,6 +550,7 @@ def register_representation_callbacks(
         State("representation-wizard-name", "value"),
         State("representation-wizard-source", "value"),
         State("representation-wizard-recipe", "value"),
+        State("representation-wizard-view-dimensions", "value"),
         State({"type": "representation-param", "name": ALL}, "value"),
         State({"type": "representation-param", "name": ALL}, "id"),
         State("representation-refresh-store", "data"),
@@ -547,7 +560,8 @@ def register_representation_callbacks(
     )
     def create(
         _clicks: int, mode: str | None, name: str | None, source: int | None,
-        recipe: str | None, values: list[Any], ids: list[dict[str, str]],
+        recipe: str | None, view_dimensions: int | None,
+        values: list[Any], ids: list[dict[str, str]],
         revision: int | None,
         view_revision: int | None,
     ) -> tuple[Any, Any, str]:
@@ -557,13 +571,14 @@ def register_representation_callbacks(
         try:
             if mode == "view":
                 result_id = create_view(
-                    project, name=name or "", geometry_id=int(source),
-                    method=recipe or "umap", parameters=params,
+                    project, name=name or "", source_representation_id=int(source),
+                    method=recipe or "umap", dimensions=int(view_dimensions or 2),
+                    parameters=params,
                 )
                 label = "2D view"
             else:
                 created = create_geometry(
-                    project, name=name or "", source_geometry_id=int(source),
+                    project, name=name or "", source_representation_id=int(source),
                     recipe=recipe or "umap", parameters=params,
                 )
                 result_id = created.geometry_id
