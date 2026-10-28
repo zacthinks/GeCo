@@ -534,6 +534,10 @@ def register_view_as_geometry(coder: GeometricCoder, *, view_id: int) -> int:
 def _representation_record(coder: GeometricCoder, key: str) -> tuple[str, dict[str, Any]]:
     try:
         kind, identifier = str(key).split(":", 1)
+        if kind == "representation":
+            canonical = coder.database.get_representation(int(identifier))
+            kind = str(canonical["legacy_kind"])
+            identifier = str(canonical["legacy_id"])
         if kind == "geometry":
             return kind, coder.database.get_geometry(int(identifier))
         if kind == "view":
