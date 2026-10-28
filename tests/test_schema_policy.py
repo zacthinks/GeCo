@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -341,3 +342,64 @@ def test_native_identity_view_reuses_geometry_identity(tmp_path: Path) -> None:
     assert (db.representation_for_legacy("view", view_id)["representation_id"]
             == db.representation_for_legacy("geometry", geometry_id)["representation_id"])
     assert len(db.list_representations()) == 1
+
+
+def test_numeric_lineage_reconciles_out_of_order_teal_artifacts(tmp_path: Path) -> None:
+    from geometric_coder.ui.representation_manager import (
+        _teal_numeric_ancestors, reconcile_teal_numeric_parents,
+    )
+
+    project = _make_workspace(tmp_path, external=True)
+    db = project.database
+    operations = {
+        "embeddings": "op_embed", "umap_50": "op_50",
+        "umap_2": "op_2", "concat": "op_concat",
+    }
+    sources = {
+        "op_embed": ["text"], "op_50": ["embeddings"],
+        "op_2": ["umap_50"], "op_concat": ["embeddings", "counts"],
+    }
+    types = {
+        "text": "text", "counts": "sparse_matrix",
+        "embeddings": "dense_matrix", "umap_50": "dense_matrix",
+        "umap_2": "dense_matrix", "concat": "dense_matrix",
+    }
+    catalog = SimpleNamespace(
+        operation_for_artifact=lambda artifact_id: (
+            {"operation_id": operations[artifact_id]}
+            if artifact_id in operations else None
+        ),
+        operation_sources=lambda operation_id: [
+            {"source_artifact_id": value} for value in sources[operation_id]
+        ],
+    )
+    teal = SimpleNamespace(
+        catalog=catalog,
+        get_artifact=lambda artifact_id: SimpleNamespace(
+            artifact_type=SimpleNamespace(value=types[artifact_id])
+        ),
+    )
+    assert _teal_numeric_ancestors(teal, "umap_2") == ("umap_50", "embeddings")
+    assert _teal_numeric_ancestors(teal, "embeddings") == ()
+    assert _teal_numeric_ancestors(teal, "concat") == ()
+
+    def register(name: str) -> int:
+        gid = db.register_geometry(
+            name=name, class_name="external", modality="text", public=True,
+            config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
+            state_path=None, supports_query=False, supports_text_transform=False,
+            storage_kind="external", external_ref={"artifact_id": name},
+        )
+        return db.representation_for_legacy("geometry", gid)["representation_id"]
+
+    root_id = register("embeddings")
+    leaf_id = register("umap_2")
+    assert reconcile_teal_numeric_parents(project, teal) == 1
+    assert db.get_representation(leaf_id)["parent_representation_id"] == root_id
+    middle_id = register("umap_50")
+    assert reconcile_teal_numeric_parents(project, teal) == 2
+    assert db.get_representation(middle_id)["parent_representation_id"] == root_id
+    assert db.get_representation(leaf_id)["parent_representation_id"] == middle_id
+    concat_id = register("concat")
+    assert reconcile_teal_numeric_parents(project, teal) == 0
+    assert db.get_representation(concat_id)["parent_representation_id"] is None
