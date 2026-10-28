@@ -716,21 +716,36 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
     kind, record = _representation_record(coder, key)
     identifier = int(record["geometry_id" if kind == "geometry" else "view_id"])
     with coder.database.connect() as con:
+        associated = con.execute(
+            "SELECT r.representation_id, r.analytic_enabled "
+            "FROM representation_legacy_refs l "
+            "JOIN representations r ON r.representation_id = l.representation_id "
+            "WHERE l.legacy_kind = ? AND l.legacy_id = ?",
+            (kind, identifier),
+        ).fetchone()
         sessions = con.execute("SELECT state_json FROM sessions").fetchall()
         for row in sessions:
             import json
             state = json.loads(row["state_json"])
             fields = ("geometry_id",) if kind == "geometry" else ("view_id",)
-            if any(str(state.get(field)) == str(identifier) for field in fields):
+            legacy_selected = any(
+                str(state.get(field)) == str(identifier) for field in fields
+            )
+            # A 1D/2D numerical representation has a negative compatibility
+            # view ID. Removing its registry node must not strand a saved
+            # session even when no separate legacy view row exists.
+            canonical_selected = (
+                associated is not None
+                and (
+                    str(state.get("view_id")) == str(-int(associated["representation_id"]))
+                    or str(state.get("representation_id")) == str(int(associated["representation_id"]))
+                )
+            )
+            if legacy_selected or canonical_selected:
                 raise ConfigurationError(
                     "This representation is used in a saved session. Select "
                     "another representation in that session before removing it."
                 )
-        associated = con.execute(
-            "SELECT representation_id FROM representation_legacy_refs "
-            "WHERE legacy_kind = ? AND legacy_id = ?",
-            (kind, identifier),
-        ).fetchone()
         if associated is not None:
             descendant = con.execute(
                 "SELECT 1 FROM representations WHERE parent_representation_id = ? LIMIT 1",
@@ -741,7 +756,10 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
                     "Cannot unregister a representation while descendants depend on it."
                 )
         if kind == "geometry":
-            if len(coder.geometries(public_only=True)) <= 1:
+            # View-only representations may use a legacy geometry row to load
+            # their numerical matrix, but must not count as analytic geometries.
+            if (associated is not None and bool(associated["analytic_enabled"])
+                    and len(coder.geometries(public_only=True)) <= 1):
                 raise ConfigurationError("Cannot unregister the last analytic geometry.")
             for table in ("views", "classifier_specs", "classifier_fits",
                           "navigation_events", "observation_geometry_vectors"):
