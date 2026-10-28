@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 import numpy as np
@@ -172,3 +173,55 @@ def test_external_interface_initializes_registered_geometry_and_view(tmp_path: P
         provider.geometry_matrix({"artifact": "geometry"}, []),
     )
     _assert_dash_http_surface(app)
+
+
+def test_v14_external_project_migrates_with_saved_view_selection(tmp_path: Path) -> None:
+    """An old workspace retains its selected geometry and view after upgrade."""
+    _require_ui()
+    from geometric_coder.ui import create_app
+
+    provider = _ExternalSmokeProvider()
+    project = GeometricCoder.create_external(
+        project_dir=tmp_path / "v14-external-smoke.geco",
+        data=pd.DataFrame({"row_id": [0, 1, 2], "text": ["alpha", "beta", "gamma"]}),
+        keys=["row_id"], text="text", metadata=[], external_provider=provider,
+    )
+    geometry_id = project.register_external_geometry(
+        name="external_geometry", external_ref={"artifact": "geometry"},
+    )
+    view_id = project.register_external_view(
+        geometry_id=geometry_id, name="external_view",
+        external_ref={"artifact": "view"},
+    )
+    session_id = int(project.sessions()[0]["session_id"])
+    project.patch_session_state(
+        session_id, {"geometry_id": geometry_id, "view_id": view_id},
+    )
+    # Recreate a genuine v14 registry layout while leaving the rest of the
+    # original workspace, its external refs, and its saved session untouched.
+    database_path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE representation_legacy_refs")
+        connection.execute("DROP TABLE representations")
+        connection.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
+
+    reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
+    assert reopened.database.get_session(session_id)["state"]["geometry_id"] == geometry_id
+    assert reopened.database.get_session(session_id)["state"]["view_id"] == view_id
+    assert reopened.database.representation_for_legacy(
+        "geometry", geometry_id
+    )["representation_id"] > 0
+    assert reopened.database.representation_for_legacy(
+        "view", view_id
+    )["representation_id"] > 0
+    app = create_app(reopened)
+    assert _component_by_id(app.layout, "geometry-dropdown").value == geometry_id
+    assert _component_by_id(app.layout, "view-dropdown").value == view_id
+    np.testing.assert_array_equal(
+        reopened.view_coordinates(view_id),
+        provider.view_coordinates({"artifact": "view"}, []),
+    )
+    _assert_dash_http_surface(app)
+    # A second open must be an idempotent no-op for historical selections.
+    again = GeometricCoder.open(project.project_dir, external_provider=provider)
+    assert again.database.get_session(session_id)["state"]["view_id"] == view_id
