@@ -157,6 +157,16 @@ CREATE TABLE representations (
     CHECK (parent_representation_id IS NULL OR parent_representation_id != representation_id)
 );
 CREATE INDEX representations_parent_idx ON representations(parent_representation_id);
+-- Compatibility references can point to one canonical numerical representation.
+-- A provider artifact registered for analysis and display has one identity.
+CREATE TABLE representation_legacy_refs (
+    legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+    legacy_id INTEGER NOT NULL,
+    representation_id INTEGER NOT NULL REFERENCES representations(representation_id) ON DELETE CASCADE,
+    PRIMARY KEY (legacy_kind, legacy_id)
+);
+CREATE INDEX representation_legacy_refs_target_idx
+ON representation_legacy_refs(representation_id);
 
 CREATE TABLE observation_geometry_vectors (
     observation_id INTEGER NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
@@ -569,6 +579,16 @@ def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX representations_parent_idx ON representations(parent_representation_id)"
     )
+    connection.execute("""CREATE TABLE representation_legacy_refs (
+        legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+        legacy_id INTEGER NOT NULL,
+        representation_id INTEGER NOT NULL REFERENCES representations(representation_id) ON DELETE CASCADE,
+        PRIMARY KEY (legacy_kind, legacy_id)
+    )""")
+    connection.execute(
+        "CREATE INDEX representation_legacy_refs_target_idx "
+        "ON representation_legacy_refs(representation_id)"
+    )
     geometries = connection.execute(
         "SELECT geometry_id, name, dependency_names_json, storage_kind, "
         "external_ref_json, created_at FROM geometries ORDER BY geometry_id"
@@ -583,6 +603,10 @@ def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
              g["external_ref_json"], g["created_at"]),
         )
         geometry_to_rep[int(g["geometry_id"])] = int(cursor.lastrowid)
+        connection.execute(
+            "INSERT INTO representation_legacy_refs VALUES ('geometry', ?, ?)",
+            (int(g["geometry_id"]), int(cursor.lastrowid)),
+        )
     for g in geometries:
         deps = json.loads(g["dependency_names_json"])
         if len(deps) == 1 and deps[0] in name_to_geometry:
@@ -596,17 +620,41 @@ def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
                     (geometry_to_rep[source_id], geometry_to_rep[target_id]),
                 )
     for v in connection.execute(
-        "SELECT view_id, geometry_id, name, storage_kind, external_ref_json, "
+        "SELECT view_id, geometry_id, name, method, storage_kind, external_ref_json, "
         "created_at FROM views ORDER BY view_id"
     ).fetchall():
+        parent_rep = geometry_to_rep[int(v["geometry_id"])]
+        shared_rep = None
+        if v["external_ref_json"] is not None:
+            matches = [
+                geometry_to_rep[int(g["geometry_id"])] for g in geometries
+                if g["external_ref_json"] is not None
+                and json.loads(g["external_ref_json"]) == json.loads(v["external_ref_json"])
+            ]
+            if len(set(matches)) == 1:
+                shared_rep = matches[0]
+        elif str(v["method"]).lower() == "identity":
+            # Legacy native identity views display the same fitted geometry.
+            shared_rep = parent_rep
+        if shared_rep is None:
+            cursor = connection.execute(
+                "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+                "analytic_enabled, parent_representation_id, storage_kind, "
+                "external_ref_json, created_at) "
+                "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+                (int(v["view_id"]), str(v["name"]), parent_rep,
+                 str(v["storage_kind"]), v["external_ref_json"], v["created_at"]),
+            )
+            shared_rep = int(cursor.lastrowid)
+        else:
+            connection.execute(
+                "UPDATE representations SET dimensions = 2 "
+                "WHERE representation_id = ? AND dimensions IS NULL",
+                (shared_rep,),
+            )
         connection.execute(
-            "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
-            "analytic_enabled, parent_representation_id, storage_kind, "
-            "external_ref_json, created_at) "
-            "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
-            (int(v["view_id"]), str(v["name"]),
-             geometry_to_rep[int(v["geometry_id"])], str(v["storage_kind"]),
-             v["external_ref_json"], v["created_at"]),
+            "INSERT INTO representation_legacy_refs VALUES ('view', ?, ?)",
+            (int(v["view_id"]), shared_rep),
         )
 
 
