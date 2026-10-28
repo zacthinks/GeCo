@@ -30,10 +30,10 @@ def test_creation_rejects_invalid_names_and_unlinked_projects(monkeypatch):
 
 def test_view_creation_rejects_non_2d_configuration_without_teal(monkeypatch):
     coder = SimpleNamespace(has_view=lambda name: False)
-    with pytest.raises(ValueError, match="2D view name"):
+    with pytest.raises(ValueError, match="view representation name"):
         rm.create_view(coder, name=" ", geometry_id=1)
     monkeypatch.setattr(rm, "teal_linked_project", lambda coder: Path("/fake"))
-    with pytest.raises(ValueError, match="fixed at two"):
+    with pytest.raises(ValueError, match="dimensionality is fixed"):
         rm.create_view(coder, name="view", geometry_id=1, parameters={"n_components": 5})
 
 
@@ -54,6 +54,9 @@ def fake_link(monkeypatch):
         primary_key=["doc_id"],
         get_matrix=Mock(return_value=__import__("numpy").ones((1, 8))),
         n_rows=1,
+        aliases=[],
+        add_alias=Mock(),
+        remove_alias=Mock(),
     )
     linked = SimpleNamespace(
         documents=SimpleNamespace(primary_key=["doc_id"]),
@@ -98,6 +101,7 @@ def fake_link(monkeypatch):
         register_external_geometry=Mock(return_value=49),
         database=SimpleNamespace(
             list_observations=Mock(return_value=[]),
+            list_representations=Mock(return_value=[]),
             representation_for_legacy=Mock(side_effect=lambda _kind, ident: {
                 "representation_id": 100 + int(ident)
             }),
@@ -152,23 +156,48 @@ def test_replayable_registration_uses_teal_link_validation(fake_link):
     coder.register_external_geometry.assert_not_called()
 
 
-def test_identity_view_is_separate_from_geometry_and_has_no_fit(fake_link):
+def test_identity_view_is_implicit_and_does_not_fit(fake_link):
     coder, project, linked, artifact, derived = fake_link
-    view_id = rm.create_view(coder, name="Base 2D", geometry_id=3, method="identity")
-    assert view_id == 48
+    with pytest.raises(ValueError, match="implicit"):
+        rm.create_view(coder, name="Base 2D", geometry_id=3, method="identity")
     project.translate.assert_not_called()
-    linked.add_projection.assert_called_once_with("Base 2D", artifact, geometry="base")
+    linked.add_projection.assert_not_called()
 
 
-def test_projected_view_uses_fixed_two_dimensions(fake_link):
+def test_projected_view_is_registered_once_as_view_only(fake_link):
     coder, project, linked, artifact, derived = fake_link
-    view_id = rm.create_view(coder, name="Map", geometry_id=3,
-                             method="umap", parameters={"n_neighbors": 12})
-    assert view_id == 48
+    derived.get_matrix.return_value = __import__("numpy").ones((1, 2))
+    representation_id = rm.create_view(
+        coder, name="Map", geometry_id=3,
+        method="umap", parameters={"n_neighbors": 12},
+    )
+    assert representation_id == 149
     assert project.translate.call_args.args[0] == (
         "operator", "umap", {"n_neighbors": 12, "n_components": 2}
     )
-    linked.add_projection.assert_called_once_with("Map", derived, geometry="base")
+    coder.register_external_geometry.assert_called_once_with(
+        name="Map", external_ref={"artifact_id": "saved-matrix"},
+        supports_query=False, supports_text_transform=False,
+        analytic_enabled=False,
+    )
+    coder.database.assign_representation_parent.assert_called_once_with(149, 103)
+    derived.add_alias.assert_called_once_with("Map")
+    linked.add_projection.assert_not_called()
+
+
+def test_one_dimensional_view_is_navigation_only(fake_link):
+    coder, project, linked, artifact, derived = fake_link
+    derived.get_matrix.return_value = __import__("numpy").ones((1, 1))
+    representation_id = rm.create_view(
+        coder, name="Map1D", geometry_id=3, method="svd", dimensions=1,
+    )
+    assert representation_id == 149
+    assert project.translate.call_args.args[0] == (
+        "operator", "svd", {"n_components": 1}
+    )
+    coder.register_external_geometry.assert_called_once()
+    assert coder.register_external_geometry.call_args.kwargs["analytic_enabled"] is False
+
 
 
 def test_manager_is_exposed_without_changing_topic_model_creation():
