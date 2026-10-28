@@ -506,7 +506,15 @@ class GeometricCoder:
         ``supports_query`` and ``supports_text_transform`` capability flags.
         Hidden dependency geometries are excluded by default.
         """
-        return self.database.list_geometries(public_only=public_only)
+        records = self.database.list_geometries(public_only=public_only)
+        if not public_only:
+            return records
+        enabled = {
+            int(row["legacy_id"])
+            for row in self.database.list_representations()
+            if row["analytic_enabled"] and row["legacy_kind"] == "geometry"
+        }
+        return [row for row in records if int(row["geometry_id"]) in enabled]
 
     def has_geometry(self, name: str) -> bool:
         """Return whether a geometry with ``name`` is registered."""
