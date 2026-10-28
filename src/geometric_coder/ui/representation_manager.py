@@ -572,6 +572,7 @@ def set_representation_analytic_enabled(
                     "WHERE representation_id=?",
                     (int(representation_id),),
                 )
+            coder.ensure_default_classifier_specs()
         return True
 
     if record["parent_representation_id"] is None:
