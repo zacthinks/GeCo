@@ -798,57 +798,99 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
 
 
 def create_view(
-    coder: GeometricCoder, *, name: str, geometry_id: int, method: str = "umap",
+    coder: GeometricCoder, *, name: str, method: str = "umap",
+    geometry_id: int | None = None,
+    source_representation_id: int | None = None,
+    dimensions: int = 2,
     parameters: Mapping[str, Any] | None = None,
 ) -> int:
-    """Persist a 2D display projection without changing analytic geometry.
+    """Persist one visualization-only 1D/2D numerical representation.
 
-    Identity is available only when the existing geometry is already 2D.
-    Projection fits use TeAL translations, keeping transformation provenance
-    in TeAL and associating the resulting view with one GeCo geometry ID.
+    Its identity and source are recorded in the unified representation
+    registry. A legacy numerical geometry row is a compatibility backing,
+    not a second scientific artifact or an analytic role.
     """
     clean = str(name).strip()
     if not clean:
-        raise ValueError("Enter a 2D view name.")
-    if coder.has_view(clean):
-        raise ConfigurationError(f"2D view {clean!r} already exists.")
-    if method not in {"identity", "umap", "svd"}:
-        raise ValueError(f"Unsupported 2D projection method {method!r}.")
-    if method == "identity" and parameters:
-        raise ValueError("Identity view does not accept fit parameters.")
-    if method != "identity" and "n_components" in (parameters or {}):
-        # A view always has exactly two coordinate dimensions.
-        raise ValueError("2D view dimensionality is fixed at two.")
+        raise ValueError("Enter a view representation name.")
+    if coder.has_geometry(clean) or coder.has_view(clean):
+        raise ConfigurationError(f"Representation {clean!r} is already registered.")
+    if dimensions not in (1, 2):
+        raise ValueError("Supported view dimensions are 1 and 2.")
+    if method not in {"umap", "svd"}:
+        raise ValueError(
+            "A view of an existing representation is implicit; choose UMAP or SVD to create another."
+        )
+    if "n_components" in (parameters or {}):
+        raise ValueError("View dimensionality is fixed by the dimensions control.")
     path = teal_linked_project(coder)
     if path is None:
-        raise ConfigurationError("Creating 2D views requires a TeAL-linked GeCo workspace.")
-    records = [g for g in coder.geometries(public_only=True)
-               if int(g["geometry_id"]) == int(geometry_id)]
-    if len(records) != 1:
-        raise ValueError("Choose a registered parent geometry.")
-    ref = records[0].get("external_ref")
-    if not isinstance(ref, Mapping) or not isinstance(ref.get("artifact_id"), str):
-        raise ConfigurationError("The parent must reference a TeAL numerical artifact.")
+        raise ConfigurationError("Creating views requires a TeAL-linked GeCo workspace.")
+    source_id, ref = _source_representation(
+        coder, source_geometry_id=geometry_id,
+        source_representation_id=source_representation_id,
+    )
+    if coder.database.list_observations(kinds=["span", "teaching_example"]):
+        raise ConfigurationError(
+            "New numerical representations require derived-observation backfill, "
+            "which is not yet implemented."
+        )
 
     from text_analysis_lab.core.project import Project
+    operator = _operator_for_recipe(
+        method, {**(parameters or {}), "n_components": dimensions}
+    )
     with Project.open(path) as teal:
-        links = [row for row in teal.geco.list()
-                 if row.get("mode", "explore") == "explore"
-                 and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()]
+        links = [
+            row for row in teal.geco.list()
+            if row.get("mode", "explore") == "explore"
+            and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()
+        ]
         if len(links) != 1:
-            raise ConfigurationError("Could not uniquely match this GeCo workspace to its TeAL link.")
+            raise ConfigurationError(
+                "Could not uniquely match this GeCo workspace to its TeAL link."
+            )
         source = teal.get_artifact(ref["artifact_id"])
         if getattr(source.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
             raise ValueError("A view source must be a numerical TeAL matrix.")
-        if method == "identity":
-            if int(source.get_matrix(positions=[0]).shape[1]) != 2:
-                raise ValueError("Identity view requires exactly two dimensions.")
-            output = source
-        else:
-            operator = _operator_for_recipe(method, {**(parameters or {}), "n_components": 2})
-            output = teal.translate(
-                operator, source,
-                memo=f"GeCo Create 2D View {clean!r}, method={method}, source={source.artifact_id}.",
-            )["output"]
-        with teal.geco.open(str(links[0]["name"])) as linked:
-            return int(linked.add_projection(clean, output, geometry=str(records[0]["name"])))
+        output = teal.translate(
+            operator, source,
+            memo=(f"GeCo Create View {clean!r}, {dimensions}D, method={method}, "
+                  f"source={source.artifact_id}."),
+        )["output"]
+        if getattr(output.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
+            raise ValueError("The view transformation did not produce a numerical matrix.")
+        sample = [0] if int(output.n_rows or 0) > 0 else []
+        if int(output.get_matrix(positions=sample).shape[1]) != dimensions:
+            raise ValueError("The fitted view did not have the requested dimensionality.")
+        existing = {
+            str(row["external_ref"]["artifact_id"])
+            for row in coder.database.list_representations()
+            if isinstance(row.get("external_ref"), Mapping)
+            and isinstance(row["external_ref"].get("artifact_id"), str)
+        }
+        if str(output.artifact_id) in existing:
+            raise ConfigurationError(
+                "This saved artifact is already a GeCo representation; select it instead."
+            )
+        alias_added = False
+        try:
+            if clean not in output.aliases:
+                output.add_alias(clean)
+                alias_added = True
+            new_geometry_id = coder.register_external_geometry(
+                name=clean, external_ref={"artifact_id": str(output.artifact_id)},
+                supports_query=False, supports_text_transform=False,
+                analytic_enabled=False,
+            )
+            result = coder.database.representation_for_legacy(
+                "geometry", int(new_geometry_id)
+            )
+            coder.database.assign_representation_parent(
+                int(result["representation_id"]), source_id
+            )
+        except Exception:
+            if alias_added:
+                output.remove_alias(clean)
+            raise
+        return int(result["representation_id"])
