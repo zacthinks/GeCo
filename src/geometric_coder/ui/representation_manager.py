@@ -369,7 +369,8 @@ def representation_inventory(coder: GeometricCoder) -> list[dict[str, Any]]:
 
         by_id = {int(row["representation_id"]): row for row in registry}
         public_geometry_ids = {
-            int(row["geometry_id"]) for row in coder.geometries(public_only=True)
+            int(row["geometry_id"])
+            for row in coder.database.list_geometries(public_only=True)
         }
         names = {}
         artifacts = {}
