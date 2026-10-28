@@ -154,5 +154,21 @@ def test_external_interface_initializes_registered_geometry_and_view(tmp_path: P
     view_dropdown = _component_by_id(app.layout, "view-dropdown")
     assert geometry_dropdown.value == geometry_id
     assert view_dropdown.value == view_id
-    assert view_dropdown.options == [{"label": "external_view", "value": view_id}]
+    # A registered 2D analytic representation can also be displayed directly.
+    # The old 2D view remains the default; both must remain selectable.
+    representation_id = reopened.database.representation_for_legacy(
+        "geometry", geometry_id
+    )["representation_id"]
+    assert view_dropdown.options == [
+        {"label": "external_view", "value": view_id},
+        {"label": "external_geometry", "value": -representation_id},
+    ]
+    np.testing.assert_array_equal(
+        reopened.view_coordinates(view_id),
+        provider.view_coordinates({"artifact": "view"}, []),
+    )
+    np.testing.assert_array_equal(
+        reopened.view_coordinates(-representation_id),
+        provider.geometry_matrix({"artifact": "geometry"}, []),
+    )
     _assert_dash_http_surface(app)
