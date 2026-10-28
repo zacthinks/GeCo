@@ -519,9 +519,28 @@ class GeometricCoder:
             return False
         return True
 
-    def views(self, geometry_id: int | None = None) -> list[dict[str, Any]]:
-        """Return stable persisted two-dimensional view records."""
-        return self.database.list_views(geometry_id=geometry_id)
+    def views(
+        self, geometry_id: int | None = None, *, include_descendants: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return views, optionally including numerical descendants of a geometry.
+
+        The compatibility path returns legacy view records, so existing clients
+        keep using stable view IDs while the unified registry is being adopted.
+        """
+        if not include_descendants or geometry_id is None:
+            return self.database.list_views(geometry_id=geometry_id)
+        root = self.database.representation_for_legacy("geometry", int(geometry_id))
+        candidates = self.database.eligible_view_representations(
+            root["representation_id"], dimensions=(2,)
+        )
+        view_ids = {
+            int(row["legacy_id"]) for row in candidates
+            if row["legacy_kind"] == "view"
+        }
+        return [
+            view for view in self.database.list_views()
+            if int(view["view_id"]) in view_ids
+        ]
 
     def has_view(self, name: str) -> bool:
         """Return whether a two-dimensional view with ``name`` is registered."""
