@@ -235,40 +235,30 @@ def test_unregistration_blocks_dependent_views():
     )
 
 
-def test_role_filter_and_dual_role_inventory(monkeypatch):
-    rows = [
-        {"key": "geometry:1", "kind": "geometry", "name": "A", "dimensions": 10,
-         "sources": []},
-        {"key": "geometry:2", "kind": "both", "name": "B", "dimensions": 2,
-         "sources": ["A"], "view_id": 9},
-        {"key": "view:3", "kind": "view", "name": "C", "dimensions": 2,
-         "sources": ["A"]},
-    ]
-    assert [x["name"] for x in rm.filter_representations(rows, role="both")] == ["B"]
-    assert [x["name"] for x in rm.filter_representations(rows, role="view")] == ["C"]
-    with pytest.raises(ValueError, match="role"):
-        rm.filter_representations(rows, role="unsupported")
-
+def test_unified_inventory_shows_one_row_for_shared_artifact(monkeypatch):
     coder = SimpleNamespace(
-        geometries=lambda **_: [
-            {"geometry_id": 2, "name": "B", "supports_query": False,
-             "supports_text_transform": False,
-             "external_ref": {"artifact_id": "shared"}, "storage_kind": "external"},
-        ],
-        views=lambda: [
-            {"view_id": 9, "geometry_id": 2, "name": "B",
-             "storage_kind": "external", "external_ref": {"artifact_id": "shared"}},
-        ],
+        geometries=lambda **_: [{"geometry_id": 2, "name": "B"}],
         database=SimpleNamespace(
-            list_representations=Mock(return_value=[]),
-            representation_for_legacy=Mock(return_value={"parent_representation_id": None}),
+            list_representations=Mock(return_value=[{
+                "representation_id": 7, "legacy_kind": "geometry",
+                "legacy_id": 2, "name": "B", "dimensions": 2,
+                "analytic_enabled": True, "parent_representation_id": None,
+                "storage_kind": "external",
+                "external_ref": {"artifact_id": "shared"},
+            }]),
+            get_geometry=Mock(return_value={
+                "supports_query": False, "supports_text_transform": False,
+            }),
         ),
     )
     monkeypatch.setattr(rm, "teal_linked_project", lambda _coder: None)
     inventory = rm.representation_inventory(coder)
     assert len(inventory) == 1
-    assert inventory[0]["kind"] == "both"
-    assert inventory[0]["view_id"] == 9
+    assert inventory[0]["key"] == "representation:7"
+    assert inventory[0]["dimensions"] == 2
+    assert inventory[0]["analytic_enabled"]
+    assert inventory[0]["source"] == ""
+
 
 
 def test_register_view_as_geometry_reuses_artifact_without_fitting():
@@ -288,10 +278,7 @@ def test_register_view_as_geometry_reuses_artifact_without_fitting():
         name="Map2D", external_ref={"artifact_id": "saved-2d"},
         supports_query=False, supports_text_transform=False,
     )
-    coder.register_external_view.assert_called_once_with(
-        geometry_id=21, name="Map2D (identity)",
-        external_ref={"artifact_id": "saved-2d"},
-    )
+    coder.register_external_view.assert_not_called()
     coder.database.get_view.return_value["storage_kind"] = "local"
     with pytest.raises(ConfigurationError, match="provider-backed"):
         rm.register_view_as_geometry(coder, view_id=11)
