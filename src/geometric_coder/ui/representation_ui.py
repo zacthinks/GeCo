@@ -357,7 +357,6 @@ def register_representation_callbacks(
         except (KeyError, ValueError):
             pass
         can_add_view = (
-            bool(row["analytic_enabled"]) and
             teal_linked_project(project) is not None and bool(row["artifact_id"])
         )
         can_toggle = row["dimensions"] in (1, 2) and (
@@ -489,15 +488,13 @@ def register_representation_callbacks(
             return {"display": "none"}, no_update, no_update, no_update, no_update
         if trigger == "representation-detail-add-view":
             matches = [r for r in inventory or []
-                       if r["key"] == selected and r["analytic_enabled"]]
+                       if r["key"] == selected and r.get("artifact_id")]
             if not matches:
                 return (no_update,) * 5
-            record = project.database.get_representation(
-                int(matches[0]["representation_id"])
+            return (
+                {"display": "flex"}, "view",
+                int(matches[0]["representation_id"]), "umap", "",
             )
-            if record["legacy_kind"] != "geometry":
-                return (no_update,) * 5
-            return {"display": "flex"}, "view", int(record["legacy_id"]), "umap", ""
         return {"display": "flex"}, "geometry", None, "umap", ""
 
     @app.callback(
