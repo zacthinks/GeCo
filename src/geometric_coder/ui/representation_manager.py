@@ -565,6 +565,8 @@ def set_representation_analytic_enabled(
     their existing matrix. Demotion refuses roots and active dependent research
     state; legacy geometry rows remain as durable compatibility references.
     """
+    import json
+
     record = coder.database.get_representation(int(representation_id))
     if bool(record["analytic_enabled"]) == bool(enabled):
         return bool(enabled)
@@ -572,7 +574,45 @@ def set_representation_analytic_enabled(
         if record["legacy_kind"] == "view":
             register_view_as_geometry(coder, view_id=int(record["legacy_id"]))
         else:
+            # The numerical artifact already exists. An independent TeAL
+            # replay check determines whether it can transform new text; mere
+            # analytic promotion is not evidence of that capability.
+            replay_ref = None
+            path = teal_linked_project(coder)
+            external_ref = record.get("external_ref")
+            if path is not None and isinstance(external_ref, Mapping) and external_ref.get("artifact_id"):
+                from text_analysis_lab.core.project import Project
+                with Project.open(path) as teal:
+                    links = [
+                        item for item in teal.geco.list()
+                        if item.get("mode", "explore") == "explore"
+                        and Path(str(item["workspace_path"])).resolve() == coder.project_dir.resolve()
+                    ]
+                    if len(links) == 1:
+                        with teal.geco.open(str(links[0]["name"])) as linked:
+                            text_id = str(linked.manifest["text_artifact_id"])
+                            text_artifact = teal.get_artifact(text_id)
+                            output = teal.get_artifact(str(external_ref["artifact_id"]))
+                            from text_analysis_lab.core.errors import PipelineError
+                            try:
+                                teal.pipeline(start=text_artifact, end=output)
+                            except PipelineError:
+                                pass
+                            else:
+                                replay_ref = {**external_ref, "text_artifact_id": text_id}
             with coder.database.connect() as connection:
+                if replay_ref is not None and record["legacy_kind"] == "geometry":
+                    connection.execute(
+                        "UPDATE geometries SET supports_query=1, "
+                        "supports_text_transform=1, external_ref_json=? "
+                        "WHERE geometry_id=?",
+                        (json.dumps(replay_ref, sort_keys=True), int(record["legacy_id"])),
+                    )
+                    connection.execute(
+                        "UPDATE representations SET external_ref_json=? "
+                        "WHERE representation_id=?",
+                        (json.dumps(replay_ref, sort_keys=True), int(representation_id)),
+                    )
                 connection.execute(
                     "UPDATE representations SET analytic_enabled=1 "
                     "WHERE representation_id=?",
