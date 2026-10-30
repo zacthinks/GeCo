@@ -186,8 +186,8 @@ def create_geometry(
     clean = str(name).strip()
     if not clean:
         raise ValueError("Enter a geometry name.")
-    if coder.has_geometry(clean):
-        raise ConfigurationError(f"Geometry {clean!r} is already registered.")
+    if coder.has_geometry(clean) or coder.has_view(clean):
+        raise ConfigurationError(f"Representation {clean!r} is already registered.")
     path = teal_linked_project(coder)
     if path is None:
         raise ConfigurationError("Creating geometries requires a TeAL-linked GeCo workspace.")
@@ -203,9 +203,10 @@ def create_geometry(
         )
     from text_analysis_lab.core.project import Project
 
-    # Construct/validate the operator before opening any mutable project state.
+    # Validate the exact TeAL alias rule before performing an expensive fit.
     operator = _operator_for_recipe(recipe, parameters or {})
     with Project.open(path) as teal:
+        teal.catalog.validate_artifact_alias(clean)
         links = [
             row for row in teal.geco.list()
             if row.get("mode", "explore") == "explore"
@@ -223,26 +224,35 @@ def create_geometry(
         )["output"]
         if getattr(output.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
             raise ValueError("This TeAL transformation did not produce a numerical matrix.")
-        with teal.geco.open(str(links[0]["name"])) as linked:
-            text_source = teal.get_artifact(str(linked.manifest["text_artifact_id"]))
-            from text_analysis_lab.core.errors import PipelineError
-            try:
-                teal.pipeline(start=text_source, end=output)
-            except PipelineError:
-                replayable = False
-            else:
-                replayable = True
-            if replayable:
-                geometry_id = linked.add_geometry(clean, output)
-            else:
-                if output.primary_key != linked.documents.primary_key:
-                    raise ConfigurationError(
-                        "Navigation-only geometry must use linked document primary keys."
+        alias_added = False
+        try:
+            if clean not in output.aliases:
+                output.add_alias(clean)
+                alias_added = True
+            with teal.geco.open(str(links[0]["name"])) as linked:
+                text_source = teal.get_artifact(str(linked.manifest["text_artifact_id"]))
+                from text_analysis_lab.core.errors import PipelineError
+                try:
+                    teal.pipeline(start=text_source, end=output)
+                except PipelineError:
+                    replayable = False
+                else:
+                    replayable = True
+                if replayable:
+                    geometry_id = linked.add_geometry(clean, output)
+                else:
+                    if output.primary_key != linked.documents.primary_key:
+                        raise ConfigurationError(
+                            "Navigation-only geometry must use linked document primary keys."
+                        )
+                    geometry_id = coder.register_external_geometry(
+                        name=clean, external_ref={"artifact_id": str(output.artifact_id)},
+                        supports_query=False, supports_text_transform=False,
                     )
-                geometry_id = coder.register_external_geometry(
-                    name=clean, external_ref={"artifact_id": str(output.artifact_id)},
-                    supports_query=False, supports_text_transform=False,
-                )
+        except Exception:
+            if alias_added:
+                output.remove_alias(clean)
+            raise
         # The wizard explicitly identifies one numerical source. Record that
         # relationship independently of TeAL's broader artifact provenance,
         # regardless of whether the transform expands or reduces dimensions.
@@ -856,6 +866,7 @@ def create_view(
         method, {**(parameters or {}), "n_components": dimensions}
     )
     with Project.open(path) as teal:
+        teal.catalog.validate_artifact_alias(clean)
         links = [
             row for row in teal.geco.list()
             if row.get("mode", "explore") == "explore"
