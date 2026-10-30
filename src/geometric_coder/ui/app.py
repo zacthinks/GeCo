@@ -1978,7 +1978,17 @@ def create_app(
                 mode=selected_color_mode, selected_topic=topic_component_id,
             )
         seen = project.database.seen_unit_ids(int(session_id))
-        view = project.database.get_view(int(view_id))
+        # A canonical 1D/2D representation is selectable as a view without
+        # an additional legacy views-table row. Resolve both kinds using the
+        # same descendant-aware catalog as the Explorer dropdown.
+        view = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view is None:
+            return (
+                _empty_figure("The selected view is unavailable for this geometry."),
+                literal_status, "", "", next_revision,
+            )
         figure = build_geometry_figure(
             coordinates=coordinates,
             units=page_units,
