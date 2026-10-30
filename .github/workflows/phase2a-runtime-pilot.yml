@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - master
+      - main
     paths:
       - benchmarks/phase2a_runtime_pilot.py
       - .github/workflows/phase2a-runtime-pilot.yml

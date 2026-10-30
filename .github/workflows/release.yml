@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.11
+
+      - name: Verify tag matches package metadata
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PROJECT_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "Tag $TAG_VERSION does not match package version $PROJECT_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: uv sync --python 3.11 --all-extras
+
+      - name: Run unit tests
+        run: uv run --no-sync pytest -q -rs
+
+      - name: Run acceptance tests
+        run: uv run --no-sync pytest --acceptance -m acceptance -q -rs
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify wheel installs in a clean environment
+        shell: bash
+        run: |
+          uv venv --python 3.11 .release-check
+          uv pip install --python .release-check/bin/python dist/*.whl
+          .release-check/bin/python -c "import geometric_coder; print(geometric_coder.__file__)"
+          .release-check/bin/geco --help
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "GeCo $GITHUB_REF_NAME"
