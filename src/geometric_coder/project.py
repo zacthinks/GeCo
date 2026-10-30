@@ -458,6 +458,10 @@ class GeometricCoder:
                 supports_query=geometry.supports_query,
                 supports_text_transform=geometry.supports_text_transform,
             )
+            self.database.record_representation_dimensions(
+                self.database.representation_for_legacy("geometry", geometry_id)["representation_id"],
+                int(matrix.shape[1]),
+            )
             if registration.public:
                 view_spec = geometry.default_view
                 view_started = time.perf_counter()
@@ -502,7 +506,15 @@ class GeometricCoder:
         ``supports_query`` and ``supports_text_transform`` capability flags.
         Hidden dependency geometries are excluded by default.
         """
-        return self.database.list_geometries(public_only=public_only)
+        records = self.database.list_geometries(public_only=public_only)
+        if not public_only:
+            return records
+        enabled = {
+            int(row["legacy_id"])
+            for row in self.database.list_representations()
+            if row["analytic_enabled"] and row["legacy_kind"] == "geometry"
+        }
+        return [row for row in records if int(row["geometry_id"]) in enabled]
 
     def has_geometry(self, name: str) -> bool:
         """Return whether a geometry with ``name`` is registered."""
@@ -515,9 +527,43 @@ class GeometricCoder:
             return False
         return True
 
-    def views(self, geometry_id: int | None = None) -> list[dict[str, Any]]:
-        """Return stable persisted two-dimensional view records."""
-        return self.database.list_views(geometry_id=geometry_id)
+    def views(
+        self, geometry_id: int | None = None, *, include_descendants: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return views, optionally including numerical descendants of a geometry.
+
+        The compatibility path returns legacy view records, so existing clients
+        keep using stable view IDs while the unified registry is being adopted.
+        """
+        if not include_descendants or geometry_id is None:
+            return self.database.list_views(geometry_id=geometry_id)
+        root = self.database.representation_for_legacy("geometry", int(geometry_id))
+        candidates = self.database.eligible_view_representations(
+            root["representation_id"], dimensions=(1, 2)
+        )
+        view_ids = self.database.legacy_view_ids_for_representations(
+            [int(row["representation_id"]) for row in candidates]
+        )
+        registered = [
+            view for view in self.database.list_views()
+            if int(view["view_id"]) in view_ids
+        ]
+        # Until every Explorer consumer uses unified IDs directly, a negative
+        # view ID is a namespace-safe tag for a plot-ready representation that
+        # has no legacy view alias. No duplicate numerical artifact is created.
+        for representation in candidates:
+            rid = int(representation["representation_id"])
+            if self.database.legacy_view_ids_for_representations([rid]):
+                continue
+            registered.append({
+                "view_id": -rid,
+                "geometry_id": int(geometry_id),
+                "name": str(representation["name"]),
+                "method": "representation",
+                "storage_kind": "representation",
+                "representation_id": rid,
+            })
+        return registered
 
     def has_view(self, name: str) -> bool:
         """Return whether a two-dimensional view with ``name`` is registered."""
@@ -870,6 +916,7 @@ class GeometricCoder:
         supports_query: bool = False,
         supports_text_transform: bool = False,
         public: bool = True,
+        analytic_enabled: bool = True,
         if_exists: str = "error",
     ) -> int:
         """Register a provider-backed geometry over the complete document universe.
@@ -944,8 +991,16 @@ class GeometricCoder:
             supports_text_transform=bool(supports_text_transform),
             storage_kind="external",
             external_ref=ref,
+            analytic_enabled=bool(analytic_enabled),
         )
-        self.ensure_default_classifier_specs()
+        representation_id = self.database.representation_for_legacy(
+            "geometry", geometry_id
+        )["representation_id"]
+        self.database.record_representation_dimensions(
+            representation_id, int(matrix.shape[1])
+        )
+        if self.database.get_representation(representation_id)["analytic_enabled"]:
+            self.ensure_default_classifier_specs()
         return geometry_id
 
     def register_external_view(
@@ -1162,6 +1217,28 @@ class GeometricCoder:
             description=description,
         )
 
+    def representations(self) -> list[dict[str, Any]]:
+        """One registry for numerical resources, independent of display role."""
+        return self.database.list_representations()
+
+    def representation_matrix(self, representation_id: int) -> Matrix:
+        """Get an artifact using its stable unified ID, without an implicit fit."""
+        record = self.database.get_representation(int(representation_id))
+        if record["legacy_kind"] == "geometry":
+            return self.geometry_matrix(record["legacy_id"])
+        return self.view_coordinates(record["legacy_id"])
+
+    def representation_display_candidates(
+        self, analytic_representation_id: int
+    ) -> list[dict[str, Any]]:
+        """Eligible 1D/2D visual descendants of an analytic representation."""
+        root = self.database.get_representation(int(analytic_representation_id))
+        if not root["analytic_enabled"]:
+            raise ConfigurationError("A view-only representation cannot be selected for analysis.")
+        return self.database.eligible_view_representations(
+            int(analytic_representation_id), dimensions=(1, 2)
+        )
+
     def geometry_matrix(self, geometry: int | str) -> Matrix:
         """Load one local or provider-backed geometry matrix by ID or name."""
         record = (
@@ -1363,7 +1440,19 @@ class GeometricCoder:
         }
 
     def view_coordinates(self, view_id: int) -> np.ndarray:
-        """Load one local or provider-backed two-dimensional view."""
+        """Load a view or one plot-ready 1D/2D unified representation."""
+        if int(view_id) < 0:
+            representation_id = -int(view_id)
+            registered = self.database.get_representation(representation_id)
+            if registered["dimensions"] not in (1, 2):
+                raise ValueError("Only 1D or 2D numerical representations are plot-ready.")
+            matrix = self.representation_matrix(representation_id)
+            coordinates = (
+                matrix.toarray() if sparse.issparse(matrix) else np.asarray(matrix)
+            )
+            if coordinates.ndim != 2 or coordinates.shape[1] not in (1, 2):
+                raise ValueError("The selected representation is not 1D or 2D.")
+            return coordinates.astype(np.float32, copy=False)
         view = self.database.get_view(view_id)
         if str(view.get("storage_kind", "local")) == "external":
             provider = self._require_external_provider()
@@ -1596,6 +1685,25 @@ class GeometricCoder:
     ) -> np.ndarray:
         """Place one atomic or derived observation in a persisted two-dimensional view."""
         observation = self.database.get_observation(observation_id)
+        if int(view_id) < 0:
+            # Canonical 1D/2D display representations need no fitted view
+            # object. Only atomic positions are guaranteed here; derived
+            # observations need separate frozen transform/backfill support.
+            if observation["kind"] != "atomic":
+                raise ValueError(
+                    "This numerical representation has no persisted coordinates "
+                    "for the derived observation."
+                )
+            position = int(observation["row_position"])
+            point = self.view_coordinates(view_id)[position : position + 1]
+            if point.shape[1] == 1:
+                from geometric_coder.ui.figures import one_dimensional_display_y
+                unit_id = int(observation["unit_id"])
+                return np.asarray(
+                    [[float(point[0, 0]), one_dimensional_display_y(unit_id)]],
+                    dtype=np.float32,
+                )
+            return point
         view = self.database.get_view(view_id)
         if observation["kind"] == "atomic":
             row_position = int(observation["row_position"])
@@ -2322,6 +2430,13 @@ class GeometricCoder:
         """Create one classifier owned by exactly one code."""
         self.database.get_code(int(code_id))
         self.database.get_geometry(int(geometry_id))
+        representation = self.database.representation_for_legacy(
+            "geometry", int(geometry_id)
+        )
+        if not representation["analytic_enabled"]:
+            raise ConfigurationError(
+                "A visualization-only representation cannot be a classifier geometry."
+            )
         parameters = normalize_hyperparameters(algorithm, dict(hyperparameters or {}))
         return self.database.create_classifier_spec(
             code_id=int(code_id),
@@ -2371,7 +2486,7 @@ class GeometricCoder:
             if code_id is not None
             else self.database.list_codes()
         )
-        geometries = self.database.list_geometries(public_only=True)
+        geometries = self.geometries(public_only=True)
         for code in codes:
             current_code_id = int(code["code_id"])
             existing = self.database.list_classifier_specs(

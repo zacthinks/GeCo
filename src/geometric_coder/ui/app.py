@@ -387,6 +387,8 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.figures import one_dimensional_jitter_spread
+    from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
     from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, standalone_primary_specs, teal_linked_project
 
@@ -404,11 +406,17 @@ def create_app(
     geometries = project.geometries(public_only=True)
     geometry_by_id = {int(record["geometry_id"]): record for record in geometries}
     geometry_id_by_name = {str(record["name"]): int(record["geometry_id"]) for record in geometries}
-    views = project.views()
-    view_by_id = {int(record["view_id"]): record for record in views}
-    views_by_geometry: dict[int, list[dict[str, Any]]] = {}
-    for view in views:
-        views_by_geometry.setdefault(int(view["geometry_id"]), []).append(view)
+    # The display surfaces share one descendant-aware compatibility path.
+    views_by_geometry: dict[int, list[dict[str, Any]]] = {
+        int(geometry["geometry_id"]): _display_view_records(
+            project, int(geometry["geometry_id"])
+        )
+        for geometry in geometries
+    }
+    presentation_views = _presentation_view_records(project, geometries)
+    presentation_view_by_id = {
+        int(record["view_id"]): record for record in presentation_views
+    }
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
@@ -533,6 +541,7 @@ def create_app(
                 ),
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
+                dcc.Store(id="representation-refresh-store", data=0),
                 dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
@@ -727,7 +736,7 @@ def create_app(
                     _memo_presentation_layout(
                         dcc=dcc,
                         html=html,
-                        views=views,
+                        views=presentation_views,
                         geometry_by_id=geometry_by_id,
                         initial_view_id=initial_view_id,
                         total_units=len(units),
@@ -753,6 +762,7 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    representation_modal(project, html=html, dcc=dcc, dash_table=dash_table),
                     html.Div([
                         html.Div([
                             html.Div([
@@ -817,6 +827,12 @@ def create_app(
         ],
         className="app-shell",
         style=GECO_DASH_THEME,
+    )
+
+    register_representation_callbacks(
+        app, project, html=html, dcc=dcc, Input=Input, Output=Output,
+        State=State, ALL=ALL, callback_context=callback_context,
+        no_update=no_update, geometries=geometries, geometry_by_id=geometry_by_id,
     )
 
     @app.callback(
@@ -1130,7 +1146,10 @@ def create_app(
         session = project.database.get_session(int(session_id))
         state = dict(session["state"])
         geometry_id = _valid_geometry_id(state.get("geometry_id"), geometries)
-        view_id = _valid_view_id(state.get("view_id"), project.views(geometry_id))
+        view_id = _valid_view_id(
+            state.get("view_id"),
+            project.views(geometry_id, include_descendants=True),
+        )
         query = str(state.get("semantic_query", ""))
         scores = project.semantic_search(query) if query else {}
         literal_options = []
@@ -1226,7 +1245,10 @@ def create_app(
         desired_view_id: int | None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         del refresh
-        candidates = project.views(int(geometry_id)) if geometry_id is not None else []
+        candidates = (
+            project.views(int(geometry_id), include_descendants=True)
+            if geometry_id is not None else []
+        )
         options = [{"label": view["name"], "value": int(view["view_id"])} for view in candidates]
         valid_ids = {option["value"] for option in options}
         if desired_view_id in valid_ids:
@@ -1236,6 +1258,19 @@ def create_app(
         else:
             value = options[0]["value"] if options else None
         return options, value
+
+    @app.callback(
+        Output("one-dimensional-jitter-wrap", "style"),
+        Input("view-dropdown", "value"),
+    )
+    def show_one_dimensional_jitter(view_id: int | None) -> dict[str, str]:
+        if view_id is None:
+            return {"display": "none"}
+        return (
+            {"display": "block"}
+            if project.view_coordinates(int(view_id)).shape[1] == 1
+            else {"display": "none"}
+        )
 
     @app.callback(
         Output("projection-modal", "style"),
@@ -1855,6 +1890,7 @@ def create_app(
         Output("geometry-map-base-revision-store", "data"),
         Input("view-dropdown", "value"),
         Input("geometry-dropdown", "value"),
+        Input("one-dimensional-jitter", "value"),
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-scores-store", "data"),
@@ -1877,6 +1913,7 @@ def create_app(
     def update_map(
         view_id: int | None,
         geometry_id: int | None,
+        jitter_strength: float | None,
         literal_query: str | None,
         literal_options: list[str] | None,
         all_semantic_scores: dict[str, list[float]] | None,
@@ -1940,7 +1977,8 @@ def create_app(
             page_number=number,
             additional_mask=uncoded_mask,
         )
-        coordinates = project.view_coordinates(int(view_id))[positions]
+        all_view_coordinates = project.view_coordinates(int(view_id))
+        coordinates = all_view_coordinates[positions]
         page_units = [units[int(position)] for position in positions]
         page_eligible = filters.eligible[positions]
         page_semantic = (
@@ -1957,7 +1995,17 @@ def create_app(
                 mode=selected_color_mode, selected_topic=topic_component_id,
             )
         seen = project.database.seen_unit_ids(int(session_id))
-        view = project.database.get_view(int(view_id))
+        # A canonical 1D/2D representation is selectable as a view without
+        # an additional legacy views-table row. Resolve both kinds using the
+        # same descendant-aware catalog as the Explorer dropdown.
+        view = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view is None:
+            return (
+                _empty_figure("The selected view is unavailable for this geometry."),
+                literal_status, "", "", next_revision,
+            )
         figure = build_geometry_figure(
             coordinates=coordinates,
             units=page_units,
@@ -1970,6 +2018,11 @@ def create_app(
             view_name=str(view["name"]),
             page_label=f"Page {page.page_index + 1} of {page.page_count}",
             uirevision=f"view:{int(view_id)}:page:{page.page_index}",
+            jitter_strength=float(jitter_strength if jitter_strength is not None else 1.0),
+            jitter_spread=(
+                one_dimensional_jitter_spread(all_view_coordinates[:, 0])
+                if all_view_coordinates.shape[1] == 1 else None
+            ),
         )
         if callback_context.triggered_id not in {
             "view-dropdown",
@@ -2893,9 +2946,38 @@ def create_app(
         return page_count, current
 
     @app.callback(
+        Output("memo-presentation-view", "options"),
+        Output("memo-presentation-view", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
+        State("memo-presentation-view", "value"),
+    )
+    def refresh_presentation_views(
+        _representation_revision: int | None,
+        _view_revision: int | None,
+        current_view_id: int | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        current_geometries = project.geometries(public_only=True)
+        records = _presentation_view_records(project, current_geometries)
+        presentation_view_by_id.clear()
+        presentation_view_by_id.update({
+            int(row["view_id"]): row for row in records
+        })
+        options = _presentation_view_options(records, current_geometries)
+        valid_ids = {int(option["value"]) for option in options}
+        selected = (
+            int(current_view_id)
+            if current_view_id is not None and int(current_view_id) in valid_ids
+            else (int(options[0]["value"]) if options else None)
+        )
+        return options, selected
+
+    @app.callback(
         Output("memo-presentation-map", "figure"),
         Output("memo-presentation-page-status", "children"),
         Input("memo-presentation-view", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
         Input("memo-presentation-saved-filter", "value"),
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-page-number", "value"),
@@ -2904,15 +2986,17 @@ def create_app(
     )
     def update_memo_presentation_map(
         view_id: int | None,
+        _representation_revision: int | None,
+        _view_revision: int | None,
         saved_filter_id: str | None,
         page_size: Any,
         page_number: Any,
         location_hash: str | None,
         relayout_data: dict[str, Any] | None,
     ) -> tuple[Any, str]:
-        if view_id is None or int(view_id) not in view_by_id:
-            return _empty_figure("No computed 2D view is available."), ""
-        view_record = view_by_id[int(view_id)]
+        if view_id is None or int(view_id) not in presentation_view_by_id:
+            return _empty_figure("No compatible display representation is available."), ""
+        view_record = presentation_view_by_id[int(view_id)]
         geometry_id = int(view_record["geometry_id"])
         geometry_record = geometry_by_id.get(geometry_id)
         if geometry_record is None:
@@ -3564,13 +3648,25 @@ def create_app(
     @app.callback(
         Output("code-center-view", "options"), Output("code-center-view", "value"),
         Input("code-center-geometry", "value"),
+        Input("representation-refresh-store", "data"),
+        Input("view-refresh-store", "data"),
+        State("code-center-view", "value"),
     )
-    def update_code_center_views(geometry_id: int | None) -> tuple[list[dict[str, Any]], int | None]:
+    def update_code_center_views(
+        geometry_id: int | None, _revision: int | None,
+        _view_revision: int | None, current_view_id: int | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
         if geometry_id is None:
             return [], None
-        records = project.views(int(geometry_id))
+        records = _display_view_records(project, int(geometry_id))
         options = [{"label": row["name"], "value": int(row["view_id"])} for row in records]
-        return options, (int(records[0]["view_id"]) if records else None)
+        valid_ids = {int(row["view_id"]) for row in records}
+        selected = (
+            int(current_view_id)
+            if current_view_id is not None and int(current_view_id) in valid_ids
+            else (int(records[0]["view_id"]) if records else None)
+        )
+        return options, selected
 
     @app.callback(
         Output("code-center-map", "figure"),
@@ -3635,7 +3731,11 @@ def create_app(
         page_units = [units[int(position)] for position in positions]
         page_eligible = [int(unit["unit_id"]) in positive for unit in page_units]
         geometry_record = geometry_by_id[int(geometry_id)]
-        view_record = project.database.get_view(int(view_id))
+        view_record = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view_record is None:
+            return _empty_figure("This view is no longer available."), ""
         figure = build_geometry_figure(
             coordinates=project.view_coordinates(int(view_id))[positions],
             units=page_units,
@@ -6792,7 +6892,7 @@ def _explore_layout(
                                 value=initial_geometry_id,
                                 clearable=False,
                             ),
-                            html.Label("2D view", className="stacked-control-label"),
+                            html.Label("View", className="stacked-control-label"),
                             dcc.Dropdown(
                                 id="view-dropdown",
                                 options=[
@@ -6812,12 +6912,24 @@ def _explore_layout(
                                 n_clicks=0,
                                 className="secondary-action",
                                 disabled=not allow_create_view,
+                                style={} if allow_create_view else {"display": "none"},
                                 title=(
                                     None
                                     if allow_create_view
-                                    else "Create views in the external provider and register them with GeCo."
+                                    else "Use Manage Representations for TeAL-backed 2D views."
                                 ),
                             ),
+                            html.Div([
+                                html.Label("1D jitter strength"),
+                                dcc.Slider(
+                                    id="one-dimensional-jitter", min=0, max=3, step=0.25,
+                                    value=1, marks={0: "Off", 1: "1×", 2: "2×", 3: "3×"},
+                                    updatemode="mouseup",
+                                ),
+                            ], id="one-dimensional-jitter-wrap",
+                               style={"display": "none"},
+                               className="one-dimensional-jitter-control"),
+                            html.Button("Manage Representations", id="representation-manager-open", n_clicks=0, className="secondary-action"),
                         ],
                         className="control-block geometry-view-control-block",
                     ),
@@ -7321,15 +7433,9 @@ def _memo_presentation_layout(
     public_views = [
         view for view in views if int(view["geometry_id"]) in geometry_by_id
     ]
-    view_options = [
-        {
-            "label": (
-                f"{geometry_by_id[int(view['geometry_id'])]['name']} — {view['name']}"
-            ),
-            "value": int(view["view_id"]),
-        }
-        for view in public_views
-    ]
+    view_options = _presentation_view_options(
+        public_views, list(geometry_by_id.values())
+    )
     selected_view = (
         int(initial_view_id)
         if initial_view_id is not None
@@ -7375,7 +7481,7 @@ def _memo_presentation_layout(
                                 [
                                     html.Div(
                                         [
-                                            html.Label("2D view", htmlFor="memo-presentation-view"),
+                                            html.Label("View", htmlFor="memo-presentation-view"),
                                             dcc.Dropdown(
                                                 id="memo-presentation-view",
                                                 options=view_options,
@@ -7405,7 +7511,7 @@ def _memo_presentation_layout(
                                 [
                                     dcc.Graph(
                                         id="memo-presentation-map",
-                                        figure=_empty_figure("Choose a memo and 2D view."),
+                                        figure=_empty_figure("Choose a memo and view."),
                                         config={
                                             "displaylogo": False,
                                             "scrollZoom": True,
@@ -9476,12 +9582,81 @@ def _valid_geometry_id(value: Any, geometries: list[dict[str, Any]]) -> int | No
 
 
 def _valid_view_id(value: Any, views: list[dict[str, Any]]) -> int | None:
+    """Restore a saved view, preferring legacy views for an unset selection.
+
+    Canonical-only representation views use negative compatibility IDs; an
+    unset/invalid saved view must not suddenly prefer one merely because its
+    negative ID sorts before the original registered view.
+    """
     valid = {int(record["view_id"]) for record in views}
     try:
         candidate = int(value)
     except (TypeError, ValueError):
-        candidate = -1
-    return candidate if candidate in valid else (min(valid) if valid else None)
+        candidate = None
+    if candidate is not None and candidate in valid:
+        return candidate
+    legacy = [view_id for view_id in valid if view_id > 0]
+    if legacy:
+        return min(legacy)
+    return int(views[0]["view_id"]) if views else None
+
+
+def _display_view_records(
+    project: GeometricCoder, geometry_id: int,
+) -> list[dict[str, Any]]:
+    """Include numerical descendants, not just owned legacy 2D views."""
+    return project.views(int(geometry_id), include_descendants=True)
+
+
+def _presentation_view_records(
+    project: GeometricCoder, geometries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """List distinct plot-ready view IDs under currently analytic geometries.
+
+    A descendant may visualize several ancestors; presentation offers one
+    selection per numerical view, deterministically choosing a public analytic
+    source rather than showing duplicate dropdown values.
+    """
+    result: dict[int, dict[str, Any]] = {}
+    for geometry in geometries:
+        geometry_id = int(geometry["geometry_id"])
+        for view in _display_view_records(project, geometry_id):
+            view_id = int(view["view_id"])
+            if view_id not in result:
+                result[view_id] = {
+                    "view_id": view_id,
+                    "geometry_id": geometry_id,
+                    "name": str(view["name"]),
+                }
+    return sorted(result.values(), key=lambda row: (
+        str(row["name"]).casefold(), int(row["view_id"]),
+    ))
+
+
+def _presentation_view_options(
+    views: list[dict[str, Any]], geometries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Provide labels with analytic source context and stable display IDs."""
+    names = {int(row["geometry_id"]): str(row["name"]) for row in geometries}
+    return [
+        {
+            "label": f"{names[int(view['geometry_id'])]} — {view['name']}",
+            "value": int(view["view_id"]),
+        }
+        for view in views
+        if int(view["geometry_id"]) in names
+    ]
+
+
+def _display_view_record(
+    project: GeometricCoder, *, geometry_id: int, view_id: int,
+) -> dict[str, Any] | None:
+    """Resolve a selected legacy or canonical-only view within its geometry."""
+    return next(
+        (row for row in _display_view_records(project, geometry_id)
+         if int(row["view_id"]) == int(view_id)),
+        None,
+    )
 
 
 def _coerce_positive_int(value: Any, *, default: int) -> int:

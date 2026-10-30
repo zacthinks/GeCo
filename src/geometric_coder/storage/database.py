@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -138,6 +138,35 @@ CREATE TABLE geometries (
     external_ref_json TEXT,
     created_at TEXT NOT NULL
 );
+
+-- Unified representation identity. Legacy registries remain available only
+-- during the compatibility transition; callers must not infer parenthood from
+-- shared document keys or arbitrary TeAL basis lineage.
+CREATE TABLE representations (
+    representation_id INTEGER PRIMARY KEY,
+    legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+    legacy_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    dimensions INTEGER CHECK (dimensions IS NULL OR dimensions > 0),
+    analytic_enabled INTEGER NOT NULL CHECK (analytic_enabled IN (0, 1)),
+    parent_representation_id INTEGER REFERENCES representations(representation_id),
+    storage_kind TEXT NOT NULL CHECK (storage_kind IN ('local', 'external')),
+    external_ref_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(legacy_kind, legacy_id),
+    CHECK (parent_representation_id IS NULL OR parent_representation_id != representation_id)
+);
+CREATE INDEX representations_parent_idx ON representations(parent_representation_id);
+-- Compatibility references can point to one canonical numerical representation.
+-- A provider artifact registered for analysis and display has one identity.
+CREATE TABLE representation_legacy_refs (
+    legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+    legacy_id INTEGER NOT NULL,
+    representation_id INTEGER NOT NULL REFERENCES representations(representation_id) ON DELETE CASCADE,
+    PRIMARY KEY (legacy_kind, legacy_id)
+);
+CREATE INDEX representation_legacy_refs_target_idx
+ON representation_legacy_refs(representation_id);
 
 CREATE TABLE observation_geometry_vectors (
     observation_id INTEGER NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
@@ -524,10 +553,116 @@ def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
     )
 
 
+
+def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
+    """Backfill unified IDs without discarding any legacy registration.
+
+    Parent relationships are recorded only where legacy GeCo directly
+    recorded numerical sources. Imported provider lineage is deliberately
+    unresolved until a provider provenance reconciliation pass. Keeping legacy
+    identity columns makes the transitional reader deterministic and reversible.
+    """
+    connection.execute("""CREATE TABLE representations (
+        representation_id INTEGER PRIMARY KEY,
+        legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+        legacy_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        dimensions INTEGER CHECK (dimensions IS NULL OR dimensions > 0),
+        analytic_enabled INTEGER NOT NULL CHECK (analytic_enabled IN (0, 1)),
+        parent_representation_id INTEGER REFERENCES representations(representation_id),
+        storage_kind TEXT NOT NULL CHECK (storage_kind IN ('local', 'external')),
+        external_ref_json TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(legacy_kind, legacy_id),
+        CHECK (parent_representation_id IS NULL OR parent_representation_id != representation_id)
+    )""")
+    connection.execute(
+        "CREATE INDEX representations_parent_idx ON representations(parent_representation_id)"
+    )
+    connection.execute("""CREATE TABLE representation_legacy_refs (
+        legacy_kind TEXT NOT NULL CHECK (legacy_kind IN ('geometry', 'view')),
+        legacy_id INTEGER NOT NULL,
+        representation_id INTEGER NOT NULL REFERENCES representations(representation_id) ON DELETE CASCADE,
+        PRIMARY KEY (legacy_kind, legacy_id)
+    )""")
+    connection.execute(
+        "CREATE INDEX representation_legacy_refs_target_idx "
+        "ON representation_legacy_refs(representation_id)"
+    )
+    geometries = connection.execute(
+        "SELECT geometry_id, name, dependency_names_json, storage_kind, "
+        "external_ref_json, created_at FROM geometries ORDER BY geometry_id"
+    ).fetchall()
+    geometry_to_rep: dict[int, int] = {}
+    name_to_geometry = {str(g["name"]): int(g["geometry_id"]) for g in geometries}
+    for g in geometries:
+        cursor = connection.execute(
+            "INSERT INTO representations(legacy_kind, legacy_id, name, analytic_enabled, "
+            "storage_kind, external_ref_json, created_at) VALUES ('geometry', ?, ?, 1, ?, ?, ?)",
+            (int(g["geometry_id"]), str(g["name"]), str(g["storage_kind"]),
+             g["external_ref_json"], g["created_at"]),
+        )
+        geometry_to_rep[int(g["geometry_id"])] = int(cursor.lastrowid)
+        connection.execute(
+            "INSERT INTO representation_legacy_refs VALUES ('geometry', ?, ?)",
+            (int(g["geometry_id"]), int(cursor.lastrowid)),
+        )
+    for g in geometries:
+        deps = json.loads(g["dependency_names_json"])
+        if len(deps) == 1 and deps[0] in name_to_geometry:
+            # Single numerical source is the only permissible parent edge.
+            source_id = name_to_geometry[deps[0]]
+            target_id = int(g["geometry_id"])
+            if source_id != target_id:
+                connection.execute(
+                    "UPDATE representations SET parent_representation_id = ? "
+                    "WHERE representation_id = ?",
+                    (geometry_to_rep[source_id], geometry_to_rep[target_id]),
+                )
+    for v in connection.execute(
+        "SELECT view_id, geometry_id, name, method, storage_kind, external_ref_json, "
+        "created_at FROM views ORDER BY view_id"
+    ).fetchall():
+        parent_rep = geometry_to_rep[int(v["geometry_id"])]
+        shared_rep = None
+        if v["external_ref_json"] is not None:
+            matches = [
+                geometry_to_rep[int(g["geometry_id"])] for g in geometries
+                if g["external_ref_json"] is not None
+                and json.loads(g["external_ref_json"]) == json.loads(v["external_ref_json"])
+            ]
+            if len(set(matches)) == 1:
+                shared_rep = matches[0]
+        elif str(v["method"]).lower() == "identity":
+            # Legacy native identity views display the same fitted geometry.
+            shared_rep = parent_rep
+        if shared_rep is None:
+            cursor = connection.execute(
+                "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+                "analytic_enabled, parent_representation_id, storage_kind, "
+                "external_ref_json, created_at) "
+                "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+                (int(v["view_id"]), str(v["name"]), parent_rep,
+                 str(v["storage_kind"]), v["external_ref_json"], v["created_at"]),
+            )
+            shared_rep = int(cursor.lastrowid)
+        else:
+            connection.execute(
+                "UPDATE representations SET dimensions = 2 "
+                "WHERE representation_id = ? AND dimensions IS NULL",
+                (shared_rep,),
+            )
+        connection.execute(
+            "INSERT INTO representation_legacy_refs VALUES ('view', ?, ?)",
+            (int(v["view_id"]), shared_rep),
+        )
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     13: _migrate_13_to_14,
+    14: _migrate_14_to_15,
 }
 
 
@@ -1146,10 +1281,17 @@ class ProjectDatabase:
         supports_text_transform: bool,
         storage_kind: str = "local",
         external_ref: Any | None = None,
+        analytic_enabled: bool = True,
     ) -> int:
-        """Register a local or externally backed geometry and return its ID."""
+        """Register a local or externally backed geometry and return its ID.
+
+        A second legacy alias for the same artifact may grant analytic
+        eligibility, but must never revoke it from the existing identity.
+        Only the explicit eligibility operation can demote an artifact.
+        """
         if storage_kind not in {"local", "external"}:
             raise ValueError("storage_kind must be 'local' or 'external'")
+        deps = list(dependency_names)
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -1165,7 +1307,7 @@ class ProjectDatabase:
                     modality,
                     int(public),
                     json.dumps(config, sort_keys=True),
-                    json.dumps(list(dependency_names)),
+                    json.dumps(deps),
                     matrix_path,
                     int(matrix_sparse),
                     state_path,
@@ -1178,7 +1320,50 @@ class ProjectDatabase:
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return a geometry ID.")
-            return int(cursor.lastrowid)
+            geometry_id = int(cursor.lastrowid)
+            parent = None
+            if len(deps) == 1:
+                parent_row = connection.execute(
+                    "SELECT r.representation_id FROM representations r "
+                    "JOIN geometries g ON r.legacy_kind='geometry' "
+                    "AND r.legacy_id=g.geometry_id WHERE g.name=?",
+                    (deps[0],),
+                ).fetchone()
+                if parent_row is not None:
+                    parent = int(parent_row["representation_id"])
+            ref_json = json.dumps(external_ref) if external_ref is not None else None
+            shared = None
+            if storage_kind == "external" and ref_json is not None:
+                matches = connection.execute(
+                    "SELECT representation_id FROM representations "
+                    "WHERE storage_kind='external' AND external_ref_json=?",
+                    (ref_json,),
+                ).fetchall()
+                if len(matches) == 1:
+                    shared = int(matches[0]["representation_id"])
+            if shared is not None:
+                connection.execute(
+                    "UPDATE representations SET legacy_kind='geometry', legacy_id=?, "
+                    "name=?, analytic_enabled=MAX(analytic_enabled, ?) "
+                    "WHERE representation_id=?",
+                    (geometry_id, name, int(bool(analytic_enabled)), shared),
+                )
+                rep_id = shared
+            else:
+                result = connection.execute(
+                    "INSERT INTO representations(legacy_kind, legacy_id, name, "
+                    "analytic_enabled, parent_representation_id, storage_kind, "
+                    "external_ref_json, created_at) "
+                    "VALUES ('geometry', ?, ?, ?, ?, ?, ?, ?)",
+                    (geometry_id, name, int(bool(analytic_enabled)), parent,
+                     storage_kind, ref_json, utc_now()),
+                )
+                rep_id = int(result.lastrowid)
+            connection.execute(
+                "INSERT INTO representation_legacy_refs VALUES ('geometry', ?, ?)",
+                (geometry_id, rep_id),
+            )
+            return geometry_id
 
     def register_view(
         self,
@@ -1220,7 +1405,48 @@ class ProjectDatabase:
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return a view ID.")
-            return int(cursor.lastrowid)
+            view_id = int(cursor.lastrowid)
+            parent = connection.execute(
+                "SELECT representation_id FROM representations "
+                "WHERE legacy_kind='geometry' AND legacy_id=?",
+                (int(geometry_id),),
+            ).fetchone()
+            if parent is None:
+                raise RuntimeError("Cannot register a view without its analytic parent.")
+            parent_id = int(parent["representation_id"])
+            ref_json = json.dumps(external_ref) if external_ref is not None else None
+            shared = None
+            if storage_kind == "external" and ref_json is not None:
+                matches = connection.execute(
+                    "SELECT representation_id FROM representations "
+                    "WHERE storage_kind='external' AND external_ref_json=?",
+                    (ref_json,),
+                ).fetchall()
+                if len(matches) == 1:
+                    shared = int(matches[0]["representation_id"])
+            elif method.lower() == "identity":
+                shared = parent_id
+            if shared is not None:
+                connection.execute(
+                    "UPDATE representations SET dimensions=2 "
+                    "WHERE representation_id=? AND dimensions IS NULL",
+                    (shared,),
+                )
+                rep_id = shared
+            else:
+                result = connection.execute(
+                    "INSERT INTO representations(legacy_kind, legacy_id, name, dimensions, "
+                    "analytic_enabled, parent_representation_id, storage_kind, "
+                    "external_ref_json, created_at) "
+                    "VALUES ('view', ?, ?, 2, 0, ?, ?, ?, ?)",
+                    (view_id, name, parent_id, storage_kind, ref_json, utc_now()),
+                )
+                rep_id = int(result.lastrowid)
+            connection.execute(
+                "INSERT INTO representation_legacy_refs VALUES ('view', ?, ?)",
+                (view_id, rep_id),
+            )
+            return view_id
 
 
     def register_topic_model(
@@ -1335,6 +1561,174 @@ class ProjectDatabase:
                 "UPDATE topic_models SET topic_labels_json = ? WHERE topic_model_id = ?",
                 (json.dumps(labels, sort_keys=True), topic_model_id),
             )
+
+    def list_representations(self) -> list[dict[str, Any]]:
+        """Unified numerical registry; IDs are independent of legacy view/geometry IDs."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM representations ORDER BY representation_id"
+            ).fetchall()
+        return [self._representation_row(row) for row in rows]
+
+    @staticmethod
+    def _representation_row(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["representation_id"] = int(value["representation_id"])
+        value["legacy_id"] = int(value["legacy_id"])
+        value["analytic_enabled"] = bool(value["analytic_enabled"])
+        if value["parent_representation_id"] is not None:
+            value["parent_representation_id"] = int(value["parent_representation_id"])
+        if value["dimensions"] is not None:
+            value["dimensions"] = int(value["dimensions"])
+        value["external_ref"] = (
+            json.loads(value.pop("external_ref_json"))
+            if value["external_ref_json"] is not None else None
+        )
+        return value
+
+    def get_representation(self, representation_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM representations WHERE representation_id = ?",
+                (int(representation_id),),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown representation_id: {representation_id}")
+        return self._representation_row(row)
+
+    def representation_for_legacy(self, kind: str, identifier: int) -> dict[str, Any]:
+        if kind not in {"geometry", "view"}:
+            raise ValueError("Legacy representation kind must be geometry or view.")
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT r.* FROM representations r "
+                "JOIN representation_legacy_refs l "
+                "ON l.representation_id = r.representation_id "
+                "WHERE l.legacy_kind = ? AND l.legacy_id = ?",
+                (kind, int(identifier)),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown {kind} representation ID: {identifier}")
+        return self._representation_row(row)
+
+    def legacy_view_ids_for_representations(self, representation_ids: Sequence[int]) -> set[int]:
+        if not representation_ids:
+            return set()
+        placeholders = ",".join("?" for _ in representation_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT legacy_id FROM representation_legacy_refs "
+                f"WHERE legacy_kind='view' AND representation_id IN ({placeholders})",
+                tuple(int(value) for value in representation_ids),
+            ).fetchall()
+        return {int(row["legacy_id"]) for row in rows}
+
+    def record_representation_dimensions(self, representation_id: int, dimensions: int) -> None:
+        """Cache validated numerical shape; a later shape change is an error."""
+        if isinstance(dimensions, bool) or int(dimensions) < 1 or int(dimensions) != dimensions:
+            raise ValueError("Representation dimensions must be a positive integer.")
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE representations SET dimensions = ? "
+                "WHERE representation_id = ? AND (dimensions IS NULL OR dimensions = ?)",
+                (int(dimensions), int(representation_id), int(dimensions)),
+            )
+            if result.rowcount != 1:
+                raise ValueError(
+                    "Representation is missing or its recorded feature dimensions differ."
+                )
+
+    def assign_representation_parent(
+        self, representation_id: int, parent_representation_id: int,
+        *, allow_refinement: bool = False,
+    ) -> None:
+        """Link numerical ancestry without cycles.
+
+        Refinement is allowed only when the proposed closer parent is already
+        a descendant of the old one. A provider integration must separately
+        establish the single-input numerical source chain.
+        """
+        child = int(representation_id)
+        parent = int(parent_representation_id)
+        if child == parent:
+            raise ValueError("A representation cannot parent itself.")
+        with self.connect() as connection:
+            records = connection.execute(
+                "SELECT representation_id, parent_representation_id "
+                "FROM representations"
+            ).fetchall()
+            by_id = {
+                int(row["representation_id"]): (
+                    int(row["parent_representation_id"])
+                    if row["parent_representation_id"] is not None else None
+                )
+                for row in records
+            }
+            if child not in by_id or parent not in by_id:
+                raise KeyError("Unknown representation in parent assignment.")
+            existing_parent = by_id[child]
+            if existing_parent is not None:
+                if existing_parent == parent:
+                    return
+                if not allow_refinement:
+                    raise ValueError("A representation already has a numerical parent.")
+                # The new parent must demonstrably lie beneath the old parent
+                # in the persisted GeCo graph; arbitrary rewiring is forbidden.
+                ancestor = parent
+                known_ancestors: set[int] = set()
+                while ancestor is not None and ancestor not in known_ancestors:
+                    if ancestor == existing_parent:
+                        break
+                    known_ancestors.add(ancestor)
+                    ancestor = by_id[ancestor]
+                else:
+                    raise ValueError("A refined parent must descend from the previous parent.")
+                if ancestor != existing_parent:
+                    raise ValueError("A refined parent must descend from the previous parent.")
+            visited = set()
+            current: int | None = parent
+            while current is not None:
+                if current == child or current in visited:
+                    raise ValueError("Numerical parent assignment would create a cycle.")
+                visited.add(current)
+                current = by_id[current]
+            connection.execute(
+                "UPDATE representations SET parent_representation_id = ? "
+                "WHERE representation_id = ?",
+                (parent, child),
+            )
+
+    def eligible_view_representations(
+        self, analytic_representation_id: int, *, dimensions: tuple[int, ...] = (1, 2)
+    ) -> list[dict[str, Any]]:
+        """Return self/descendants that can be displayed, at any lineage depth."""
+        if not dimensions or any(d < 1 for d in dimensions):
+            raise ValueError("Supported display dimensions must be positive.")
+        # The recursive graph follows numerical parent links only, not
+        # TeAL computational provenance or coincident document identifiers.
+        placeholders = ",".join("?" for _ in dimensions)
+        query = f"""WITH RECURSIVE descendants(representation_id) AS (
+            SELECT representation_id FROM representations WHERE representation_id = ?
+            UNION
+            SELECT child.representation_id FROM representations child
+            JOIN descendants ancestor
+              ON child.parent_representation_id = ancestor.representation_id
+        )
+        SELECT r.* FROM representations r
+        JOIN descendants d ON d.representation_id = r.representation_id
+        WHERE r.dimensions IN ({placeholders})
+        ORDER BY r.name COLLATE NOCASE, r.representation_id"""
+        with self.connect() as connection:
+            root = connection.execute(
+                "SELECT 1 FROM representations WHERE representation_id = ?",
+                (int(analytic_representation_id),),
+            ).fetchone()
+            if root is None:
+                raise KeyError(f"Unknown representation_id: {analytic_representation_id}")
+            rows = connection.execute(
+                query, (int(analytic_representation_id), *dimensions)
+            ).fetchall()
+        return [self._representation_row(row) for row in rows]
 
     def list_geometries(self, *, public_only: bool = False) -> list[dict[str, Any]]:
         """List persisted geometries in computation order."""

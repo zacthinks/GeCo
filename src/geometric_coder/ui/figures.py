@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from hashlib import blake2b
 from typing import Any
 
 import numpy as np
@@ -21,6 +22,24 @@ EXPLORE_TRACE_NAMES = (
 )
 
 
+def one_dimensional_jitter_spread(coordinates: np.ndarray) -> float:
+    """One stable jitter unit based on the full 1D view, not a filtered page."""
+    values = np.asarray(coordinates, dtype=float).reshape(-1)
+    spread = float(np.std(values)) if values.size else 0.0
+    # Constant-coordinate displays still need distinguishable observations.
+    return spread if np.isfinite(spread) and spread > 0 else 1.0
+
+
+def one_dimensional_display_y(
+    unit_id: int, *, spread: float = 1.0, strength: float = 1.0,
+) -> float:
+    """Stable observation-ID jitter, scaled only for display, never analysis."""
+    key = str(int(unit_id)).encode("ascii")
+    digest = blake2b(key, digest_size=8, person=b"GeCoJit1").digest()
+    base = (int.from_bytes(digest, "big") / (2**64 - 1) - 0.5) * 0.8
+    return base * float(spread) * float(strength)
+
+
 def build_geometry_figure(
     *,
     coordinates: np.ndarray,
@@ -34,6 +53,8 @@ def build_geometry_figure(
     view_name: str = "View",
     page_label: str | None = None,
     uirevision: str | None = None,
+    jitter_strength: float = 1.0,
+    jitter_spread: float | None = None,
 ) -> go.Figure:
     """Build a click-responsive Explore map with stable trace structure.
 
@@ -44,10 +65,28 @@ def build_geometry_figure(
     figure update instead of rebuilding and retransmitting the full map.
     """
     coordinates = np.asarray(coordinates, dtype=float)
-    if coordinates.ndim != 2 or coordinates.shape[1] != 2:
-        raise ValueError("coordinates must have shape (n, 2)")
+    if coordinates.ndim != 2 or coordinates.shape[1] not in (1, 2):
+        raise ValueError("coordinates must have shape (n, 1) or (n, 2)")
     if coordinates.shape[0] != len(units):
         raise ValueError("coordinates and units must contain the same number of rows")
+    if coordinates.shape[1] == 1:
+        # Display-only jitter: stable by observation ID, independent of page,
+        # filter, or order. Analytic distances always use the original 1D vector.
+        spread = (
+            one_dimensional_jitter_spread(coordinates[:, 0])
+            if jitter_spread is None else float(jitter_spread)
+        )
+        if not np.isfinite(spread) or spread <= 0:
+            raise ValueError("jitter_spread must be positive and finite.")
+        if not np.isfinite(jitter_strength) or jitter_strength < 0:
+            raise ValueError("jitter_strength must be nonnegative and finite.")
+        offsets = [
+            one_dimensional_display_y(
+                int(unit["unit_id"]), spread=spread, strength=jitter_strength
+            )
+            for unit in units
+        ]
+        coordinates = np.column_stack((coordinates[:, 0], offsets))
     eligible_array = np.asarray(eligible, dtype=bool)
     if eligible_array.shape != (len(units),):
         raise ValueError("eligible must contain one value per unit")

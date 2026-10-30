@@ -21,6 +21,13 @@ def test_initial_geometry_and_view_selection_falls_back_to_registered_resources(
     views = [{"view_id": 23}, {"view_id": 31}]
     assert _valid_geometry_id(None, geometries) == 7
     assert _valid_view_id(None, views) == 23
+    # Legacy default remains selected even when a canonical-only view has a
+    # negative adapter ID; explicit saved canonical selections remain valid.
+    mixed = [{"view_id": 1}, {"view_id": -1}]
+    assert _valid_view_id(None, mixed) == 1
+    assert _valid_view_id(999, mixed) == 1
+    assert _valid_view_id(-1, mixed) == -1
+    assert _valid_view_id(None, [{"view_id": -42}]) == -42
 
 
 def test_code_center_patch_target_is_initialized_before_partial_updates() -> None:
@@ -463,3 +470,118 @@ def test_training_and_recommendation_callbacks_preserve_explicit_boundaries() ->
     assert 'if not request:' in training
     assert 'if not completed:' in training
     assert "training_inbox.drain(fit)" in training
+
+
+
+def test_code_center_uses_transitive_unified_display_candidates() -> None:
+    from geometric_coder.ui.app import _display_view_record, _display_view_records
+
+    class FakeProject:
+        def views(self, geometry_id, *, include_descendants=False):
+            assert geometry_id == 7
+            assert include_descendants is True
+            return [
+                {"view_id": 23, "name": "Legacy 2D view"},
+                {"view_id": -42, "name": "Canonical 1D descendant"},
+            ]
+
+    project = FakeProject()
+    records = _display_view_records(project, 7)
+    assert [item["view_id"] for item in records] == [23, -42]
+    assert _display_view_record(project, geometry_id=7, view_id=-42) == records[1]
+    assert _display_view_record(project, geometry_id=7, view_id=-99) is None
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'Input("representation-refresh-store", "data")' in source
+    assert '_display_view_records(project, int(geometry_id))' in source
+    assert '_display_view_record(' in source
+
+
+def test_presentation_views_include_canonical_descendants_without_duplicate_ids() -> None:
+    from geometric_coder.ui.app import (
+        _presentation_view_options, _presentation_view_records,
+    )
+
+    class FakeProject:
+        def views(self, geometry_id, *, include_descendants=False):
+            assert include_descendants
+            return {
+                7: [
+                    {"view_id": 23, "name": "Legacy"},
+                    {"view_id": -42, "name": "1D child"},
+                ],
+                11: [{"view_id": -42, "name": "1D child"}],
+            }[geometry_id]
+
+    geometries = [
+        {"geometry_id": 7, "name": "Source A"},
+        {"geometry_id": 11, "name": "Source B"},
+    ]
+    records = _presentation_view_records(FakeProject(), geometries)
+    assert {row["view_id"] for row in records} == {23, -42}
+    assert len(records) == 2
+    options = _presentation_view_options(records, geometries)
+    assert {option["value"] for option in options} == {23, -42}
+    assert next(option for option in options if option["value"] == -42)["label"] == "Source A — 1D child"
+
+
+def test_explorer_map_resolves_canonical_display_without_legacy_view_row():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    section = source.split("    def update_map(", 1)[1].split(
+        "    def update_map_navigation_overlays(", 1
+    )[0]
+    assert "_display_view_record(" in section
+    assert "project.database.get_view(int(view_id))" not in section
+    assert "project.view_coordinates(int(view_id))" in section
+
+
+def test_one_dimensional_jitter_is_stable_and_scale_aware() -> None:
+    import numpy as np
+    from geometric_coder.ui.figures import (
+        one_dimensional_display_y, one_dimensional_jitter_spread,
+        build_geometry_figure,
+    )
+
+    units = [{"unit_id": i, "user_key": {"id": i}} for i in (11, 12, 13)]
+    values = np.asarray([[0.0], [100.0], [200.0]])
+    spread = one_dimensional_jitter_spread(values[:, 0])
+    assert spread > 10
+    assert one_dimensional_display_y(11, spread=spread) == one_dimensional_display_y(
+        11, spread=spread
+    )
+    assert one_dimensional_display_y(11, spread=spread, strength=0) == 0
+    assert one_dimensional_display_y(11, spread=spread, strength=2) == (
+        2 * one_dimensional_display_y(11, spread=spread)
+    )
+    figure = build_geometry_figure(
+        coordinates=values, units=units, eligible=[True, True, True],
+        jitter_strength=1, jitter_spread=spread,
+    )
+    assert len(set(figure.data[1].y)) == 3
+    zoomed = build_geometry_figure(
+        coordinates=values[:2], units=units[:2], eligible=[True, True],
+        jitter_strength=1, jitter_spread=spread,
+    )
+    assert list(zoomed.data[1].y) == list(figure.data[1].y[:2])
+    flat = build_geometry_figure(
+        coordinates=np.ones((3, 1)), units=units, eligible=[True] * 3
+    )
+    assert len(set(flat.data[1].y)) == 3
+
+
+def test_representation_detail_clears_cell_focus_and_allows_repeat_clicks() -> None:
+    source = (Path(__file__).resolve().parents[1] /
+              "src/geometric_coder/ui/representation_ui.py").read_text()
+    assert 'Output("representation-table", "active_cell")' in source
+    assert 'return {"display": "flex"}, rows[position]["key"], None' in source
+    assert "style_data_conditional=[]" in source
+    assert 'id="one-dimensional-jitter"' in (
+        Path(__file__).resolve().parents[1] /
+        "src/geometric_coder/ui/app.py"
+    ).read_text()
