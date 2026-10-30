@@ -65,6 +65,7 @@ def fake_link(monkeypatch):
         add_projection=Mock(return_value=48),
     )
     project = SimpleNamespace(
+        catalog=SimpleNamespace(validate_artifact_alias=Mock()),
         get_artifact=Mock(return_value=artifact),
         pipeline=Mock(),
         translate=Mock(return_value={"output": derived}),
@@ -345,3 +346,19 @@ def test_unknown_dimensions_remain_in_unfiltered_inventory():
     assert len(rm.filter_representations(rows)) == 2
     filtered = rm.filter_representations(rows, min_dimensions=1, max_dimensions=2)
     assert [row["name"] for row in filtered] == ["Known"]
+
+
+def test_dimension_filter_controls_have_no_browser_spinners():
+    ui = (Path(__file__).resolve().parents[1]
+          / "src/geometric_coder/ui/representation_ui.py").read_text()
+    assert 'id="representation-filter-min", type="text"' in ui
+    assert 'id="representation-filter-max", type="text"' in ui
+
+
+def test_created_geometry_receives_preferred_teal_alias(fake_link):
+    coder, project, linked, artifact, derived = fake_link
+    rm.create_geometry(coder, name="tfidf_l2", recipe="normalize",
+                       source_geometry_id=3)
+    project.catalog.validate_artifact_alias.assert_called_once_with("tfidf_l2")
+    derived.add_alias.assert_called_once_with("tfidf_l2")
+    linked.add_geometry.assert_called_once_with("tfidf_l2", derived)
