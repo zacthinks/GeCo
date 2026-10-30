@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - master
+      - main
     paths:
       - benchmarks/phase2b_focus_factors.py
       - .github/workflows/phase2b-focus-factors.yml

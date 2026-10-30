@@ -8,5 +8,3 @@ GeCo is in pre-1.0 development. GitHub releases are deliberately tagged and init
 4. The `Release` workflow checks the tag against `pyproject.toml`, installs dependencies, runs unit and acceptance tests, builds wheel and sdist, verifies a clean wheel installation, and attaches distributions to a GitHub Release.
 5. Verify the tag, associated commit, uploaded assets and release page. Check the CLI through a clean install before announcing.
 6. If CI fails, fix the problem through a new PR; do not silently move or replace an already published version tag.
-
-The optional `master` → `main` default-branch rename is a coordinated GeCo/TeAL operation, separate from the release process. The release workflow triggers on version tags and does not depend on the branch name.

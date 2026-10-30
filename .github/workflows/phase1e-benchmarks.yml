@@ -2,7 +2,7 @@ name: Phase 1E Benchmarks
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, main]
     paths:
       - benchmarks/phase1e_recommendations.py
       - tests/test_phase1e_closure.py
