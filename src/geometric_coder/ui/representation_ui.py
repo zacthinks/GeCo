@@ -61,14 +61,11 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         {"name": "Source", "id": "source"},
                     ],
                     data=[], page_size=12, cell_selectable=True,
+                    active_cell=None,
                     style_table={"overflowX": "auto"},
                     style_cell={"textAlign": "left", "padding": "10px"},
                     style_header={"fontWeight": "600"},
-                    style_data_conditional=[{
-                        "if": {"state": "active"},
-                        "backgroundColor": "#e7f1ea",
-                        "border": "1px solid #2f744a",
-                    }],
+                    style_data_conditional=[],
                 ),
                 html.Div(id="representation-list-status", role="status",
                          className="control-status"),
@@ -277,6 +274,7 @@ def register_representation_callbacks(
     @app.callback(
         Output("representation-detail-modal", "style"),
         Output("representation-selected", "data"),
+        Output("representation-table", "active_cell"),
         Input("representation-table", "active_cell"),
         Input("representation-detail-close", "n_clicks"),
         Input("representation-detail-delete-status", "children"),
@@ -285,22 +283,22 @@ def register_representation_callbacks(
         prevent_initial_call=True,
     )
     def open_detail(active_cell: Any, _close: int, delete_status: str | None,
-                    promote_status: str | None, rows: list[dict[str, Any]] | None) -> tuple[Any, Any]:
+                    promote_status: str | None, rows: list[dict[str, Any]] | None) -> tuple[Any, Any, Any]:
         trigger = callback_context.triggered_id
         if trigger == "representation-detail-close":
-            return {"display": "none"}, None
+            return {"display": "none"}, None, None
         if trigger in {"representation-detail-delete-status", "representation-detail-promote-status"}:
             if (trigger == "representation-detail-delete-status" and delete_status == "Deleted.") or (
                 trigger == "representation-detail-promote-status" and promote_status == "Updated."
             ):
-                return {"display": "none"}, None
-            return no_update, no_update
+                return {"display": "none"}, None, None
+            return no_update, no_update, no_update
         if not active_cell or not rows:
-            return no_update, no_update
+            return no_update, no_update, no_update
         position = active_cell.get("row")
         if position is None or position >= len(rows):
-            return no_update, no_update
-        return {"display": "flex"}, rows[position]["key"]
+            return no_update, no_update, None
+        return {"display": "flex"}, rows[position]["key"], None
 
     @app.callback(
         Output("representation-detail-rename-status", "children", allow_duplicate=True),
