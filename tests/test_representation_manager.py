@@ -20,7 +20,10 @@ def test_recipe_catalog_is_generic_and_does_not_duplicate_topic_models():
 
 
 def test_creation_rejects_invalid_names_and_unlinked_projects(monkeypatch):
-    coder = SimpleNamespace(has_geometry=lambda name: False)
+    coder = SimpleNamespace(
+        has_geometry=lambda name: False,
+        has_view=lambda name: False,
+    )
     with pytest.raises(ValueError, match="geometry name"):
         rm.create_geometry(coder, name="  ", source_geometry_id=1, recipe="umap")
     monkeypatch.setattr(rm, "teal_linked_project", lambda coder: None)
