@@ -539,3 +539,49 @@ def test_explorer_map_resolves_canonical_display_without_legacy_view_row():
     assert "_display_view_record(" in section
     assert "project.database.get_view(int(view_id))" not in section
     assert "project.view_coordinates(int(view_id))" in section
+
+
+def test_one_dimensional_jitter_is_stable_and_scale_aware() -> None:
+    import numpy as np
+    from geometric_coder.ui.figures import (
+        one_dimensional_display_y, one_dimensional_jitter_spread,
+        build_geometry_figure,
+    )
+
+    units = [{"unit_id": i, "user_key": {"id": i}} for i in (11, 12, 13)]
+    values = np.asarray([[0.0], [100.0], [200.0]])
+    spread = one_dimensional_jitter_spread(values[:, 0])
+    assert spread > 10
+    assert one_dimensional_display_y(11, spread=spread) == one_dimensional_display_y(
+        11, spread=spread
+    )
+    assert one_dimensional_display_y(11, spread=spread, strength=0) == 0
+    assert one_dimensional_display_y(11, spread=spread, strength=2) == (
+        2 * one_dimensional_display_y(11, spread=spread)
+    )
+    figure = build_geometry_figure(
+        coordinates=values, units=units, eligible=[True, True, True],
+        jitter_strength=1, jitter_spread=spread,
+    )
+    assert len(set(figure.data[1].y)) == 3
+    zoomed = build_geometry_figure(
+        coordinates=values[:2], units=units[:2], eligible=[True, True],
+        jitter_strength=1, jitter_spread=spread,
+    )
+    assert list(zoomed.data[1].y) == list(figure.data[1].y[:2])
+    flat = build_geometry_figure(
+        coordinates=np.ones((3, 1)), units=units, eligible=[True] * 3
+    )
+    assert len(set(flat.data[1].y)) == 3
+
+
+def test_representation_detail_clears_cell_focus_and_allows_repeat_clicks() -> None:
+    source = (Path(__file__).resolve().parents[1] /
+              "src/geometric_coder/ui/representation_ui.py").read_text()
+    assert 'Output("representation-table", "active_cell")' in source
+    assert 'return {"display": "flex"}, rows[position]["key"], None' in source
+    assert "style_data_conditional=[]" in source
+    assert 'id="one-dimensional-jitter"' in (
+        Path(__file__).resolve().parents[1] /
+        "src/geometric_coder/ui/app.py"
+    ).read_text()
