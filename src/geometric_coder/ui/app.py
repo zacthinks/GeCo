@@ -387,6 +387,7 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.figures import one_dimensional_jitter_spread
     from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
     from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, standalone_primary_specs, teal_linked_project
@@ -1259,6 +1260,19 @@ def create_app(
         return options, value
 
     @app.callback(
+        Output("one-dimensional-jitter-wrap", "style"),
+        Input("view-dropdown", "value"),
+    )
+    def show_one_dimensional_jitter(view_id: int | None) -> dict[str, str]:
+        if view_id is None:
+            return {"display": "none"}
+        return (
+            {"display": "block"}
+            if project.view_coordinates(int(view_id)).shape[1] == 1
+            else {"display": "none"}
+        )
+
+    @app.callback(
         Output("projection-modal", "style"),
         Output("view-refresh-store", "data"),
         Output("desired-view-store", "data", allow_duplicate=True),
@@ -1876,6 +1890,7 @@ def create_app(
         Output("geometry-map-base-revision-store", "data"),
         Input("view-dropdown", "value"),
         Input("geometry-dropdown", "value"),
+        Input("one-dimensional-jitter", "value"),
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-scores-store", "data"),
@@ -1898,6 +1913,7 @@ def create_app(
     def update_map(
         view_id: int | None,
         geometry_id: int | None,
+        jitter_strength: float | None,
         literal_query: str | None,
         literal_options: list[str] | None,
         all_semantic_scores: dict[str, list[float]] | None,
@@ -1961,7 +1977,8 @@ def create_app(
             page_number=number,
             additional_mask=uncoded_mask,
         )
-        coordinates = project.view_coordinates(int(view_id))[positions]
+        all_view_coordinates = project.view_coordinates(int(view_id))
+        coordinates = all_view_coordinates[positions]
         page_units = [units[int(position)] for position in positions]
         page_eligible = filters.eligible[positions]
         page_semantic = (
@@ -2001,6 +2018,11 @@ def create_app(
             view_name=str(view["name"]),
             page_label=f"Page {page.page_index + 1} of {page.page_count}",
             uirevision=f"view:{int(view_id)}:page:{page.page_index}",
+            jitter_strength=float(jitter_strength if jitter_strength is not None else 1.0),
+            jitter_spread=(
+                one_dimensional_jitter_spread(all_view_coordinates[:, 0])
+                if all_view_coordinates.shape[1] == 1 else None
+            ),
         )
         if callback_context.triggered_id not in {
             "view-dropdown",
@@ -6897,6 +6919,16 @@ def _explore_layout(
                                     else "Use Manage Representations for TeAL-backed 2D views."
                                 ),
                             ),
+                            html.Div([
+                                html.Label("1D jitter strength"),
+                                dcc.Slider(
+                                    id="one-dimensional-jitter", min=0, max=3, step=0.25,
+                                    value=1, marks={0: "Off", 1: "1×", 2: "2×", 3: "3×"},
+                                    updatemode="mouseup",
+                                ),
+                            ], id="one-dimensional-jitter-wrap",
+                               style={"display": "none"},
+                               className="one-dimensional-jitter-control"),
                             html.Button("Manage Representations", id="representation-manager-open", n_clicks=0, className="secondary-action"),
                         ],
                         className="control-block geometry-view-control-block",
