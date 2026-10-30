@@ -526,3 +526,16 @@ def test_presentation_views_include_canonical_descendants_without_duplicate_ids(
     options = _presentation_view_options(records, geometries)
     assert {option["value"] for option in options} == {23, -42}
     assert next(option for option in options if option["value"] == -42)["label"] == "Source A — 1D child"
+
+
+def test_explorer_map_resolves_canonical_display_without_legacy_view_row():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    section = source.split("    def update_map(", 1)[1].split(
+        "    def update_map_navigation_overlays(", 1
+    )[0]
+    assert "_display_view_record(" in section
+    assert "project.database.get_view(int(view_id))" not in section
+    assert "project.view_coordinates(int(view_id))" in section
