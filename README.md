@@ -126,7 +126,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 | --- | --- |
 | **Observation** | A codable unit of text: an imported row, a contiguous span, or a researcher-authored teaching example. |
 | **Geometry** | A computational representation that defines relationships among observations. |
-| **View** | A 2D projection of a geometry for interactive exploration. |
+| **View** | A one- or two-dimensional display of a numerical representation for exploration. |
 | **Topic model** | An exploratory representation of recurring themes or groupings in a corpus, with memberships that can be inspected alongside the original text. |
 | **Code** | A researcher-defined concept with an evolving description and explicit Present, Absent, or Unsure assignments. |
 | **Classifier** | A code-specific model trained from human judgments in a chosen geometry; it supports active learning and generates proposals for review. |
