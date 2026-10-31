@@ -6,7 +6,7 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
-## [0.9.0] - 2026-10-30
+## [0.9.0] - release pending
 
 ### Added
 - **Manage Representations** for creating, inspecting, renaming, and managing numerical representations and their source relationships in TeAL-linked workspaces.
