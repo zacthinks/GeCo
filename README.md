@@ -16,7 +16,7 @@ Explore your corpus through interactive maps of different **geometries**—for e
 
 Search in different ways depending on the question. **Literal search** finds words or phrases in the original text (including regular-expression searches). **Semantic search** finds observations similar in meaning to a query, using the selected geometry. Because similarity depends on the geometry, switching representations can facilitate the retrieval of different documents.
 
-In a TeAL-linked project, **Manage Representations** lets researchers create reusable numerical representations from existing ones, including TF-IDF, normalization, SVD, and UMAP steps. You can inspect their sources, rename them, and explore one- or two-dimensional views. A display-only view can also be made available for analysis without refitting the underlying artifact. New-text search capabilities depend on whether the saved transformation pipeline can process new text.
+In TeAL-linked projects, **Manage Representations** lets you create and compare new ways of viewing your corpus using numerical representations you already have. You can explore one- or two-dimensional views and make a representation available for analysis without repeating its computation.
 
 GeCo also supports **topic-model exploration**. Inspect topic memberships, color observations by their dominant topic or their association with a particular topic, and give topics meaningful labels as you interpret them. In projects integrated with **Text Analysis Lab (TeAL)**, you can also fit topic models from existing representations—including latent Dirichlet allocation (LDA) and a broad range of clustering-based approaches—and explore their results in GeCo.
 
@@ -47,6 +47,8 @@ Dedicated **Codes** and **Memos** workspaces help you manage code definitions, c
 GeCo can be used independently or integrated with [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab). TeAL supports corpus preparation, computational representations, and downstream analysis; GeCo adds interactive exploration, qualitative coding, and classifier development within that broader research workflow.
 
 We are also developing [🦎 GeCo Desktop](https://github.com/zacthinks/geco-desktop), a desktop application designed to let researchers create and use GeCo projects **without writing Python or managing Python environments**. GeCo Desktop is still under active development and is not yet a finished, distributable application.
+
+For developers and integration authors, see the [technical architecture overview](docs/architecture.md), which describes GeCo's project model and integration boundaries.
 
 ## Getting started
 
