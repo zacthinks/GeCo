@@ -16,17 +16,15 @@ Imported rows are **atomic observations** with source keys and canonical corpus 
 
 Human judgments distinguish Present, Absent, Unsure, and **unreviewed** (no judgment). Coding changes are recorded as events. Model predictions and proposed assignments stay separate from human judgments until a researcher explicitly commits decisions.
 
-## Representations and views
+## Geometries and Views
 
-GeCo maintains a **unified numerical representation registry**. Representations have stable identities and may have parent/source ancestry. Analytic and visualization capabilities are separate:
+GeCo maintains a unified registry of **numerical representations of text**. A representation can serve as a **geometry**, a **view**, or both. A **geometry** is used to examine relationships among observations, including distances, neighborhoods, and patterns. A **view** is a lower-dimensional representation of a geometry, typically in one or two dimensions, used for visualization.
 
-- Analytic representations provide features for distances, classifiers, and supported searches.
-- One- and two-dimensional representations can be visualized. A view-only representation can be enabled for analysis without refitting; a two-dimensional analytic representation may display itself.
-- New-text queries and derived-observation transformations require compatible frozen replayable pipelines. Enabling analysis does not by itself grant new-text capability.
+Geometries provide numerical features for distance-based navigation, classifiers, and supported searches. A two-dimensional geometry can directly serve as its own view; a visualization-only view can be enabled as a geometry without refitting the underlying numerical artifact. These roles are independent of new-text capability: transforming new queries or derived observations still requires a compatible frozen, replayable pipeline.
 
-In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns the immutable numerical artifacts and transformation lineage; GeCo manages local names, registrations, analytic/display eligibility, and research interactions. Removing a GeCo registration does not delete the TeAL artifact.
+In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns immutable numerical artifacts and their transformation lineage; GeCo manages local names, registrations, and use as geometries and views. Removing a GeCo registration does not delete the underlying TeAL artifact.
 
-The project-level numerical access boundaries include `geometry_matrix(...)` and `view_coordinates(...)`. Jitter for one-dimensional displays affects only rendering, not analytic coordinates.
+The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` remain compatibility boundaries. One-dimensional jitter changes displayed coordinates only, not analytic distances.
 
 ## Explore, Develop, and Apply & Review
 
