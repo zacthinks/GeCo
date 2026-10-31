@@ -1,16 +1,23 @@
 # Changelog
 
-Notable GeCo changes are recorded here. Before 1.0, backward-incompatible public changes may occur in minor releases. This file tracks development history; a package version in metadata does not prove a GitHub release was published.
+Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 versioning: minor versions may include changes to public APIs or project schemas.
 
 ## [Unreleased]
 
+_No changes recorded yet._
+
+## [0.9.0] - 2026-10-30
+
 ### Added
-- Release automation with tag/version checks, testing, build, and clean wheel-install verification.
+- **Manage Representations** for creating, inspecting, renaming, and managing numerical representations and their source relationships in TeAL-linked workspaces.
+- Reusable TF-IDF, normalization, SVD, and UMAP transformation steps, including multidimensional analytic representations and one-/two-dimensional visualizations.
+- Ability to make an existing display-only representation available for analysis without refitting it.
+- Adjustable, deterministic jitter for one-dimensional Explore plots.
+- New-text capability reporting based on the availability of a replayable transformation pipeline.
 
 ### Changed
-- Release and contribution documentation.
+- Representation handling now uses one numerical registry for analysis and visualization, with compatibility handling for existing projects.
+- Improved navigation and representation selection in Explore.
 
-## 0.9.0 development line (not previously tagged as a GitHub Release)
-
-- Unified numerical representation registry and manager, including TeAL-backed transformation chains, 1D/2D displays, analytic eligibility, saved-state compatibility, and schema v15 (PR #22, merged October 30, 2026).
-- The first public release tag and notes will be chosen separately once release automation is verified.
+### Maintenance
+- Added automated GitHub Releases with version verification, tests, distribution builds, and clean-install checks.
