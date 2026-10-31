@@ -1,97 +1,49 @@
 # GeCo architecture
 
-This document gives a compact public overview of the current GeCo architecture. GeCo 0.7.0 uses project schema 12.
+This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-## Project model
+This describes GeCo 0.9.0 and project schema 15. Internal implementation modules are not a stable plugin SDK.
 
-`GeometricCoder` is the main project object used by Python code and the local Dash interface. Structured state is stored in SQLite; large numerical and model artifacts are stored as registered sidecars.
+## Project model and persistence
 
-```text
-project.geco/
-├── project.sqlite3
-└── artifacts/
-    ├── geometries/
-    ├── views/
-    ├── observations/
-    └── models/
-```
+`GeometricCoder` is the main Python project object. GeCo's local Dash interface uses the same persistent project state. SQLite stores structured research records; numerical arrays and fitted models are stored in registered project-local sidecar artifacts. Projects can have local fitted representations or use external numerical providers, particularly [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab).
 
-Runtime opening requires an exact project-schema match. Schema migrations are explicit standalone scripts rather than automatic application behavior.
+Opening a project verifies its schema version. Supported forward migrations run on open, including schema 13 to 14 and 14 to 15; unsupported versions fail explicitly rather than being silently interpreted.
 
-## Documents, keys, and observations
+## Observations, keys, and coding
 
-Project creation accepts a pandas DataFrame with one text column, one or more key columns, and optional metadata columns. Input row order is canonical and original key values are preserved.
+Imported rows are **atomic observations** with source keys and canonical corpus order. GeCo also supports contiguous **spans** and researcher-authored **teaching examples**. The internal `unit_id` identifies atomic rows, while `observation_id` identifies both atomic and derived observations. Integrations should preserve original source keys for alignment.
 
-Each imported row is an **atomic observation**. GeCo also supports two derived observation kinds:
+Human judgments distinguish Present, Absent, Unsure, and **unreviewed** (no judgment). Coding changes are recorded as events. Model predictions and proposed assignments stay separate from human judgments until a researcher explicitly commits decisions.
 
-- **span** — a contiguous interval of atomic observations within the same immediate context group;
-- **teaching example** — researcher-authored text attached to a code as positive or negative training evidence.
+## Geometries and Views
 
-`unit_id` identifies imported atomic rows for canonical corpus order and navigation. `observation_id` is the general identity used by coding and representation access across atomic and derived observations.
+GeCo maintains a unified registry of **numerical representations of text**. A representation can serve as a **geometry**, a **view**, or both. A **geometry** is used to examine relationships among observations, including distances, neighborhoods, and patterns. A **view** is a lower-dimensional representation of a geometry, typically in one or two dimensions, used for visualization.
 
-## Human assignments
+Geometries provide numerical features for distance-based navigation, classifiers, and supported searches. A two-dimensional geometry can directly serve as its own view; a visualization-only view can be enabled as a geometry without refitting the underlying numerical artifact. These roles are independent of new-text capability: transforming new queries or derived observations still requires a compatible frozen, replayable pipeline.
 
-Human coding is represented as append-only assignment events with three substantive values:
+In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns immutable numerical artifacts and their transformation lineage; GeCo manages local names, registrations, and use as geometries and views. Removing a GeCo registration does not delete the underlying TeAL artifact.
 
-```text
-positive
-negative
-unsure
-```
+The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` remain compatibility boundaries. One-dimensional jitter changes displayed coordinates only, not analytic distances.
 
-The latest assignment for an observation/code pair is the current judgment. No assignment means the observation has not been reviewed for that code. Model predictions and proposals are stored separately and never silently become human assignments.
+## Explore, Develop, and Apply & Review
 
-## Geometries and views
+**Explore** manages navigation, text and context reading, sessions, filters, search state, and linked memos. A document counts as visited when it becomes focal, not merely because it appeared on a map.
 
-A **geometry** maps observation text into a numerical space. Geometries may be local or externally backed.
+**Develop** connects researcher-defined codes to their own classifiers and committees. Training maintains current fitted model state and prediction caches while preserving the separation between human judgments and machine suggestions.
 
-For local geometries, GeCo stores the fitted transformation and the atomic corpus matrix. Transform-capable geometries can place later spans and teaching examples into the same frozen space without refitting the corpus representation.
+**Apply & Review** stores machine-generated proposals in drafts. Only committed researcher decisions become human assignment events; predictions are never silently accepted.
 
-A **view** is a two-dimensional display associated with a parent geometry. Views are used for exploration and are not treated as analytic geometries unless a researcher explicitly constructs a geometry from them.
+## Integration boundaries
 
-The stable access boundaries are:
+GeCo can operate on its own or use externally backed numerical data. External providers align their results with the project's original source keys; GeCo owns codes, observations, assignments, sessions, and other mutable exploratory state. The UI does not need to interpret an external provider's private storage layout.
 
-```python
-project.geometry_matrix(...)
-project.view_coordinates(...)
-```
+Existing integration entry points include project creation/opening, representation access, and selected exports such as `export_codes(...)`. For current signatures, consult the [source package](../src/geometric_coder/) and tests rather than accessing GeCo's SQLite tables or private sidecar files.
 
-External integrations implement these through a runtime provider rather than special-casing another application's storage system in the UI.
+## Future extensions
 
-## Sessions, filters, and memos
+GeCo is intended to stay a focused **research interface** rather than accumulate every specialized analytical feature. A future plugin system could allow trusted, separately installed Python libraries to contribute actions, small configuration workflows, keyed derived results, or exports. For example, an interview-analysis library such as LIPE might supply protocol-specific analyses without requiring GeCo's core application to implement those algorithms.
 
-Explore sessions persist navigation and resumable search/filter state. An atomic unit counts as visited only when it becomes focal; appearing on a map or in context does not itself count as a visit.
+The intended division of responsibility is GeCo for the research interface and mutable coding state, an appropriate analytic engine such as TeAL for immutable derived artifacts, and domain-specific extensions for specialist methods or outputs.
 
-Memos are versioned Markdown documents with evidence references that can reopen the corresponding observation in the interface. Presentation mode provides a read-only analytic narrative alongside a minimal map and context reader without changing Explore visit history.
-
-## Codes and classifiers
-
-A code may own multiple classifiers. Every active classifier:
-
-- belongs to exactly one code;
-- has a project-wide unique active name;
-- records its geometry, algorithm, and hyperparameters;
-- has at most one retained heavy fitted estimator and current prediction cache;
-- is explicitly Current, Stale, or Not trained.
-
-Retraining creates and validates the replacement fit before switching live state. Superseded heavy estimator and prediction artifacts are then removed, while lightweight historical metadata needed to interpret prior Apply/evaluation events remains.
-
-Classifier training is explicit. Ordinary coding or navigation does not silently retrain models.
-
-## Apply and Review
-
-Apply drafts persist machine proposals separately from human assignments. Researchers can accept a proposal, override it with Present/Absent/Unsure, or leave it unreviewed. Only committed decisions create assignment events. Bulk operations preserve their commit provenance and can be undone at the commit-operation level without erasing later revisions.
-
-## External numerical resources
-
-Externally backed projects preserve the normal GeCo document/text/metadata snapshot in SQLite while obtaining geometry matrices and view coordinates from a runtime provider. External references are opaque JSON values; GeCo persists and round-trips them without interpretation.
-
-The provider receives the project's original user keys in canonical atomic-row order and is responsible for returning correctly aligned rows. This keeps GeCo independent of external catalogs, lineage systems, query engines, and physical storage formats.
-
-See [`teal-integration.md`](teal-integration.md) for the public provider protocol.
-
-## Incremental ingestion
-
-Standalone projects can append new atomic rows through `GeometricCoder.ingest(...)` when their local fitted geometries/views can transform new text without refitting existing representations.
-
-Externally backed projects have a fixed document universe in GeCo 0.7.0; ingestion is disabled so the GeCo workspace cannot diverge from the external key universe.
+**A general plugin API does not exist yet.** Registration, compatibility, permissions, execution, and UI integration remain design work. Installed Python plugins would run trusted local code, not sandboxed scripts.

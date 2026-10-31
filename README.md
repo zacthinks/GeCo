@@ -14,7 +14,9 @@ GeCo's main workflow has three interconnected stages: **Explore, Develop, and Ap
 
 Explore your corpus through interactive maps of different **geometries**—for example, representations based on word use or semantic meaning. Move among nearby, distant, or randomly selected observations; filter by metadata; and save useful combinations of filters. Select any observation to read its text in context, examine surrounding passages, and start coding.
 
-Search in different ways depending on the question. **Literal search** finds words or phrases in the original text (including regular-expression searches). **Semantic search** finds observations similar in meaning to a query, using the selected geometry. Because similarity depends on the geometry, switching representations can facilitate the retrieval of different documents.
+Search in different ways depending on the question. **Literal search** finds words or phrases in the original text (including regular-expression searches). **Semantic search** finds observations similar in meaning to a query, using the selected geometry. Because similarity depends on the geometry, switching geometries can facilitate the retrieval of different documents.
+
+In TeAL-linked projects, **Manage Representations** lets you create and compare numerical representations of your corpus. A representation can be a **geometry** for exploring relationships among texts, a **view** for visualizing a geometry in one or two dimensions, or both.
 
 GeCo also supports **topic-model exploration**. Inspect topic memberships, color observations by their dominant topic or their association with a particular topic, and give topics meaningful labels as you interpret them. In projects integrated with **Text Analysis Lab (TeAL)**, you can also fit topic models from existing representations—including latent Dirichlet allocation (LDA) and a broad range of clustering-based approaches—and explore their results in GeCo.
 
@@ -45,6 +47,8 @@ Dedicated **Codes** and **Memos** workspaces help you manage code definitions, c
 GeCo can be used independently or integrated with [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab). TeAL supports corpus preparation, computational representations, and downstream analysis; GeCo adds interactive exploration, qualitative coding, and classifier development within that broader research workflow.
 
 We are also developing [🦎 GeCo Desktop](https://github.com/zacthinks/geco-desktop), a desktop application designed to let researchers create and use GeCo projects **without writing Python or managing Python environments**. GeCo Desktop is still under active development and is not yet a finished, distributable application.
+
+For developers and integration authors, see the [technical architecture overview](docs/architecture.md), which describes GeCo's project model and integration boundaries.
 
 ## Getting started
 
@@ -123,8 +127,9 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 | Concept | Meaning in GeCo |
 | --- | --- |
 | **Observation** | A codable unit of text: an imported row, a contiguous span, or a researcher-authored teaching example. |
-| **Geometry** | A computational representation that defines relationships among observations. |
-| **View** | A 2D projection of a geometry for interactive exploration. |
+| **Representation** | A numerical representation of text; it may be used as a geometry, a view, or both. |
+| **Geometry** | A representation used to examine relationships among observations, including distances and neighborhoods. |
+| **View** | A one- or two-dimensional representation of a geometry used for visualization, usually a lower-dimensional projection. |
 | **Topic model** | An exploratory representation of recurring themes or groupings in a corpus, with memberships that can be inspected alongside the original text. |
 | **Code** | A researcher-defined concept with an evolving description and explicit Present, Absent, or Unsure assignments. |
 | **Classifier** | A code-specific model trained from human judgments in a chosen geometry; it supports active learning and generates proposals for review. |
