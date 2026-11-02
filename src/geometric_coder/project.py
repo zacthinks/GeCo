@@ -1623,6 +1623,30 @@ class GeometricCoder:
             )
         return normalized
 
+    @property
+    def saved_semantic_searches(self):
+        """Project-local named and automatic semantic-search snapshots."""
+        from geometric_coder.search_results import SavedSemanticSearches
+
+        return SavedSemanticSearches(self)
+
+    def save_semantic_search(self, **kwargs: Any) -> int:
+        """Persist one validated score snapshot in GeCo."""
+        return self.saved_semantic_searches.save(**kwargs)
+
+    def load_semantic_search(self, result_id: int) -> dict[str, Any]:
+        """Restore validated scores without rerunning the geometry pipeline."""
+        return self.saved_semantic_searches.load(result_id)
+
+    def list_semantic_searches(self, *, session_id: int | None = None) -> list[dict[str, Any]]:
+        return self.saved_semantic_searches.list(session_id=session_id)
+
+    def delete_semantic_search(self, result_id: int) -> None:
+        self.saved_semantic_searches.delete(result_id)
+
+    def rename_semantic_search(self, result_id: int, name: str) -> None:
+        self.saved_semantic_searches.rename(result_id, name)
+
     def semantic_search(
         self,
         query: str,
