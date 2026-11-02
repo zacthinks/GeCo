@@ -639,3 +639,27 @@ def test_semantic_search_success_is_silent_and_controls_fit_one_row() -> None:
     assert ".semantic-query-row > #semantic-query" in css
     assert ".representation-detail-actions > button" in css
     assert 'className="danger-action", title="Delete saved query"' in source
+
+
+def test_destructive_semantic_and_representation_actions_require_confirmation() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    app = (root / "app.py").read_text()
+    rep = (root / "representation_ui.py").read_text()
+    manager = (root / "representation_manager.py").read_text()
+    assert 'id="semantic-delete-confirm"' in app
+    assert 'Input("semantic-delete-confirm", "submit_n_clicks")' in app
+    assert 'id="representation-delete-confirm"' in rep
+    assert 'Input("representation-delete-confirm", "submit_n_clicks")' in rep
+    assert "_release_representation_alias(" in manager
+    assert 'figure.update_xaxes(autorange=True)' in app
+    assert 'figure.update_yaxes(autorange=True)' in app
+
+
+def test_semantic_search_panel_stays_compact_and_topic_mode_replaces_it() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    css = (root / "assets/geco.css").read_text()
+    app = (root / "app.py").read_text()
+    assert ".explore-controls > .semantic-search-control-block" in css
+    assert ".semantic-search-control-block .control-status:empty" in css
+    assert "def clear_semantic_on_topic_color(" in app
+    assert 'Output("topic-model-selector", "value", allow_duplicate=True)' in app
