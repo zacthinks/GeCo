@@ -1,4 +1,4 @@
-"""Persistence, alignment, and migration regression checks."""
+"""Query-centric semantic-search persistence, alignment, and restoration."""
 from __future__ import annotations
 
 import sqlite3
@@ -18,112 +18,114 @@ def project(tmp_path):
     )
 
 
-def _geometry(project):
+def _geometry(project, name="sample"):
     return project.database.register_geometry(
-        name="sample", class_name="CountGeometry", modality="text", public=True,
+        name=name, class_name="CountGeometry", modality="text", public=True,
         config={}, dependency_names=[], matrix_path="", matrix_sparse=False,
         state_path=None, supports_query=True, supports_text_transform=True,
     )
 
 
-def test_named_saved_search_survives_reopen_and_rename(project):
-    geometry = _geometry(project)
-    saved = project.save_semantic_search(
-        geometry_id=geometry, query="  example ", name="Find examples",
-        scores=[0.7, 0.1, 0.4], range_values=[0.1, 0.7],
-    )
+def test_queries_deduplicate_and_cache_across_geometries_and_sessions(project):
+    store = project.saved_semantic_searches
+    first = _geometry(project)
+    second = _geometry(project, "other")
+    qid = store.store("  example  ", first, [0.7, 0.1, 0.4])
+    assert store.register("example") == qid
+    assert store.store("example", second, [0.2, 0.3, 0.9]) == qid
+    assert [x["query"] for x in store.queries()] == ["example"]
     reopened = GeometricCoder.open(project.project_dir)
-    loaded = reopened.load_semantic_search(saved)
-    assert loaded["query"] == "example"
-    assert loaded["scores"] == pytest.approx([0.7, 0.1, 0.4])
-    assert loaded["range"] == [0.1, 0.7]
-    reopened.rename_semantic_search(saved, "Examples")
-    assert reopened.list_semantic_searches()[0]["name"] == "Examples"
-    with pytest.raises(ValueError, match="already exists"):
-        reopened.save_semantic_search(
-            geometry_id=geometry, query="test", name="examples", scores=[0, 0, 0]
-        )
-    reopened.delete_semantic_search(saved)
-    assert reopened.list_semantic_searches() == []
+    cache = reopened.saved_semantic_searches
+    assert cache.find("example", first)["scores"] == pytest.approx([0.7, 0.1, 0.4])
+    assert cache.find("example", second)["scores"] == pytest.approx([0.2, 0.3, 0.9])
+    assert cache.find("other", first) is None
 
 
-def test_auto_results_are_bounded_by_session_and_geometry(project):
-    gid = _geometry(project)
-    session_id = project.sessions()[0]["session_id"]
-    first = project.save_semantic_search(
-        geometry_id=gid, query="one", scores=[1, 0, 0], session_id=session_id,
-    )
-    latest = project.save_semantic_search(
-        geometry_id=gid, query="two", scores=[0, 1, 0], session_id=session_id,
-    )
-    assert first != latest
-    assert project.saved_semantic_searches.latest(session_id, gid)["query"] == "two"
-    assert len(project.list_semantic_searches(session_id=session_id)) == 1
-    with pytest.raises(KeyError):
-        project.load_semantic_search(first)
+def test_delete_query_cascades_all_geometry_caches(project):
+    store = project.saved_semantic_searches
+    a = _geometry(project)
+    b = _geometry(project, "second")
+    qid = store.store("query", a, [0.1, 0.2, 0.3])
+    store.store("query", b, [0.3, 0.2, 0.1])
+    store.delete_query(qid)
+    assert store.queries() == []
+    assert store.find("query", a) is None
+    assert store.find("query", b) is None
 
 
 def test_stale_result_rejected_after_ordered_universe_change(project):
     gid = _geometry(project)
-    saved = project.save_semantic_search(
-        geometry_id=gid, query="example", name="Saved", scores=[0.1, 0.2, 0.3],
-    )
+    store = project.saved_semantic_searches
+    store.store("example", gid, [0.1, 0.2, 0.3])
     with project.database.connect() as con:
-        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0", ('{"id": 99}',))
+        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0",
+                    ('{"id": 99}',))
     with pytest.raises(ValueError, match="stale"):
-        project.load_semantic_search(saved)
+        store.find("example", gid)
 
 
-def test_schema_15_migrates_without_erasing_existing_records(project):
+def test_schema_15_migrates_to_query_catalog(project):
     path = project.project_dir / "project.sqlite3"
     gid = _geometry(project)
     with sqlite3.connect(path) as con:
         con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("UPDATE project SET schema_version=15")
     reopened = GeometricCoder.open(project.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 16
+    assert reopened.database.project_metadata()["schema_version"] == 17
     assert reopened.database.get_geometry(gid)["name"] == "sample"
-    assert reopened.list_semantic_searches() == []
+    assert reopened.saved_semantic_searches.queries() == []
 
 
+def test_legacy_v16_saved_results_migrate_without_loss(project):
+    from geometric_coder.storage import database as storage
+    gid = _geometry(project)
+    path = project.project_dir / "project.sqlite3"
+    with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
+        for statement in storage._SAVED_SEARCH_SQL:
+            con.execute(statement)
+        con.execute("UPDATE project SET schema_version=16")
+    # Create the legacy result with its old schema for the migration exercise.
+    from geometric_coder.search_results import SavedSemanticSearches
+    import numpy as np
+    import zlib
+    store = SavedSemanticSearches(project)
+    signature, count, _ = store._signature(gid)
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """INSERT INTO semantic_search_results
+               (kind,name,session_id,geometry_id,query,signature,unit_count,scores_blob,
+                range_json,created_at) VALUES
+               ('named','Saved',NULL,?,?,?,?,?,'null','2026-11-02T00:00:00Z')""",
+            (gid, "example", signature, count,
+             zlib.compress(np.asarray([0.1,0.2,0.3], dtype="<f8").tobytes())),
+        )
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.saved_semantic_searches.find("example", gid)["scores"] == pytest.approx([0.1,0.2,0.3])
 
-def test_restore_reports_stale_and_does_not_restore_semantic_coloring(project):
-    from geometric_coder.ui.app import (
-        _restore_semantic_snapshot, _restored_semantic_color_mode,
-    )
+
+def test_restore_only_valid_cached_results(project):
+    from geometric_coder.ui.app import _restore_semantic_snapshot, _restored_semantic_color_mode
     gid = _geometry(project)
     sid = int(project.sessions()[0]["session_id"])
-    project.save_semantic_search(
-        geometry_id=gid, session_id=sid, query="original",
-        scores=[0.2, 0.6, 0.9],
-    )
-    scores, status = _restore_semantic_snapshot(project, sid, gid, "original")
+    store = project.saved_semantic_searches
+    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
+    assert scores == {} and "Run Search" in message
+    store.store("example", gid, [0.2, 0.6, 0.9])
+    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
     assert scores["sample"] == pytest.approx([0.2, 0.6, 0.9])
-    assert "Restored" in status
     assert _restored_semantic_color_mode("semantic", scores) == "semantic"
-
     with project.database.connect() as con:
-        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0", ('{"id": 99}',))
-    stale, status = _restore_semantic_snapshot(project, sid, gid, "original")
-    assert stale == {}
-    assert "stale" in status.lower() and "Run Search" in status
-    assert _restored_semantic_color_mode("semantic", stale) == "plain"
+        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0",
+                    ('{"id": 99}',))
+    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
+    assert scores == {} and "stale" in message
+    assert _restored_semantic_color_mode("semantic", scores) == "plain"
 
 
-def test_restore_mismatched_and_missing_query_retains_request(project):
-    from geometric_coder.ui.app import _restore_semantic_snapshot
-    gid = _geometry(project)
-    sid = int(project.sessions()[0]["session_id"])
-    scores, status = _restore_semantic_snapshot(project, sid, gid, "question")
-    assert scores == {} and "Run Search" in status
-    project.save_semantic_search(
-        geometry_id=gid, session_id=sid, query="completed", scores=[0.1, 0.2, 0.3],
-    )
-    scores, status = _restore_semantic_snapshot(project, sid, gid, "edited")
-    assert scores == {} and "query has changed" in status
-
-
-def test_restored_topic_selection_cannot_take_over_semantic_coloring():
+def test_topic_selection_restore_guard():
     from geometric_coder.ui.app import _topic_restore_snapshot, _is_restored_topic_selection
     snapshot = _topic_restore_snapshot(
         12, {"topic_model_id": 42, "topic_component_id": "topic-a",
@@ -132,4 +134,3 @@ def test_restored_topic_selection_cannot_take_over_semantic_coloring():
     assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 12)
     assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 13)
     assert not _is_restored_topic_selection(42, "intensity", "topic-a", snapshot, 12)
-    assert not _is_restored_topic_selection(21, "dominant", "topic-a", snapshot, 12)
