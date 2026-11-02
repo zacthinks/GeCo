@@ -854,6 +854,8 @@ def create_app(
                             html.Div(id="semantic-load-list"),
                         ], className="modal-card"),
                     ], id="semantic-load-modal", className="modal-overlay", style={"display": "none"}),
+                    dcc.ConfirmDialog(id="semantic-delete-confirm", message="Delete this saved semantic query and all cached geometry results?"),
+                    dcc.Store(id="semantic-delete-pending", data=None),
                     representation_modal(project, html=html, dcc=dcc, dash_table=dash_table),
                     html.Div([
                         html.Div([
@@ -983,6 +985,18 @@ def create_app(
         if triggered == "topic-component-selector" and component is None:
             return no_update
         return "intensity" if display == "intensity" else "dominant"
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("semantic-query", "value", allow_duplicate=True),
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Input("topic-color-mode", "data"),
+        prevent_initial_call=True,
+    )
+    def clear_semantic_on_topic_color(mode):
+        if mode not in {"dominant", "intensity"}:
+            return no_update, no_update, no_update
+        return "", "", {}
 
     @app.callback(
         Output("topic-component-wrap", "style"),
@@ -1525,6 +1539,8 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-load-refresh", "data", allow_duplicate=True),
         Output("semantic-load-modal", "style", allow_duplicate=True),
+        Output("semantic-delete-pending", "data"),
+        Output("semantic-delete-confirm", "displayed"),
         Input({"type": "semantic-load-query", "index": ALL}, "n_clicks"),
         Input({"type": "semantic-delete-query", "index": ALL}, "n_clicks"),
         State("semantic-active-query", "data"),
@@ -1534,10 +1550,11 @@ def create_app(
     def select_saved_query(_loads, _deletes, active, revision):
         trigger = callback_context.triggered_id
         if not _is_semantic_modal_click(trigger, callback_context.triggered):
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 6
         qid = int(trigger["index"])
         if trigger["type"] == "semantic-delete-query":
-            query = next((row["query"] for row in project.saved_semantic_searches.queries()
+            return no_update, no_update, no_update, no_update, qid, True
+        query = next((row["query"] for row in project.saved_semantic_searches.queries()
                           if row["query_id"] == qid), None)
             project.saved_semantic_searches.delete_query(qid)
             # A deleted query must not reappear through another session's state.
@@ -1550,11 +1567,37 @@ def create_app(
         query = next((row["query"] for row in project.saved_semantic_searches.queries()
                       if row["query_id"] == qid), None)
         if query is None:
-            return no_update, no_update, no_update, no_update
-        return query, query, no_update, {"display": "none"}
+            return (no_update,) * 6
+        return query, query, no_update, {"display": "none"}, no_update, False
 
     @app.callback(
         Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("semantic-load-refresh", "data", allow_duplicate=True),
+        Output("semantic-delete-pending", "data", allow_duplicate=True),
+        Input("semantic-delete-confirm", "submit_n_clicks"),
+        State("semantic-delete-pending", "data"),
+        State("semantic-active-query", "data"),
+        State("semantic-load-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def confirm_saved_query_delete(clicks, qid, active, revision):
+        if not clicks or qid is None:
+            return no_update, no_update, no_update
+        query = next((row["query"] for row in project.saved_semantic_searches.queries()
+                      if row["query_id"] == int(qid)), None)
+        if query is None:
+            return no_update, no_update, None
+        project.saved_semantic_searches.delete_query(int(qid))
+        for session in project.sessions():
+            if str(session["state"].get("semantic_active_query", "")).strip() == query:
+                project.patch_session_state(
+                    int(session["session_id"]), {"semantic_active_query": ""}
+                )
+        return ("" if query == active else no_update), int(revision or 0) + 1, None
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
         Input("semantic-query", "n_submit"),
         State("semantic-query", "value"),
@@ -1564,7 +1607,7 @@ def create_app(
         clean = str(query or "").strip()
         if clean:
             project.saved_semantic_searches.register(clean)
-        return clean
+        return clean, (None if clean else no_update)
 
     @app.callback(
         Output("semantic-scores-store", "data", allow_duplicate=True),
