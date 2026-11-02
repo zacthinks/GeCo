@@ -604,7 +604,10 @@ def test_semantic_search_auto_snapshot_restoration_never_runs_similarity_on_open
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
     assert 'project.saved_semantic_searches.latest(' in source
-    assert 'previous["query"] == query.strip()' in source
+    # Startup and session restoration now share the validated restore helper.
+    # Query-match and stale-result behavior are exercised in
+    # test_saved_semantic_searches.py rather than matched by source spelling.
+    assert source.count("_restore_semantic_snapshot(") >= 3
     assert 'project.save_semantic_search(' in source
     assert 'State("active-session-store", "data")' in source
     assert "initial_semantic_scores = project.semantic_search" not in source
