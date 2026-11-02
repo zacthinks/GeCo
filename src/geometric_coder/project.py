@@ -1561,7 +1561,13 @@ class GeometricCoder:
         self._runtime_geometries = restored
         return dict(restored)
 
-    def transform_query(self, geometry: int | str, query: str) -> Matrix:
+    def transform_query(
+        self,
+        geometry: int | str,
+        query: str,
+        *,
+        _reference_matrix: Matrix | None = None,
+    ) -> Matrix:
         """Transform one semantic query through a registered geometry.
 
         The caller names the GeCo geometry; GeCo decides whether to use the
@@ -1602,7 +1608,14 @@ class GeometricCoder:
                 f"Query transform for geometry {name!r} must return shape (1, m), "
                 f"got {normalized.shape}."
             )
-        matrix = self.geometry_matrix(int(record["geometry_id"]))
+        # Semantic search already loaded this matrix; avoid a second provider
+        # fetch solely for dimensionality validation. Direct callers still
+        # validate against the registered geometry matrix.
+        matrix = (
+            _reference_matrix
+            if _reference_matrix is not None
+            else self.geometry_matrix(int(record["geometry_id"]))
+        )
         if matrix.shape[1] != normalized.shape[1]:
             raise ValueError(
                 f"Query transform for geometry {name!r} returned "
@@ -1630,7 +1643,11 @@ class GeometricCoder:
             if not record["supports_query"]:
                 continue
             matrix = self.geometry_matrix(int(record["geometry_id"]))
-            normalized_query = self.transform_query(int(record["geometry_id"]), clean_query)
+            normalized_query = self.transform_query(
+                int(record["geometry_id"]),
+                clean_query,
+                _reference_matrix=matrix,
+            )
             scores = cosine_similarity(matrix, normalized_query).reshape(-1)
             results[name] = np.asarray(scores, dtype=float).tolist()
         return results
