@@ -612,3 +612,30 @@ def test_semantic_query_cache_and_compact_modal_contract() -> None:
     assert 'id="semantic-saved-picker"' not in source
 
 
+
+
+def test_semantic_load_modal_ignores_newly_rendered_zero_clicks() -> None:
+    from geometric_coder.ui.app import _is_semantic_modal_click
+
+    trigger = {"type": "semantic-load-query", "index": 12}
+    zero = [{"prop_id": '{"index":12,"type":"semantic-load-query"}.n_clicks', "value": 0}]
+    actual = [{"prop_id": '{"index":12,"type":"semantic-load-query"}.n_clicks', "value": 1}]
+    assert not _is_semantic_modal_click(trigger, zero)
+    assert _is_semantic_modal_click(trigger, actual)
+    assert not _is_semantic_modal_click(trigger, [])
+    assert not _is_semantic_modal_click(
+        trigger, [{"prop_id": '{"index":12,"type":"semantic-delete-query"}.n_clicks', "value": 1}]
+    )
+
+
+def test_semantic_search_success_is_silent_and_controls_fit_one_row() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    source = (root / "app.py").read_text()
+    css = (root / "assets" / "geco.css").read_text()
+    assert "Computed semantic similarity in" not in source
+    assert "Loaded cached semantic similarity in" not in source
+    assert 'status = ""' in source
+    assert "grid-template-columns: minmax(0, 1fr) auto auto;" in css
+    assert ".semantic-query-row > #semantic-query" in css
+    assert ".representation-detail-actions > button" in css
+    assert 'className="danger-action", title="Delete saved query"' in source
