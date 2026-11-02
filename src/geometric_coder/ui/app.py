@@ -2243,6 +2243,10 @@ def create_app(
                 if all_view_coordinates.shape[1] == 1 else None
             ),
         )
+        if callback_context.triggered_id in {"view-dropdown", "geometry-dropdown"}:
+            # A new view can have vastly different coordinate scales.
+            figure.update_xaxes(autorange=True)
+            figure.update_yaxes(autorange=True)
         if callback_context.triggered_id not in {
             "view-dropdown",
             "geometry-dropdown",
