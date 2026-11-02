@@ -109,6 +109,32 @@ COMMITTEE_AGGREGATION_LABELS: dict[str, str] = {
 }
 
 
+def _is_semantic_modal_click(
+    trigger: Any, changes: list[dict[str, Any]] | None,
+) -> bool:
+    """Only an actual positive click should load or delete a saved query.
+
+    Dash's ALL-pattern inputs can fire when query rows first appear. Those
+    newly mounted buttons have n_clicks=0 and must not dismiss the dialog.
+    """
+    if not isinstance(trigger, dict) or trigger.get("type") not in {
+        "semantic-load-query", "semantic-delete-query",
+    }:
+        return False
+    for change in changes or []:
+        prop_id = str(change.get("prop_id", ""))
+        if not prop_id.endswith(".n_clicks"):
+            continue
+        try:
+            identifier = json.loads(prop_id.removesuffix(".n_clicks"))
+        except (TypeError, ValueError):
+            continue
+        count = change.get("value")
+        if identifier == trigger and isinstance(count, int) and count > 0:
+            return True
+    return False
+
+
 def _restore_semantic_snapshot(
     project: GeometricCoder, session_id: int, geometry_id: int | None,
     query: str,
@@ -125,7 +151,7 @@ def _restore_semantic_snapshot(
         return {}, f"Saved semantic search is stale or unavailable: {error} Run Search to refresh it."
     if saved is None:
         return {}, "No saved semantic search scores for this session and geometry. Run Search."
-    return {str(saved["geometry_name"]): saved["scores"]}, "Restored saved semantic search scores."
+    return {str(saved["geometry_name"]): saved["scores"]}, ""
 
 
 def _restored_semantic_color_mode(
@@ -1488,8 +1514,8 @@ def create_app(
             html.Div([
                 html.Span(entry["query"]),
                 html.Button("Load", id={"type": "semantic-load-query", "index": entry["query_id"]}, n_clicks=0),
-                html.Button("×", id={"type": "semantic-delete-query", "index": entry["query_id"]}, n_clicks=0,
-                            className="danger-icon-action", title="Delete saved query"),
+                html.Button("Delete", id={"type": "semantic-delete-query", "index": entry["query_id"]}, n_clicks=0,
+                            className="danger-action", title="Delete saved query"),
             ], className="saved-filter-set-row") for entry in rows
         ] or [html.P("No saved semantic searches.", className="filter-empty-state")]
         return {"display": "flex"}, children
@@ -1507,7 +1533,7 @@ def create_app(
     )
     def select_saved_query(_loads, _deletes, active, revision):
         trigger = callback_context.triggered_id
-        if not isinstance(trigger, dict):
+        if not _is_semantic_modal_click(trigger, callback_context.triggered):
             return no_update, no_update, no_update, no_update
         qid = int(trigger["index"])
         if trigger["type"] == "semantic-delete-query":
@@ -1554,7 +1580,7 @@ def create_app(
     def display_active_semantic(query, geometry_id, color_mode):
         clean = str(query or "").strip()
         if not clean:
-            return {}, "No active semantic search.", None, None, "plain" if color_mode == "semantic" else no_update
+            return {}, "", None, None, "plain" if color_mode == "semantic" else no_update
         if geometry_id is None or int(geometry_id) not in geometry_by_id:
             return {}, "Select a geometry to search.", None, None, "plain" if color_mode == "semantic" else no_update
         selected = geometry_by_id[int(geometry_id)]
@@ -1571,12 +1597,12 @@ def create_app(
                 project.saved_semantic_searches.store(clean, int(geometry_id), scores)
             except (ValueError, KeyError, ConfigurationError, OSError) as error:
                 return {}, f"Semantic search unavailable: {error}", None, None, "plain"
-            status = f"Computed semantic similarity in {selected['name']} and saved it."
+            status = ""
             current_range = None
         else:
             scores = cached["scores"]
             current_range = cached["range"]
-            status = f"Loaded cached semantic similarity in {selected['name']}."
+            status = ""
         return ({str(selected["name"]): scores}, status,
                 current_range, current_range, "semantic")
 
