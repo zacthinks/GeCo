@@ -1362,9 +1362,10 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .representation-filters { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* Keep the semantic query field compact and top-aligned in the Explore grid. */
+/* Compact contents without overriding the equal-height Explore grid rows.
+   CSS grid stretches every card in a row to its tallest sibling. */
 .explore-controls > .semantic-search-control-block {
-  align-self: start;
+  align-self: stretch;
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
 }
