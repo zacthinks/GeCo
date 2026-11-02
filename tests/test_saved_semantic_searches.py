@@ -106,23 +106,20 @@ def test_legacy_v16_saved_results_migrate_without_loss(project):
     assert reopened.saved_semantic_searches.find("example", gid)["scores"] == pytest.approx([0.1,0.2,0.3])
 
 
-def test_restore_only_valid_cached_results(project):
-    from geometric_coder.ui.app import _restore_semantic_snapshot, _restored_semantic_color_mode
+def test_session_resume_drops_legacy_semantic_and_topic_state(project):
+    from geometric_coder.ui.app import _resumable_session_state
+    state = {
+        "geometry_id": 7, "view_id": 13, "literal_query": "kept",
+        "semantic_query": "old draft", "semantic_active_query": "old search",
+        "semantic_range": [0.2, 0.8], "topic_color_mode": "semantic",
+        "topic_model_id": 6, "topic_component_id": "topic-a",
+    }
+    resumed = _resumable_session_state(state)
+    assert resumed == {"geometry_id": 7, "view_id": 13, "literal_query": "kept"}
     gid = _geometry(project)
-    sid = int(project.sessions()[0]["session_id"])
-    store = project.saved_semantic_searches
-    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
-    assert scores == {} and "Run Search" in message
-    store.store("example", gid, [0.2, 0.6, 0.9])
-    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
-    assert scores["sample"] == pytest.approx([0.2, 0.6, 0.9])
-    assert _restored_semantic_color_mode("semantic", scores) == "semantic"
-    with project.database.connect() as con:
-        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0",
-                    ('{"id": 99}',))
-    scores, message = _restore_semantic_snapshot(project, sid, gid, "example")
-    assert scores == {} and "stale" in message
-    assert _restored_semantic_color_mode("semantic", scores) == "plain"
+    project.saved_semantic_searches.store("old search", gid, [0.2, 0.6, 0.9])
+    assert project.saved_semantic_searches.find("old search", gid) is not None
+
 
 
 def test_topic_selection_restore_guard():
