@@ -846,6 +846,8 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    dcc.ConfirmDialog(id="saved-filter-delete-confirm", message="Delete this saved filter collection?"),
+                    dcc.Store(id="saved-filter-delete-pending", data=None),
                     html.Div([
                         html.Div([
                             html.Div([html.H2("Saved semantic searches"),
@@ -2029,6 +2031,8 @@ def create_app(
         Output("metadata-filter-operator", "value", allow_duplicate=True),
         Output("saved-filter-refresh-store", "data", allow_duplicate=True),
         Output("load-filter-set-status", "children"),
+        Output("saved-filter-delete-pending", "data"),
+        Output("saved-filter-delete-confirm", "displayed"),
         Input("metadata-filter-load-open-button", "n_clicks"),
         Input("load-filter-set-close", "n_clicks"),
         Input("load-filter-set-done", "n_clicks"),
@@ -2049,14 +2053,14 @@ def create_app(
         triggered = callback_context.triggered_id
         current_refresh = int(refresh or 0)
         if triggered == "metadata-filter-load-open-button":
-            return {"display": "flex"}, no_update, no_update, current_refresh, ""
+            return {"display": "flex"}, no_update, no_update, current_refresh, "", no_update, False
         if isinstance(triggered, str) and triggered in {
             "load-filter-set-close",
             "load-filter-set-done",
         }:
-            return {"display": "none"}, no_update, no_update, current_refresh, ""
+            return {"display": "none"}, no_update, no_update, current_refresh, "", no_update, False
         if not isinstance(triggered, dict):
-            return no_update, no_update, no_update, current_refresh, ""
+            return no_update, no_update, no_update, current_refresh, "", no_update, False
         identifier = str(triggered.get("index", ""))
         records = _read_saved_filter_sets(saved_filter_sets_path)
         selected_position = next(
@@ -2068,7 +2072,7 @@ def create_app(
             None,
         )
         if selected_position is None:
-            return {"display": "flex"}, no_update, no_update, current_refresh, "Saved collection not found."
+            return {"display": "flex"}, no_update, no_update, current_refresh, "Saved collection not found.", no_update, False
         clicked_values = (
             delete_clicks
             if triggered.get("type") == "delete-filter-set"
@@ -2080,14 +2084,10 @@ def create_app(
         ):
             # Saved-set rows use pattern IDs. Mounting those buttons is not a
             # user action and must not load or delete anything.
-            return no_update, no_update, no_update, current_refresh, ""
+            return no_update, no_update, no_update, current_refresh, "", no_update, False
         selected = records[selected_position]
         if triggered.get("type") == "delete-filter-set":
-            _write_saved_filter_sets(
-                saved_filter_sets_path,
-                [record for record in records if str(record.get("id")) != identifier],
-            )
-            return {"display": "flex"}, no_update, no_update, current_refresh + 1, "Deleted saved collection."
+            return {"display": "flex"}, no_update, no_update, current_refresh, "", identifier, True
         clauses = _normalize_metadata_filters(
             selected.get("filters", []), metadata_profiles
         )
@@ -2097,7 +2097,27 @@ def create_app(
             _normalize_boolean_operator(selected.get("operator")),
             current_refresh,
             "",
+            no_update,
+            False,
         )
+
+    @app.callback(
+        Output("saved-filter-refresh-store", "data", allow_duplicate=True),
+        Output("saved-filter-delete-pending", "data", allow_duplicate=True),
+        Input("saved-filter-delete-confirm", "submit_n_clicks"),
+        State("saved-filter-delete-pending", "data"),
+        State("saved-filter-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def confirm_filter_set_delete(clicks, identifier, revision):
+        if not clicks or not identifier:
+            return no_update, no_update
+        records = _read_saved_filter_sets(saved_filter_sets_path)
+        _write_saved_filter_sets(
+            saved_filter_sets_path,
+            [record for record in records if str(record.get("id")) != identifier],
+        )
+        return int(revision or 0) + 1, None
 
     @app.callback(
         Output("geometry-map", "figure"),
