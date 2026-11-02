@@ -27,7 +27,7 @@ COMMITTEE_AGGREGATIONS = FIXED_COMMITTEE_AGGREGATIONS | TRAINABLE_COMMITTEE_AGGR
 
 _SAVED_SEARCH_SQL = (
     """CREATE TABLE semantic_search_results (
-        result_id INTEGER PRIMARY KEY,
+        result_id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL CHECK (kind IN ('named', 'auto')),
         name TEXT COLLATE NOCASE,
         session_id INTEGER REFERENCES sessions(session_id) ON DELETE CASCADE,
