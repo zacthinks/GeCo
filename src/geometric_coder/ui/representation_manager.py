@@ -889,16 +889,9 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
         # Run only after GeCo reference checks have passed, but before commit.
         # If alias release fails, the GeCo transaction rolls back as well.
         if artifact_id:
-            other_refs = [
-                row for row in coder.database.list_representations()
-                if isinstance(row.get("external_ref"), Mapping)
-                and row["external_ref"].get("artifact_id") == artifact_id
-                and str(row.get("name")) != str(record["name"])
-            ]
-            if not other_refs:
-                _release_representation_alias(
-                    coder, name=str(record["name"]), artifact_id=artifact_id
-                )
+            _release_representation_alias(
+                coder, name=str(record["name"]), artifact_id=artifact_id
+            )
 
 
 def create_view(
