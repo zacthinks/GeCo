@@ -1625,27 +1625,29 @@ class GeometricCoder:
 
     @property
     def saved_semantic_searches(self):
-        """Project-local named and automatic semantic-search snapshots."""
+        """Project-level semantic queries with geometry-specific result caches."""
         from geometric_coder.search_results import SavedSemanticSearches
-
         return SavedSemanticSearches(self)
 
-    def save_semantic_search(self, **kwargs: Any) -> int:
-        """Persist one validated score snapshot in GeCo."""
-        return self.saved_semantic_searches.save(**kwargs)
+    def list_semantic_searches(self) -> list[dict[str, Any]]:
+        """List project-wide search strings, independent of geometry."""
+        return self.saved_semantic_searches.queries()
 
-    def load_semantic_search(self, result_id: int) -> dict[str, Any]:
-        """Restore validated scores without rerunning the geometry pipeline."""
-        return self.saved_semantic_searches.load(result_id)
+    def save_semantic_search(self, *, geometry_id: int, query: str,
+                             scores: Sequence[float],
+                             range_values: Sequence[float] | None = None) -> int:
+        """Save a successful query and its current geometry scores."""
+        return self.saved_semantic_searches.store(
+            query, geometry_id, scores, range_values=range_values,
+        )
 
-    def list_semantic_searches(self, *, session_id: int | None = None) -> list[dict[str, Any]]:
-        return self.saved_semantic_searches.list(session_id=session_id)
+    def load_semantic_search(self, *, query: str, geometry_id: int) -> dict[str, Any] | None:
+        """Fetch a validated cached result; do not calculate missing scores."""
+        return self.saved_semantic_searches.find(query, geometry_id)
 
-    def delete_semantic_search(self, result_id: int) -> None:
-        self.saved_semantic_searches.delete(result_id)
-
-    def rename_semantic_search(self, result_id: int, name: str) -> None:
-        self.saved_semantic_searches.rename(result_id, name)
+    def delete_semantic_search(self, query_id: int) -> None:
+        """Remove a query and every cached geometry result for that query."""
+        self.saved_semantic_searches.delete_query(query_id)
 
     def semantic_search(
         self,
