@@ -202,6 +202,7 @@ def test_v14_external_project_migrates_with_saved_view_selection(tmp_path: Path)
     database_path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(database_path) as connection:
         connection.execute("DROP TABLE semantic_search_results")
+        connection.execute("DROP TABLE semantic_queries")
         connection.execute("DROP TABLE representation_legacy_refs")
         connection.execute("DROP TABLE representations")
         connection.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
