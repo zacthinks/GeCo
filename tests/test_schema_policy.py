@@ -122,7 +122,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 17):
+    for version in (12, 18):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
