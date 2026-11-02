@@ -1361,3 +1361,26 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 @media (max-width: 650px) {
   .representation-filters { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Keep the semantic query field compact and top-aligned in the Explore grid. */
+.explore-controls > .semantic-search-control-block {
+  align-self: start;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+.semantic-search-control-block .control-block-title {
+  margin-bottom: 0.28rem;
+}
+.semantic-search-control-block .semantic-search-section {
+  margin: 0;
+  padding: 0;
+}
+.semantic-search-control-block .semantic-query-row { margin: 0; }
+.semantic-search-control-block .control-status:empty {
+  display: none;
+  min-height: 0;
+  margin: 0;
+}
+.semantic-search-control-block #semantic-search-loading:has(.control-status:empty) {
+  min-height: 0;
+}
