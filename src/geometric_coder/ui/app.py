@@ -553,6 +553,7 @@ def create_app(
                 dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
+                dcc.Store(id="semantic-saved-refresh", data=0),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
                     id="metadata-filters-store",
@@ -6910,6 +6911,36 @@ def _explore_layout(
                                         ),
                                     ),
                                 ],
+                                    html.Div(
+                                        [
+                                            html.H4("Saved semantic searches"),
+                                            dcc.Dropdown(
+                                                id="semantic-saved-picker",
+                                                options=[
+                                                    {"label": str(item["name"]), "value": item["result_id"]}
+                                                    for item in project.list_semantic_searches()
+                                                ],
+                                                placeholder="Choose a saved search",
+                                                clearable=True,
+                                            ),
+                                            dcc.Input(
+                                                id="semantic-saved-title", type="text",
+                                                placeholder="Search name",
+                                            ),
+                                            html.Div(
+                                                [
+                                                    html.Button("Save As", id="semantic-save-as", n_clicks=0),
+                                                    html.Button("Load", id="semantic-load", n_clicks=0),
+                                                    html.Button("Rename", id="semantic-rename", n_clicks=0),
+                                                    html.Button("Delete", id="semantic-delete", n_clicks=0),
+                                                ],
+                                                className="inline-controls",
+                                            ),
+                                            html.Div(id="semantic-saved-status", className="control-status"),
+                                            html.Div(id="semantic-load-status", className="control-status"),
+                                        ],
+                                        className="search-section semantic-saved-results",
+                                    ),
                                 className="search-section semantic-search-section",
                             ),
                         ],
