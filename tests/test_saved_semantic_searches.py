@@ -84,3 +84,52 @@ def test_schema_15_migrates_without_erasing_existing_records(project):
     assert reopened.database.project_metadata()["schema_version"] == 16
     assert reopened.database.get_geometry(gid)["name"] == "sample"
     assert reopened.list_semantic_searches() == []
+
+
+
+def test_restore_reports_stale_and_does_not_restore_semantic_coloring(project):
+    from geometric_coder.ui.app import (
+        _restore_semantic_snapshot, _restored_semantic_color_mode,
+    )
+    gid = _geometry(project)
+    sid = int(project.sessions()[0]["session_id"])
+    project.save_semantic_search(
+        geometry_id=gid, session_id=sid, query="original",
+        scores=[0.2, 0.6, 0.9],
+    )
+    scores, status = _restore_semantic_snapshot(project, sid, gid, "original")
+    assert scores["sample"] == pytest.approx([0.2, 0.6, 0.9])
+    assert "Restored" in status
+    assert _restored_semantic_color_mode("semantic", scores) == "semantic"
+
+    with project.database.connect() as con:
+        con.execute("UPDATE units SET user_key_json = ? WHERE row_position = 0", ('{"id": 99}',))
+    stale, status = _restore_semantic_snapshot(project, sid, gid, "original")
+    assert stale == {}
+    assert "stale" in status.lower() and "Run Search" in status
+    assert _restored_semantic_color_mode("semantic", stale) == "plain"
+
+
+def test_restore_mismatched_and_missing_query_retains_request(project):
+    from geometric_coder.ui.app import _restore_semantic_snapshot
+    gid = _geometry(project)
+    sid = int(project.sessions()[0]["session_id"])
+    scores, status = _restore_semantic_snapshot(project, sid, gid, "question")
+    assert scores == {} and "Run Search" in status
+    project.save_semantic_search(
+        geometry_id=gid, session_id=sid, query="completed", scores=[0.1, 0.2, 0.3],
+    )
+    scores, status = _restore_semantic_snapshot(project, sid, gid, "edited")
+    assert scores == {} and "query has changed" in status
+
+
+def test_restored_topic_selection_cannot_take_over_semantic_coloring():
+    from geometric_coder.ui.app import _topic_restore_snapshot, _is_restored_topic_selection
+    snapshot = _topic_restore_snapshot(
+        12, {"topic_model_id": 42, "topic_component_id": "topic-a",
+             "topic_color_mode": "semantic"},
+    )
+    assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 12)
+    assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 13)
+    assert not _is_restored_topic_selection(42, "intensity", "topic-a", snapshot, 12)
+    assert not _is_restored_topic_selection(21, "dominant", "topic-a", snapshot, 12)
