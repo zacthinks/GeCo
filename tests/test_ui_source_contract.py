@@ -596,3 +596,16 @@ def test_semantic_search_only_scores_selected_geometry_and_does_not_replay_on_re
     assert 'clean_query, geometry_names=[str(selected["name"])]' in source
     assert "initial_semantic_scores = project.semantic_search" not in source
     assert "scores = project.semantic_search(query) if query else {}" not in source
+
+
+def test_semantic_search_auto_snapshot_restoration_never_runs_similarity_on_open() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'project.saved_semantic_searches.latest(' in source
+    assert 'previous["query"] == query.strip()' in source
+    assert 'project.save_semantic_search(' in source
+    assert 'State("active-session-store", "data")' in source
+    assert "initial_semantic_scores = project.semantic_search" not in source
+    assert "scores = project.semantic_search(query) if query else {}" not in source
