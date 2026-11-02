@@ -598,38 +598,17 @@ def test_semantic_search_only_scores_selected_geometry_and_does_not_replay_on_re
     assert "scores = project.semantic_search(query) if query else {}" not in source
 
 
-def test_semantic_search_auto_snapshot_restoration_never_runs_similarity_on_open() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "src" / "geometric_coder" / "ui" / "app.py"
-    ).read_text(encoding="utf-8")
-    assert 'project.saved_semantic_searches.latest(' in source
-    # Startup and session restoration now share the validated restore helper.
-    # Query-match and stale-result behavior are exercised in
-    # test_saved_semantic_searches.py rather than matched by source spelling.
-    assert source.count("_restore_semantic_snapshot(") >= 3
-    assert 'project.save_semantic_search(' in source
-    assert 'State("active-session-store", "data")' in source
-    assert "initial_semantic_scores = project.semantic_search" not in source
-    assert "scores = project.semantic_search(query) if query else {}" not in source
+def test_semantic_query_cache_and_compact_modal_contract() -> None:
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert "_restore_semantic_snapshot(" in source
+    assert 'project.saved_semantic_searches.find(' in source
+    assert 'project.saved_semantic_searches.store(' in source
+    assert 'Input("semantic-query", "n_submit")' in source
+    assert 'id="semantic-load-open"' in source
+    assert 'id="semantic-load-modal"' in source
+    assert 'id="semantic-active-query"' in source
+    assert 'Input("geometry-dropdown", "value")' in source
+    assert 'id="semantic-save-as"' not in source
+    assert 'id="semantic-saved-picker"' not in source
 
 
-def test_explore_saved_semantic_results_controls_use_durable_project_api() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "src" / "geometric_coder" / "ui" / "app.py"
-    ).read_text(encoding="utf-8")
-    for identifier in (
-        "semantic-saved-picker",
-        "semantic-saved-title",
-        "semantic-save-as",
-        "semantic-load",
-        "semantic-rename",
-        "semantic-delete",
-    ):
-        assert f'id="{identifier}"' in source
-    assert "project.list_semantic_searches()" in source
-    assert "project.load_semantic_search(int(result_id))" in source
-    assert "project.delete_semantic_search(int(selected_result))" in source
-    assert "project.rename_semantic_search(int(selected_result), name)" in source
-    assert '"Run Search before saving this query."' in source
