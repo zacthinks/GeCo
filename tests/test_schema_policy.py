@@ -48,8 +48,8 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 
 def test_current_schema_and_upgrade_registry() -> None:
-    assert SCHEMA_VERSION == 15
-    assert set(storage_database._MIGRATIONS) == {13, 14}
+    assert SCHEMA_VERSION == 16
+    assert set(storage_database._MIGRATIONS) == {13, 14, 15}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -73,7 +73,7 @@ def test_open_schema_13_upgrades_and_preserves_research_state(
 
     provider = object() if external else None
     reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
-    assert _version_and_topics(path) == (15, True)
+    assert _version_and_topics(path) == (16, True)
     assert reopened.topic_models() == []
     with sqlite3.connect(path) as connection:
         for table, rows in baseline.items():
@@ -121,7 +121,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 16):
+    for version in (12, 17):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
