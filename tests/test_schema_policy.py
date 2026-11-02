@@ -29,6 +29,7 @@ def _simulate_existing_schema_13(path: Path) -> None:
     """A schema-13 database had no topic_models table."""
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE semantic_search_results")
+        connection.execute("DROP TABLE semantic_queries")
         connection.execute("DROP TABLE topic_models")
         connection.execute("DROP TABLE representation_legacy_refs")
         connection.execute("DROP TABLE representations")
@@ -163,6 +164,7 @@ def test_14_to_15_preserves_legacy_ids_and_view_parent(tmp_path: Path) -> None:
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
         con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
@@ -197,6 +199,7 @@ def test_14_to_15_migration_rolls_back_on_failure(
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
         con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
@@ -321,6 +324,7 @@ def test_unified_registry_deduplicates_same_provider_artifact(tmp_path: Path) ->
     # Recreate a genuine schema-14 database to test the migration separately.
     with sqlite3.connect(project.project_dir / project.DATABASE_FILENAME) as con:
         con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
