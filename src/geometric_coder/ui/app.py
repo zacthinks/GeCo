@@ -1623,7 +1623,7 @@ def create_app(
     def display_active_semantic(query, geometry_id, color_mode):
         clean = str(query or "").strip()
         if not clean:
-            return {}, "", None, None, "plain" if color_mode == "semantic" else no_update
+            return {}, "", None, None, no_update
         if geometry_id is None or int(geometry_id) not in geometry_by_id:
             return {}, "Select a geometry to search.", None, None, "plain" if color_mode == "semantic" else no_update
         selected = geometry_by_id[int(geometry_id)]
