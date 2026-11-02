@@ -7055,16 +7055,6 @@ def _explore_layout(
                                                             else {}
                                                         ),
                                                         allowCross=False,
-                                                        tooltip={
-                                                            "placement": "top",
-                                                            "always_visible": False,
-                                                            "transform": "formatSimilarity",
-                                                            "style": {
-                                                                "minWidth": "58px",
-                                                                "textAlign": "center",
-                                                                "fontVariantNumeric": "tabular-nums",
-                                                            },
-                                                        },
                                                         allow_direct_input=False,
                                                     ),
                                                     id="semantic-range-wrap",
