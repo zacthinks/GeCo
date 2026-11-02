@@ -434,8 +434,7 @@ def create_app(
     )
     initial_semantic_query = str(initial_state.get("semantic_query", ""))
     initial_semantic_scores: dict[str, list[float]] = {}
-    if initial_semantic_query:
-        initial_semantic_scores = project.semantic_search(initial_semantic_query)
+    # Retain the typed query without eagerly scoring on app startup.
     initial_history = _normalize_navigation_history(
         initial_state.get("navigation_history"),
         focal_unit_id=initial_state.get("focal_unit_id"),
@@ -1151,7 +1150,8 @@ def create_app(
             project.views(geometry_id, include_descendants=True),
         )
         query = str(state.get("semantic_query", ""))
-        scores = project.semantic_search(query) if query else {}
+        # Restoring a session must not execute an expensive query implicitly.
+        scores = {}
         literal_options = []
         if state.get("case_sensitive"):
             literal_options.append("case")
@@ -1398,6 +1398,7 @@ def create_app(
         Output("topic-color-mode", "data", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
         State("semantic-query", "value"),
+        State("geometry-dropdown", "value"),
         prevent_initial_call=True,
         running=[
             (Output("semantic-search-button", "disabled"), True, False),
@@ -1406,12 +1407,20 @@ def create_app(
     def run_semantic_search(
         search_clicks: int,
         query: str | None,
+        geometry_id: int | None,
     ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
         del search_clicks
         clean_query = (query or "").strip()
         if not clean_query:
             return {}, "Semantic search cleared.", "", None, None, "plain"
-        scores = project.semantic_search(clean_query)
+        if geometry_id is None or int(geometry_id) not in geometry_by_id:
+            return {}, "Choose a geometry before searching.", no_update, None, None, no_update
+        selected = geometry_by_id[int(geometry_id)]
+        if not selected.get("supports_query"):
+            return {}, "This geometry does not support semantic queries.", no_update, None, None, no_update
+        scores = project.semantic_search(
+            clean_query, geometry_names=[str(selected["name"])]
+        )
         if not scores:
             return (
                 {},
@@ -1423,7 +1432,7 @@ def create_app(
             )
         return (
             scores,
-            f"Computed semantic similarity in {len(scores)} geometries.",
+            f"Computed semantic similarity in {str(selected['name'])}.",
             no_update,
             None,
             None,
