@@ -991,10 +991,17 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Input("topic-color-mode", "data"),
+        State("topic-model-selector", "value"),
+        State("topic-display-mode", "value"),
+        State("topic-component-selector", "value"),
+        State("topic-restore-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
-    def clear_semantic_on_topic_color(mode):
+    def clear_semantic_on_topic_color(mode, model, display, component, restored, session_id):
         if mode not in {"dominant", "intensity"}:
+            return no_update, no_update, no_update
+        if _is_restored_topic_selection(model, display, component, restored, session_id):
             return no_update, no_update, no_update
         return "", "", {}
 
@@ -1539,6 +1546,7 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-load-refresh", "data", allow_duplicate=True),
         Output("semantic-load-modal", "style", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
         Output("semantic-delete-pending", "data"),
         Output("semantic-delete-confirm", "displayed"),
         Input({"type": "semantic-load-query", "index": ALL}, "n_clicks"),
@@ -1550,15 +1558,15 @@ def create_app(
     def select_saved_query(_loads, _deletes, active, revision):
         trigger = callback_context.triggered_id
         if not _is_semantic_modal_click(trigger, callback_context.triggered):
-            return (no_update,) * 6
+            return (no_update,) * 7
         qid = int(trigger["index"])
         if trigger["type"] == "semantic-delete-query":
-            return no_update, no_update, no_update, no_update, qid, True
+            return no_update, no_update, no_update, no_update, no_update, qid, True
         query = next((row["query"] for row in project.saved_semantic_searches.queries()
                       if row["query_id"] == qid), None)
         if query is None:
-            return (no_update,) * 6
-        return query, query, no_update, {"display": "none"}, no_update, False
+            return (no_update,) * 7
+        return query, query, no_update, {"display": "none"}, None, no_update, False
 
     @app.callback(
         Output("semantic-active-query", "data", allow_duplicate=True),
