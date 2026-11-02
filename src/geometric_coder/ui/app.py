@@ -1409,6 +1409,105 @@ def create_app(
         )
 
     @app.callback(
+        Output("semantic-saved-picker", "options"),
+        Input("semantic-saved-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def refresh_semantic_saved_options(_revision: int | None) -> list[dict[str, Any]]:
+        return [
+            {"label": str(item["name"]), "value": item["result_id"]}
+            for item in project.list_semantic_searches()
+        ]
+
+    @app.callback(
+        Output("semantic-saved-refresh", "data"),
+        Output("semantic-saved-status", "children"),
+        Output("semantic-saved-picker", "value"),
+        Input("semantic-save-as", "n_clicks"),
+        Input("semantic-rename", "n_clicks"),
+        Input("semantic-delete", "n_clicks"),
+        State("semantic-saved-picker", "value"),
+        State("semantic-saved-title", "value"),
+        State("geometry-dropdown", "value"),
+        State("semantic-query", "value"),
+        State("active-session-store", "data"),
+        State("semantic-saved-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def manage_saved_semantic_search(
+        _save_clicks: int, _rename_clicks: int, _delete_clicks: int,
+        selected_result: int | None, requested_name: str | None,
+        geometry_id: int | None, typed_query: str | None,
+        session_id: int, current_revision: int | None,
+    ) -> tuple[int | Any, str, int | None | Any]:
+        action = callback_context.triggered_id
+        name = (requested_name or "").strip()
+        try:
+            if action == "semantic-save-as":
+                if geometry_id is None or not name:
+                    return no_update, "Choose a geometry and enter a search name.", no_update
+                last = project.saved_semantic_searches.latest(
+                    int(session_id), int(geometry_id)
+                )
+                if last is None or last["query"] != (typed_query or "").strip():
+                    return no_update, "Run Search before saving this query.", no_update
+                result_id = project.save_semantic_search(
+                    geometry_id=int(geometry_id), query=last["query"],
+                    scores=last["scores"], name=name, range_values=last["range"],
+                )
+                return int(current_revision or 0) + 1, f"Saved {name}.", result_id
+            if selected_result is None:
+                return no_update, "Choose a saved search first.", no_update
+            if action == "semantic-rename":
+                if not name:
+                    return no_update, "Enter the new name.", no_update
+                project.rename_semantic_search(int(selected_result), name)
+                return int(current_revision or 0) + 1, f"Renamed to {name}.", selected_result
+            if action == "semantic-delete":
+                project.delete_semantic_search(int(selected_result))
+                return int(current_revision or 0) + 1, "Saved search deleted.", None
+        except Exception as error:
+            return no_update, f"Saved search operation failed: {error}", no_update
+        return no_update, "", no_update
+
+    @app.callback(
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-query", "value", allow_duplicate=True),
+        Output("geometry-dropdown", "value", allow_duplicate=True),
+        Output("semantic-range", "data", allow_duplicate=True),
+        Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Output("semantic-load-status", "children"),
+        Input("semantic-load", "n_clicks"),
+        State("semantic-saved-picker", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def load_named_semantic_search(
+        _clicks: int, result_id: int | None, session_id: int,
+    ) -> tuple[Any, Any, Any, Any, Any, Any, str]:
+        if result_id is None:
+            return (no_update,) * 6 + ("Choose a saved search.",)
+        try:
+            saved = project.load_semantic_search(int(result_id))
+            project.save_semantic_search(
+                geometry_id=int(saved["geometry_id"]), query=saved["query"],
+                scores=saved["scores"], session_id=int(session_id),
+                range_values=saved["range"],
+            )
+        except (KeyError, ValueError, OSError) as error:
+            return (no_update,) * 6 + (f"Unable to load search: {error}",)
+        return (
+            {saved["geometry_name"]: saved["scores"]},
+            saved["query"],
+            saved["geometry_id"],
+            saved["range"],
+            saved["range"],
+            "semantic",
+            f"Loaded {saved['name']} into the selected geometry.",
+        )
+
+    @app.callback(
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Output("semantic-search-status", "children"),
         Output("semantic-query", "value", allow_duplicate=True),
