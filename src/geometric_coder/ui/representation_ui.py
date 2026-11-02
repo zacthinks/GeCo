@@ -106,6 +106,8 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                                 className="secondary-action", disabled=not linked),
                     html.Button("Delete", id="representation-detail-delete",
                                 n_clicks=0, className="danger-action"),
+                    dcc.ConfirmDialog(id="representation-delete-confirm",
+                                      message="Delete this representation from GeCo? Its TeAL artifact will be kept."),
                 ], className="representation-detail-actions"),
                 html.Div(id="representation-detail-promote-status", role="status",
                          className="control-status"),
@@ -419,14 +421,24 @@ def register_representation_callbacks(
         return "Updated.", int(revision or 0) + 1, int(view_revision or 0) + 1
 
     @app.callback(
+        Output("representation-delete-confirm", "displayed"),
+        Input("representation-detail-delete", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def request_representation_delete(clicks: int | None) -> bool:
+        return bool(clicks)
+
+    @app.callback(
         Output("representation-detail-delete-status", "children"),
         Output("representation-refresh-store", "data", allow_duplicate=True),
-        Input("representation-detail-delete", "n_clicks"),
+        Input("representation-delete-confirm", "submit_n_clicks"),
         State("representation-selected", "data"),
         State("representation-refresh-store", "data"),
         prevent_initial_call=True,
     )
     def unregister(_clicks: int, key: str | None, revision: int | None) -> tuple[Any, Any]:
+        if not _clicks:
+            return no_update, no_update
         if key is None:
             return "Choose a representation.", no_update
         try:
