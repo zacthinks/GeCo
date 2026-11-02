@@ -114,7 +114,16 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   padding: 0.35rem 0.15rem 0.1rem;
   background: #fff;
 }
-.semantic-query-row { margin-bottom: 0.1rem; }
+.semantic-query-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.1rem;
+}
+.semantic-query-row > #semantic-query { min-width: 0; width: 100%; }
+.semantic-query-row > button { width: auto; white-space: nowrap; }
+
 .semantic-clear-action {
   width: auto;
   margin-top: 0.5rem;
@@ -437,6 +446,20 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .saved-filter-set-description small { display: block; }
 .saved-filter-set-description small { margin-top: 0.15rem; color: #69736d; }
 .danger-icon-action { color: #9f2f2f; }
+/* The representation detail actions are peers, including the destructive one. */
+.representation-detail-actions { display: grid; grid-template-columns: 1fr; gap: 0.55rem; }
+.representation-detail-actions > button {
+  width: 100%;
+  min-height: 38px;
+  margin: 0;
+  padding: 0.52rem 0.78rem;
+}
+.saved-filter-set-row > .danger-action {
+  min-height: 38px;
+  padding: 0.52rem 0.78rem;
+  white-space: nowrap;
+}
+
 @media (max-width: 1380px) {
   .explore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .combined-search-block, .metadata-filter-block { grid-column: span 1; }
