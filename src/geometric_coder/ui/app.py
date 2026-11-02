@@ -1430,6 +1430,7 @@ def create_app(
         State("semantic-saved-title", "value"),
         State("geometry-dropdown", "value"),
         State("semantic-query", "value"),
+        State("semantic-range", "data"),
         State("active-session-store", "data"),
         State("semantic-saved-refresh", "data"),
         prevent_initial_call=True,
@@ -1438,6 +1439,7 @@ def create_app(
         _save_clicks: int, _rename_clicks: int, _delete_clicks: int,
         selected_result: int | None, requested_name: str | None,
         geometry_id: int | None, typed_query: str | None,
+        current_range: list[float] | None,
         session_id: int, current_revision: int | None,
     ) -> tuple[int | Any, str, int | None | Any]:
         action = callback_context.triggered_id
@@ -1453,7 +1455,7 @@ def create_app(
                     return no_update, "Run Search before saving this query.", no_update
                 result_id = project.save_semantic_search(
                     geometry_id=int(geometry_id), query=last["query"],
-                    scores=last["scores"], name=name, range_values=last["range"],
+                    scores=last["scores"], name=name, range_values=current_range,
                 )
                 return int(current_revision or 0) + 1, f"Saved {name}.", result_id
             if selected_result is None:
