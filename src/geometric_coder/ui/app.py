@@ -434,7 +434,16 @@ def create_app(
     )
     initial_semantic_query = str(initial_state.get("semantic_query", ""))
     initial_semantic_scores: dict[str, list[float]] = {}
-    # Retain the typed query without eagerly scoring on app startup.
+    # Load a validated session snapshot, never run cosine similarity on startup.
+    if initial_semantic_query.strip() and initial_geometry_id is not None:
+        try:
+            previous = project.saved_semantic_searches.latest(
+                int(initial_session["session_id"]), int(initial_geometry_id)
+            )
+        except ValueError:
+            previous = None
+        if previous is not None and previous["query"] == initial_semantic_query.strip():
+            initial_semantic_scores = {previous["geometry_name"]: previous["scores"]}
     initial_history = _normalize_navigation_history(
         initial_state.get("navigation_history"),
         focal_unit_id=initial_state.get("focal_unit_id"),
@@ -1150,8 +1159,17 @@ def create_app(
             project.views(geometry_id, include_descendants=True),
         )
         query = str(state.get("semantic_query", ""))
-        # Restoring a session must not execute an expensive query implicitly.
+        # Restore cached scores only when they match the completed query.
         scores = {}
+        if query.strip() and geometry_id is not None:
+            try:
+                previous = project.saved_semantic_searches.latest(
+                    int(session_id), int(geometry_id)
+                )
+            except ValueError:
+                previous = None
+            if previous is not None and previous["query"] == query.strip():
+                scores = {previous["geometry_name"]: previous["scores"]}
         literal_options = []
         if state.get("case_sensitive"):
             literal_options.append("case")
@@ -1399,6 +1417,7 @@ def create_app(
         Input("semantic-search-button", "n_clicks"),
         State("semantic-query", "value"),
         State("geometry-dropdown", "value"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
         running=[
             (Output("semantic-search-button", "disabled"), True, False),
@@ -1408,6 +1427,7 @@ def create_app(
         search_clicks: int,
         query: str | None,
         geometry_id: int | None,
+        session_id: int,
     ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
         del search_clicks
         clean_query = (query or "").strip()
@@ -1430,9 +1450,19 @@ def create_app(
                 None,
                 no_update,
             )
+        try:
+            project.save_semantic_search(
+                geometry_id=int(geometry_id),
+                query=clean_query,
+                scores=scores[str(selected["name"])],
+                session_id=int(session_id),
+            )
+            persisted = " Saved for this session."
+        except (ValueError, KeyError, OSError) as error:
+            persisted = f" Results not saved: {error}"
         return (
             scores,
-            f"Computed semantic similarity in {str(selected['name'])}.",
+            f"Computed semantic similarity in {str(selected['name'])}.{persisted}",
             no_update,
             None,
             None,
