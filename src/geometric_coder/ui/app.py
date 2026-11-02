@@ -684,6 +684,7 @@ def create_app(
                         sessions=sessions,
                         initial_session_id=int(initial_session["session_id"]),
                         initial_seen_count=initial_seen_count,
+                        saved_semantic_searches=project.list_semantic_searches(),
                         metadata_profiles=metadata_profiles,
                         allow_create_view=not project.is_external_backed,
                     )),
@@ -6846,6 +6847,7 @@ def _explore_layout(
     sessions: list[dict[str, Any]],
     initial_session_id: int,
     initial_seen_count: int,
+    saved_semantic_searches: list[dict[str, Any]],
     metadata_profiles: dict[str, dict[str, Any]],
     allow_create_view: bool,
 ) -> Any:
@@ -7011,7 +7013,6 @@ def _explore_layout(
                                             ]
                                         ),
                                     ),
-                                ],
                                     html.Div(
                                         [
                                             html.H4("Saved semantic searches"),
@@ -7019,7 +7020,7 @@ def _explore_layout(
                                                 id="semantic-saved-picker",
                                                 options=[
                                                     {"label": str(item["name"]), "value": item["result_id"]}
-                                                    for item in project.list_semantic_searches()
+                                                    for item in saved_semantic_searches
                                                 ],
                                                 placeholder="Choose a saved search",
                                                 clearable=True,
@@ -7042,6 +7043,7 @@ def _explore_layout(
                                         ],
                                         className="search-section semantic-saved-results",
                                     ),
+                                ],
                                 className="search-section semantic-search-section",
                             ),
                         ],
