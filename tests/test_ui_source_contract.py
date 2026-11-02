@@ -600,7 +600,7 @@ def test_semantic_search_only_scores_selected_geometry_and_does_not_replay_on_re
 
 def test_semantic_query_cache_and_compact_modal_contract() -> None:
     source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
-    assert "_restore_semantic_snapshot(" in source
+    assert "_resumable_session_state(" in source
     assert 'project.saved_semantic_searches.find(' in source
     assert 'project.saved_semantic_searches.store(' in source
     assert 'Input("semantic-query", "n_submit")' in source
@@ -663,3 +663,14 @@ def test_semantic_search_panel_stays_compact_and_topic_mode_replaces_it() -> Non
     assert ".semantic-search-control-block .control-status:empty" in css
     assert "def clear_semantic_on_topic_color(" in app
     assert 'Output("topic-model-selector", "value", allow_duplicate=True)' in app
+
+
+def test_clear_colors_resets_active_query_and_session_resumes_without_color() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    app = (root / "app.py").read_text()
+    assert 'Output("semantic-active-query", "data", allow_duplicate=True)' in app
+    assert 'return "plain", None, "", {}, None, "", None, ""' in app
+    assert 'query, scores, semantic_status = "", {}, ""' in app
+    assert '"semantic_active_query": semantic_active_query or ""' not in app
+    assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' not in app
+    assert 'State("geometry-map", "relayoutData")' not in app[:app.index('def update_map(')]
