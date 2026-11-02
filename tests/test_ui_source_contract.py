@@ -609,3 +609,24 @@ def test_semantic_search_auto_snapshot_restoration_never_runs_similarity_on_open
     assert 'State("active-session-store", "data")' in source
     assert "initial_semantic_scores = project.semantic_search" not in source
     assert "scores = project.semantic_search(query) if query else {}" not in source
+
+
+def test_explore_saved_semantic_results_controls_use_durable_project_api() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    for identifier in (
+        "semantic-saved-picker",
+        "semantic-saved-title",
+        "semantic-save-as",
+        "semantic-load",
+        "semantic-rename",
+        "semantic-delete",
+    ):
+        assert f'id="{identifier}"' in source
+    assert "project.list_semantic_searches()" in source
+    assert "project.load_semantic_search(int(result_id))" in source
+    assert "project.delete_semantic_search(int(selected_result))" in source
+    assert "project.rename_semantic_search(int(selected_result), name)" in source
+    assert '"Run Search before saving this query."' in source
