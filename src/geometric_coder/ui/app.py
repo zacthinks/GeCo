@@ -120,13 +120,11 @@ def _restore_semantic_snapshot(
     if geometry_id is None:
         return {}, "Saved semantic search unavailable: select a geometry and run Search."
     try:
-        saved = project.saved_semantic_searches.latest(int(session_id), int(geometry_id))
+        saved = project.saved_semantic_searches.find(clean_query, int(geometry_id))
     except (ValueError, KeyError, ConfigurationError) as error:
         return {}, f"Saved semantic search is stale or unavailable: {error} Run Search to refresh it."
     if saved is None:
         return {}, "No saved semantic search scores for this session and geometry. Run Search."
-    if saved["query"] != clean_query:
-        return {}, "The query has changed since the last completed semantic search. Run Search again."
     return {str(saved["geometry_name"]): saved["scores"]}, "Restored saved semantic search scores."
 
 
@@ -486,7 +484,7 @@ def create_app(
         initial_state.get("view_id"),
         views_by_geometry.get(initial_geometry_id, []),
     )
-    initial_semantic_query = str(initial_state.get("semantic_query", ""))
+    initial_semantic_query = str(initial_state.get("semantic_active_query", initial_state.get("semantic_query", "")))
     # Restore only validated cached scores; never run similarity on startup.
     initial_semantic_scores, initial_semantic_status = _restore_semantic_snapshot(
         project, int(initial_session["session_id"]), initial_geometry_id,
@@ -602,7 +600,8 @@ def create_app(
                 dcc.Store(id="topic-restore-snapshot", data=_topic_restore_snapshot(int(initial_session["session_id"]), initial_state)),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
-                dcc.Store(id="semantic-saved-refresh", data=0),
+                dcc.Store(id="semantic-active-query", data=initial_semantic_query),
+                dcc.Store(id="semantic-load-refresh", data=0),
                 dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
                 dcc.Store(
                     id="metadata-filters-store",
@@ -734,7 +733,6 @@ def create_app(
                         sessions=sessions,
                         initial_session_id=int(initial_session["session_id"]),
                         initial_seen_count=initial_seen_count,
-                        saved_semantic_searches=project.list_semantic_searches(),
                         metadata_profiles=metadata_profiles,
                         allow_create_view=not project.is_external_backed,
                     )),
@@ -822,6 +820,14 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    html.Div([
+                        html.Div([
+                            html.Div([html.H2("Saved semantic searches"),
+                                      html.Button("×", id="semantic-load-close", n_clicks=0, className="modal-close-icon")],
+                                     className="modal-header"),
+                            html.Div(id="semantic-load-list"),
+                        ], className="modal-card"),
+                    ], id="semantic-load-modal", className="modal-overlay", style={"display": "none"}),
                     representation_modal(project, html=html, dcc=dcc, dash_table=dash_table),
                     html.Div([
                         html.Div([
@@ -1187,6 +1193,7 @@ def create_app(
         Output("literal-query", "value"),
         Output("literal-options", "value"),
         Output("semantic-query", "value"),
+        Output("semantic-active-query", "data", allow_duplicate=True),
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data"),
         Output("metadata-filters-store", "data"),
@@ -1221,7 +1228,7 @@ def create_app(
             state.get("view_id"),
             project.views(geometry_id, include_descendants=True),
         )
-        query = str(state.get("semantic_query", ""))
+        query = str(state.get("semantic_active_query", state.get("semantic_query", "")))
         scores, semantic_status = _restore_semantic_snapshot(
             project, int(session_id), geometry_id, query
         )
@@ -1275,6 +1282,7 @@ def create_app(
             history,
             str(state.get("literal_query", "")),
             literal_options,
+            query,
             query,
             scores,
             state.get("semantic_range"),
@@ -1465,167 +1473,106 @@ def create_app(
         )
 
     @app.callback(
-        Output("semantic-saved-picker", "options"),
-        Input("semantic-saved-refresh", "data"),
+        Output("semantic-load-modal", "style"),
+        Output("semantic-load-list", "children"),
+        Input("semantic-load-open", "n_clicks"),
+        Input("semantic-load-close", "n_clicks"),
+        Input("semantic-load-refresh", "data"),
         prevent_initial_call=True,
     )
-    def refresh_semantic_saved_options(_revision: int | None) -> list[dict[str, Any]]:
-        return [
-            {"label": str(item["name"]), "value": item["result_id"]}
-            for item in project.list_semantic_searches()
-        ]
+    def semantic_load_dialog(_open, _close, _refresh):
+        if callback_context.triggered_id == "semantic-load-close":
+            return {"display": "none"}, no_update
+        rows = project.saved_semantic_searches.queries()
+        children = [
+            html.Div([
+                html.Span(entry["query"]),
+                html.Button("Load", id={"type": "semantic-load-query", "index": entry["query_id"]}, n_clicks=0),
+                html.Button("×", id={"type": "semantic-delete-query", "index": entry["query_id"]}, n_clicks=0,
+                            className="danger-icon-action", title="Delete saved query"),
+            ], className="saved-filter-set-row") for entry in rows
+        ] or [html.P("No saved semantic searches.", className="filter-empty-state")]
+        return {"display": "flex"}, children
 
     @app.callback(
-        Output("semantic-saved-refresh", "data"),
-        Output("semantic-saved-status", "children"),
-        Output("semantic-saved-picker", "value"),
-        Input("semantic-save-as", "n_clicks"),
-        Input("semantic-rename", "n_clicks"),
-        Input("semantic-delete", "n_clicks"),
-        State("semantic-saved-picker", "value"),
-        State("semantic-saved-title", "value"),
-        State("geometry-dropdown", "value"),
-        State("semantic-query", "value"),
-        State("semantic-range", "data"),
-        State("active-session-store", "data"),
-        State("semantic-saved-refresh", "data"),
-        prevent_initial_call=True,
-    )
-    def manage_saved_semantic_search(
-        _save_clicks: int, _rename_clicks: int, _delete_clicks: int,
-        selected_result: int | None, requested_name: str | None,
-        geometry_id: int | None, typed_query: str | None,
-        current_range: list[float] | None,
-        session_id: int, current_revision: int | None,
-    ) -> tuple[int | Any, str, int | None | Any]:
-        action = callback_context.triggered_id
-        name = (requested_name or "").strip()
-        try:
-            if action == "semantic-save-as":
-                if geometry_id is None or not name:
-                    return no_update, "Choose a geometry and enter a search name.", no_update
-                last = project.saved_semantic_searches.latest(
-                    int(session_id), int(geometry_id)
-                )
-                if last is None or last["query"] != (typed_query or "").strip():
-                    return no_update, "Run Search before saving this query.", no_update
-                result_id = project.save_semantic_search(
-                    geometry_id=int(geometry_id), query=last["query"],
-                    scores=last["scores"], name=name, range_values=current_range,
-                )
-                return int(current_revision or 0) + 1, f"Saved {name}.", result_id
-            if selected_result is None:
-                return no_update, "Choose a saved search first.", no_update
-            if action == "semantic-rename":
-                if not name:
-                    return no_update, "Enter the new name.", no_update
-                project.rename_semantic_search(int(selected_result), name)
-                return int(current_revision or 0) + 1, f"Renamed to {name}.", selected_result
-            if action == "semantic-delete":
-                project.delete_semantic_search(int(selected_result))
-                return int(current_revision or 0) + 1, "Saved search deleted.", None
-        except Exception as error:
-            return no_update, f"Saved search operation failed: {error}", no_update
-        return no_update, "", no_update
-
-    @app.callback(
-        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-active-query", "data", allow_duplicate=True),
         Output("semantic-query", "value", allow_duplicate=True),
-        Output("geometry-dropdown", "value", allow_duplicate=True),
-        Output("semantic-range", "data", allow_duplicate=True),
-        Output("desired-semantic-range-store", "data", allow_duplicate=True),
-        Output("topic-color-mode", "data", allow_duplicate=True),
-        Output("semantic-load-status", "children"),
-        Input("semantic-load", "n_clicks"),
-        State("semantic-saved-picker", "value"),
-        State("active-session-store", "data"),
+        Output("semantic-load-refresh", "data", allow_duplicate=True),
+        Output("semantic-load-modal", "style", allow_duplicate=True),
+        Input({"type": "semantic-load-query", "index": ALL}, "n_clicks"),
+        Input({"type": "semantic-delete-query", "index": ALL}, "n_clicks"),
+        State("semantic-active-query", "data"),
+        State("semantic-load-refresh", "data"),
         prevent_initial_call=True,
     )
-    def load_named_semantic_search(
-        _clicks: int, result_id: int | None, session_id: int,
-    ) -> tuple[Any, Any, Any, Any, Any, Any, str]:
-        if result_id is None:
-            return (no_update,) * 6 + ("Choose a saved search.",)
-        try:
-            saved = project.load_semantic_search(int(result_id))
-            project.save_semantic_search(
-                geometry_id=int(saved["geometry_id"]), query=saved["query"],
-                scores=saved["scores"], session_id=int(session_id),
-                range_values=saved["range"],
-            )
-        except (KeyError, ValueError, OSError) as error:
-            return (no_update,) * 6 + (f"Unable to load search: {error}",)
-        return (
-            {saved["geometry_name"]: saved["scores"]},
-            saved["query"],
-            saved["geometry_id"],
-            saved["range"],
-            saved["range"],
-            "semantic",
-            f"Loaded {saved['name']} into the selected geometry.",
-        )
+    def select_saved_query(_loads, _deletes, active, revision):
+        trigger = callback_context.triggered_id
+        if not isinstance(trigger, dict):
+            return no_update, no_update, no_update, no_update
+        qid = int(trigger["index"])
+        if trigger["type"] == "semantic-delete-query":
+            query = next((row["query"] for row in project.saved_semantic_searches.queries()
+                          if row["query_id"] == qid), None)
+            project.saved_semantic_searches.delete_query(qid)
+            return ("" if query == active else no_update), no_update, int(revision or 0) + 1, no_update
+        query = next((row["query"] for row in project.saved_semantic_searches.queries()
+                      if row["query_id"] == qid), None)
+        if query is None:
+            return no_update, no_update, no_update, no_update
+        return query, query, no_update, {"display": "none"}
 
     @app.callback(
-        Output("semantic-scores-store", "data", allow_duplicate=True),
-        Output("semantic-search-status", "children"),
-        Output("semantic-query", "value", allow_duplicate=True),
-        Output("semantic-range", "data", allow_duplicate=True),
-        Output("desired-semantic-range-store", "data", allow_duplicate=True),
-        Output("topic-color-mode", "data", allow_duplicate=True),
+        Output("semantic-active-query", "data", allow_duplicate=True),
         Input("semantic-search-button", "n_clicks"),
+        Input("semantic-query", "n_submit"),
         State("semantic-query", "value"),
-        State("geometry-dropdown", "value"),
-        State("active-session-store", "data"),
         prevent_initial_call=True,
-        running=[
-            (Output("semantic-search-button", "disabled"), True, False),
-        ],
     )
-    def run_semantic_search(
-        search_clicks: int,
-        query: str | None,
-        geometry_id: int | None,
-        session_id: int,
-    ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
-        del search_clicks
-        clean_query = (query or "").strip()
-        if not clean_query:
-            return {}, "Semantic search cleared.", "", None, None, "plain"
+    def submit_semantic_query(_clicks, _enters, query):
+        clean = str(query or "").strip()
+        if clean:
+            project.saved_semantic_searches.register(clean)
+        return clean
+
+    @app.callback(
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-search-status", "children", allow_duplicate=True),
+        Output("semantic-range", "data", allow_duplicate=True),
+        Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Input("semantic-active-query", "data"),
+        Input("geometry-dropdown", "value"),
+        State("topic-color-mode", "data"),
+        prevent_initial_call=True,
+    )
+    def display_active_semantic(query, geometry_id, color_mode):
+        clean = str(query or "").strip()
+        if not clean:
+            return {}, "No active semantic search.", None, None, "plain" if color_mode == "semantic" else no_update
         if geometry_id is None or int(geometry_id) not in geometry_by_id:
-            return {}, "Choose a geometry before searching.", no_update, None, None, no_update
+            return {}, "Select a geometry to search.", None, None, "plain" if color_mode == "semantic" else no_update
         selected = geometry_by_id[int(geometry_id)]
         if not selected.get("supports_query"):
-            return {}, "This geometry does not support semantic queries.", no_update, None, None, no_update
-        scores = project.semantic_search(
-            clean_query, geometry_names=[str(selected["name"])]
-        )
-        if not scores:
-            return (
-                {},
-                "No registered geometry supports semantic query transformation.",
-                no_update,
-                None,
-                None,
-                no_update,
-            )
+            return {}, "This geometry does not support semantic query transformation.", None, None, "plain" if color_mode == "semantic" else no_update
         try:
-            project.save_semantic_search(
-                geometry_id=int(geometry_id),
-                query=clean_query,
-                scores=scores[str(selected["name"])],
-                session_id=int(session_id),
-            )
-            persisted = " Saved for this session."
-        except (ValueError, KeyError, OSError) as error:
-            persisted = f" Results not saved: {error}"
-        return (
-            scores,
-            f"Computed semantic similarity in {str(selected['name'])}.{persisted}",
-            no_update,
-            None,
-            None,
-            "semantic",
-        )
+            cached = project.saved_semantic_searches.find(clean, int(geometry_id))
+        except ValueError:
+            cached = None
+        if cached is None:
+            try:
+                computed = project.semantic_search(clean, geometry_names=[str(selected["name"])])
+                scores = computed[str(selected["name"])]
+                project.saved_semantic_searches.store(clean, int(geometry_id), scores)
+            except (ValueError, KeyError, ConfigurationError, OSError) as error:
+                return {}, f"Semantic search unavailable: {error}", None, None, "plain"
+            status = f"Computed semantic similarity in {selected['name']} and saved it."
+            current_range = None
+        else:
+            scores = cached["scores"]
+            current_range = cached["range"]
+            status = f"Loaded cached semantic similarity in {selected['name']}."
+        return ({str(selected["name"]): scores}, status,
+                current_range, current_range, "semantic")
 
     @app.callback(
         Output("semantic-range-slider", "min"),
@@ -6771,6 +6718,7 @@ def create_app(
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-query", "value"),
+        Input("semantic-active-query", "data"),
         Input("semantic-range", "data"),
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
@@ -6804,6 +6752,7 @@ def create_app(
         literal_query: str | None,
         literal_options: list[str] | None,
         semantic_query: str | None,
+        semantic_active_query: str | None,
         semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
@@ -6846,6 +6795,7 @@ def create_app(
                 "case_sensitive": "case" in options,
                 "regex": "regex" in options,
                 "semantic_query": semantic_query or "",
+                "semantic_active_query": semantic_active_query or "",
                 "semantic_range": semantic_range,
                 "metadata_filters": _normalize_metadata_filters(
                     metadata_filters or [], metadata_profiles
@@ -6903,7 +6853,6 @@ def _explore_layout(
     sessions: list[dict[str, Any]],
     initial_session_id: int,
     initial_seen_count: int,
-    saved_semantic_searches: list[dict[str, Any]],
     metadata_profiles: dict[str, dict[str, Any]],
     allow_create_view: bool,
 ) -> Any:
@@ -7006,16 +6955,14 @@ def _explore_layout(
                                             dcc.Input(
                                                 id="semantic-query",
                                                 type="text",
+                                                debounce=False,
                                                 value=initial_state.get(
                                                     "semantic_query", ""
                                                 ),
                                                 placeholder="Describe what you want to find",
                                             ),
-                                            html.Button(
-                                                "Search",
-                                                id="semantic-search-button",
-                                                n_clicks=0,
-                                            ),
+                                            html.Button("Search", id="semantic-search-button", n_clicks=0),
+                                            html.Button("Load", id="semantic-load-open", n_clicks=0),
                                         ],
                                         className="inline-controls semantic-query-row",
                                     ),
@@ -7070,36 +7017,7 @@ def _explore_layout(
                                             ]
                                         ),
                                     ),
-                                    html.Div(
-                                        [
-                                            html.H4("Saved semantic searches"),
-                                            dcc.Dropdown(
-                                                id="semantic-saved-picker",
-                                                options=[
-                                                    {"label": str(item["name"]), "value": item["result_id"]}
-                                                    for item in saved_semantic_searches
-                                                ],
-                                                placeholder="Choose a saved search",
-                                                clearable=True,
-                                            ),
-                                            dcc.Input(
-                                                id="semantic-saved-title", type="text",
-                                                placeholder="Search name",
-                                            ),
-                                            html.Div(
-                                                [
-                                                    html.Button("Save As", id="semantic-save-as", n_clicks=0),
-                                                    html.Button("Load", id="semantic-load", n_clicks=0),
-                                                    html.Button("Rename", id="semantic-rename", n_clicks=0),
-                                                    html.Button("Delete", id="semantic-delete", n_clicks=0),
-                                                ],
-                                                className="inline-controls",
-                                            ),
-                                            html.Div(id="semantic-saved-status", className="control-status"),
-                                            html.Div(id="semantic-load-status", className="control-status"),
-                                        ],
-                                        className="search-section semantic-saved-results",
-                                    ),
+
                                 ],
                                 className="search-section semantic-search-section",
                             ),
