@@ -109,6 +109,60 @@ COMMITTEE_AGGREGATION_LABELS: dict[str, str] = {
 }
 
 
+def _restore_semantic_snapshot(
+    project: GeometricCoder, session_id: int, geometry_id: int | None,
+    query: str,
+) -> tuple[dict[str, list[float]], str]:
+    """Restore a query's last valid score vector without calculating scores."""
+    clean_query = str(query or "").strip()
+    if not clean_query:
+        return {}, ""
+    if geometry_id is None:
+        return {}, "Saved semantic search unavailable: select a geometry and run Search."
+    try:
+        saved = project.saved_semantic_searches.latest(int(session_id), int(geometry_id))
+    except (ValueError, KeyError, ConfigurationError) as error:
+        return {}, f"Saved semantic search is stale or unavailable: {error} Run Search to refresh it."
+    if saved is None:
+        return {}, "No saved semantic search scores for this session and geometry. Run Search."
+    if saved["query"] != clean_query:
+        return {}, "The query has changed since the last completed semantic search. Run Search again."
+    return {str(saved["geometry_name"]): saved["scores"]}, "Restored saved semantic search scores."
+
+
+def _restored_semantic_color_mode(
+    requested: str | None, scores: dict[str, list[float]],
+) -> str:
+    """Do not restore semantic coloring without a valid score vector."""
+    mode = normalize_color_mode(requested, has_semantic_query=bool(scores))
+    return "plain" if mode == "semantic" and not scores else mode
+
+
+def _topic_restore_snapshot(session_id: int, state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "session_id": int(session_id),
+        "model_id": state.get("topic_model_id"),
+        "component": state.get("topic_component_id"),
+        "display": "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
+    }
+
+
+def _is_restored_topic_selection(
+    model_id: int | None, display: str | None, component: str | None,
+    snapshot: dict[str, Any] | None, session_id: int,
+) -> bool:
+    """Suppress topic activation from restored controls, including in-flight switches."""
+    if not isinstance(snapshot, dict):
+        return False
+    if snapshot.get("session_id") != session_id:
+        return True
+    return (
+        snapshot.get("model_id") == model_id
+        and snapshot.get("display") == display
+        and snapshot.get("component") == component
+    )
+
+
 def _auto_training_spec_scope(
     project: GeometricCoder, *, code_id: int,
     source: str, classifier_spec_id: int | None,
@@ -433,17 +487,11 @@ def create_app(
         views_by_geometry.get(initial_geometry_id, []),
     )
     initial_semantic_query = str(initial_state.get("semantic_query", ""))
-    initial_semantic_scores: dict[str, list[float]] = {}
-    # Load a validated session snapshot, never run cosine similarity on startup.
-    if initial_semantic_query.strip() and initial_geometry_id is not None:
-        try:
-            previous = project.saved_semantic_searches.latest(
-                int(initial_session["session_id"]), int(initial_geometry_id)
-            )
-        except ValueError:
-            previous = None
-        if previous is not None and previous["query"] == initial_semantic_query.strip():
-            initial_semantic_scores = {previous["geometry_name"]: previous["scores"]}
+    # Restore only validated cached scores; never run similarity on startup.
+    initial_semantic_scores, initial_semantic_status = _restore_semantic_snapshot(
+        project, int(initial_session["session_id"]), initial_geometry_id,
+        initial_semantic_query,
+    )
     initial_history = _normalize_navigation_history(
         initial_state.get("navigation_history"),
         focal_unit_id=initial_state.get("focal_unit_id"),
@@ -550,7 +598,8 @@ def create_app(
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
                 dcc.Store(id="representation-refresh-store", data=0),
-                dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
+                dcc.Store(id="topic-color-mode", data=_restored_semantic_color_mode(initial_state.get("topic_color_mode"), initial_semantic_scores)),
+                dcc.Store(id="topic-restore-snapshot", data=_topic_restore_snapshot(int(initial_session["session_id"]), initial_state)),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
                 dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
                 dcc.Store(id="semantic-saved-refresh", data=0),
@@ -679,6 +728,7 @@ def create_app(
                         initial_geometry_id=initial_geometry_id,
                         initial_view_id=initial_view_id,
                         initial_semantic_scores=initial_semantic_scores,
+                        initial_semantic_status=initial_semantic_status,
                         geometry_by_id=geometry_by_id,
                         total_units=len(units),
                         sessions=sessions,
@@ -880,13 +930,22 @@ def create_app(
         Input("topic-model-selector", "value"),
         Input("topic-display-mode", "value"),
         Input("topic-component-selector", "value"),
-        State("topic-color-mode", "data"),
+        Input("topic-restore-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
-    def activate_topic_colors(model_id: int | None, display: str | None, component: str | None, active: str | None) -> Any:
-        if model_id is None:
+    def activate_topic_colors(
+        model_id: int | None, display: str | None, component: str | None,
+        restored: dict[str, Any] | None, session_id: int,
+    ) -> Any:
+        # Session restore also changes topic selectors; those are not user actions.
+        if model_id is None or _is_restored_topic_selection(
+            model_id, display, component, restored, session_id
+        ):
             return no_update
         triggered = callback_context.triggered_id
+        if triggered == "topic-restore-snapshot":
+            return no_update
         if triggered == "topic-component-selector" and display != "intensity":
             return no_update
         if triggered == "topic-component-selector" and component is None:
@@ -1149,6 +1208,8 @@ def create_app(
         Output("topic-model-selector", "value"),
         Output("topic-component-selector", "value"),
         Output("topic-display-mode", "value"),
+        Output("semantic-search-status", "children", allow_duplicate=True),
+        Output("topic-restore-snapshot", "data"),
         Input("session-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -1161,17 +1222,9 @@ def create_app(
             project.views(geometry_id, include_descendants=True),
         )
         query = str(state.get("semantic_query", ""))
-        # Restore cached scores only when they match the completed query.
-        scores = {}
-        if query.strip() and geometry_id is not None:
-            try:
-                previous = project.saved_semantic_searches.latest(
-                    int(session_id), int(geometry_id)
-                )
-            except ValueError:
-                previous = None
-            if previous is not None and previous["query"] == query.strip():
-                scores = {previous["geometry_name"]: previous["scores"]}
+        scores, semantic_status = _restore_semantic_snapshot(
+            project, int(session_id), geometry_id, query
+        )
         literal_options = []
         if state.get("case_sensitive"):
             literal_options.append("case")
@@ -1244,10 +1297,12 @@ def create_app(
             focus_committee,
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
-            normalize_color_mode(state.get("topic_color_mode"), has_semantic_query=bool(query)),
+            _restored_semantic_color_mode(state.get("topic_color_mode"), scores),
             state.get("topic_model_id"),
             state.get("topic_component_id"),
             "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
+            semantic_status,
+            _topic_restore_snapshot(int(session_id), state),
         )
 
     @app.callback(
@@ -6842,6 +6897,7 @@ def _explore_layout(
     initial_geometry_id: int | None,
     initial_view_id: int | None,
     initial_semantic_scores: dict[str, list[float]],
+    initial_semantic_status: str,
     geometry_by_id: dict[int, dict[str, Any]],
     total_units: int,
     sessions: list[dict[str, Any]],
@@ -6970,6 +7026,7 @@ def _explore_layout(
                                             [
                                                 html.Div(
                                                     id="semantic-search-status",
+                                                    children=initial_semantic_status,
                                                     className="control-status",
                                                 ),
                                                 html.Div(
