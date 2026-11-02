@@ -1514,6 +1514,12 @@ def create_app(
             query = next((row["query"] for row in project.saved_semantic_searches.queries()
                           if row["query_id"] == qid), None)
             project.saved_semantic_searches.delete_query(qid)
+            # A deleted query must not reappear through another session's state.
+            for session in project.sessions():
+                if str(session["state"].get("semantic_active_query", "")).strip() == query:
+                    project.patch_session_state(
+                        int(session["session_id"]), {"semantic_active_query": ""}
+                    )
             return ("" if query == active else no_update), no_update, int(revision or 0) + 1, no_update
         query = next((row["query"] for row in project.saved_semantic_searches.queries()
                       if row["query_id"] == qid), None)
