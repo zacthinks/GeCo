@@ -601,8 +601,8 @@ def test_semantic_search_only_scores_selected_geometry_and_does_not_replay_on_re
 def test_semantic_query_cache_and_compact_modal_contract() -> None:
     source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
     assert "_resumable_session_state(" in source
-    assert 'project.saved_semantic_searches.find(' in source
-    assert 'project.saved_semantic_searches.store(' in source
+    assert 'cache.find(clean, int(geometry_id), expected_query_id=qid)' in source
+    assert 'cache.store(clean, int(geometry_id), scores, expected_query_id=qid)' in source
     assert 'Input("semantic-query", "n_submit")' in source
     assert 'id="semantic-load-open"' in source
     assert 'id="semantic-load-modal"' in source
