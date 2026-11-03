@@ -144,6 +144,19 @@ _TRANSIENT_EXPLORE_KEYS = frozenset({
 })
 
 
+def _current_semantic_scores(
+    payload: dict[str, Any] | None, query: str | None,
+    geometry_id: int | None,
+) -> dict[str, list[float]]:
+    """Only return scores that belong to the current query and geometry."""
+    if not isinstance(payload, dict) or not query or geometry_id is None:
+        return {}
+    if (payload.get("query") != str(query).strip()
+            or str(payload.get("geometry_id")) != str(geometry_id)):
+        return {}
+    return payload.get("scores") or {}
+
+
 def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
     """Drop legacy transient color/search state without altering navigation."""
     return {key: value for key, value in state.items()
@@ -611,7 +624,8 @@ def create_app(
                 dcc.Store(id="topic-color-mode", data="plain"),
                 dcc.Store(id="topic-restore-snapshot", data=_topic_restore_snapshot(int(initial_session["session_id"]), initial_state)),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
-                dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
+                dcc.Store(id="semantic-scores-store", data={}),
+                dcc.Store(id="semantic-result-candidate", data=None),
                 dcc.Store(id="semantic-active-query", data=initial_semantic_query),
                 dcc.Store(id="semantic-load-refresh", data=0),
                 dcc.Store(id="semantic-range", data=None),
@@ -1598,44 +1612,78 @@ def create_app(
         return clean, (None if clean else no_update)
 
     @app.callback(
-        Output("semantic-scores-store", "data", allow_duplicate=True),
-        Output("semantic-search-status", "children", allow_duplicate=True),
-        Output("semantic-range", "data", allow_duplicate=True),
-        Output("desired-semantic-range-store", "data", allow_duplicate=True),
-        Output("topic-color-mode", "data", allow_duplicate=True),
+        Output("semantic-result-candidate", "data"),
         Input("semantic-active-query", "data"),
         Input("geometry-dropdown", "value"),
-        State("topic-color-mode", "data"),
         prevent_initial_call=True,
     )
-    def display_active_semantic(query, geometry_id, color_mode):
+    def display_active_semantic(query, geometry_id):
+        """Compute a candidate; the browser alone may commit current results."""
         clean = str(query or "").strip()
         if not clean:
-            return {}, "", None, None, no_update
+            return {"query": "", "geometry_id": geometry_id, "scores": {}, "status": "", "range": None}
         if geometry_id is None or int(geometry_id) not in geometry_by_id:
-            return {}, "Select a geometry to search.", None, None, "plain" if color_mode == "semantic" else no_update
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "Select a geometry to search.", "range": None}
         selected = geometry_by_id[int(geometry_id)]
         if not selected.get("supports_query"):
-            return {}, "This geometry does not support semantic query transformation.", None, None, "plain" if color_mode == "semantic" else no_update
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This geometry does not support semantic query transformation.",
+                    "range": None}
+        cache = project.saved_semantic_searches
+        qid = cache.query_id(clean)
+        if qid is None:
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This saved query is unavailable.", "range": None}
         try:
-            cached = project.saved_semantic_searches.find(clean, int(geometry_id))
+            cached = cache.find(clean, int(geometry_id), expected_query_id=qid)
         except ValueError:
             cached = None
         if cached is None:
             try:
                 computed = project.semantic_search(clean, geometry_names=[str(selected["name"])])
                 scores = computed[str(selected["name"])]
-                project.saved_semantic_searches.store(clean, int(geometry_id), scores)
+                cache.store(clean, int(geometry_id), scores, expected_query_id=qid)
             except (ValueError, KeyError, ConfigurationError, OSError) as error:
-                return {}, f"Semantic search unavailable: {error}", None, None, "plain"
-            status = ""
+                return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                        "status": f"Semantic search unavailable: {error}", "range": None}
             current_range = None
         else:
             scores = cached["scores"]
             current_range = cached["range"]
-            status = ""
-        return ({str(selected["name"]): scores}, status,
-                current_range, current_range, "semantic")
+        # A query deleted after reading the cache must not be displayed.
+        if cache.query_id(clean) != qid:
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This saved query was deleted.", "range": None}
+        return {"query": clean, "geometry_id": int(geometry_id), "query_id": qid,
+                "scores": {str(selected["name"]): scores}, "status": "",
+                "range": current_range}
+
+    app.clientside_callback(
+        """function(candidate, query, geometryId) {
+            const no = window.dash_clientside.no_update;
+            if (!candidate || String(candidate.query || "") !== String(query || "").trim()
+                || String(candidate.geometry_id) !== String(geometryId)) {
+                return [no, no, no, no, no];
+            }
+            const payload = candidate.scores && Object.keys(candidate.scores).length
+                ? {query: candidate.query, geometry_id: candidate.geometry_id,
+                   query_id: candidate.query_id, scores: candidate.scores}
+                : {};
+            return [payload, candidate.status || "", candidate.range || null,
+                    candidate.range || null,
+                    Object.keys(payload).length ? "semantic" : "plain"];
+        }""",
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-search-status", "children", allow_duplicate=True),
+        Output("semantic-range", "data", allow_duplicate=True),
+        Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("topic-color-mode", "data", allow_duplicate=True),
+        Input("semantic-result-candidate", "data"),
+        State("semantic-active-query", "data"),
+        State("geometry-dropdown", "value"),
+        prevent_initial_call=True,
+    )
 
     @app.callback(
         Output("semantic-range-slider", "min"),
@@ -1648,11 +1696,13 @@ def create_app(
         Output("nav-least-similar", "style"),
         Input("semantic-scores-store", "data"),
         Input("geometry-dropdown", "value"),
+        Input("semantic-active-query", "data"),
         Input("desired-semantic-range-store", "data"),
     )
     def update_semantic_range(
-        all_scores: dict[str, list[float]] | None,
+        all_scores: dict[str, Any] | None,
         geometry_id: int | None,
+        active_query: str | None,
         desired_range: list[float] | None,
     ) -> tuple[
         float,
@@ -1668,7 +1718,7 @@ def create_app(
         if geometry_id is None or not all_scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
-        scores = all_scores.get(geometry_name)
+        scores = _current_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
         if not scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
@@ -2119,6 +2169,7 @@ def create_app(
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-scores-store", "data"),
+        Input("semantic-active-query", "data"),
         Input("semantic-range", "data"),
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
@@ -2140,7 +2191,8 @@ def create_app(
         jitter_strength: float | None,
         literal_query: str | None,
         literal_options: list[str] | None,
-        all_semantic_scores: dict[str, list[float]] | None,
+        all_semantic_scores: dict[str, Any] | None,
+        active_query: str | None,
         semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
@@ -2162,7 +2214,7 @@ def create_app(
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
-        semantic_scores = (all_semantic_scores or {}).get(str(geometry_record["name"]))
+        semantic_scores = _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
         try:
             filters = combine_filters(
                 texts,
