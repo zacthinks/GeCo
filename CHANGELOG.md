@@ -6,7 +6,25 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
-## [0.9.0] - release pending
+## [0.10.0] - release pending
+
+### Added
+
+- Project-wide, automatically saved semantic-search query strings in Explore, with Search/Enter submission and Load/delete controls (PR #26).
+- Lazy similarity scoring for the active geometry, with reusable per-query/per-geometry results persisted across sessions (PR #26).
+- Cache validation against geometry and observation alignment, including handling for stale or unsupported results (PR #26).
+
+### Changed
+
+- Semantic searches use query-string identity rather than manually named geometry-specific entries; draft text and the active submitted query have separate states (PR #26).
+- Project schema advances to version 17, with forward migrations from schema 15 through the interim schema 16 search storage. The Python `semantic_search(query, geometry_names=...)` API still supports explicit multi-geometry searches (PR #26).
+
+### Notes
+
+- Switching geometries can require a first computation for each geometry; switching views within the same geometry reuses the existing result.
+- Back up research workspaces before upgrading. Forward migrations do not guarantee that older GeCo versions can reopen upgraded workspaces.
+
+## [0.9.0] - 2026-10-31
 
 ### Added
 - **Manage Representations** for creating, inspecting, renaming, and managing numerical representations and their source relationships in TeAL-linked workspaces.
