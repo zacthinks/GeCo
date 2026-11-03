@@ -674,3 +674,16 @@ def test_clear_colors_resets_active_query_and_session_resumes_without_color() ->
     assert '"semantic_active_query": semantic_active_query or ""' not in app
     assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' not in app
     assert 'State("geometry-map", "relayoutData")' not in app[:app.index('def update_map(')]
+
+
+def test_explore_cards_stretch_equal_height_and_semantic_slider_has_no_hover_tooltip() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    css = (root / "assets" / "geco.css").read_text()
+    source = (root / "app.py").read_text()
+    assert ".explore-controls > .semantic-search-control-block {" in css
+    assert "align-self: stretch;" in css
+    slider = source.split('id="semantic-range-slider",', 1)[1].split(
+        'id="semantic-range-wrap",', 1
+    )[0]
+    assert "tooltip=" not in slider
+    assert "marks=(" in slider
