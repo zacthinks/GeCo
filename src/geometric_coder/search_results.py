@@ -89,6 +89,15 @@ class SavedSemanticSearches:
                 "SELECT query_id FROM semantic_queries WHERE query = ?", (clean,),
             ).fetchone()[0])
 
+    def query_id(self, query: str) -> int | None:
+        """Return an existing query identity without registering or reviving it."""
+        with self.project.database.connect() as con:
+            row = con.execute(
+                "SELECT query_id FROM semantic_queries WHERE query = ?",
+                (str(query).strip(),),
+            ).fetchone()
+        return int(row[0]) if row is not None else None
+
     def queries(self) -> list[dict[str, Any]]:
         with self.project.database.connect() as con:
             return [dict(x) for x in con.execute(
@@ -104,14 +113,16 @@ class SavedSemanticSearches:
             if result.rowcount != 1:
                 raise KeyError(f"Unknown saved query: {query_id}")
 
-    def find(self, query: str, geometry_id: int) -> dict[str, Any] | None:
+    def find(self, query: str, geometry_id: int, *,
+             expected_query_id: int | None = None) -> dict[str, Any] | None:
         clean = str(query).strip()
         with self.project.database.connect() as con:
             row = con.execute(
                 """SELECT r.*, q.query FROM semantic_search_results r
                    JOIN semantic_queries q ON q.query_id=r.query_id
-                   WHERE q.query=? AND r.geometry_id=?""",
-                (clean, int(geometry_id)),
+                   WHERE q.query=? AND r.geometry_id=?
+                   AND (? IS NULL OR q.query_id=?)""",
+                (clean, int(geometry_id), expected_query_id, expected_query_id),
             ).fetchone()
         if row is None:
             return None
@@ -133,7 +144,8 @@ class SavedSemanticSearches:
                 "range": json.loads(record["range_json"])}
 
     def store(self, query: str, geometry_id: int, scores: Sequence[float],
-              range_values: Sequence[float] | None = None) -> int:
+              range_values: Sequence[float] | None = None, *,
+              expected_query_id: int | None = None) -> int:
         signature, count, _ = self._signature(int(geometry_id))
         vector = np.asarray(scores, dtype=np.float64)
         if vector.ndim != 1 or vector.size != count or not np.isfinite(vector).all():
@@ -148,12 +160,26 @@ class SavedSemanticSearches:
                 raise ValueError("Invalid saved similarity range.")
         blob = zlib.compress(vector.astype("<f8", copy=False).tobytes())
         with self.project.database.connect() as con:
-            con.execute(
-                "INSERT OR IGNORE INTO semantic_queries(query, created_at) "
-                "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", (clean,),
-            )
-            qid = int(con.execute("SELECT query_id FROM semantic_queries WHERE query=?",
-                                  (clean,)).fetchone()[0])
+            if expected_query_id is None:
+                # The programmatic API may create an automatically saved query.
+                con.execute(
+                    "INSERT OR IGNORE INTO semantic_queries(query, created_at) "
+                    "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                    (clean,),
+                )
+                qid = int(con.execute(
+                    "SELECT query_id FROM semantic_queries WHERE query=?", (clean,),
+                ).fetchone()[0])
+            else:
+                # UI requests capture query identity *before* computation.
+                # If deletion won the race, never register a replacement row.
+                row = con.execute(
+                    "SELECT query_id FROM semantic_queries WHERE query_id=? AND query=?",
+                    (int(expected_query_id), clean),
+                ).fetchone()
+                if row is None:
+                    raise KeyError("Semantic search was deleted while calculating scores.")
+                qid = int(row[0])
             con.execute(
                 """INSERT INTO semantic_search_results
                    (query_id, geometry_id, signature, unit_count, scores_blob, range_json, created_at)
