@@ -131,3 +131,33 @@ def test_topic_selection_restore_guard():
     assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 12)
     assert _is_restored_topic_selection(42, "dominant", "topic-a", snapshot, 13)
     assert not _is_restored_topic_selection(42, "intensity", "topic-a", snapshot, 12)
+
+
+def test_inflight_deleted_query_cannot_be_resurrected(project):
+    gid = _geometry(project)
+    cache = project.saved_semantic_searches
+    old_id = cache.register("question")
+    cache.delete_query(old_id)
+    with pytest.raises(KeyError, match="deleted"):
+        cache.store("question", gid, [0.1, 0.2, 0.3], expected_query_id=old_id)
+    assert cache.queries() == []
+    assert cache.find("question", gid) is None
+    new_id = cache.register("question")
+    assert new_id != old_id
+    with pytest.raises(KeyError, match="deleted"):
+        cache.store("question", gid, [0.1, 0.2, 0.3], expected_query_id=old_id)
+    assert cache.find("question", gid) is None
+
+
+def test_late_query_and_geometry_result_is_rejected(project):
+    from geometric_coder.ui.app import _current_semantic_scores
+    from geometric_coder.ui.app import _resumable_session_state
+    payload_a = {"query": "A", "geometry_id": 5,
+                 "query_id": 11, "scores": {"sample": [0.1, 0.2, 0.3]}}
+    payload_b = {"query": "B", "geometry_id": 5,
+                 "query_id": 12, "scores": {"sample": [0.4, 0.5, 0.6]}}
+    assert _current_semantic_scores(payload_b, "B", 5) == payload_b["scores"]
+    assert _current_semantic_scores(payload_a, "B", 5) == {}
+    assert _current_semantic_scores(payload_a, "A", 6) == {}
+    assert _current_semantic_scores(payload_a, "", 5) == {}
+    assert _resumable_session_state({"semantic_active_query": "A"}) == {}
