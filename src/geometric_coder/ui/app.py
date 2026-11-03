@@ -2425,6 +2425,7 @@ def create_app(
         State("literal-query", "value"),
         State("literal-options", "value"),
         State("semantic-scores-store", "data"),
+        State("semantic-active-query", "data"),
         State("semantic-range", "data"),
         State("metadata-filters-store", "data"),
         State("metadata-filter-operator", "value"),
@@ -2447,7 +2448,8 @@ def create_app(
         focal_unit_id: int | None,
         literal_query: str | None,
         literal_options: list[str] | None,
-        all_semantic_scores: dict[str, list[float]] | None,
+        all_semantic_scores: dict[str, Any] | None,
+        active_query: str | None,
         semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
@@ -2483,7 +2485,7 @@ def create_app(
                 geometry_by_id[int(geometry_id)] if geometry_id is not None else None
             )
             semantic_scores = (
-                (all_semantic_scores or {}).get(str(geometry_record["name"]))
+                _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
                 if geometry_record is not None
                 else None
             )
