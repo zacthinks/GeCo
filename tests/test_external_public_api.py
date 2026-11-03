@@ -202,3 +202,31 @@ def test_external_registration_reuse_checks_text_transform_capability(tmp_path: 
             supports_text_transform=False,
             if_exists="reuse",
         )
+
+
+def test_semantic_search_reuses_matrix_when_transforming_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _external_project(tmp_path)
+    project.register_external_geometry(
+        name="minilm",
+        external_ref={"artifact": "minilm"},
+        supports_query=True,
+    )
+    real_geometry_matrix = project.geometry_matrix
+    fetched: list[int | str] = []
+
+    def counted_geometry_matrix(geometry: int | str):
+        fetched.append(geometry)
+        return real_geometry_matrix(geometry)
+
+    monkeypatch.setattr(project, "geometry_matrix", counted_geometry_matrix)
+    result = project.semantic_search(
+        "qualitative interview methods", geometry_names=["minilm"]
+    )
+    assert len(result["minilm"]) == 3
+    assert len(fetched) == 1
+
+    # Direct transforms still validate width against the registered matrix.
+    project.transform_query("minilm", "qualitative interview methods")
+    assert len(fetched) == 2

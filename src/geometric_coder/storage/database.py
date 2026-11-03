@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 17
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -24,6 +24,48 @@ FIXED_COMMITTEE_AGGREGATIONS = {
 }
 TRAINABLE_COMMITTEE_AGGREGATIONS = {"logistic_stack"}
 COMMITTEE_AGGREGATIONS = FIXED_COMMITTEE_AGGREGATIONS | TRAINABLE_COMMITTEE_AGGREGATIONS
+
+_SAVED_SEARCH_SQL = (
+    """CREATE TABLE semantic_search_results (
+        result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL CHECK (kind IN ('named', 'auto')),
+        name TEXT COLLATE NOCASE,
+        session_id INTEGER REFERENCES sessions(session_id) ON DELETE CASCADE,
+        geometry_id INTEGER NOT NULL,
+        query TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        unit_count INTEGER NOT NULL,
+        scores_blob BLOB NOT NULL,
+        range_json TEXT,
+        created_at TEXT NOT NULL,
+        CHECK ((kind='named' AND name IS NOT NULL AND session_id IS NULL)
+            OR (kind='auto' AND name IS NULL AND session_id IS NOT NULL))
+    )""",
+    "CREATE UNIQUE INDEX semantic_search_name_idx ON semantic_search_results(name) WHERE kind='named'",
+    "CREATE UNIQUE INDEX semantic_search_auto_idx ON semantic_search_results(session_id, geometry_id) WHERE kind='auto'",
+)
+
+
+# Project-level queries own their geometry-specific cached similarity vectors.
+_QUERY_SEARCH_SQL = (
+    """CREATE TABLE semantic_queries (
+        query_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query TEXT NOT NULL UNIQUE CHECK (length(trim(query)) > 0),
+        created_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE semantic_search_results (
+        result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query_id INTEGER NOT NULL REFERENCES semantic_queries(query_id) ON DELETE CASCADE,
+        geometry_id INTEGER NOT NULL,
+        signature TEXT NOT NULL,
+        unit_count INTEGER NOT NULL,
+        scores_blob BLOB NOT NULL,
+        range_json TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(query_id, geometry_id)
+    )""",
+    "CREATE INDEX semantic_search_results_geometry_idx ON semantic_search_results(geometry_id)",
+)
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -658,11 +700,57 @@ def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_15_to_16(connection: sqlite3.Connection) -> None:
+    """Install project-local saved-search metadata and compressed score storage."""
+    for statement in _SAVED_SEARCH_SQL:
+        connection.execute(statement)
+
+
+def _migrate_16_to_17(connection: sqlite3.Connection) -> None:
+    """Consolidate old named/session caches into project-wide query identities.
+
+    Keep the most recent valid saved vector for a query/geometry. No provider
+    artifacts are touched and migration runs in one transaction.
+    """
+    connection.execute("ALTER TABLE semantic_search_results RENAME TO semantic_search_results_legacy")
+    for statement in _QUERY_SEARCH_SQL:
+        connection.execute(statement)
+    old_rows = connection.execute(
+        "SELECT * FROM semantic_search_results_legacy "
+        "ORDER BY created_at, result_id"
+    ).fetchall()
+    for row in old_rows:
+        query = str(row["query"]).strip()
+        if not query:
+            continue
+        connection.execute(
+            "INSERT OR IGNORE INTO semantic_queries(query, created_at) VALUES (?, ?)",
+            (query, row["created_at"]),
+        )
+        query_id = connection.execute(
+            "SELECT query_id FROM semantic_queries WHERE query = ?", (query,),
+        ).fetchone()[0]
+        connection.execute(
+            """INSERT INTO semantic_search_results
+               (query_id, geometry_id, signature, unit_count, scores_blob, range_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(query_id, geometry_id) DO UPDATE SET
+               signature=excluded.signature, unit_count=excluded.unit_count,
+               scores_blob=excluded.scores_blob, range_json=excluded.range_json,
+               created_at=excluded.created_at""",
+            (query_id, row["geometry_id"], row["signature"], row["unit_count"],
+             row["scores_blob"], row["range_json"], row["created_at"]),
+        )
+    connection.execute("DROP TABLE semantic_search_results_legacy")
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     13: _migrate_13_to_14,
     14: _migrate_14_to_15,
+    15: _migrate_15_to_16,
+    16: _migrate_16_to_17,
 }
 
 
@@ -706,6 +794,8 @@ class ProjectDatabase:
         """Create the schema and project metadata."""
         with self.connect() as connection:
             connection.executescript(_SCHEMA)
+            for statement in _QUERY_SEARCH_SQL:
+                connection.execute(statement)
             connection.execute(
                 """
                 INSERT INTO project (

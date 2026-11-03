@@ -28,6 +28,8 @@ def _make_workspace(tmp_path: Path, *, external: bool = False) -> GeometricCoder
 def _simulate_existing_schema_13(path: Path) -> None:
     """A schema-13 database had no topic_models table."""
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE semantic_search_results")
+        connection.execute("DROP TABLE semantic_queries")
         connection.execute("DROP TABLE topic_models")
         connection.execute("DROP TABLE representation_legacy_refs")
         connection.execute("DROP TABLE representations")
@@ -48,8 +50,8 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 
 def test_current_schema_and_upgrade_registry() -> None:
-    assert SCHEMA_VERSION == 15
-    assert set(storage_database._MIGRATIONS) == {13, 14}
+    assert SCHEMA_VERSION == 17
+    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -73,7 +75,7 @@ def test_open_schema_13_upgrades_and_preserves_research_state(
 
     provider = object() if external else None
     reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
-    assert _version_and_topics(path) == (15, True)
+    assert _version_and_topics(path) == (17, True)
     assert reopened.topic_models() == []
     with sqlite3.connect(path) as connection:
         for table, rows in baseline.items():
@@ -94,7 +96,7 @@ def test_latest_schema_skips_migration_function(
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, unexpected)
     reopened = GeometricCoder.open(project.project_dir)
     assert reopened.topic_models() == []
-    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (15, True)
+    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (17, True)
 
 
 def test_13_to_14_upgrade_is_transactional(
@@ -113,7 +115,7 @@ def test_13_to_14_upgrade_is_transactional(
     assert _version_and_topics(path) == (13, False)
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, original)
     assert GeometricCoder.open(project.project_dir).topic_models() == []
-    assert _version_and_topics(path) == (15, True)
+    assert _version_and_topics(path) == (17, True)
 
 
 def test_unsupported_older_and_newer_versions_fail_without_changes(
@@ -121,7 +123,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 16):
+    for version in (12, 18):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
@@ -161,6 +163,8 @@ def test_14_to_15_preserves_legacy_ids_and_view_parent(tmp_path: Path) -> None:
     )
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
@@ -194,6 +198,8 @@ def test_14_to_15_migration_rolls_back_on_failure(
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")
@@ -317,6 +323,8 @@ def test_unified_registry_deduplicates_same_provider_artifact(tmp_path: Path) ->
 
     # Recreate a genuine schema-14 database to test the migration separately.
     with sqlite3.connect(project.project_dir / project.DATABASE_FILENAME) as con:
+        con.execute("DROP TABLE semantic_search_results")
+        con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
         con.execute("DROP TABLE representations")
         con.execute("UPDATE project SET schema_version=14 WHERE project_id=1")

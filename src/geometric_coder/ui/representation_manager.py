@@ -757,14 +757,40 @@ def rename_representation(coder: GeometricCoder, *, key: str, name: str) -> None
             teal.close()
 
 
+def _release_representation_alias(
+    coder: GeometricCoder, *, name: str, artifact_id: str | None,
+) -> None:
+    """Free only the TeAL alias matching the removed GeCo representation.
+
+    The immutable TeAL artifact and any other aliases remain intact.
+    """
+    if not artifact_id:
+        return
+    path = teal_linked_project(coder)
+    if path is None:
+        return
+    from text_analysis_lab.core.project import Project
+    with Project.open(path) as teal:
+        artifact = teal.get_artifact(artifact_id)
+        if name in artifact.aliases:
+            artifact.remove_alias(name)
+
+
 def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
     """Remove only a GeCo registration when no known references remain.
 
-    Never removes TeAL artifacts or aliases. Conservative dependency checks
-    guard historical sessions and models, rather than silently orphaning them.
+    Never removes TeAL artifacts. Release the matching artifact alias so a
+    researcher may reuse the name; leave other aliases and artifacts intact.
+    Conservative dependency checks guard historical session/model references.
     """
     kind, record = _representation_record(coder, key)
     identifier = int(record["geometry_id" if kind == "geometry" else "view_id"])
+    source_ref = record.get("external_ref") or {}
+    artifact_id = (
+        str(source_ref["artifact_id"])
+        if isinstance(source_ref, Mapping) and source_ref.get("artifact_id")
+        else None
+    )
     with coder.database.connect() as con:
         associated = con.execute(
             "SELECT r.representation_id, r.analytic_enabled "
@@ -860,6 +886,12 @@ def unregister_representation(coder: GeometricCoder, *, key: str) -> None:
                     (first["legacy_kind"], int(first["legacy_id"]), str(retained["name"]),
                      int(retained_analytic), representation_id),
                 )
+        # Run only after GeCo reference checks have passed, but before commit.
+        # If alias release fails, the GeCo transaction rolls back as well.
+        if artifact_id:
+            _release_representation_alias(
+                coder, name=str(record["name"]), artifact_id=artifact_id
+            )
 
 
 def create_view(

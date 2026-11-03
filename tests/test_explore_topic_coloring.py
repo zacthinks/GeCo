@@ -83,7 +83,14 @@ def test_explore_only_no_new_tab():
     source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
     assert 'id="topic-color-mode"' in source
     assert 'label="Topic Modeling"' not in source
-    assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' in source
+    # Color selection is deliberately ephemeral, unlike project-level topic models.
+    from geometric_coder.ui.app import _resumable_session_state
+    session_state = {
+        "geometry_id": 7, "topic_color_mode": "dominant",
+        "topic_model_id": 3, "topic_component_id": "topic_1",
+    }
+    assert _resumable_session_state(session_state) == {"geometry_id": 7}
+    assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' not in source
 
 def test_layout_helper_resolves_at_module_scope():
     from geometric_coder.ui import app as app_module

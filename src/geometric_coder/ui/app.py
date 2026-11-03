@@ -109,6 +109,85 @@ COMMITTEE_AGGREGATION_LABELS: dict[str, str] = {
 }
 
 
+def _is_semantic_modal_click(
+    trigger: Any, changes: list[dict[str, Any]] | None,
+) -> bool:
+    """Only an actual positive click should load or delete a saved query.
+
+    Dash's ALL-pattern inputs can fire when query rows first appear. Those
+    newly mounted buttons have n_clicks=0 and must not dismiss the dialog.
+    """
+    if not isinstance(trigger, dict) or trigger.get("type") not in {
+        "semantic-load-query", "semantic-delete-query",
+    }:
+        return False
+    for change in changes or []:
+        prop_id = str(change.get("prop_id", ""))
+        if not prop_id.endswith(".n_clicks"):
+            continue
+        try:
+            identifier = json.loads(prop_id.removesuffix(".n_clicks"))
+        except (TypeError, ValueError):
+            continue
+        count = change.get("value")
+        if identifier == trigger and isinstance(count, int) and count > 0:
+            return True
+    return False
+
+
+# Search strings and topic-model artifacts are persistent project resources, but
+# color selections, draft queries and similarity sliders belong to the current
+# running Explore interaction. Legacy session states may contain these keys.
+_TRANSIENT_EXPLORE_KEYS = frozenset({
+    "semantic_query", "semantic_active_query", "semantic_range",
+    "topic_color_mode", "topic_model_id", "topic_component_id",
+})
+
+
+def _current_semantic_scores(
+    payload: dict[str, Any] | None, query: str | None,
+    geometry_id: int | None,
+) -> dict[str, list[float]]:
+    """Only return scores that belong to the current query and geometry."""
+    if not isinstance(payload, dict) or not query or geometry_id is None:
+        return {}
+    if (payload.get("query") != str(query).strip()
+            or str(payload.get("geometry_id")) != str(geometry_id)):
+        return {}
+    return payload.get("scores") or {}
+
+
+def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Drop legacy transient color/search state without altering navigation."""
+    return {key: value for key, value in state.items()
+            if key not in _TRANSIENT_EXPLORE_KEYS}
+
+
+def _topic_restore_snapshot(session_id: int, state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "session_id": int(session_id),
+        "model_id": state.get("topic_model_id"),
+        "component": state.get("topic_component_id"),
+        "display": "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
+    }
+
+
+def _is_restored_topic_selection(
+    model_id: int | None, display: str | None, component: str | None,
+    snapshot: dict[str, Any] | None, session_id: int,
+) -> bool:
+    """Suppress topic activation from restored controls, including in-flight switches."""
+    if not isinstance(snapshot, dict):
+        return False
+    if snapshot.get("session_id") != session_id:
+        return True
+    return (
+        snapshot.get("model_id") == model_id
+        and snapshot.get("display") == display
+        and snapshot.get("component") == component
+    )
+
+
 def _auto_training_spec_scope(
     project: GeometricCoder, *, code_id: int,
     source: str, classifier_spec_id: int | None,
@@ -426,16 +505,16 @@ def create_app(
 
     sessions = project.sessions()
     initial_session = sessions[0]
-    initial_state = dict(initial_session["state"])
+    initial_state = _resumable_session_state(dict(initial_session["state"]))
     initial_geometry_id = _valid_geometry_id(initial_state.get("geometry_id"), geometries)
     initial_view_id = _valid_view_id(
         initial_state.get("view_id"),
         views_by_geometry.get(initial_geometry_id, []),
     )
-    initial_semantic_query = str(initial_state.get("semantic_query", ""))
+    # Project-wide query catalog remains on disk; no search is active at startup.
+    initial_semantic_query = ""
     initial_semantic_scores: dict[str, list[float]] = {}
-    if initial_semantic_query:
-        initial_semantic_scores = project.semantic_search(initial_semantic_query)
+    initial_semantic_status = ""
     initial_history = _normalize_navigation_history(
         initial_state.get("navigation_history"),
         focal_unit_id=initial_state.get("focal_unit_id"),
@@ -542,10 +621,14 @@ def create_app(
                 dcc.Store(id="geometry-map-base-revision-store", data=0),
                 dcc.Store(id="topic-model-refresh-store", data=0),
                 dcc.Store(id="representation-refresh-store", data=0),
-                dcc.Store(id="topic-color-mode", data=normalize_color_mode(initial_state.get("topic_color_mode"), has_semantic_query=bool(initial_semantic_scores))),
+                dcc.Store(id="topic-color-mode", data="plain"),
+                dcc.Store(id="topic-restore-snapshot", data=_topic_restore_snapshot(int(initial_session["session_id"]), initial_state)),
                 dcc.Store(id="session-create-modal-return-focus", data=None),
-                dcc.Store(id="semantic-scores-store", data=initial_semantic_scores),
-                dcc.Store(id="semantic-range", data=initial_state.get("semantic_range")),
+                dcc.Store(id="semantic-scores-store", data={}),
+                dcc.Store(id="semantic-result-candidate", data=None),
+                dcc.Store(id="semantic-active-query", data=initial_semantic_query),
+                dcc.Store(id="semantic-load-refresh", data=0),
+                dcc.Store(id="semantic-range", data=None),
                 dcc.Store(
                     id="metadata-filters-store",
                     data=_normalize_metadata_filters(
@@ -559,7 +642,7 @@ def create_app(
                 dcc.Store(id="view-refresh-store", data=0),
                 dcc.Store(
                     id="desired-semantic-range-store",
-                    data=initial_state.get("semantic_range"),
+                    data=None,
                 ),
                 dcc.Store(id="focus-recommendation-store", data={}),
                 dcc.Store(id="focus-refresh-store", data=0),
@@ -670,6 +753,7 @@ def create_app(
                         initial_geometry_id=initial_geometry_id,
                         initial_view_id=initial_view_id,
                         initial_semantic_scores=initial_semantic_scores,
+                        initial_semantic_status=initial_semantic_status,
                         geometry_by_id=geometry_by_id,
                         total_units=len(units),
                         sessions=sessions,
@@ -762,6 +846,18 @@ def create_app(
                     ),
                     _save_filter_set_modal(dcc=dcc, html=html),
                     _load_filter_set_modal(dcc=dcc, html=html),
+                    dcc.ConfirmDialog(id="saved-filter-delete-confirm", message="Delete this saved filter collection?"),
+                    dcc.Store(id="saved-filter-delete-pending", data=None),
+                    html.Div([
+                        html.Div([
+                            html.Div([html.H2("Saved semantic searches"),
+                                      html.Button("×", id="semantic-load-close", n_clicks=0, className="modal-close-icon")],
+                                     className="modal-header"),
+                            html.Div(id="semantic-load-list"),
+                        ], className="modal-card"),
+                    ], id="semantic-load-modal", className="modal-overlay", style={"display": "none"}),
+                    dcc.ConfirmDialog(id="semantic-delete-confirm", message="Delete this saved semantic query and all cached geometry results?"),
+                    dcc.Store(id="semantic-delete-pending", data=None),
                     representation_modal(project, html=html, dcc=dcc, dash_table=dash_table),
                     html.Div([
                         html.Div([
@@ -852,11 +948,16 @@ def create_app(
         Output("semantic-query", "value", allow_duplicate=True),
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Output("semantic-range", "data", allow_duplicate=True),
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("desired-semantic-range-store", "data", allow_duplicate=True),
+        Output("semantic-search-status", "children", allow_duplicate=True),
         Input("nav-clear-colors", "n_clicks"),
         prevent_initial_call=True,
     )
-    def clear_all_colors(_clicks: int) -> tuple[str, None, str, dict[str, Any], None]:
-        return "plain", None, "", {}, None
+    def clear_all_colors(_clicks: int) -> tuple[str, None, str, dict[str, Any], None, str, None, str]:
+        # Clear the query *intent* as well as visible scores: geometry changes
+        # must not reactivate a search the researcher explicitly dismissed.
+        return "plain", None, "", {}, None, "", None, ""
 
     @app.callback(
         Output("nav-clear-colors", "style"),
@@ -870,18 +971,46 @@ def create_app(
         Input("topic-model-selector", "value"),
         Input("topic-display-mode", "value"),
         Input("topic-component-selector", "value"),
-        State("topic-color-mode", "data"),
+        Input("topic-restore-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
-    def activate_topic_colors(model_id: int | None, display: str | None, component: str | None, active: str | None) -> Any:
-        if model_id is None:
+    def activate_topic_colors(
+        model_id: int | None, display: str | None, component: str | None,
+        restored: dict[str, Any] | None, session_id: int,
+    ) -> Any:
+        # Session restore also changes topic selectors; those are not user actions.
+        if model_id is None or _is_restored_topic_selection(
+            model_id, display, component, restored, session_id
+        ):
             return no_update
         triggered = callback_context.triggered_id
+        if triggered == "topic-restore-snapshot":
+            return no_update
         if triggered == "topic-component-selector" and display != "intensity":
             return no_update
         if triggered == "topic-component-selector" and component is None:
             return no_update
         return "intensity" if display == "intensity" else "dominant"
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("semantic-query", "value", allow_duplicate=True),
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Input("topic-color-mode", "data"),
+        State("topic-model-selector", "value"),
+        State("topic-display-mode", "value"),
+        State("topic-component-selector", "value"),
+        State("topic-restore-snapshot", "data"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def clear_semantic_on_topic_color(mode, model, display, component, restored, session_id):
+        if mode not in {"dominant", "intensity"}:
+            return no_update, no_update, no_update
+        if _is_restored_topic_selection(model, display, component, restored, session_id):
+            return no_update, no_update, no_update
+        return "", "", {}
 
     @app.callback(
         Output("topic-component-wrap", "style"),
@@ -1118,8 +1247,10 @@ def create_app(
         Output("literal-query", "value"),
         Output("literal-options", "value"),
         Output("semantic-query", "value"),
+        Output("semantic-active-query", "data", allow_duplicate=True),
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data"),
+        Output("semantic-range", "data", allow_duplicate=True),
         Output("metadata-filters-store", "data"),
         Output("metadata-filter-operator", "value"),
         Output("context-level", "value"),
@@ -1139,19 +1270,21 @@ def create_app(
         Output("topic-model-selector", "value"),
         Output("topic-component-selector", "value"),
         Output("topic-display-mode", "value"),
+        Output("semantic-search-status", "children", allow_duplicate=True),
+        Output("topic-restore-snapshot", "data"),
         Input("session-dropdown", "value"),
         prevent_initial_call=True,
     )
     def restore_session(session_id: int) -> tuple[Any, ...]:
         session = project.database.get_session(int(session_id))
-        state = dict(session["state"])
+        state = _resumable_session_state(dict(session["state"]))
         geometry_id = _valid_geometry_id(state.get("geometry_id"), geometries)
         view_id = _valid_view_id(
             state.get("view_id"),
             project.views(geometry_id, include_descendants=True),
         )
-        query = str(state.get("semantic_query", ""))
-        scores = project.semantic_search(query) if query else {}
+        # Each session starts without active semantic or topic coloring.
+        query, scores, semantic_status = "", {}, ""
         literal_options = []
         if state.get("case_sensitive"):
             literal_options.append("case")
@@ -1203,8 +1336,10 @@ def create_app(
             str(state.get("literal_query", "")),
             literal_options,
             query,
+            query,
             scores,
-            state.get("semantic_range"),
+            None,
+            None,
             _normalize_metadata_filters(
                 state.get("metadata_filters", []), metadata_profiles
             ),
@@ -1224,10 +1359,12 @@ def create_app(
             focus_committee,
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
-            normalize_color_mode(state.get("topic_color_mode"), has_semantic_query=bool(query)),
-            state.get("topic_model_id"),
-            state.get("topic_component_id"),
-            "intensity" if state.get("topic_color_mode") == "intensity" else "dominant",
+            "plain",
+            None,
+            None,
+            "dominant",
+            semantic_status,
+            _topic_restore_snapshot(int(session_id), state),
         )
 
     @app.callback(
@@ -1390,45 +1527,163 @@ def create_app(
         )
 
     @app.callback(
-        Output("semantic-scores-store", "data", allow_duplicate=True),
-        Output("semantic-search-status", "children"),
+        Output("semantic-load-modal", "style"),
+        Output("semantic-load-list", "children"),
+        Input("semantic-load-open", "n_clicks"),
+        Input("semantic-load-close", "n_clicks"),
+        Input("semantic-load-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def semantic_load_dialog(_open, _close, _refresh):
+        if callback_context.triggered_id == "semantic-load-close":
+            return {"display": "none"}, no_update
+        rows = project.saved_semantic_searches.queries()
+        children = [
+            html.Div([
+                html.Span(entry["query"]),
+                html.Button("Load", id={"type": "semantic-load-query", "index": entry["query_id"]}, n_clicks=0),
+                html.Button("Delete", id={"type": "semantic-delete-query", "index": entry["query_id"]}, n_clicks=0,
+                            className="danger-action", title="Delete saved query"),
+            ], className="saved-filter-set-row") for entry in rows
+        ] or [html.P("No saved semantic searches.", className="filter-empty-state")]
+        return {"display": "flex"}, children
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
         Output("semantic-query", "value", allow_duplicate=True),
+        Output("semantic-load-refresh", "data", allow_duplicate=True),
+        Output("semantic-load-modal", "style", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
+        Output("semantic-delete-pending", "data"),
+        Output("semantic-delete-confirm", "displayed"),
+        Input({"type": "semantic-load-query", "index": ALL}, "n_clicks"),
+        Input({"type": "semantic-delete-query", "index": ALL}, "n_clicks"),
+        State("semantic-active-query", "data"),
+        State("semantic-load-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def select_saved_query(_loads, _deletes, active, revision):
+        trigger = callback_context.triggered_id
+        if not _is_semantic_modal_click(trigger, callback_context.triggered):
+            return (no_update,) * 7
+        qid = int(trigger["index"])
+        if trigger["type"] == "semantic-delete-query":
+            return no_update, no_update, no_update, no_update, no_update, qid, True
+        query = next((row["query"] for row in project.saved_semantic_searches.queries()
+                      if row["query_id"] == qid), None)
+        if query is None:
+            return (no_update,) * 7
+        return query, query, no_update, {"display": "none"}, None, no_update, False
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("semantic-load-refresh", "data", allow_duplicate=True),
+        Output("semantic-delete-pending", "data", allow_duplicate=True),
+        Input("semantic-delete-confirm", "submit_n_clicks"),
+        State("semantic-delete-pending", "data"),
+        State("semantic-active-query", "data"),
+        State("semantic-load-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def confirm_saved_query_delete(clicks, qid, active, revision):
+        if not clicks or qid is None:
+            return no_update, no_update, no_update
+        query = next((row["query"] for row in project.saved_semantic_searches.queries()
+                      if row["query_id"] == int(qid)), None)
+        if query is None:
+            return no_update, no_update, None
+        project.saved_semantic_searches.delete_query(int(qid))
+        # Session state no longer stores active queries; the catalog delete
+        # cascades through all per-geometry cached vectors.
+        return ("" if query == active else no_update), int(revision or 0) + 1, None
+
+    @app.callback(
+        Output("semantic-active-query", "data", allow_duplicate=True),
+        Output("topic-model-selector", "value", allow_duplicate=True),
+        Input("semantic-search-button", "n_clicks"),
+        Input("semantic-query", "n_submit"),
+        State("semantic-query", "value"),
+        prevent_initial_call=True,
+    )
+    def submit_semantic_query(_clicks, _enters, query):
+        clean = str(query or "").strip()
+        if clean:
+            project.saved_semantic_searches.register(clean)
+        return clean, (None if clean else no_update)
+
+    @app.callback(
+        Output("semantic-result-candidate", "data"),
+        Input("semantic-active-query", "data"),
+        Input("geometry-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def display_active_semantic(query, geometry_id):
+        """Compute a candidate; the browser alone may commit current results."""
+        clean = str(query or "").strip()
+        if not clean:
+            return {"query": "", "geometry_id": geometry_id, "scores": {}, "status": "", "range": None}
+        if geometry_id is None or int(geometry_id) not in geometry_by_id:
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "Select a geometry to search.", "range": None}
+        selected = geometry_by_id[int(geometry_id)]
+        if not selected.get("supports_query"):
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This geometry does not support semantic query transformation.",
+                    "range": None}
+        cache = project.saved_semantic_searches
+        qid = cache.query_id(clean)
+        if qid is None:
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This saved query is unavailable.", "range": None}
+        try:
+            cached = cache.find(clean, int(geometry_id), expected_query_id=qid)
+        except ValueError:
+            cached = None
+        if cached is None:
+            try:
+                computed = project.semantic_search(clean, geometry_names=[str(selected["name"])])
+                scores = computed[str(selected["name"])]
+                cache.store(clean, int(geometry_id), scores, expected_query_id=qid)
+            except (ValueError, KeyError, ConfigurationError, OSError) as error:
+                return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                        "status": f"Semantic search unavailable: {error}", "range": None}
+            current_range = None
+        else:
+            scores = cached["scores"]
+            current_range = cached["range"]
+        # A query deleted after reading the cache must not be displayed.
+        if cache.query_id(clean) != qid:
+            return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                    "status": "This saved query was deleted.", "range": None}
+        return {"query": clean, "geometry_id": int(geometry_id), "query_id": qid,
+                "scores": {str(selected["name"]): scores}, "status": "",
+                "range": current_range}
+
+    app.clientside_callback(
+        """function(candidate, query, geometryId) {
+            const no = window.dash_clientside.no_update;
+            if (!candidate || String(candidate.query || "") !== String(query || "").trim()
+                || String(candidate.geometry_id) !== String(geometryId)) {
+                return [no, no, no, no, no];
+            }
+            const payload = candidate.scores && Object.keys(candidate.scores).length
+                ? {query: candidate.query, geometry_id: candidate.geometry_id,
+                   query_id: candidate.query_id, scores: candidate.scores}
+                : {};
+            return [payload, candidate.status || "", candidate.range || null,
+                    candidate.range || null,
+                    Object.keys(payload).length ? "semantic" : "plain"];
+        }""",
+        Output("semantic-scores-store", "data", allow_duplicate=True),
+        Output("semantic-search-status", "children", allow_duplicate=True),
         Output("semantic-range", "data", allow_duplicate=True),
         Output("desired-semantic-range-store", "data", allow_duplicate=True),
         Output("topic-color-mode", "data", allow_duplicate=True),
-        Input("semantic-search-button", "n_clicks"),
-        State("semantic-query", "value"),
+        Input("semantic-result-candidate", "data"),
+        State("semantic-active-query", "data"),
+        State("geometry-dropdown", "value"),
         prevent_initial_call=True,
-        running=[
-            (Output("semantic-search-button", "disabled"), True, False),
-        ],
     )
-    def run_semantic_search(
-        search_clicks: int,
-        query: str | None,
-    ) -> tuple[dict[str, list[float]], str, Any, None, None, Any]:
-        del search_clicks
-        clean_query = (query or "").strip()
-        if not clean_query:
-            return {}, "Semantic search cleared.", "", None, None, "plain"
-        scores = project.semantic_search(clean_query)
-        if not scores:
-            return (
-                {},
-                "No registered geometry supports semantic query transformation.",
-                no_update,
-                None,
-                None,
-                no_update,
-            )
-        return (
-            scores,
-            f"Computed semantic similarity in {len(scores)} geometries.",
-            no_update,
-            None,
-            None,
-            "semantic",
-        )
 
     @app.callback(
         Output("semantic-range-slider", "min"),
@@ -1441,11 +1696,13 @@ def create_app(
         Output("nav-least-similar", "style"),
         Input("semantic-scores-store", "data"),
         Input("geometry-dropdown", "value"),
+        Input("semantic-active-query", "data"),
         Input("desired-semantic-range-store", "data"),
     )
     def update_semantic_range(
-        all_scores: dict[str, list[float]] | None,
+        all_scores: dict[str, Any] | None,
         geometry_id: int | None,
+        active_query: str | None,
         desired_range: list[float] | None,
     ) -> tuple[
         float,
@@ -1461,7 +1718,7 @@ def create_app(
         if geometry_id is None or not all_scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
-        scores = all_scores.get(geometry_name)
+        scores = _current_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
         if not scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
@@ -1812,6 +2069,8 @@ def create_app(
         Output("metadata-filter-operator", "value", allow_duplicate=True),
         Output("saved-filter-refresh-store", "data", allow_duplicate=True),
         Output("load-filter-set-status", "children"),
+        Output("saved-filter-delete-pending", "data"),
+        Output("saved-filter-delete-confirm", "displayed"),
         Input("metadata-filter-load-open-button", "n_clicks"),
         Input("load-filter-set-close", "n_clicks"),
         Input("load-filter-set-done", "n_clicks"),
@@ -1832,14 +2091,14 @@ def create_app(
         triggered = callback_context.triggered_id
         current_refresh = int(refresh or 0)
         if triggered == "metadata-filter-load-open-button":
-            return {"display": "flex"}, no_update, no_update, current_refresh, ""
+            return {"display": "flex"}, no_update, no_update, current_refresh, "", no_update, False
         if isinstance(triggered, str) and triggered in {
             "load-filter-set-close",
             "load-filter-set-done",
         }:
-            return {"display": "none"}, no_update, no_update, current_refresh, ""
+            return {"display": "none"}, no_update, no_update, current_refresh, "", no_update, False
         if not isinstance(triggered, dict):
-            return no_update, no_update, no_update, current_refresh, ""
+            return no_update, no_update, no_update, current_refresh, "", no_update, False
         identifier = str(triggered.get("index", ""))
         records = _read_saved_filter_sets(saved_filter_sets_path)
         selected_position = next(
@@ -1851,7 +2110,7 @@ def create_app(
             None,
         )
         if selected_position is None:
-            return {"display": "flex"}, no_update, no_update, current_refresh, "Saved collection not found."
+            return {"display": "flex"}, no_update, no_update, current_refresh, "Saved collection not found.", no_update, False
         clicked_values = (
             delete_clicks
             if triggered.get("type") == "delete-filter-set"
@@ -1863,14 +2122,10 @@ def create_app(
         ):
             # Saved-set rows use pattern IDs. Mounting those buttons is not a
             # user action and must not load or delete anything.
-            return no_update, no_update, no_update, current_refresh, ""
+            return no_update, no_update, no_update, current_refresh, "", no_update, False
         selected = records[selected_position]
         if triggered.get("type") == "delete-filter-set":
-            _write_saved_filter_sets(
-                saved_filter_sets_path,
-                [record for record in records if str(record.get("id")) != identifier],
-            )
-            return {"display": "flex"}, no_update, no_update, current_refresh + 1, "Deleted saved collection."
+            return {"display": "flex"}, no_update, no_update, current_refresh, "", identifier, True
         clauses = _normalize_metadata_filters(
             selected.get("filters", []), metadata_profiles
         )
@@ -1880,7 +2135,27 @@ def create_app(
             _normalize_boolean_operator(selected.get("operator")),
             current_refresh,
             "",
+            no_update,
+            False,
         )
+
+    @app.callback(
+        Output("saved-filter-refresh-store", "data", allow_duplicate=True),
+        Output("saved-filter-delete-pending", "data", allow_duplicate=True),
+        Input("saved-filter-delete-confirm", "submit_n_clicks"),
+        State("saved-filter-delete-pending", "data"),
+        State("saved-filter-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def confirm_filter_set_delete(clicks, identifier, revision):
+        if not clicks or not identifier:
+            return no_update, no_update
+        records = _read_saved_filter_sets(saved_filter_sets_path)
+        _write_saved_filter_sets(
+            saved_filter_sets_path,
+            [record for record in records if str(record.get("id")) != identifier],
+        )
+        return int(revision or 0) + 1, None
 
     @app.callback(
         Output("geometry-map", "figure"),
@@ -1894,6 +2169,7 @@ def create_app(
         Input("literal-query", "value"),
         Input("literal-options", "value"),
         Input("semantic-scores-store", "data"),
+        Input("semantic-active-query", "data"),
         Input("semantic-range", "data"),
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
@@ -1906,7 +2182,6 @@ def create_app(
         Input("topic-model-selector", "value"),
         Input("topic-component-selector", "value"),
         Input("topic-model-refresh-store", "data"),
-        State("geometry-map", "relayoutData"),
         State("explore-focal-unit-store", "data"),
         State("geometry-map-base-revision-store", "data"),
     )
@@ -1916,7 +2191,8 @@ def create_app(
         jitter_strength: float | None,
         literal_query: str | None,
         literal_options: list[str] | None,
-        all_semantic_scores: dict[str, list[float]] | None,
+        all_semantic_scores: dict[str, Any] | None,
+        active_query: str | None,
         semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
@@ -1929,7 +2205,6 @@ def create_app(
         topic_model_id: int | None,
         topic_component_id: str | None,
         topic_revision: int | None,
-        relayout_data: dict[str, Any] | None,
         focal_unit_id: int | None,
         base_revision: int | None,
     ) -> tuple[Any, str, str, Any, int]:
@@ -1939,7 +2214,7 @@ def create_app(
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
-        semantic_scores = (all_semantic_scores or {}).get(str(geometry_record["name"]))
+        semantic_scores = _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
         try:
             filters = combine_filters(
                 texts,
@@ -2024,13 +2299,12 @@ def create_app(
                 if all_view_coordinates.shape[1] == 1 else None
             ),
         )
-        if callback_context.triggered_id not in {
-            "view-dropdown",
-            "geometry-dropdown",
-            "page-size",
-            "page-number",
-        }:
-            _apply_relayout_ranges(figure, relayout_data)
+        # Plotly's view-scoped uirevision preserves deliberate same-view zooms.
+        # Never replay stale relayoutData from another representation; changing
+        # the view identity asks Plotly to autoscale the new coordinates.
+        if callback_context.triggered_id in {"view-dropdown", "geometry-dropdown"}:
+            figure.update_xaxes(autorange=True)
+            figure.update_yaxes(autorange=True)
         filter_match_count = int(combined_mask.sum())
         page_status = (
             f"Page {page.page_index + 1} of {page.page_count} · "
@@ -2151,6 +2425,7 @@ def create_app(
         State("literal-query", "value"),
         State("literal-options", "value"),
         State("semantic-scores-store", "data"),
+        State("semantic-active-query", "data"),
         State("semantic-range", "data"),
         State("metadata-filters-store", "data"),
         State("metadata-filter-operator", "value"),
@@ -2173,7 +2448,8 @@ def create_app(
         focal_unit_id: int | None,
         literal_query: str | None,
         literal_options: list[str] | None,
-        all_semantic_scores: dict[str, list[float]] | None,
+        all_semantic_scores: dict[str, Any] | None,
+        active_query: str | None,
         semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
@@ -2209,7 +2485,7 @@ def create_app(
                 geometry_by_id[int(geometry_id)] if geometry_id is not None else None
             )
             semantic_scores = (
-                (all_semantic_scores or {}).get(str(geometry_record["name"]))
+                _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
                 if geometry_record is not None
                 else None
             )
@@ -6573,8 +6849,6 @@ def create_app(
         Input("navigation-history-store", "data"),
         Input("literal-query", "value"),
         Input("literal-options", "value"),
-        Input("semantic-query", "value"),
-        Input("semantic-range", "data"),
         Input("metadata-filters-store", "data"),
         Input("metadata-filter-operator", "value"),
         Input("explore-uncoded-only", "value"),
@@ -6584,9 +6858,6 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
-        Input("topic-color-mode", "data"),
-        Input("topic-model-selector", "value"),
-        Input("topic-component-selector", "value"),
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
@@ -6606,8 +6877,6 @@ def create_app(
         navigation_history: dict[str, Any] | None,
         literal_query: str | None,
         literal_options: list[str] | None,
-        semantic_query: str | None,
-        semantic_range: list[float] | None,
         metadata_filters: list[dict[str, Any]] | None,
         metadata_filter_operator: str | None,
         explore_uncoded_values: list[str] | None,
@@ -6617,9 +6886,6 @@ def create_app(
         page_number: Any,
         navigation_new_only: list[str] | None,
         workspace: str,
-        topic_color_mode: str | None,
-        topic_model_id: int | None,
-        topic_component_id: str | None,
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
@@ -6648,8 +6914,6 @@ def create_app(
                 "literal_query": literal_query or "",
                 "case_sensitive": "case" in options,
                 "regex": "regex" in options,
-                "semantic_query": semantic_query or "",
-                "semantic_range": semantic_range,
                 "metadata_filters": _normalize_metadata_filters(
                     metadata_filters or [], metadata_profiles
                 ),
@@ -6669,9 +6933,6 @@ def create_app(
                 "page_number": _coerce_positive_int(page_number, default=1),
                 "navigation_new_only": "new_only" in (navigation_new_only or []),
                 "workspace": workspace,
-                "topic_color_mode": normalize_color_mode(topic_color_mode),
-                "topic_model_id": topic_model_id,
-                "topic_component_id": topic_component_id,
                 "focus_code_id": focus_code_id,
                 "focus_classifier_spec_id": focus_classifier_spec_id,
                 "focus_committee_id": focus_committee_id,
@@ -6700,6 +6961,7 @@ def _explore_layout(
     initial_geometry_id: int | None,
     initial_view_id: int | None,
     initial_semantic_scores: dict[str, list[float]],
+    initial_semantic_status: str,
     geometry_by_id: dict[int, dict[str, Any]],
     total_units: int,
     sessions: list[dict[str, Any]],
@@ -6807,16 +7069,12 @@ def _explore_layout(
                                             dcc.Input(
                                                 id="semantic-query",
                                                 type="text",
-                                                value=initial_state.get(
-                                                    "semantic_query", ""
-                                                ),
+                                                debounce=False,
+                                                value="",
                                                 placeholder="Describe what you want to find",
                                             ),
-                                            html.Button(
-                                                "Search",
-                                                id="semantic-search-button",
-                                                n_clicks=0,
-                                            ),
+                                            html.Button("Search", id="semantic-search-button", n_clicks=0),
+                                            html.Button("Load", id="semantic-load-open", n_clicks=0),
                                         ],
                                         className="inline-controls semantic-query-row",
                                     ),
@@ -6827,6 +7085,7 @@ def _explore_layout(
                                             [
                                                 html.Div(
                                                     id="semantic-search-status",
+                                                    children=initial_semantic_status,
                                                     className="control-status",
                                                 ),
                                                 html.Div(
@@ -6850,16 +7109,6 @@ def _explore_layout(
                                                             else {}
                                                         ),
                                                         allowCross=False,
-                                                        tooltip={
-                                                            "placement": "top",
-                                                            "always_visible": False,
-                                                            "transform": "formatSimilarity",
-                                                            "style": {
-                                                                "minWidth": "58px",
-                                                                "textAlign": "center",
-                                                                "fontVariantNumeric": "tabular-nums",
-                                                            },
-                                                        },
                                                         allow_direct_input=False,
                                                     ),
                                                     id="semantic-range-wrap",
@@ -6870,6 +7119,7 @@ def _explore_layout(
                                             ]
                                         ),
                                     ),
+
                                 ],
                                 className="search-section semantic-search-section",
                             ),

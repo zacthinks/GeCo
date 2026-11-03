@@ -1561,7 +1561,13 @@ class GeometricCoder:
         self._runtime_geometries = restored
         return dict(restored)
 
-    def transform_query(self, geometry: int | str, query: str) -> Matrix:
+    def transform_query(
+        self,
+        geometry: int | str,
+        query: str,
+        *,
+        _reference_matrix: Matrix | None = None,
+    ) -> Matrix:
         """Transform one semantic query through a registered geometry.
 
         The caller names the GeCo geometry; GeCo decides whether to use the
@@ -1602,13 +1608,46 @@ class GeometricCoder:
                 f"Query transform for geometry {name!r} must return shape (1, m), "
                 f"got {normalized.shape}."
             )
-        matrix = self.geometry_matrix(int(record["geometry_id"]))
+        # Semantic search already loaded this matrix; avoid a second provider
+        # fetch solely for dimensionality validation. Direct callers still
+        # validate against the registered geometry matrix.
+        matrix = (
+            _reference_matrix
+            if _reference_matrix is not None
+            else self.geometry_matrix(int(record["geometry_id"]))
+        )
         if matrix.shape[1] != normalized.shape[1]:
             raise ValueError(
                 f"Query transform for geometry {name!r} returned "
                 f"{normalized.shape[1]} features, expected {matrix.shape[1]}."
             )
         return normalized
+
+    @property
+    def saved_semantic_searches(self):
+        """Project-level semantic queries with geometry-specific result caches."""
+        from geometric_coder.search_results import SavedSemanticSearches
+        return SavedSemanticSearches(self)
+
+    def list_semantic_searches(self) -> list[dict[str, Any]]:
+        """List project-wide search strings, independent of geometry."""
+        return self.saved_semantic_searches.queries()
+
+    def save_semantic_search(self, *, geometry_id: int, query: str,
+                             scores: Sequence[float],
+                             range_values: Sequence[float] | None = None) -> int:
+        """Save a successful query and its current geometry scores."""
+        return self.saved_semantic_searches.store(
+            query, geometry_id, scores, range_values=range_values,
+        )
+
+    def load_semantic_search(self, *, query: str, geometry_id: int) -> dict[str, Any] | None:
+        """Fetch a validated cached result; do not calculate missing scores."""
+        return self.saved_semantic_searches.find(query, geometry_id)
+
+    def delete_semantic_search(self, query_id: int) -> None:
+        """Remove a query and every cached geometry result for that query."""
+        self.saved_semantic_searches.delete_query(query_id)
 
     def semantic_search(
         self,
@@ -1630,7 +1669,11 @@ class GeometricCoder:
             if not record["supports_query"]:
                 continue
             matrix = self.geometry_matrix(int(record["geometry_id"]))
-            normalized_query = self.transform_query(int(record["geometry_id"]), clean_query)
+            normalized_query = self.transform_query(
+                int(record["geometry_id"]),
+                clean_query,
+                _reference_matrix=matrix,
+            )
             scores = cosine_similarity(matrix, normalized_query).reshape(-1)
             results[name] = np.asarray(scores, dtype=float).tolist()
         return results

@@ -114,7 +114,16 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   padding: 0.35rem 0.15rem 0.1rem;
   background: #fff;
 }
-.semantic-query-row { margin-bottom: 0.1rem; }
+.semantic-query-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.1rem;
+}
+.semantic-query-row > #semantic-query { min-width: 0; width: 100%; }
+.semantic-query-row > button { width: auto; white-space: nowrap; }
+
 .semantic-clear-action {
   width: auto;
   margin-top: 0.5rem;
@@ -437,6 +446,20 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .saved-filter-set-description small { display: block; }
 .saved-filter-set-description small { margin-top: 0.15rem; color: #69736d; }
 .danger-icon-action { color: #9f2f2f; }
+/* The representation detail actions are peers, including the destructive one. */
+.representation-detail-actions { display: grid; grid-template-columns: 1fr; gap: 0.55rem; }
+.representation-detail-actions > button {
+  width: 100%;
+  min-height: 38px;
+  margin: 0;
+  padding: 0.52rem 0.78rem;
+}
+.saved-filter-set-row > .danger-action {
+  min-height: 38px;
+  padding: 0.52rem 0.78rem;
+  white-space: nowrap;
+}
+
 @media (max-width: 1380px) {
   .explore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .combined-search-block, .metadata-filter-block { grid-column: span 1; }
@@ -1337,4 +1360,28 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .representation-source-filter .dash-dropdown { width: 100%; min-width: 0; }
 @media (max-width: 650px) {
   .representation-filters { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Compact contents without overriding the equal-height Explore grid rows.
+   CSS grid stretches every card in a row to its tallest sibling. */
+.explore-controls > .semantic-search-control-block {
+  align-self: stretch;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+.semantic-search-control-block .control-block-title {
+  margin-bottom: 0.28rem;
+}
+.semantic-search-control-block .semantic-search-section {
+  margin: 0;
+  padding: 0;
+}
+.semantic-search-control-block .semantic-query-row { margin: 0; }
+.semantic-search-control-block .control-status:empty {
+  display: none;
+  min-height: 0;
+  margin: 0;
+}
+.semantic-search-control-block #semantic-search-loading:has(.control-status:empty) {
+  min-height: 0;
 }

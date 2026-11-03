@@ -585,3 +585,117 @@ def test_representation_detail_clears_cell_focus_and_allows_repeat_clicks() -> N
         Path(__file__).resolve().parents[1] /
         "src/geometric_coder/ui/app.py"
     ).read_text()
+
+
+def test_semantic_search_only_scores_selected_geometry_and_does_not_replay_on_restore() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'State("geometry-dropdown", "value")' in source
+    assert 'project.semantic_search(clean, geometry_names=[str(selected["name"])])' in source
+    assert "initial_semantic_scores = project.semantic_search" not in source
+    assert "scores = project.semantic_search(query) if query else {}" not in source
+
+
+def test_semantic_query_cache_and_compact_modal_contract() -> None:
+    source = (Path(__file__).resolve().parents[1] / "src/geometric_coder/ui/app.py").read_text()
+    assert "_resumable_session_state(" in source
+    assert 'cache.find(clean, int(geometry_id), expected_query_id=qid)' in source
+    assert 'cache.store(clean, int(geometry_id), scores, expected_query_id=qid)' in source
+    assert 'Input("semantic-query", "n_submit")' in source
+    assert 'id="semantic-load-open"' in source
+    assert 'id="semantic-load-modal"' in source
+    assert 'id="semantic-active-query"' in source
+    assert 'Input("geometry-dropdown", "value")' in source
+    assert 'id="semantic-save-as"' not in source
+    assert 'id="semantic-saved-picker"' not in source
+
+
+
+
+def test_semantic_load_modal_ignores_newly_rendered_zero_clicks() -> None:
+    from geometric_coder.ui.app import _is_semantic_modal_click
+
+    trigger = {"type": "semantic-load-query", "index": 12}
+    zero = [{"prop_id": '{"index":12,"type":"semantic-load-query"}.n_clicks', "value": 0}]
+    actual = [{"prop_id": '{"index":12,"type":"semantic-load-query"}.n_clicks', "value": 1}]
+    assert not _is_semantic_modal_click(trigger, zero)
+    assert _is_semantic_modal_click(trigger, actual)
+    assert not _is_semantic_modal_click(trigger, [])
+    assert not _is_semantic_modal_click(
+        trigger, [{"prop_id": '{"index":12,"type":"semantic-delete-query"}.n_clicks', "value": 1}]
+    )
+
+
+def test_semantic_search_success_is_silent_and_controls_fit_one_row() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    source = (root / "app.py").read_text()
+    css = (root / "assets" / "geco.css").read_text()
+    assert "Computed semantic similarity in" not in source
+    assert "Loaded cached semantic similarity in" not in source
+    assert 'status = ""' in source
+    assert "grid-template-columns: minmax(0, 1fr) auto auto;" in css
+    assert ".semantic-query-row > #semantic-query" in css
+    assert ".representation-detail-actions > button" in css
+    assert 'className="danger-action", title="Delete saved query"' in source
+
+
+def test_destructive_semantic_and_representation_actions_require_confirmation() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    app = (root / "app.py").read_text()
+    rep = (root / "representation_ui.py").read_text()
+    manager = (root / "representation_manager.py").read_text()
+    assert 'id="semantic-delete-confirm"' in app
+    assert 'Input("semantic-delete-confirm", "submit_n_clicks")' in app
+    assert 'id="representation-delete-confirm"' in rep
+    assert 'Input("representation-delete-confirm", "submit_n_clicks")' in rep
+    assert "_release_representation_alias(" in manager
+    assert 'figure.update_xaxes(autorange=True)' in app
+    assert 'figure.update_yaxes(autorange=True)' in app
+
+
+def test_semantic_search_panel_stays_compact_and_topic_mode_replaces_it() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    css = (root / "assets/geco.css").read_text()
+    app = (root / "app.py").read_text()
+    assert ".explore-controls > .semantic-search-control-block" in css
+    assert ".semantic-search-control-block .control-status:empty" in css
+    assert "def clear_semantic_on_topic_color(" in app
+    assert 'Output("topic-model-selector", "value", allow_duplicate=True)' in app
+
+
+def test_clear_colors_resets_active_query_and_session_resumes_without_color() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    app = (root / "app.py").read_text()
+    assert 'Output("semantic-active-query", "data", allow_duplicate=True)' in app
+    assert 'return "plain", None, "", {}, None, "", None, ""' in app
+    assert 'query, scores, semantic_status = "", {}, ""' in app
+    assert '"semantic_active_query": semantic_active_query or ""' not in app
+    assert '"topic_color_mode": normalize_color_mode(topic_color_mode)' not in app
+    assert 'State("geometry-map", "relayoutData")' not in app[:app.index('def update_map(')]
+
+
+def test_explore_cards_stretch_equal_height_and_semantic_slider_has_no_hover_tooltip() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    css = (root / "assets" / "geco.css").read_text()
+    source = (root / "app.py").read_text()
+    assert ".explore-controls > .semantic-search-control-block {" in css
+    assert "align-self: stretch;" in css
+    slider = source.split('id="semantic-range-slider",', 1)[1].split(
+        'id="semantic-range-wrap",', 1
+    )[0]
+    assert "tooltip=" not in slider
+    assert "marks=(" in slider
+
+
+def test_semantic_candidate_is_checked_against_current_browser_request() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    source = (root / "app.py").read_text()
+    assert 'Output("semantic-result-candidate", "data")' in source
+    assert 'String(candidate.query || "") !== String(query || "").trim()' in source
+    assert 'String(candidate.geometry_id) !== String(geometryId)' in source
+    assert 'State("semantic-active-query", "data")' in source
+    assert 'State("geometry-dropdown", "value")' in source
+    assert '_current_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    assert "expected_query_id=qid" in source
