@@ -687,3 +687,15 @@ def test_explore_cards_stretch_equal_height_and_semantic_slider_has_no_hover_too
     )[0]
     assert "tooltip=" not in slider
     assert "marks=(" in slider
+
+
+def test_semantic_candidate_is_checked_against_current_browser_request() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    source = (root / "app.py").read_text()
+    assert 'Output("semantic-result-candidate", "data")' in source
+    assert 'String(candidate.query || "") !== String(query || "").trim()' in source
+    assert 'String(candidate.geometry_id) !== String(geometryId)' in source
+    assert 'State("semantic-active-query", "data")' in source
+    assert 'State("geometry-dropdown", "value")' in source
+    assert '_current_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    assert "expected_query_id=qid" in source
