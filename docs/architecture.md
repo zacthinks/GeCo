@@ -2,13 +2,13 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes GeCo 0.9.0 and project schema 15. Internal implementation modules are not a stable plugin SDK.
+This describes GeCo 0.10.0 and project schema 17. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
 `GeometricCoder` is the main Python project object. GeCo's local Dash interface uses the same persistent project state. SQLite stores structured research records; numerical arrays and fitted models are stored in registered project-local sidecar artifacts. Projects can have local fitted representations or use external numerical providers, particularly [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab).
 
-Opening a project verifies its schema version. Supported forward migrations run on open, including schema 13 to 14 and 14 to 15; unsupported versions fail explicitly rather than being silently interpreted.
+Opening a project verifies its schema version. Supported forward migrations run on open, including schema 13 to 14, 14 to 15, 15 to 16, and 16 to 17; unsupported versions fail explicitly rather than being silently interpreted.
 
 ## Observations, keys, and coding
 
@@ -28,7 +28,7 @@ The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` r
 
 ## Explore, Develop, and Apply & Review
 
-**Explore** manages navigation, text and context reading, sessions, filters, search state, and linked memos. A document counts as visited when it becomes focal, not merely because it appeared on a map.
+**Explore** manages navigation, text and context reading, sessions, filters, search state, and linked memos. A document counts as visited when it becomes focal, not merely because it appeared on a map. Submitted semantic-search queries are saved project-wide, with similarity results cached per query and eligible geometry. Switching views reuses valid cached results; switching geometries computes scores only when needed. Saved queries can be loaded or deleted, and the Python API retains explicit multi-geometry searches.
 
 **Develop** connects researcher-defined codes to their own classifiers and committees. Training maintains current fitted model state and prediction caches while preserving the separation between human judgments and machine suggestions.
 
