@@ -1660,7 +1660,7 @@ def create_app(
                 "range": current_range}
 
     app.clientside_callback(
-        """function(candidate, query, geometryId) {
+        """function(candidate, query, geometryId, currentColorMode) {
             const no = window.dash_clientside.no_update;
             if (!candidate || String(candidate.query || "") !== String(query || "").trim()
                 || String(candidate.geometry_id) !== String(geometryId)) {
@@ -1670,9 +1670,14 @@ def create_app(
                 ? {query: candidate.query, geometry_id: candidate.geometry_id,
                    query_id: candidate.query_id, scores: candidate.scores}
                 : {};
+            // Clearing the semantic query when selecting a Topic Model must not
+            // undo topic coloring. Only an active semantic color or an attempted
+            // semantic query without results should return to plain.
+            const nextColorMode = Object.keys(payload).length
+                ? "semantic"
+                : (String(query || "").trim() || currentColorMode === "semantic" ? "plain" : no);
             return [payload, candidate.status || "", candidate.range || null,
-                    candidate.range || null,
-                    Object.keys(payload).length ? "semantic" : "plain"];
+                    candidate.range || null, nextColorMode];
         }""",
         Output("semantic-scores-store", "data", allow_duplicate=True),
         Output("semantic-search-status", "children", allow_duplicate=True),
@@ -1682,6 +1687,7 @@ def create_app(
         Input("semantic-result-candidate", "data"),
         State("semantic-active-query", "data"),
         State("geometry-dropdown", "value"),
+        State("topic-color-mode", "data"),
         prevent_initial_call=True,
     )
 
