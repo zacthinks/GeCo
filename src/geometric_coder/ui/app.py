@@ -565,7 +565,7 @@ def create_app(
                 # These targets correspond to operations that can legitimately take
                 # long enough to need explicit feedback.
                 target_components={
-                    "semantic-scores-store": "data",
+                    "semantic-result-candidate": "data",
                     "view-refresh-store": "data",
                     "focus-refresh-store": "data",
                     "focus-model-refresh-store": "data",
