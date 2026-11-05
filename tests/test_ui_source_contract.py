@@ -3,6 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_semantic_loading_tracks_expensive_candidate_callback() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert '"semantic-result-candidate": "data"' in app_source
+    assert '"semantic-scores-store": "data"' not in app_source
+    assert 'Output("semantic-result-candidate", "data")' in app_source
+
+
 def test_projection_numeric_inputs_do_not_use_invalid_decimal_input_mode() -> None:
     app_source = (
         Path(__file__).resolve().parents[1]
