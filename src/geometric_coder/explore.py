@@ -107,6 +107,15 @@ def combine_filters(
     )
 
 
+def deterministic_page_count(total_units: int, *, page_size: int = 5_000) -> int:
+    """Count deterministic pages without allocating a corpus permutation."""
+    if total_units < 0:
+        raise ValueError("total_units must be nonnegative")
+    if page_size < 1:
+        raise ValueError("page_size must be at least 1")
+    return max(1, ceil(total_units / page_size))
+
+
 def deterministic_page(
     total_units: int,
     *,
@@ -123,7 +132,7 @@ def deterministic_page(
         raise ValueError("total_units must be nonnegative")
     if page_size < 1:
         raise ValueError("page_size must be at least 1")
-    page_count = max(1, ceil(total_units / page_size))
+    page_count = deterministic_page_count(total_units, page_size=page_size)
     bounded_index = min(max(int(page_index), 0), page_count - 1)
     if total_units == 0:
         positions = np.asarray([], dtype=int)
