@@ -876,6 +876,22 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .classifier-train-scope label {
   margin: 0;
 }
+.classifier-auto-train-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.classifier-auto-train-help {
+  cursor: help;
+  color: var(--geco-muted);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.classifier-auto-train-help:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 50%;
+}
 .classifier-management-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
