@@ -52,6 +52,7 @@ def run(size: int, repeats: int, seed: int) -> dict:
             geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
         )
         code = project.create_code("quality")
+        project.ensure_default_classifier_specs(code_id=code)
         units = project.database.list_observations()
         for idx in range(10):
             project.annotate(int(units[idx]["observation_id"]), code, "positive")
