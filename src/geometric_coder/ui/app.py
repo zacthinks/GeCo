@@ -412,7 +412,7 @@ def _matching_recommendation_fit_id(
     ):
         return None
     try:
-        fit_ids = recommendation.get("classifier_fit_ids") or {}
+        fit_ids = (recommendation or {}).get("classifier_fit_ids") or {}
         if not isinstance(fit_ids, dict) or len(fit_ids) != 1:
             return None
         return int(next(iter(fit_ids.values())))
