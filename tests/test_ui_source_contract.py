@@ -159,7 +159,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
         / "app.py"
     ).read_text(encoding="utf-8")
     assert 'id="focus-tune-hyperparameters"' in app_source
-    assert '"label": "Tune hyperparameters with cross-validation"' in app_source
+    assert '_tooltip_label(html, "Tune hyperparameters with cross-validation"' in app_source
     assert '"focus_tune_hyperparameters", False' in app_source
     assert 'tune=tune_hyperparameters' in app_source
     assert 'retune_current=tune_hyperparameters' in app_source
@@ -418,31 +418,36 @@ def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
     assert 'triggered == "focus-manage-committees"' in app_source
 
 
-def test_auto_training_ui_has_concise_label_and_help_without_inline_paragraph() -> None:
+def test_auto_training_and_teaching_help_are_on_labels_not_inline_prose() -> None:
     app_source = (
         Path(__file__).resolve().parents[1]
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
-    assert '"label": "Automatically train"' in app_source
-    assert 'className="classifier-auto-train-help"' in app_source
-    assert '"About automatic training"' in app_source
+    assert '_tooltip_label(html, "Automatically train"' in app_source
+    assert '_tooltip_label(html, "Teaching examples"' in app_source
+    assert 'className="classifier-auto-train-help"' not in app_source
     assert "With automatic training off, only explicit Train actions fit models;" not in app_source
     assert "Automatically train selected models after saved coding changes" not in app_source
+    assert "Saving a teaching example updates the evidence, not the fitted model." not in app_source
     assert 'id="focus-cv-folds"' not in app_source
-    assert "Train selected classifiers after saved label changes" in app_source
-    assert "Apply reviews are not yet connected." not in app_source
+    assert 'id="geco-settings-cv-folds"' in app_source
 
 
-def test_teaching_examples_help_describes_save_and_training_timing() -> None:
+def test_settings_modal_and_topic_inspection_are_contextual() -> None:
     app_source = (
         Path(__file__).resolve().parents[1]
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
-    assert "Saving a teaching example updates the evidence, not the fitted model." in app_source
-    assert "For the code selected in Develop, active examples can trigger training of " in app_source
-    assert "the selected models after a change when automatic training is enabled." in app_source
-    assert "Otherwise, use Train to include active examples in the next manual fit." in app_source
-    assert "Active examples join corpus assignments at the next manual retrain." not in app_source
+    assert 'id="geco-settings-open"' in app_source
+    assert 'id="geco-settings-modal"' in app_source
+    assert 'storage_type="local"' in app_source
+    assert 'id="topic-interpretation-details"' in app_source
+    assert 'def show_topic_interpretation(' in app_source
+    assert 'style={"display": "none"}' in app_source
+    reading = app_source.split('className="inspection-scroll"', 1)[0]
+    assert reading.rindex('html.Summary("Metadata")') < reading.rindex(
+        'html.Summary("Topic Model interpretation")'
+    )
 
 
 def test_develop_code_summary_does_not_refresh_on_focal_navigation() -> None:
