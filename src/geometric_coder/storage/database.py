@@ -5150,15 +5150,60 @@ class ProjectDatabase:
         return result
 
     def memo_versions(self, memo_id: int) -> list[dict[str, Any]]:
-        """Return every immutable version of one memo."""
+        """Return immutable memo versions and their evidence in three queries."""
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT version_number FROM memo_versions WHERE memo_id = ? ORDER BY version_number",
-                (memo_id,),
+                """
+                SELECT m.memo_id, m.created_at, mv.memo_version_id, mv.version_number,
+                       mv.title, mv.body_markdown, mv.created_at AS updated_at
+                FROM memos m
+                JOIN memo_versions mv ON mv.memo_id = m.memo_id
+                WHERE m.memo_id = ?
+                ORDER BY mv.version_number
+                """,
+                (int(memo_id),),
             ).fetchall()
-        if not rows:
-            raise KeyError(f"Unknown memo_id: {memo_id}")
-        return [self.get_memo(memo_id, int(row["version_number"])) for row in rows]
+            if not rows:
+                raise KeyError(f"Unknown memo_id: {memo_id}")
+            tag_rows = connection.execute(
+                """
+                SELECT mv.memo_version_id, h.hashtag
+                FROM memo_versions mv
+                JOIN memo_version_hashtags h ON h.memo_version_id = mv.memo_version_id
+                WHERE mv.memo_id = ?
+                ORDER BY mv.memo_version_id, h.hashtag
+                """,
+                (int(memo_id),),
+            ).fetchall()
+            ref_rows = connection.execute(
+                """
+                SELECT mv.memo_version_id, r.reference_id, r.unit_id, r.token
+                FROM memo_versions mv
+                JOIN memo_version_unit_references r
+                  ON r.memo_version_id = mv.memo_version_id
+                WHERE mv.memo_id = ?
+                ORDER BY mv.memo_version_id, r.reference_id
+                """,
+                (int(memo_id),),
+            ).fetchall()
+        tags: dict[int, list[str]] = {}
+        for row in tag_rows:
+            tags.setdefault(int(row["memo_version_id"]), []).append(str(row["hashtag"]))
+        references: dict[int, list[dict[str, Any]]] = {}
+        for row in ref_rows:
+            references.setdefault(int(row["memo_version_id"]), []).append({
+                "reference_id": int(row["reference_id"]),
+                "unit_id": int(row["unit_id"]),
+                "token": str(row["token"]),
+            })
+        versions = []
+        for row in rows:
+            version = dict(row)
+            version_id = int(row["memo_version_id"])
+            version["hashtags"] = tags.get(version_id, [])
+            version["unit_references"] = references.get(version_id, [])
+            versions.append(version)
+        return versions
 
     def update_memo(
         self, memo_id: int, *, title: str, body_markdown: str,
