@@ -115,3 +115,34 @@ def test_memo_version_query_count_is_independent_of_history(tmp_path: Path, monk
     assert len(rows) == 11
     assert len(selects) == 3
     assert [row["version_number"] for row in rows] == list(range(1, 12))
+
+
+def test_code_and_memo_search_query_counts_are_independent_of_collection_size(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = _project(tmp_path)
+    for index in range(9):
+        project.create_code(f"Code {index}", f"Description {index}")
+        project.create_memo(
+            title=f"Memo {index}", body_markdown=f"Evidence {index}",
+            hashtags=["shared", f"tag{index}"],
+            unit_references=[1, 2],
+        )
+    statements = []
+    original_connect = project.database.connect
+
+    @contextmanager
+    def traced_connect():
+        with original_connect() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(project.database, "connect", traced_connect)
+    code_results = project.search_codes()
+    code_selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    statements.clear()
+    memo_results = project.search_memos()
+    memo_selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    assert len(code_results) == len(memo_results) == 9
+    assert len(code_selects) == 2
+    assert len(memo_selects) == 3
