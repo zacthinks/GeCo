@@ -157,6 +157,44 @@ def _current_semantic_scores(
     return payload.get("scores") or {}
 
 
+_DEFAULT_UI_SETTINGS = {"cv_folds": 5}
+
+
+def _read_ui_settings(project_dir: Path) -> dict[str, int]:
+    """Read modest project-scoped training defaults, preserving older projects."""
+    path = project_dir / "ui_settings.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        folds = int(raw.get("cv_folds", 5))
+    except (TypeError, ValueError):
+        folds = 5
+    return {"cv_folds": folds if 2 <= folds <= 10 else 5}
+
+
+def _save_ui_settings(project_dir: Path, *, cv_folds: int) -> None:
+    """Save the project CV default atomically; no database/schema migration."""
+    folds = int(cv_folds)
+    if not 2 <= folds <= 10:
+        raise ValueError("Cross-validation folds must be between 2 and 10.")
+    path = project_dir / "ui_settings.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"cv_folds": folds}, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _tooltip_label(html: Any, label: str, description: str) -> Any:
+    """Attach low-clutter contextual help to the text itself."""
+    return html.Span(
+        label, className="geco-tooltip", tabIndex=0,
+        **{"data-geco-tooltip": description},
+    )
+
+
 def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
     """Drop legacy transient color/search state without altering navigation."""
     return {key: value for key, value in state.items()
@@ -539,7 +577,7 @@ def create_app(
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
-    classifier_specs = project.ensure_default_classifier_specs()
+    classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
     training_inbox = _ScopedTrainingInbox()
 
@@ -5314,7 +5352,6 @@ def create_app(
         del refresh
         if code_id is None:
             return [], None
-        project.ensure_default_classifier_specs(code_id=int(code_id))
         rows = project.classifier_specs(code_id=int(code_id))
         options = [
             {
@@ -7117,7 +7154,7 @@ def _explore_layout(
                 [
                     html.Div(
                         [
-                            html.H3("Session", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Session", "A session records which units you've visited and the order in which you visited them."), className="control-block-title"),
                             html.Div([
                                 dcc.Dropdown(
                                     id="session-dropdown",
@@ -7141,7 +7178,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Literal Search", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Literal Search", "Find units containing a specified substring or matching a regular expression."), className="control-block-title"),
                             html.Div(
                                 [
                                     dcc.Input(
@@ -7172,7 +7209,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Semantic search", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Semantic search", "Represent your search text in the selected geometry and calculate its similarity to other units. Only available for geometries that can represent new queries."), className="control-block-title"),
                             html.Div(
                                 [
                                     html.Div(
@@ -7240,7 +7277,7 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Geometry and View", className="control-block-title"),
-                            html.Label("Geometry"),
+                            html.Label(_tooltip_label(html, "Geometry", "A geometry represents units of analysis in a numerical space, allowing their relationships to be measured.")),
                             dcc.Dropdown(
                                 id="geometry-dropdown",
                                 options=[
@@ -7253,7 +7290,7 @@ def _explore_layout(
                                 value=initial_geometry_id,
                                 clearable=False,
                             ),
-                            html.Label("View", className="stacked-control-label"),
+                            html.Label(_tooltip_label(html, "View", "A view displays a geometry in one or two dimensions without changing the underlying geometry used for analysis."), className="stacked-control-label"),
                             dcc.Dropdown(
                                 id="view-dropdown",
                                 options=[
@@ -7296,7 +7333,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Filters", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Filters", "Choose which units appear in Explore using metadata, optionally restricting the display to uncoded units."), className="control-block-title"),
                             html.Div(
                                 id="active-metadata-filter-chips",
                                 className="metadata-filter-chip-box",
@@ -7357,7 +7394,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Topic Models", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Topic Models", "Explore topics represented by a topic model. Color units by their dominant topic or by their association with a selected topic."), className="control-block-title"),
                             dcc.Dropdown(id="topic-model-selector", clearable=True, placeholder="Select a Topic Model"),
                             html.Div([html.Label("Selected topic"), dcc.Dropdown(id="topic-component-selector", clearable=False)], id="topic-component-wrap"),
                             dcc.RadioItems(id="topic-display-mode", options=[
@@ -7404,7 +7441,7 @@ def _explore_layout(
                     html.Button("Random", id="nav-random", n_clicks=0),
                     dcc.Checklist(
                         id="navigation-new-only",
-                        options=[{"label": "New points only", "value": "new_only"}],
+                        options=[{"label": _tooltip_label(html, "New points only", "Exclude units already visited in this session when using the navigation buttons."), "value": "new_only"}],
                         value=new_only,
                         inline=True,
                         className="navigation-repeat-control",
@@ -7474,13 +7511,6 @@ def _explore_layout(
                     html.Aside(
                         [
                             html.Div(id="focal-key", className="focal-key inspection-key"),
-                            html.Details([
-                                html.Summary("Topic Model interpretation"),
-                                html.Div(id="topic-focal-key"),
-                                html.Div(id="topic-memberships"),
-                                html.Div(id="topic-descriptors"),
-                            ]),
-
                             html.Div(
                                 [
                                     html.Div(
@@ -7558,6 +7588,16 @@ def _explore_layout(
                                             ),
                                         ],
                                         open=False,
+                                    ),
+                                    html.Details(
+                                        [
+                                            html.Summary("Topic Model interpretation"),
+                                            html.Div(id="topic-focal-key"),
+                                            html.Div(id="topic-memberships"),
+                                            html.Div(id="topic-descriptors"),
+                                        ],
+                                        id="topic-interpretation-details",
+                                        style={"display": "none"},
                                     ),
                                 ],
                                 className="inspection-scroll",
@@ -9015,7 +9055,7 @@ def _focus_layout(
                     ),
                     html.Div(
                         [
-                            html.Label("Teaching examples"),
+                            html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
                             html.Div(
                                 "Select a code to manage examples.",
                                 id="focus-teaching-counts",
@@ -9026,13 +9066,6 @@ def _focus_layout(
                                 id="focus-teaching-button",
                                 n_clicks=0,
                                 disabled=initial_code_id is None,
-                            ),
-                            html.Small(
-                                "Saving a teaching example updates the evidence, not the fitted model. "
-                                "For the code selected in Develop, active examples can trigger training of "
-                                "the selected models after a change when automatic training is enabled. "
-                                "Otherwise, use Train to include active examples in the next manual fit.",
-                                className="focus-help",
                             ),
                         ],
                         className="focus-teaching-select",
@@ -9107,7 +9140,7 @@ def _focus_layout(
                                                 id="focus-tune-hyperparameters",
                                                 options=[
                                                     {
-                                                        "label": "Tune hyperparameters with cross-validation",
+                                                        "label": _tooltip_label(html, "Tune hyperparameters with cross-validation", "Compare hyperparameter settings using cross-validation, then fit the selected configuration. This takes longer than ordinary training."),
                                                         "value": "tune",
                                                     }
                                                 ],
@@ -9126,7 +9159,7 @@ def _focus_layout(
                                                     dcc.Checklist(
                                                         id="focus-auto-retrain",
                                                         options=[
-                                                            {"label": "Automatically train", "value": "auto"}
+                                                            {"label": _tooltip_label(html, "Automatically train", "Automatically request training when saved coding changes affect the code selected in Develop."), "value": "auto"}
                                                         ],
                                                         value=(
                                                             ["auto"]
@@ -9137,18 +9170,6 @@ def _focus_layout(
                                                             )
                                                             else []
                                                         ),
-                                                    ),
-                                                    html.Span(
-                                                        "ⓘ",
-                                                        className="classifier-auto-train-help",
-                                                        title=(
-                                                            "Train selected classifiers after saved label changes "
-                                                            "for the code currently selected in Develop, once both "
-                                                            "Present and Absent examples exist. Recommendations and "
-                                                            "draft review changes do not trigger training."
-                                                        ),
-                                                        tabIndex=0,
-                                                        **{"aria-label": "About automatic training"},
                                                     ),
                                                 ],
                                                 className="classifier-auto-train-row",
@@ -9191,7 +9212,7 @@ def _focus_layout(
                                         role="status",
                                         **{"aria-live": "polite"},
                                     ),
-                                    html.H3("Committee"),
+                                    html.H3(_tooltip_label(html, "Committee", "Combine multiple classifiers to make predictions and recommendations.")),
                                     dcc.Dropdown(
                                         id="focus-committee-dropdown",
                                         options=[],
@@ -9284,7 +9305,7 @@ def _focus_layout(
                                                         style={"display": "none"},
                                                     ),
                                                     html.Button(
-                                                        "Review unsure",
+                                                        _tooltip_label(html, "Review unsure", "Revisit units you previously marked as Unsure, rather than units the classifier considers uncertain."),
                                                         id="focus-review-unsure",
                                                         n_clicks=0,
                                                     ),
