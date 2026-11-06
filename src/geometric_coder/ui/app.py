@@ -380,29 +380,43 @@ def _post_saved_apply_batch_training_request(
     return request, status.replace("Judgment saved", label)
 
 
+def _recommendation_matches_context(
+    recommendation: dict[str, Any] | None, *,
+    unit_id: int | None, code_id: int | None, session_id: int | None,
+) -> bool:
+    """Match saved recommendation context before showing or attributing scores."""
+    if not isinstance(recommendation, dict) or any(
+        value is None for value in (unit_id, code_id, session_id)
+    ):
+        return False
+    try:
+        return (
+            int(recommendation["unit_id"]) == int(unit_id)
+            and int(recommendation["code_id"]) == int(code_id)
+            and int(recommendation["session_id"]) == int(session_id)
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _matching_recommendation_fit_id(
     recommendation: dict[str, Any] | None, *,
     unit_id: int, code_id: int, session_id: int, selected_unit_ids: list[int],
 ) -> int | None:
-    """Attach a fit only to the exact atomic unit/code/session it recommended.
-
-    Manual navigation, another code, another session, or a span selection may
-    retain stale browser recommendation data; never misattribute their labels.
-    """
-    if not isinstance(recommendation, dict) or selected_unit_ids != [int(unit_id)]:
+    """Never attribute an unrelated recommendation fit to a manual judgment."""
+    if (
+        selected_unit_ids != [int(unit_id)]
+        or not _recommendation_matches_context(
+            recommendation, unit_id=unit_id, code_id=code_id, session_id=session_id,
+        )
+    ):
         return None
     try:
-        if (
-            int(recommendation["unit_id"]) != int(unit_id)
-            or int(recommendation["code_id"]) != int(code_id)
-            or int(recommendation["session_id"]) != int(session_id)
-        ):
-            return None
         fit_ids = recommendation.get("classifier_fit_ids") or {}
         if not isinstance(fit_ids, dict) or len(fit_ids) != 1:
             return None
         return int(next(iter(fit_ids.values())))
-    except (KeyError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -6088,13 +6102,20 @@ def create_app(
         Output("focus-probabilities", "children"),
         Input("focus-recommendation-store", "data"),
         Input("focus-focal-unit-store", "data"),
+        Input("focus-code-dropdown", "value"),
+        Input("active-session-store", "data"),
     )
     def update_focus_probabilities(
         recommendation: dict[str, Any] | None,
         focal_unit_id: int | None,
+        code_id: int | None,
+        session_id: int | None,
     ) -> Any:
         data = recommendation or {}
-        if focal_unit_id is None or int(data.get("unit_id", -1)) != int(focal_unit_id):
+        if not _recommendation_matches_context(
+            recommendation, unit_id=focal_unit_id, code_id=code_id,
+            session_id=session_id,
+        ):
             return ""
         probabilities = dict(data.get("probabilities", {}))
         committee_probability = data.get("committee_probability")
