@@ -9,6 +9,7 @@ from geometric_coder.ui.app import (
     _apply_rows_match_draft,
     _matching_recommendation_fit_id,
     _prediction_geometry_matches_code,
+    _recommendation_matches_context,
 )
 
 
@@ -36,6 +37,28 @@ def test_recommendation_fit_requires_exact_atomic_code_session_and_unit() -> Non
     assert match({**recommended, "classifier_fit_ids": {"a": 41, "b": 42}}) is None
     assert match({**recommended, "classifier_fit_ids": {}}) is None
     assert match(None) is None
+
+
+def test_probability_context_rejects_same_unit_under_other_code_or_session() -> None:
+    result = {
+        "unit_id": 10, "code_id": 5, "session_id": 3,
+        "probabilities": {"some-classifier": 0.9},
+    }
+    assert _recommendation_matches_context(
+        result, unit_id=10, code_id=5, session_id=3,
+    )
+    assert not _recommendation_matches_context(
+        result, unit_id=10, code_id=6, session_id=3,
+    )
+    assert not _recommendation_matches_context(
+        result, unit_id=10, code_id=5, session_id=4,
+    )
+    assert not _recommendation_matches_context(
+        result, unit_id=11, code_id=5, session_id=3,
+    )
+    assert not _recommendation_matches_context(
+        None, unit_id=10, code_id=5, session_id=3,
+    )
 
 
 def test_prediction_snapshot_rejects_other_code_and_missing_identity() -> None:
@@ -126,3 +149,8 @@ def test_ui_guards_apply_events_and_prediction_clicks_against_stale_identity() -
     assert "_prediction_geometry_matches_code(refresh_state, code_id)" in render
     click = source.split("def open_prediction_geometry_point(", 1)[1].split("\n    @app.callback(", 1)[0]
     assert "_prediction_geometry_matches_code(prediction_refresh, code_id)" in click
+    probabilities = source.split("def update_focus_probabilities(", 1)[1].split(
+        "\\n    @app.callback(", 1
+    )[0]
+    assert "_recommendation_matches_context(" in probabilities
+
