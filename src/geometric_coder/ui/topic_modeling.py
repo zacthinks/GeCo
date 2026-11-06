@@ -137,7 +137,7 @@ def register_topic_details_callbacks(
         _revision: int,
     ) -> tuple[Any, Any, Any]:
         if model_id is None:
-            return "", "No Topic Models registered in this project.", ""
+            return "", "", ""
         if not units:
             return "", "No atomic observations available.", ""
         position = unit_positions.get(int(focal_unit_id)) if focal_unit_id is not None else None
