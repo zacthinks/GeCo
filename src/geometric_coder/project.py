@@ -1452,11 +1452,12 @@ class GeometricCoder:
         view = self.database.get_view(view_id)
         if str(view.get("storage_kind", "local")) == "external":
             provider = self._require_external_provider()
+            ordered_keys = self._ordered_user_keys()
             coordinates = np.asarray(
-                provider.view_coordinates(view["external_ref"], self._ordered_user_keys()),
+                provider.view_coordinates(view["external_ref"], ordered_keys),
                 dtype=np.float32,
             )
-            expected = len(self.database.list_units())
+            expected = len(ordered_keys)
             if coordinates.shape != (expected, 2):
                 raise ValueError(
                     f"External view {view['name']!r} must have shape ({expected}, 2), "
