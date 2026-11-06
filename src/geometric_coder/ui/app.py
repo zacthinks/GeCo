@@ -157,6 +157,44 @@ def _current_semantic_scores(
     return payload.get("scores") or {}
 
 
+_DEFAULT_UI_SETTINGS = {"cv_folds": 5}
+
+
+def _read_ui_settings(project_dir: Path) -> dict[str, int]:
+    """Read modest project-scoped training defaults, preserving older projects."""
+    path = project_dir / "ui_settings.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        folds = int(raw.get("cv_folds", 5))
+    except (TypeError, ValueError):
+        folds = 5
+    return {"cv_folds": folds if 2 <= folds <= 10 else 5}
+
+
+def _save_ui_settings(project_dir: Path, *, cv_folds: int) -> None:
+    """Save the project CV default atomically; no database/schema migration."""
+    folds = int(cv_folds)
+    if not 2 <= folds <= 10:
+        raise ValueError("Cross-validation folds must be between 2 and 10.")
+    path = project_dir / "ui_settings.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"cv_folds": folds}, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _tooltip_label(html: Any, label: str, description: str) -> Any:
+    """Attach low-clutter contextual help to the text itself."""
+    return html.Span(
+        label, className="geco-tooltip", tabIndex=0,
+        **{"data-geco-tooltip": description},
+    )
+
+
 def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
     """Drop legacy transient color/search state without altering navigation."""
     return {key: value for key, value in state.items()
@@ -380,6 +418,46 @@ def _post_saved_apply_batch_training_request(
     return request, status.replace("Judgment saved", label)
 
 
+def _recommendation_matches_context(
+    recommendation: dict[str, Any] | None, *,
+    unit_id: int | None, code_id: int | None, session_id: int | None,
+) -> bool:
+    """Match saved recommendation context before showing or attributing scores."""
+    if not isinstance(recommendation, dict) or any(
+        value is None for value in (unit_id, code_id, session_id)
+    ):
+        return False
+    try:
+        return (
+            int(recommendation["unit_id"]) == int(unit_id)
+            and int(recommendation["code_id"]) == int(code_id)
+            and int(recommendation["session_id"]) == int(session_id)
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _matching_recommendation_fit_id(
+    recommendation: dict[str, Any] | None, *,
+    unit_id: int, code_id: int, session_id: int, selected_unit_ids: list[int],
+) -> int | None:
+    """Never attribute an unrelated recommendation fit to a manual judgment."""
+    if (
+        selected_unit_ids != [int(unit_id)]
+        or not _recommendation_matches_context(
+            recommendation, unit_id=unit_id, code_id=code_id, session_id=session_id,
+        )
+    ):
+        return None
+    try:
+        fit_ids = (recommendation or {}).get("classifier_fit_ids") or {}
+        if not isinstance(fit_ids, dict) or len(fit_ids) != 1:
+            return None
+        return int(next(iter(fit_ids.values())))
+    except (TypeError, ValueError):
+        return None
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -499,7 +577,7 @@ def create_app(
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
-    classifier_specs = project.ensure_default_classifier_specs()
+    classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
     training_inbox = _ScopedTrainingInbox()
 
@@ -609,6 +687,7 @@ def create_app(
                 ),
                 children=[
                 html.Div(id="geco-close-status", className="sr-only"),
+                dcc.Store(id="geco-tooltip-prefs", storage_type="local", data={"enabled": True}),
                 dcc.Store(id="focal-unit-store", data=initial_focal_unit_id),
                 dcc.Store(
                     id="explore-focal-unit-store",
@@ -717,10 +796,19 @@ def create_app(
                             ),
                             html.Div(
                                 [
-                                    html.Button(
-                                        "Close GeCo", id="geco-close-button",
-                                        n_clicks=0, className="geco-close-button",
-                                        title="Stop this GeCo application",
+                                    html.Div(
+                                        [
+                                            html.Button(
+                                                "Settings", id="geco-settings-open",
+                                                n_clicks=0, className="geco-settings-button",
+                                            ),
+                                            html.Button(
+                                                "Close GeCo", id="geco-close-button",
+                                                n_clicks=0, className="geco-close-button",
+                                                title="Stop this GeCo application",
+                                            ),
+                                        ],
+                                        className="app-header-actions",
                                     ),
                                     html.Div(
                                         _project_summary_children(
@@ -908,6 +996,35 @@ def create_app(
 
                     html.Div([
                         html.Div([
+                            html.Div([
+                                html.H2("GeCo Settings"),
+                                html.Button("×", id="geco-settings-close", n_clicks=0,
+                                            className="modal-close-icon", title="Close",
+                                            **{"aria-label": "Close Settings"}),
+                            ], className="modal-header"),
+                            html.H3("Interface"),
+                            dcc.Checklist(
+                                id="geco-settings-tooltips",
+                                options=[{"label": "Show explanatory tooltips", "value": "enabled"}],
+                                value=["enabled"],
+                            ),
+                            html.H3("Classifier training"),
+                            html.Label("Cross-validation folds", htmlFor="geco-settings-cv-folds"),
+                            dcc.Dropdown(
+                                id="geco-settings-cv-folds",
+                                options=[{"label": str(n), "value": n} for n in range(2, 11)],
+                                value=_read_ui_settings(project.project_dir)["cv_folds"],
+                                clearable=False, searchable=False,
+                                className="geco-settings-folds",
+                            ),
+                            html.Small("Maximum folds requested when tuning; fewer are used when labeled evidence is limited."),
+                            html.Div(id="geco-settings-status", className="control-status", role="status"),
+                        ], className="modal-card geco-settings-card", role="dialog",
+                           **{"aria-modal": "true", "aria-label": "GeCo Settings"}),
+                    ], id="geco-settings-modal", className="modal-overlay",
+                       style={"display": "none"}),
+                    html.Div([
+                        html.Div([
                             html.Div([html.H2("New session"), html.Button("×", id="new-session-x", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"})], className="modal-header"),
                             html.Label("Session name", htmlFor="new-session-title"),
                             dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
@@ -921,9 +1038,63 @@ def create_app(
             ),
             html.Div(id="session-state-status", className="sr-only"),
         ],
+        id="geco-app-shell",
         className="app-shell",
         style=GECO_DASH_THEME,
     )
+
+    @app.callback(
+        Output("geco-settings-modal", "style"),
+        Input("geco-settings-open", "n_clicks"),
+        Input("geco-settings-close", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_geco_settings(_open: int, _close: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "geco-settings-open" else {"display": "none"}
+
+    @app.callback(
+        Output("geco-tooltip-prefs", "data"),
+        Input("geco-settings-tooltips", "value"),
+        State("geco-tooltip-prefs", "data"),
+        prevent_initial_call=True,
+    )
+    def save_tooltip_preference(value: list[str] | None, current: dict[str, Any] | None) -> Any:
+        enabled = "enabled" in (value or [])
+        if isinstance(current, dict) and current.get("enabled") is enabled:
+            return no_update
+        return {"enabled": enabled}
+
+    @app.callback(
+        Output("geco-settings-tooltips", "value"),
+        Output("geco-app-shell", "className"),
+        Input("geco-tooltip-prefs", "data"),
+    )
+    def apply_tooltip_preference(prefs: dict[str, Any] | None) -> tuple[list[str], str]:
+        enabled = not isinstance(prefs, dict) or prefs.get("enabled", True) is not False
+        return (["enabled"] if enabled else []), (
+            "app-shell" if enabled else "app-shell geco-tooltip-disabled"
+        )
+
+    @app.callback(
+        Output("geco-settings-status", "children"),
+        Input("geco-settings-cv-folds", "value"),
+        prevent_initial_call=True,
+    )
+    def save_cv_fold_setting(folds: int | None) -> str:
+        if folds is None:
+            return ""
+        try:
+            _save_ui_settings(project.project_dir, cv_folds=int(folds))
+        except (OSError, ValueError) as error:
+            return f"Unable to save CV folds: {error}"
+        return f"Using up to {int(folds)} cross-validation folds."
+
+    @app.callback(
+        Output("topic-interpretation-details", "style"),
+        Input("topic-model-selector", "value"),
+    )
+    def show_topic_interpretation(model_id: int | None) -> dict[str, str]:
+        return {} if model_id is not None else {"display": "none"}
 
     register_representation_callbacks(
         app, project, html=html, dcc=dcc, Input=Input, Output=Output,
@@ -973,18 +1144,26 @@ def create_app(
         Input("topic-component-selector", "value"),
         Input("topic-restore-snapshot", "data"),
         State("active-session-store", "data"),
+        State("topic-color-mode", "data"),
         prevent_initial_call=True,
     )
     def activate_topic_colors(
         model_id: int | None, display: str | None, component: str | None,
-        restored: dict[str, Any] | None, session_id: int,
+        restored: dict[str, Any] | None, session_id: int, current_mode: str | None,
     ) -> Any:
         # Session restore also changes topic selectors; those are not user actions.
-        if model_id is None or _is_restored_topic_selection(
-            model_id, display, component, restored, session_id
-        ):
+        if _is_restored_topic_selection(model_id, display, component, restored, session_id):
             return no_update
         triggered = callback_context.triggered_id
+        if model_id is None:
+            # Manual dropdown clear removes topic coloring, but a programmatic clear
+            # after choosing semantic colors must not erase the semantic selection.
+            return (
+                "plain"
+                if triggered == "topic-model-selector"
+                and current_mode in {"dominant", "intensity"}
+                else no_update
+            )
         if triggered == "topic-restore-snapshot":
             return no_update
         if triggered == "topic-component-selector" and display != "intensity":
@@ -1253,6 +1432,7 @@ def create_app(
         Output("semantic-range", "data", allow_duplicate=True),
         Output("metadata-filters-store", "data"),
         Output("metadata-filter-operator", "value"),
+        Output("explore-uncoded-only", "value"),
         Output("context-level", "value"),
         Output("context-window", "value"),
         Output("page-size", "value"),
@@ -1264,6 +1444,9 @@ def create_app(
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-active-classifier-dropdown", "value", allow_duplicate=True),
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
+        Output("focus-train-scope", "value"),
+        Output("focus-auto-retrain", "value"),
+        Output("focus-tune-hyperparameters", "value"),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
         Output("topic-color-mode", "data"),
@@ -1346,6 +1529,7 @@ def create_app(
             _normalize_boolean_operator(
                 state.get("metadata_filter_operator", "and")
             ),
+            (["uncoded_only"] if state.get("explore_uncoded_only", False) else []),
             context_level,
             context_window,
             str(max(1, int(state.get("page_size", 5000)))),
@@ -1357,6 +1541,9 @@ def create_app(
             focus_code_id,
             focus_classifier,
             focus_committee,
+            (["all"] if state.get("focus_train_all", False) else []),
+            (["auto"] if state.get("focus_auto_retrain", True) else []),
+            (["tune"] if state.get("focus_tune_hyperparameters", False) else []),
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
             "plain",
@@ -5258,7 +5445,6 @@ def create_app(
         del refresh
         if code_id is None:
             return [], None
-        project.ensure_default_classifier_specs(code_id=int(code_id))
         rows = project.classifier_specs(code_id=int(code_id))
         options = [
             {
@@ -5423,6 +5609,7 @@ def create_app(
                 classifier_spec_ids=spec_ids,
                 tune=tune_hyperparameters,
                 retune_current=tune_hyperparameters,
+                folds=_read_ui_settings(project.project_dir)["cv_folds"],
             )
         except (KeyError, ValueError) as error:
             return str(error), int(refresh or 0)
@@ -5669,7 +5856,14 @@ def create_app(
                     "train when the current labeling batch is ready."
                 )
         unit_id = int(result["unit_id"])
-        return unit_id, _append_navigation_history(history, unit_id), status, result
+        # The recommendation remains in a browser Store after navigation or code
+        # changes; retain its exact context to validate later label provenance.
+        return (
+            unit_id,
+            _append_navigation_history(history, unit_id),
+            status,
+            {**result, "code_id": int(code_id), "session_id": int(session_id)},
+        )
 
     @app.callback(
         Output("focus-auto-training-status", "children"),
@@ -5700,6 +5894,7 @@ def create_app(
                 code_id=int(next_request["code_id"]),
                 classifier_spec_ids=[int(i) for i in next_request["classifier_spec_ids"]],
                 tune=bool(next_request["tune"]),
+                folds=_read_ui_settings(project.project_dir)["cv_folds"],
             )
 
         completed = training_inbox.drain(fit)
@@ -5745,6 +5940,7 @@ def create_app(
         Input("focus-label-unsure", "n_clicks"),
         State("focus-code-dropdown", "value"),
         State("focal-unit-store", "data"),
+        State("active-session-store", "data"),
         State("focus-recommendation-store", "data"),
         State("focus-span-selection-store", "data"),
         State("focus-refresh-store", "data"),
@@ -5763,6 +5959,7 @@ def create_app(
         unsure_clicks: int,
         code_id: int | None,
         focal_unit_id: int | None,
+        session_id: int,
         recommendation: dict[str, Any] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
@@ -5795,8 +5992,13 @@ def create_app(
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
             return "", int(refresh or 0), no_update, no_update
-        fit_ids = list((recommendation or {}).get("classifier_fit_ids", {}).values())
-        classifier_fit_id = int(fit_ids[0]) if len(fit_ids) == 1 else None
+        classifier_fit_id = _matching_recommendation_fit_id(
+            recommendation,
+            unit_id=int(focal_unit_id),
+            code_id=int(code_id),
+            session_id=int(session_id),
+            selected_unit_ids=selected,
+        )
         observation_id, _event_id = project.annotate_span(
             selected,
             int(code_id),
@@ -6032,13 +6234,20 @@ def create_app(
         Output("focus-probabilities", "children"),
         Input("focus-recommendation-store", "data"),
         Input("focus-focal-unit-store", "data"),
+        Input("focus-code-dropdown", "value"),
+        Input("active-session-store", "data"),
     )
     def update_focus_probabilities(
         recommendation: dict[str, Any] | None,
         focal_unit_id: int | None,
+        code_id: int | None,
+        session_id: int | None,
     ) -> Any:
         data = recommendation or {}
-        if focal_unit_id is None or int(data.get("unit_id", -1)) != int(focal_unit_id):
+        if not _recommendation_matches_context(
+            recommendation, unit_id=focal_unit_id, code_id=code_id,
+            session_id=session_id,
+        ):
             return ""
         probabilities = dict(data.get("probabilities", {}))
         committee_probability = data.get("committee_probability")
@@ -6217,13 +6426,17 @@ def create_app(
         Input("focus-prediction-page-size", "value"),
         Input("focus-prediction-page-number", "value"),
         Input("focus-prediction-display-options", "value"),
+        Input("focus-code-dropdown", "value"),
     )
     def render_prediction_geometry(
         refresh_state: dict[str, Any] | None,
         page_size: Any,
         page_number: Any,
         display_options: list[str] | None,
+        code_id: int | None,
     ) -> tuple[Any, str]:
+        if not _prediction_geometry_matches_code(refresh_state, code_id):
+            return go.Figure(), "Code changed. Refresh the score view for this code."
         geometry = _prediction_geometry_from_cache(
             prediction_geometry_cache, refresh_state
         )
@@ -6320,7 +6533,14 @@ def create_app(
         focal_unit_id: int | None,
         history: dict[str, Any] | None,
     ) -> tuple[Any, Any, Any]:
-        if not click_data or not click_data.get("points"):
+        if (
+            not _prediction_geometry_matches_code(prediction_refresh, code_id)
+            or not _prediction_geometry_from_cache(
+                prediction_geometry_cache, prediction_refresh
+            )
+            or not click_data
+            or not click_data.get("points")
+        ):
             return no_update, no_update, no_update
         customdata = click_data["points"][0].get("customdata")
         if not isinstance(customdata, (list, tuple)) or len(customdata) < 3:
@@ -6553,6 +6773,7 @@ def create_app(
         data = [
             {
                 "unit_id": int(row["unit_id"]),
+                "apply_run_id": int(draft_id),
                 "key": " › ".join(
                     f"{name}: {value}" for name, value in row["user_key"].items()
                 ),
@@ -6596,6 +6817,11 @@ def create_app(
                 if str(event.get("colId", "")) != "decision":
                     continue
                 row = dict(event.get("data") or {})
+                if not _apply_rows_match_draft([row], int(draft_id)):
+                    return (
+                        "Draft changed before the edit was saved; reload the selected draft.",
+                        int(refresh or 0),
+                    )
                 decision = _normalize_apply_decision(row.get("decision"))
                 project.review_apply_proposal(
                     apply_run_id=int(draft_id),
@@ -6678,6 +6904,16 @@ def create_app(
         if draft_id is None:
             return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
+        if not all(
+            _apply_rows_match_draft(table_rows, int(draft_id))
+            for table_rows in (rows, virtual_rows, selected_rows)
+        ):
+            return (
+                "Draft changed while the table was updating; reload it before reviewing.",
+                int(refresh or 0),
+                no_update,
+                no_update,
+            )
         current_page_rows = _apply_current_page_rows(
             virtual_rows if virtual_rows is not None else (rows or []),
             pagination_info,
@@ -6907,7 +7143,8 @@ def create_app(
         if presentation_values.get("presentation", [None])[0] == "memo":
             return "Presentation mode leaves Explore session state unchanged."
         options = set(literal_options or [])
-        project.update_session_state(
+        # Preserve session keys independently owned by Focus Coding and other APIs.
+        project.patch_session_state(
             int(session_id),
             {
                 "geometry_id": geometry_id,
@@ -7012,7 +7249,7 @@ def _explore_layout(
                 [
                     html.Div(
                         [
-                            html.H3("Session", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Session", "A session records which units you've visited and the order in which you visited them."), className="control-block-title"),
                             html.Div([
                                 dcc.Dropdown(
                                     id="session-dropdown",
@@ -7036,7 +7273,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Literal Search", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Literal Search", "Find units containing a specified substring or matching a regular expression."), className="control-block-title"),
                             html.Div(
                                 [
                                     dcc.Input(
@@ -7067,7 +7304,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Semantic search", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Semantic search", "Calculate similarity between search text and other units using the selected geometry. Requires support for new translations."), className="control-block-title"),
                             html.Div(
                                 [
                                     html.Div(
@@ -7135,7 +7372,7 @@ def _explore_layout(
                     html.Div(
                         [
                             html.H3("Geometry and View", className="control-block-title"),
-                            html.Label("Geometry"),
+                            html.Label(_tooltip_label(html, "Geometry", "A geometry represents units of analysis in a numerical space, allowing their relationships to be measured.")),
                             dcc.Dropdown(
                                 id="geometry-dropdown",
                                 options=[
@@ -7148,7 +7385,7 @@ def _explore_layout(
                                 value=initial_geometry_id,
                                 clearable=False,
                             ),
-                            html.Label("View", className="stacked-control-label"),
+                            html.Label(_tooltip_label(html, "View", "A view displays a geometry in one or two dimensions without changing the underlying geometry used for analysis."), className="stacked-control-label"),
                             dcc.Dropdown(
                                 id="view-dropdown",
                                 options=[
@@ -7191,7 +7428,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Filters", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Filters", "Choose which units appear in Explore using metadata, optionally restricting the display to uncoded units."), className="control-block-title"),
                             html.Div(
                                 id="active-metadata-filter-chips",
                                 className="metadata-filter-chip-box",
@@ -7252,7 +7489,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3("Topic Models", className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Topic Models", "Explore topics represented by a topic model. Color units by their dominant topic or by their association with a selected topic."), className="control-block-title"),
                             dcc.Dropdown(id="topic-model-selector", clearable=True, placeholder="Select a Topic Model"),
                             html.Div([html.Label("Selected topic"), dcc.Dropdown(id="topic-component-selector", clearable=False)], id="topic-component-wrap"),
                             dcc.RadioItems(id="topic-display-mode", options=[
@@ -7299,7 +7536,7 @@ def _explore_layout(
                     html.Button("Random", id="nav-random", n_clicks=0),
                     dcc.Checklist(
                         id="navigation-new-only",
-                        options=[{"label": "New points only", "value": "new_only"}],
+                        options=[{"label": _tooltip_label(html, "New points only", "Exclude units already visited in this session when using the navigation buttons."), "value": "new_only"}],
                         value=new_only,
                         inline=True,
                         className="navigation-repeat-control",
@@ -7369,13 +7606,6 @@ def _explore_layout(
                     html.Aside(
                         [
                             html.Div(id="focal-key", className="focal-key inspection-key"),
-                            html.Details([
-                                html.Summary("Topic Model interpretation"),
-                                html.Div(id="topic-focal-key"),
-                                html.Div(id="topic-memberships"),
-                                html.Div(id="topic-descriptors"),
-                            ]),
-
                             html.Div(
                                 [
                                     html.Div(
@@ -7453,6 +7683,16 @@ def _explore_layout(
                                             ),
                                         ],
                                         open=False,
+                                    ),
+                                    html.Details(
+                                        [
+                                            html.Summary("Topic Model interpretation"),
+                                            html.Div(id="topic-focal-key"),
+                                            html.Div(id="topic-memberships"),
+                                            html.Div(id="topic-descriptors"),
+                                        ],
+                                        id="topic-interpretation-details",
+                                        style={"display": "none"},
                                     ),
                                 ],
                                 className="inspection-scroll",
@@ -8910,7 +9150,7 @@ def _focus_layout(
                     ),
                     html.Div(
                         [
-                            html.Label("Teaching examples"),
+                            html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
                             html.Div(
                                 "Select a code to manage examples.",
                                 id="focus-teaching-counts",
@@ -8921,13 +9161,6 @@ def _focus_layout(
                                 id="focus-teaching-button",
                                 n_clicks=0,
                                 disabled=initial_code_id is None,
-                            ),
-                            html.Small(
-                                "Saving a teaching example updates the evidence, not the fitted model. "
-                                "For the code selected in Develop, active examples can trigger training of "
-                                "the selected models after a change when automatic training is enabled. "
-                                "Otherwise, use Train to include active examples in the next manual fit.",
-                                className="focus-help",
                             ),
                         ],
                         className="focus-teaching-select",
@@ -9002,7 +9235,7 @@ def _focus_layout(
                                                 id="focus-tune-hyperparameters",
                                                 options=[
                                                     {
-                                                        "label": "Tune hyperparameters with cross-validation",
+                                                        "label": _tooltip_label(html, "Tune hyperparameters with cross-validation", "Compare hyperparameter settings using cross-validation, then fit the selected configuration. This takes longer than ordinary training."),
                                                         "value": "tune",
                                                     }
                                                 ],
@@ -9016,40 +9249,28 @@ def _focus_layout(
                                                     else []
                                                 ),
                                             ),
-                                            dcc.Checklist(
-                                                id="focus-auto-retrain",
-                                                options=[
-                                                    {
-                                                        "label": "Automatically train selected models after saved coding changes",
-                                                        "value": "auto",
-                                                    }
+                                            html.Div(
+                                                [
+                                                    dcc.Checklist(
+                                                        id="focus-auto-retrain",
+                                                        options=[
+                                                            {"label": _tooltip_label(html, "Automatically train", "Automatically request training when saved coding changes affect the code selected in Develop."), "value": "auto"}
+                                                        ],
+                                                        value=(
+                                                            ["auto"]
+                                                            if bool(
+                                                                initial_state.get(
+                                                                    "focus_auto_retrain", True
+                                                                )
+                                                            )
+                                                            else []
+                                                        ),
+                                                    ),
                                                 ],
-                                                value=(
-                                                    ["auto"]
-                                                    if bool(
-                                                        initial_state.get(
-                                                            "focus_auto_retrain", True
-                                                        )
-                                                    )
-                                                    else []
-                                                ),
+                                                className="classifier-auto-train-row",
                                             ),
                                         ],
                                         className="classifier-training-options",
-                                    ),
-                                    html.Small(
-                                        "With automatic training off, only explicit Train actions fit models; "
-                                        "saved changes can leave frozen predictions stale but usable. With it on, "
-                                        "saved judgments in Develop, Explore, or Code Center, teaching-example changes, "
-                                        "and Apply commits or undos that change assignments can request training only "
-                                        "when the affected code matches the code selected in Develop. Apply draft "
-                                        "decisions, proposal generation, zero-assignment commits, and recommendation "
-                                        "or navigation clicks never start training. The scope is the active classifier "
-                                        "or selected committee members, unless Train All is explicitly chosen. "
-                                        "Training waits for both Present and Absent evidence; optional cross-validation "
-                                        "tuning can be slower. Learned committees require explicit Train committee; "
-                                        "fixed committees require Prepare selected committee.",
-                                        className="focus-help",
                                     ),
                                     html.Div(
                                         [
@@ -9086,7 +9307,7 @@ def _focus_layout(
                                         role="status",
                                         **{"aria-live": "polite"},
                                     ),
-                                    html.H3("Committee"),
+                                    html.H3(_tooltip_label(html, "Committee", "Combine multiple classifiers to make predictions and recommendations.")),
                                     dcc.Dropdown(
                                         id="focus-committee-dropdown",
                                         options=[],
@@ -9179,7 +9400,7 @@ def _focus_layout(
                                                         style={"display": "none"},
                                                     ),
                                                     html.Button(
-                                                        "Review unsure",
+                                                        _tooltip_label(html, "Review unsure", "Revisit units you previously marked as unsure."),
                                                         id="focus-review-unsure",
                                                         n_clicks=0,
                                                     ),
@@ -11222,6 +11443,28 @@ def _observation_display_key(
         else f"{atomic_name}: {first_value}–{last_value}"
     )
     return f"{parent} › {interval}" if parent else f"Span {interval}"
+
+
+def _apply_rows_match_draft(
+    rows: list[dict[str, Any]] | None, draft_id: int,
+) -> bool:
+    """Reject AG Grid rows left behind when a different Apply draft is selected."""
+    try:
+        return all(int(row["apply_run_id"]) == int(draft_id) for row in (rows or []))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _prediction_geometry_matches_code(
+    refresh_state: dict[str, Any] | None, code_id: int | None,
+) -> bool:
+    """Reject a prediction snapshot rendered for a different Develop code."""
+    if not isinstance(refresh_state, dict) or code_id is None:
+        return False
+    try:
+        return int(refresh_state["code_id"]) == int(code_id)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _prediction_geometry_from_cache(

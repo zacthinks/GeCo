@@ -29,6 +29,7 @@ def _trained(tmp_path: Path):
         geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
     )
     code = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code)
     observations = project.database.list_observations()
     for idx in (0, 1):
         project.annotate(int(observations[idx]["observation_id"]), code, "positive")

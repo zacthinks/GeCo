@@ -50,6 +50,7 @@ def _case(size: int, seed: int, repeats: int) -> dict:
             geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
         )
         code = project.create_code("benchmark")
+        project.ensure_default_classifier_specs(code_id=code)
         obs = project.database.list_observations()
         for i in range(10):
             project.annotate(int(obs[i]["observation_id"]), code, "positive")

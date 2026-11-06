@@ -180,8 +180,8 @@ def test_compact_explore_controls_and_shared_spacing_contract():
     source = (root / "app.py").read_text(encoding="utf-8")
     css = (root / "assets/geco.css").read_text(encoding="utf-8")
     assert 'className="session-select-row"' in source
-    assert 'html.H3("Literal Search", className="control-block-title")' in source
-    assert 'html.H3("Semantic search", className="control-block-title")' in source
+    assert 'html.H3(_tooltip_label(html, "Literal Search"' in source
+    assert 'html.H3(_tooltip_label(html, "Semantic search"' in source
     assert 'html.Label("Literal search")' not in source
     assert 'html.Label("Semantic search")' not in source
     assert 'html.Label("Topic Model")' not in source
