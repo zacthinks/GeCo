@@ -1,6 +1,7 @@
 """Regression checks for bounded Phase 2 database read paths."""
 
 from pathlib import Path
+from contextlib import contextmanager
 
 import pandas as pd
 import pytest
@@ -86,3 +87,31 @@ def test_classifier_coverage_matches_missing_id_oracle(tmp_path: Path) -> None:
     missing_ids = project.database.missing_classifier_prediction_observation_ids(fit_id)
     assert bool(missing_ids)
     assert project.database.classifier_predictions_complete(fit_id) == (not missing_ids)
+
+
+def test_memo_version_query_count_is_independent_of_history(tmp_path: Path, monkeypatch):
+    project = _project(tmp_path)
+    memo_id = project.create_memo(
+        title="Version 1", body_markdown="initial", hashtags=["start"],
+        unit_references=[1],
+    )
+    for version in range(2, 12):
+        project.update_memo(
+            memo_id, title=f"Version {version}", body_markdown="updated",
+            hashtags=["tag"], unit_references=[2],
+        )
+    statements = []
+    original_connect = project.database.connect
+
+    @contextmanager
+    def traced_connect():
+        with original_connect() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(project.database, "connect", traced_connect)
+    rows = project.memo_versions(memo_id)
+    selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    assert len(rows) == 11
+    assert len(selects) == 3
+    assert [row["version_number"] for row in rows] == list(range(1, 12))
