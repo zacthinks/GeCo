@@ -27,6 +27,7 @@ from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
     deterministic_page,
+    deterministic_page_count,
     deterministic_page_with_inclusions,
     recommend_page_unit,
 )
@@ -2578,9 +2579,7 @@ def create_app(
             enabled="uncoded_only" in set(uncoded_only_values or []),
         )
         combined_mask = metadata_mask & uncoded_mask
-        page_count = deterministic_page(
-            int(combined_mask.sum()), page_size=size
-        ).page_count
+        page_count = deterministic_page_count(int(combined_mask.sum()), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {
@@ -3383,7 +3382,7 @@ def create_app(
             metadata_profiles,
         )
         mask, _errors = _evaluate_metadata_filters(units, filters, operator=operator)
-        page_count = deterministic_page(int(mask.sum()), page_size=size).page_count
+        page_count = deterministic_page_count(int(mask.sum()), page_size=size)
         current = min(max(1, _coerce_positive_int(current_page, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {"memo-presentation-page-size", "memo-presentation-saved-filter"}:
@@ -4398,7 +4397,7 @@ def create_app(
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks
         size = _coerce_positive_int(page_size, default=5000)
-        page_count = deterministic_page(len(units), page_size=size).page_count
+        page_count = deterministic_page_count(len(units), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered == "code-center-page-size":
@@ -6404,7 +6403,7 @@ def create_app(
         )
         visible = _prediction_geometry_visible_points(geometry, display_options)
         size = _coerce_positive_int(page_size, default=5000)
-        page_count = deterministic_page(len(visible), page_size=size).page_count
+        page_count = deterministic_page_count(len(visible), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {
@@ -7938,7 +7937,7 @@ def _memo_presentation_layout(
         and any(int(view["view_id"]) == int(initial_view_id) for view in public_views)
         else (int(public_views[0]["view_id"]) if public_views else None)
     )
-    initial_page_count = deterministic_page(total_units, page_size=5000).page_count
+    initial_page_count = deterministic_page_count(total_units, page_size=5000)
     return html.Div(
         [
             html.Header(
@@ -8097,7 +8096,7 @@ def _code_center_layout(
     total_units: int,
 ) -> Any:
     """Return the versioned Code Center with list and geometric views."""
-    initial_page_count = deterministic_page(total_units, page_size=5000).page_count
+    initial_page_count = deterministic_page_count(total_units, page_size=5000)
     return html.Div(
         [
             html.Aside(
