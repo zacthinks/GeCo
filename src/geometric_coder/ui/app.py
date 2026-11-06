@@ -10920,16 +10920,17 @@ def _render_memo_preview(
         return html.P("Memo preview will appear here.", className="memo-preview-empty")
 
     placeholders: dict[str, str] = {}
+    reference_ids = [int(match.group(1)) for match in _MEMO_REFERENCE_PATTERN.finditer(body)]
+    reference_keys = project.database.unit_keys_for_ids(reference_ids) if reference_ids else {}
 
     def replace_reference(match: re.Match[str]) -> str:
         unit_id = int(match.group(1))
-        try:
-            unit = project.unit(unit_id)
-            label = " › ".join(
-                f"{name}: {value}" for name, value in unit["user_key"].items()
-            )
-        except KeyError:
-            label = f"unit {unit_id}"
+        user_key = reference_keys.get(unit_id)
+        label = (
+            " › ".join(f"{name}: {value}" for name, value in user_key.items())
+            if user_key is not None
+            else f"unit {unit_id}"
+        )
         token = f"GECOREFERENCE{len(placeholders)}TOKEN"
         placeholders[token] = (
             f"[{_escape_markdown_label(label)}](#{unit_hash_prefix}{unit_id})"
