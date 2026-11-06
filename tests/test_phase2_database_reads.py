@@ -78,3 +78,11 @@ def test_batched_lookup_chunks_beyond_sqlite_variable_limit(tmp_path: Path) -> N
     project = _project(tmp_path)
     keys = project.database.unit_keys_for_ids(list(range(1, 1100)))
     assert list(keys) == [1, 2, 3, 4]
+
+
+def test_classifier_coverage_matches_missing_id_oracle(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fit_id = 999999
+    missing_ids = project.database.missing_classifier_prediction_observation_ids(fit_id)
+    assert bool(missing_ids)
+    assert project.database.classifier_predictions_complete(fit_id) == (not missing_ids)
