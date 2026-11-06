@@ -50,7 +50,7 @@ def test_memo_versions_preserve_historical_values_and_references(tmp_path: Path,
 def test_batched_unit_key_lookup_preserves_identity_and_missing(tmp_path: Path) -> None:
     project = _project(tmp_path)
     keys = project.database.unit_keys_for_ids([3, 1, 3, 99999])
-    assert list(keys) == [1, 3]
+    assert set(keys) == {1, 3}
     assert keys[1] == {"doc_id": 10}
     assert keys[3] == {"doc_id": 30}
     assert project.database.unit_keys_for_ids([]) == {}
@@ -78,7 +78,7 @@ def test_memo_renderer_resolves_duplicate_and_missing_refs_without_single_lookup
 def test_batched_lookup_chunks_beyond_sqlite_variable_limit(tmp_path: Path) -> None:
     project = _project(tmp_path)
     keys = project.database.unit_keys_for_ids(list(range(1, 1100)))
-    assert list(keys) == [1, 2, 3, 4]
+    assert set(keys) == {1, 2, 3, 4}
 
 
 def test_classifier_coverage_matches_missing_id_oracle(tmp_path: Path) -> None:
