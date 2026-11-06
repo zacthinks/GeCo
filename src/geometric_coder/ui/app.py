@@ -6620,6 +6620,7 @@ def create_app(
         data = [
             {
                 "unit_id": int(row["unit_id"]),
+                "apply_run_id": int(draft_id),
                 "key": " › ".join(
                     f"{name}: {value}" for name, value in row["user_key"].items()
                 ),
@@ -6663,6 +6664,11 @@ def create_app(
                 if str(event.get("colId", "")) != "decision":
                     continue
                 row = dict(event.get("data") or {})
+                if not _apply_rows_match_draft([row], int(draft_id)):
+                    return (
+                        "Draft changed before the edit was saved; reload the selected draft.",
+                        int(refresh or 0),
+                    )
                 decision = _normalize_apply_decision(row.get("decision"))
                 project.review_apply_proposal(
                     apply_run_id=int(draft_id),
@@ -6745,6 +6751,16 @@ def create_app(
         if draft_id is None:
             return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
+        if not all(
+            _apply_rows_match_draft(table_rows, int(draft_id))
+            for table_rows in (rows, virtual_rows, selected_rows)
+        ):
+            return (
+                "Draft changed while the table was updating; reload it before reviewing.",
+                int(refresh or 0),
+                no_update,
+                no_update,
+            )
         current_page_rows = _apply_current_page_rows(
             virtual_rows if virtual_rows is not None else (rows or []),
             pagination_info,
@@ -11290,6 +11306,16 @@ def _observation_display_key(
         else f"{atomic_name}: {first_value}–{last_value}"
     )
     return f"{parent} › {interval}" if parent else f"Span {interval}"
+
+
+def _apply_rows_match_draft(
+    rows: list[dict[str, Any]] | None, draft_id: int,
+) -> bool:
+    """Reject AG Grid rows left behind when a different Apply draft is selected."""
+    try:
+        return all(int(row["apply_run_id"]) == int(draft_id) for row in (rows or []))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _prediction_geometry_matches_code(
