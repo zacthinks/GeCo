@@ -418,21 +418,18 @@ def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
     assert 'triggered == "focus-manage-committees"' in app_source
 
 
-def test_auto_training_ui_describes_cross_workspace_triggers() -> None:
+def test_auto_training_ui_has_concise_label_and_help_without_inline_paragraph() -> None:
     app_source = (
         Path(__file__).resolve().parents[1]
         / "src" / "geometric_coder" / "ui" / "app.py"
     ).read_text(encoding="utf-8")
-    assert '"label": "Automatically train selected models after saved coding changes"' in app_source
-    assert "With automatic training off, only explicit Train actions fit models;" in app_source
-    assert "saved changes can leave frozen predictions stale but usable." in app_source
-    assert "saved judgments in Develop, Explore, or Code Center, teaching-example changes," in app_source
-    assert "and Apply commits or undos that change assignments can request training only " in app_source
-    assert "when the affected code matches the code selected in Develop." in app_source
-    assert "decisions, proposal generation, zero-assignment commits, and recommendation " in app_source
-    assert "or navigation clicks never start training." in app_source
-    assert "The scope is the active classifier " in app_source
-    assert "or selected committee members, unless Train All is explicitly chosen." in app_source
+    assert '"label": "Automatically train"' in app_source
+    assert 'className="classifier-auto-train-help"' in app_source
+    assert '"About automatic training"' in app_source
+    assert "With automatic training off, only explicit Train actions fit models;" not in app_source
+    assert "Automatically train selected models after saved coding changes" not in app_source
+    assert 'id="focus-cv-folds"' not in app_source
+    assert "Train selected classifiers after saved label changes" in app_source
     assert "Apply reviews are not yet connected." not in app_source
 
 
