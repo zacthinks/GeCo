@@ -61,7 +61,42 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .app-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.38rem; margin-left: auto; min-width: 0; text-align: right; }
 .app-header-right > .project-summary { justify-content: flex-end; text-align: right; }
 .app-header-right > .focus-coding-progress-summary { text-align: right; }
-.app-header-right > .geco-close-button { align-self: flex-end; }
+.app-header-actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
+.app-header-actions button { min-height: 35px; }
+.geco-settings-card { width: min(420px, calc(100vw - 2rem)); }
+.geco-settings-card h3 { margin: 1rem 0 0.5rem; font-size: 0.95rem; }
+.geco-settings-folds { width: 7rem; margin: 0.35rem 0; }
+.geco-settings-card small { color: var(--geco-muted); }
+
+/* Explanations are attached to existing labels, never separate icons or
+   floating instructional paragraphs. CSS makes the whole family toggleable. */
+.geco-tooltip { position: relative; cursor: help; }
+.geco-tooltip:focus-visible { outline: 2px solid var(--geco-green-500); outline-offset: 2px; border-radius: 2px; }
+.geco-tooltip:is(:hover, :focus-visible)::after {
+  content: attr(data-geco-tooltip);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 0;
+  z-index: 5000;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 3rem));
+  white-space: normal;
+  box-sizing: border-box;
+  background: #26362c;
+  color: #fff;
+  font-size: 0.79rem;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border-radius: 7px;
+  box-shadow: 0 5px 14px rgba(0,0,0,0.14);
+  pointer-events: none;
+}
+.geco-tooltip-disabled .geco-tooltip:is(:hover, :focus-visible)::after {
+  display: none;
+}
+
 
 
 /* Dash tabs */
@@ -880,17 +915,6 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   display: flex;
   align-items: center;
   gap: 0.35rem;
-}
-.classifier-auto-train-help {
-  cursor: help;
-  color: var(--geco-muted);
-  font-size: 0.9rem;
-  line-height: 1;
-}
-.classifier-auto-train-help:focus-visible {
-  outline: 2px solid currentColor;
-  outline-offset: 3px;
-  border-radius: 50%;
 }
 .classifier-management-row {
   display: grid;
