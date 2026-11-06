@@ -3,6 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_semantic_loading_tracks_expensive_candidate_callback() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert '"semantic-result-candidate": "data"' in app_source
+    assert '"semantic-scores-store": "data"' not in app_source
+    assert 'Output("semantic-result-candidate", "data")' in app_source
+
+
+def test_empty_semantic_update_does_not_cancel_topic_coloring() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    # The semantic candidate callback can complete after the Topic Model has
+    # activated its coloring and cleared the previously active query.
+    # A blank-query callback must not write "plain" over "dominant"/"intensity".
+    assert 'function(candidate, query, geometryId, currentColorMode)' in app_source
+    assert 'currentColorMode === "semantic" ? "plain" : no' in app_source
+    assert 'State("topic-color-mode", "data")' in app_source
+
+
 def test_projection_numeric_inputs_do_not_use_invalid_decimal_input_mode() -> None:
     app_source = (
         Path(__file__).resolve().parents[1]
