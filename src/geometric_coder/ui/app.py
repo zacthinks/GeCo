@@ -10685,17 +10685,11 @@ def _evaluate_metadata_filters(
         value = clause.get("value")
         value2 = clause.get("value2")
         try:
+            matches = _prepared_metadata_matcher(
+                kind=kind, condition=condition, value=value, value2=value2,
+            )
             mask = np.asarray(
-                [
-                    _metadata_value_matches(
-                        unit.get("metadata", {}).get(field),
-                        kind=kind,
-                        condition=condition,
-                        value=value,
-                        value2=value2,
-                    )
-                    for unit in units
-                ],
+                [matches(unit.get("metadata", {}).get(field)) for unit in units],
                 dtype=bool,
             )
         except (TypeError, ValueError, re.error) as error:
@@ -10711,6 +10705,88 @@ def _evaluate_metadata_filters(
     else:
         combined = np.all(stacked, axis=0)
     return combined, errors
+
+
+def _prepared_metadata_matcher(
+    *, kind: str, condition: str, value: Any, value2: Any,
+) -> Any:
+    """Prepare one clause once rather than repeat setup for every unit.
+
+    Defer parsing/regex validation until the first nonmissing value so invalid
+    clauses retain the original all-missing behavior and error semantics.
+    """
+    if condition == "missing":
+        return _is_missing
+    if condition == "not_missing":
+        return lambda raw: not _is_missing(raw)
+    if kind == "boolean":
+        return lambda raw: (
+            False if _is_missing(raw)
+            else (bool(raw) if condition == "true" else not bool(raw))
+        )
+    if kind == "categorical":
+        selected = value if isinstance(value, list) else [value]
+        choices = {str(item).casefold() for item in selected}
+        return lambda raw: (
+            False if _is_missing(raw)
+            else ((str(raw).casefold() in choices) != (condition == "not_in"))
+        )
+    if kind == "text":
+        target = str(value or "")
+        folded = target.casefold()
+        expression: re.Pattern[str] | None = None
+
+        def match_text(raw: Any) -> bool:
+            nonlocal expression
+            if _is_missing(raw):
+                return False
+            text = str(raw)
+            lowered = text.casefold()
+            if condition == "contains":
+                return folded in lowered
+            if condition == "excludes":
+                return folded not in lowered
+            if condition == "eq":
+                return lowered == folded
+            if condition == "neq":
+                return lowered != folded
+            if condition == "starts":
+                return lowered.startswith(folded)
+            if condition == "ends":
+                return lowered.endswith(folded)
+            if condition == "regex":
+                if expression is None:
+                    expression = re.compile(target, flags=re.IGNORECASE)
+                return expression.search(text) is not None
+            raise ValueError(f"unsupported condition {condition!r}")
+
+        return match_text
+    if kind in {"numeric", "datetime"}:
+        prepared = False
+        right: Any = None
+        upper: Any = None
+
+        def match_ordered(raw: Any) -> bool:
+            nonlocal prepared, right, upper
+            if _is_missing(raw):
+                return False
+            if not prepared:
+                if kind == "numeric":
+                    right = float(value)
+                    upper = float(value2) if condition == "between" else None
+                else:
+                    right = _coerce_datetime(value)
+                    upper = _coerce_datetime(value2) if condition == "between" else None
+                prepared = True
+            left = float(raw) if kind == "numeric" else _coerce_datetime(raw)
+            if kind == "datetime" and (left is None or right is None):
+                raise ValueError("enter a valid date")
+            return _ordered_comparison(left, condition, right, upper)
+
+        return match_ordered
+    return lambda raw: _metadata_value_matches(
+        raw, kind=kind, condition=condition, value=value, value2=value2,
+    )
 
 
 def _metadata_value_matches(
