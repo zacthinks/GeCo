@@ -1920,6 +1920,24 @@ class ProjectDatabase:
             ).fetchall()
         return [_unit_row(row) for row in rows]
 
+    def unit_keys_for_ids(self, unit_ids: Sequence[int]) -> dict[int, dict[str, Any]]:
+        """Read only requested atomic user keys, in SQLite-sized batches."""
+        unique_ids = list(dict.fromkeys(int(value) for value in unit_ids))
+        if not unique_ids:
+            return {}
+        found: dict[int, dict[str, Any]] = {}
+        with self.connect() as connection:
+            for start in range(0, len(unique_ids), 900):
+                batch = unique_ids[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT unit_id, user_key_json FROM units WHERE unit_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[int(row["unit_id"])] = json.loads(row["user_key_json"])
+        return found
+
     def missing_unit_ids(self, unit_ids: Sequence[int]) -> list[int]:
         """Validate only requested atomic unit IDs without reading all units.
 
