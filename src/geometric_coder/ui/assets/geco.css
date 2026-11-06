@@ -71,11 +71,12 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 /* Explanations are attached to existing labels, never separate icons or
    floating instructional paragraphs. CSS makes the whole family toggleable. */
 .geco-tooltip { position: relative; cursor: help; }
+.geco-tooltip-disabled .geco-tooltip { cursor: inherit; }
 .geco-tooltip:focus-visible { outline: 2px solid var(--geco-green-500); outline-offset: 2px; border-radius: 2px; }
 .geco-tooltip:is(:hover, :focus-visible)::after {
   content: attr(data-geco-tooltip);
   position: absolute;
-  bottom: calc(100% + 7px);
+  top: calc(100% + 7px);
   left: 0;
   z-index: 5000;
   width: max-content;
@@ -1402,21 +1403,8 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .representation-filters { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* Compact contents without overriding the equal-height Explore grid rows.
-   CSS grid stretches every card in a row to its tallest sibling. */
-.explore-controls > .semantic-search-control-block {
-  align-self: stretch;
-  padding-top: 0.4rem;
-  padding-bottom: 0.4rem;
-}
-.semantic-search-control-block .control-block-title {
-  margin-bottom: 0.28rem;
-}
-.semantic-search-control-block .semantic-search-section {
-  margin: 0;
-  padding: 0;
-}
-.semantic-search-control-block .semantic-query-row { margin: 0; }
+/* Empty semantic status should not reserve vertical space. The card itself
+   uses the same shared padding and heading rhythm as the other Explore cards. */
 .semantic-search-control-block .control-status:empty {
   display: none;
   min-height: 0;
