@@ -39,6 +39,7 @@ def _project(tmp_path: Path) -> GeometricCoder:
 def test_train_uses_defaults_until_cv_is_possible_then_tunes(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
@@ -62,6 +63,7 @@ def test_train_uses_defaults_until_cv_is_possible_then_tunes(tmp_path: Path) -> 
 def test_training_current_fit_does_not_rerun_cv(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     for position in (0, 1):
@@ -82,6 +84,7 @@ def test_training_current_fit_does_not_rerun_cv(tmp_path: Path) -> None:
 def test_training_defaults_to_current_hyperparameters_without_cv(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     for position in (0, 1, 2):
@@ -101,6 +104,7 @@ def test_training_defaults_to_current_hyperparameters_without_cv(tmp_path: Path)
 def test_explicit_tuning_reruns_cv_even_when_fit_is_current(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     for position in (0, 1):
@@ -131,6 +135,7 @@ def test_explicit_tuning_reruns_cv_even_when_fit_is_current(tmp_path: Path) -> N
 def test_new_families_train_through_common_pipeline(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     for position in (0, 1, 2):
         project.annotate(int(observations[position]["observation_id"]), code_id, "positive")
@@ -164,6 +169,7 @@ def test_new_families_train_through_common_pipeline(tmp_path: Path) -> None:
 def test_auto_training_respects_train_all_scope(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     for position in (0, 1):
         project.annotate(int(observations[position]["observation_id"]), code_id, "positive")
@@ -216,6 +222,7 @@ def test_auto_training_respects_train_all_scope(tmp_path: Path) -> None:
 def test_auto_training_uses_explicit_tuning_choice(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     for position in (0, 1):
@@ -270,6 +277,7 @@ def test_auto_training_uses_explicit_tuning_choice(tmp_path: Path) -> None:
 def test_mixed_family_committee_and_apply_use_probability_outputs(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     for position in (0, 1, 2):
         project.annotate(int(observations[position]["observation_id"]), code_id, "positive")
@@ -306,6 +314,7 @@ def test_mixed_family_committee_and_apply_use_probability_outputs(tmp_path: Path
 def test_rename_classifier_preserves_fit_and_updates_live_identity(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
@@ -372,7 +381,9 @@ def test_rename_classifier_preserves_fit_and_updates_live_identity(tmp_path: Pat
 def test_rename_classifier_requires_project_wide_unique_active_name(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_a = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_a)
     code_b = project.create_code("relevance")
+    project.ensure_default_classifier_specs(code_id=code_b)
     first_id = int(project.classifier_specs(code_id=code_a)[0]["classifier_spec_id"])
     second_id = int(project.classifier_specs(code_id=code_b)[0]["classifier_spec_id"])
 
@@ -387,6 +398,7 @@ def test_rename_classifier_requires_project_wide_unique_active_name(tmp_path: Pa
 def test_rename_classifier_can_claim_an_archived_name_by_bumping_archive(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
 
     archived_id = project.create_classifier_spec(
@@ -413,6 +425,7 @@ def test_rename_classifier_can_claim_an_archived_name_by_bumping_archive(tmp_pat
 def test_deleted_classifier_cannot_be_renamed(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     project.delete_classifier_spec(classifier_id)
 
@@ -425,6 +438,7 @@ def test_fast_training_loads_atomic_geometry_once_and_current_reuse_zero_times(
 ) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     for position in (0, 1, 2):
@@ -455,6 +469,7 @@ def test_fast_training_loads_atomic_geometry_once_and_current_reuse_zero_times(
 def _trained_logistic_stack_committee(tmp_path: Path):
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     for position in (0, 1, 2):
         project.annotate(int(observations[position]["observation_id"]), code_id, "positive")
@@ -644,6 +659,7 @@ def test_fixed_committee_recommendation_reports_member_and_committee_probabiliti
 ) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     for position in (0, 1, 2):
         project.annotate(int(observations[position]["observation_id"]), code_id, "positive")
@@ -804,6 +820,7 @@ def test_prepared_fixed_committee_rankings(
 ) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("ranking")
+    project.ensure_default_classifier_specs(code_id=code_id)
     obs = project.database.list_observations()
     for index in (0, 1, 2):
         project.annotate(int(obs[index]["observation_id"]), code_id, "positive")
@@ -847,6 +864,7 @@ def test_event_boundary_training_reuses_unchanged_classifier(
 ) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("event training")
+    project.ensure_default_classifier_specs(code_id=code_id)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     first = project.train_classifiers_after_evidence_change(code_id=code_id)
     assert first["status"] == "awaiting_two_classes"
@@ -867,6 +885,7 @@ def test_event_boundary_training_reuses_unchanged_classifier(
 def test_event_boundary_training_respects_selected_scope(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("scoped")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
     project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
@@ -894,6 +913,7 @@ def test_event_training_scope_is_explicit(tmp_path: Path) -> None:
 
     project = _project(tmp_path)
     code_id = project.create_code("scope")
+    project.ensure_default_classifier_specs(code_id=code_id)
     first = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     geometry_id = int(project.database.get_classifier_spec(first)["geometry_id"])
     second = project.create_classifier_spec(
@@ -929,7 +949,9 @@ def test_saved_develop_judgment_invalid_scope_preserves_acknowledgment(
 
     project = _project(tmp_path)
     code_id = project.create_code("saved judgment")
+    project.ensure_default_classifier_specs(code_id=code_id)
     unrelated_code_id = project.create_code("unrelated")
+    project.ensure_default_classifier_specs(code_id=unrelated_code_id)
     unrelated_spec = int(
         project.classifier_specs(code_id=unrelated_code_id)[0]["classifier_spec_id"]
     )
@@ -964,6 +986,7 @@ def test_post_saved_develop_judgment_training_request_auto_disabled(tmp_path: Pa
 
     project = _project(tmp_path)
     code_id = project.create_code("no automatic training")
+    project.ensure_default_classifier_specs(code_id=code_id)
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     request, message = _post_saved_develop_judgment_training_request(
         project, code_id=code_id, annotation_event_id=42,
@@ -980,6 +1003,7 @@ def test_ui_recommendation_never_requests_training(tmp_path: Path, monkeypatch: 
 
     project = _project(tmp_path)
     code_id = project.create_code("click does not fit")
+    project.ensure_default_classifier_specs(code_id=code_id)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
@@ -1012,6 +1036,7 @@ def test_ui_recommendation_untrained_model_does_not_fit(tmp_path: Path, monkeypa
 
     project = _project(tmp_path)
     code_id = project.create_code("untrained model")
+    project.ensure_default_classifier_specs(code_id=code_id)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
@@ -1033,7 +1058,9 @@ def test_external_judgment_training_only_selected_develop_code(tmp_path: Path) -
 
     project = _project(tmp_path)
     first_code = project.create_code("selected in Develop")
+    project.ensure_default_classifier_specs(code_id=first_code)
     other_code = project.create_code("Explore only")
+    project.ensure_default_classifier_specs(code_id=other_code)
     spec = int(project.classifier_specs(code_id=first_code)[0]["classifier_spec_id"])
     request, message = _post_saved_external_judgment_training_request(
         project, code_id=other_code, develop_code_id=first_code, annotation_event_id=10,
@@ -1119,7 +1146,9 @@ def test_teaching_example_event_training_is_scoped_and_has_no_fake_annotation(
 
     project = _project(tmp_path)
     code_id = project.create_code("teaching target")
+    project.ensure_default_classifier_specs(code_id=code_id)
     other_code = project.create_code("other teaching code")
+    project.ensure_default_classifier_specs(code_id=other_code)
     selected_spec = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     observation_id = project.create_teaching_example(
         code_id=code_id, text="A deliberate teaching example",
@@ -1157,7 +1186,9 @@ def test_teaching_example_selection_rejects_other_code_and_stale_rows(tmp_path: 
 
     project = _project(tmp_path)
     first_code = project.create_code("teacher a")
+    project.ensure_default_classifier_specs(code_id=first_code)
     second_code = project.create_code("teacher b")
+    project.ensure_default_classifier_specs(code_id=second_code)
     obs = project.create_teaching_example(
         code_id=first_code, text="teaching example for first code", label="positive"
     )
@@ -1182,7 +1213,9 @@ def test_apply_batch_training_request_uses_committed_code_and_scope(tmp_path: Pa
 
     project = _project(tmp_path)
     code_id = project.create_code("apply scope")
+    project.ensure_default_classifier_specs(code_id=code_id)
     other_code = project.create_code("other")
+    project.ensure_default_classifier_specs(code_id=other_code)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
@@ -1233,6 +1266,7 @@ def test_apply_bulk_model_commits_preserve_training_eligibility_and_undo(tmp_pat
 
     project = _project(tmp_path)
     code_id = project.create_code("apply model evidence")
+    project.ensure_default_classifier_specs(code_id=code_id)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
@@ -1301,6 +1335,7 @@ def test_develop_summary_reconciles_apply_and_explore_on_tab_return(tmp_path: Pa
 
     project = _project(tmp_path)
     code_id = project.create_code("cross-workspace summary")
+    project.ensure_default_classifier_specs(code_id=code_id)
     observations = project.database.list_observations()
     project.annotate(int(observations[0]["observation_id"]), code_id, "positive")
     project.annotate(int(observations[3]["observation_id"]), code_id, "negative")
