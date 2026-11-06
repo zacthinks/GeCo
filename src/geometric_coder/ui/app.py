@@ -9400,7 +9400,7 @@ def _focus_layout(
                                                         style={"display": "none"},
                                                     ),
                                                     html.Button(
-                                                        _tooltip_label(html, "Review unsure", "Revisit units you previously marked as Unsure, rather than units the classifier considers uncertain."),
+                                                        _tooltip_label(html, "Review unsure", "Revisit units you previously marked as unsure."),
                                                         id="focus-review-unsure",
                                                         n_clicks=0,
                                                     ),
