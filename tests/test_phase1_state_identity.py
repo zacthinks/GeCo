@@ -63,7 +63,7 @@ def test_session_ui_patch_preserves_independent_focus_task(tmp_path: Path) -> No
         keys=["doc_id"],
         text="text",
     )
-    code_id = int(project.create_code("concept", "Example")["code_id"])
+    code_id = int(project.create_code("concept", "Example"))
     session_id = project.configure_focus(codes=[code_id], unit_ids=[2, 1])
     focus_before = project.focus_task(session_id)
     state_before = project.database.get_session(session_id)["state"]
