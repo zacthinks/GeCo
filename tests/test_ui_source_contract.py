@@ -684,7 +684,7 @@ def test_semantic_search_panel_stays_compact_and_topic_mode_replaces_it() -> Non
     root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
     css = (root / "assets/geco.css").read_text()
     app = (root / "app.py").read_text()
-    assert ".explore-controls > .semantic-search-control-block" in css
+    assert ".control-block { padding: 0.72rem; min-width: 0; }" in css
     assert ".semantic-search-control-block .control-status:empty" in css
     assert "def clear_semantic_on_topic_color(" in app
     assert 'Output("topic-model-selector", "value", allow_duplicate=True)' in app
@@ -705,8 +705,9 @@ def test_explore_cards_stretch_equal_height_and_semantic_slider_has_no_hover_too
     root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
     css = (root / "assets" / "geco.css").read_text()
     source = (root / "app.py").read_text()
-    assert ".explore-controls > .semantic-search-control-block {" in css
-    assert "align-self: stretch;" in css
+    assert ".explore-controls > .semantic-search-control-block {" not in css
+    assert ".semantic-search-control-block .control-block-title {" not in css
+    assert ".semantic-search-control-block .control-status:empty" in css
     slider = source.split('id="semantic-range-slider",', 1)[1].split(
         'id="semantic-range-wrap",', 1
     )[0]
@@ -724,3 +725,14 @@ def test_semantic_candidate_is_checked_against_current_browser_request() -> None
     assert 'State("geometry-dropdown", "value")' in source
     assert '_current_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
     assert "expected_query_id=qid" in source
+
+
+def test_explanatory_tooltips_disable_cursor_and_avoid_viewport_top_clipping() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    css = (root / "assets" / "geco.css").read_text()
+    app = (root / "app.py").read_text()
+    assert ".geco-tooltip-disabled .geco-tooltip { cursor: inherit; }" in css
+    assert "top: calc(100% + 7px);" in css
+    assert "bottom: calc(100% + 7px);" not in css
+    assert "Calculate similarity between search text and other units using the selected geometry." in app
+    assert "Requires support for new translations." in app
