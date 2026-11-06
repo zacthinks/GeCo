@@ -170,7 +170,6 @@ class GeometricCoder:
                     registry=registry,
                     progress=progress,
                 )
-                project.ensure_default_classifier_specs()
             emit_progress(
                 progress,
                 phase="complete",
@@ -301,7 +300,6 @@ class GeometricCoder:
             )
         project.database.ensure_current_schema()
         project.database.ensure_recommendation_indexes()
-        project.ensure_default_classifier_specs()
         return project
 
     @classmethod
@@ -999,8 +997,6 @@ class GeometricCoder:
         self.database.record_representation_dimensions(
             representation_id, int(matrix.shape[1])
         )
-        if self.database.get_representation(representation_id)["analytic_enabled"]:
-            self.ensure_default_classifier_specs()
         return geometry_id
 
     def register_external_view(
@@ -1962,10 +1958,8 @@ class GeometricCoder:
         )
 
     def create_code(self, name: str, definition: str = "") -> int:
-        """Create a code, then provision its own default classifiers."""
-        code_id = self.database.create_code(name, definition)
-        self.ensure_default_classifier_specs(code_id=code_id)
-        return code_id
+        """Create a code without implicitly creating classifiers."""
+        return self.database.create_code(name, definition)
 
     def update_code(self, code_id: int, *, name: str, description: str) -> int:
         """Append a new label/description version for a code."""
@@ -2523,7 +2517,7 @@ class GeometricCoder:
     def ensure_default_classifier_specs(
         self, code_id: int | None = None
     ) -> list[dict[str, Any]]:
-        """Ensure each code owns one default logistic classifier per public geometry."""
+        """Explicitly provision legacy logistic defaults, only when directly requested."""
         codes = (
             [self.database.get_code(int(code_id))]
             if code_id is not None
@@ -3152,6 +3146,7 @@ class GeometricCoder:
         code_id: int,
         classifier_spec_ids: Sequence[int] | None = None,
         tune: bool = False,
+        folds: int = 5,
     ) -> dict[str, Any]:
         """Explicit event-boundary training; never called by recommendation clicks.
 
@@ -3206,6 +3201,7 @@ class GeometricCoder:
             classifier_spec_ids=pending_ids,
             tune=bool(tune),
             retune_current=False,
+            folds=int(folds),
         )
         return {
             "status": "trained", "trained_fit_ids": {
