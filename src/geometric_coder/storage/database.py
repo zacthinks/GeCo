@@ -5055,16 +5055,50 @@ class ProjectDatabase:
         self, *, query: str = "", scope: str = "full", hashtags: Iterable[str] = (),
         hashtag_operator: str = "and",
     ) -> list[dict[str, Any]]:
-        """Search latest memo versions by text and composable hashtag filters."""
+        """Search latest memo versions without per-memo database queries."""
         if scope not in {"full", "title"}:
             raise ValueError("scope must be 'full' or 'title'")
         if hashtag_operator not in {"and", "or", "xor"}:
             raise ValueError("hashtag_operator must be 'and', 'or', or 'xor'")
         needle = query.strip().casefold()
         selected = {str(tag).strip().lstrip("#").casefold() for tag in hashtags if str(tag).strip().lstrip("#")}
+        versions = self.list_memos()
+        latest_versions_sql = """
+            SELECT mv.memo_version_id FROM memos m
+            JOIN memo_versions mv ON mv.memo_version_id = (
+                SELECT mv2.memo_version_id FROM memo_versions mv2
+                WHERE mv2.memo_id = m.memo_id
+                ORDER BY mv2.version_number DESC LIMIT 1
+            )
+        """
+        with self.connect() as connection:
+            tag_rows = connection.execute(
+                f"""SELECT memo_version_id, hashtag FROM memo_version_hashtags
+                    WHERE memo_version_id IN ({latest_versions_sql})
+                    ORDER BY memo_version_id, hashtag"""
+            ).fetchall()
+            reference_rows = connection.execute(
+                f"""SELECT memo_version_id, reference_id, unit_id, token
+                    FROM memo_version_unit_references
+                    WHERE memo_version_id IN ({latest_versions_sql})
+                    ORDER BY memo_version_id, reference_id"""
+            ).fetchall()
+        tags_by_version: dict[int, list[str]] = {}
+        for row in tag_rows:
+            tags_by_version.setdefault(int(row["memo_version_id"]), []).append(str(row["hashtag"]))
+        references_by_version: dict[int, list[dict[str, Any]]] = {}
+        for row in reference_rows:
+            references_by_version.setdefault(int(row["memo_version_id"]), []).append({
+                "reference_id": int(row["reference_id"]),
+                "unit_id": int(row["unit_id"]),
+                "token": str(row["token"]),
+            })
         results: list[dict[str, Any]] = []
-        for summary in self.list_memos():
-            memo = self.get_memo(int(summary["memo_id"]))
+        for summary in versions:
+            memo = dict(summary)
+            version_id = int(memo["memo_version_id"])
+            memo["hashtags"] = tags_by_version.get(version_id, [])
+            memo["unit_references"] = references_by_version.get(version_id, [])
             haystack = str(memo["title"])
             if scope == "full":
                 haystack += "\n" + str(memo["body_markdown"])
@@ -5073,9 +5107,12 @@ class ProjectDatabase:
             memo_tags = {str(tag).casefold() for tag in memo["hashtags"]}
             if selected:
                 overlap = len(selected & memo_tags)
-                if hashtag_operator == "and" and not selected.issubset(memo_tags): continue
-                if hashtag_operator == "or" and overlap == 0: continue
-                if hashtag_operator == "xor" and overlap != 1: continue
+                if hashtag_operator == "and" and not selected.issubset(memo_tags):
+                    continue
+                if hashtag_operator == "or" and overlap == 0:
+                    continue
+                if hashtag_operator == "xor" and overlap != 1:
+                    continue
             results.append(memo)
         return results
 
