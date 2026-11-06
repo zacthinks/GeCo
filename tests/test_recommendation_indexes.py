@@ -35,6 +35,7 @@ def _trained_project(tmp_path: Path):
         geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
     )
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     obs = project.database.list_observations()
     for idx in (0, 1):
         project.annotate(int(obs[idx]["observation_id"]), code_id, "positive")
@@ -258,6 +259,7 @@ def test_bootstrap_random_fallback_before_two_classes(
         geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
     )
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     if label_count:
         observation = project.database.list_observations()[0]
