@@ -1982,26 +1982,24 @@ class ProjectDatabase:
                 raise KeyError(
                     f"No hierarchy level {level_index} for unit_id {unit_id}."
                 )
+            # A context window only needs the sibling count, not every sibling
+            # row; the subsequent bounded query fetches the selected groups.
             if focal["parent_group_id"] is None:
-                sibling_rows = connection.execute(
+                sibling_count = int(connection.execute(
                     """
-                    SELECT group_id, position_within_parent FROM groups
+                    SELECT COUNT(*) FROM groups
                     WHERE level_index = ? AND parent_group_id IS NULL
-                    ORDER BY position_within_parent
                     """,
                     (level_index,),
-                ).fetchall()
+                ).fetchone()[0])
             else:
-                sibling_rows = connection.execute(
+                sibling_count = int(connection.execute(
                     """
-                    SELECT group_id, position_within_parent FROM groups
+                    SELECT COUNT(*) FROM groups
                     WHERE level_index = ? AND parent_group_id = ?
-                    ORDER BY position_within_parent
                     """,
                     (level_index, focal["parent_group_id"]),
-                ).fetchall()
-
-            sibling_count = len(sibling_rows)
+                ).fetchone()[0])
             desired = min(int(window), sibling_count)
             focal_position = int(focal["position_within_parent"])
             surrounding = desired - 1
