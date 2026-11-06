@@ -687,6 +687,7 @@ def create_app(
                 ),
                 children=[
                 html.Div(id="geco-close-status", className="sr-only"),
+                dcc.Store(id="geco-tooltip-prefs", storage_type="local", data={"enabled": True}),
                 dcc.Store(id="focal-unit-store", data=initial_focal_unit_id),
                 dcc.Store(
                     id="explore-focal-unit-store",
@@ -795,10 +796,19 @@ def create_app(
                             ),
                             html.Div(
                                 [
-                                    html.Button(
-                                        "Close GeCo", id="geco-close-button",
-                                        n_clicks=0, className="geco-close-button",
-                                        title="Stop this GeCo application",
+                                    html.Div(
+                                        [
+                                            html.Button(
+                                                "Settings", id="geco-settings-open",
+                                                n_clicks=0, className="geco-settings-button",
+                                            ),
+                                            html.Button(
+                                                "Close GeCo", id="geco-close-button",
+                                                n_clicks=0, className="geco-close-button",
+                                                title="Stop this GeCo application",
+                                            ),
+                                        ],
+                                        className="app-header-actions",
                                     ),
                                     html.Div(
                                         _project_summary_children(
@@ -986,6 +996,35 @@ def create_app(
 
                     html.Div([
                         html.Div([
+                            html.Div([
+                                html.H2("GeCo Settings"),
+                                html.Button("×", id="geco-settings-close", n_clicks=0,
+                                            className="modal-close-icon", title="Close",
+                                            **{"aria-label": "Close Settings"}),
+                            ], className="modal-header"),
+                            html.H3("Interface"),
+                            dcc.Checklist(
+                                id="geco-settings-tooltips",
+                                options=[{"label": "Show explanatory tooltips", "value": "enabled"}],
+                                value=["enabled"],
+                            ),
+                            html.H3("Classifier training"),
+                            html.Label("Cross-validation folds", htmlFor="geco-settings-cv-folds"),
+                            dcc.Dropdown(
+                                id="geco-settings-cv-folds",
+                                options=[{"label": str(n), "value": n} for n in range(2, 11)],
+                                value=_read_ui_settings(project.project_dir)["cv_folds"],
+                                clearable=False, searchable=False,
+                                className="geco-settings-folds",
+                            ),
+                            html.Small("Maximum folds requested when tuning; fewer are used when labeled evidence is limited."),
+                            html.Div(id="geco-settings-status", className="control-status", role="status"),
+                        ], className="modal-card geco-settings-card", role="dialog",
+                           **{"aria-modal": "true", "aria-label": "GeCo Settings"}),
+                    ], id="geco-settings-modal", className="modal-overlay",
+                       style={"display": "none"}),
+                    html.Div([
+                        html.Div([
                             html.Div([html.H2("New session"), html.Button("×", id="new-session-x", n_clicks=0, className="modal-close-icon", title="Close", **{"aria-label": "Close"})], className="modal-header"),
                             html.Label("Session name", htmlFor="new-session-title"),
                             dcc.Input(id="new-session-title", type="text", placeholder="Session name", autoFocus=True),
@@ -999,9 +1038,63 @@ def create_app(
             ),
             html.Div(id="session-state-status", className="sr-only"),
         ],
+        id="geco-app-shell",
         className="app-shell",
         style=GECO_DASH_THEME,
     )
+
+    @app.callback(
+        Output("geco-settings-modal", "style"),
+        Input("geco-settings-open", "n_clicks"),
+        Input("geco-settings-close", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def toggle_geco_settings(_open: int, _close: int) -> dict[str, str]:
+        return {"display": "flex"} if callback_context.triggered_id == "geco-settings-open" else {"display": "none"}
+
+    @app.callback(
+        Output("geco-tooltip-prefs", "data"),
+        Input("geco-settings-tooltips", "value"),
+        State("geco-tooltip-prefs", "data"),
+        prevent_initial_call=True,
+    )
+    def save_tooltip_preference(value: list[str] | None, current: dict[str, Any] | None) -> Any:
+        enabled = "enabled" in (value or [])
+        if isinstance(current, dict) and current.get("enabled") is enabled:
+            return no_update
+        return {"enabled": enabled}
+
+    @app.callback(
+        Output("geco-settings-tooltips", "value"),
+        Output("geco-app-shell", "className"),
+        Input("geco-tooltip-prefs", "data"),
+    )
+    def apply_tooltip_preference(prefs: dict[str, Any] | None) -> tuple[list[str], str]:
+        enabled = not isinstance(prefs, dict) or prefs.get("enabled", True) is not False
+        return (["enabled"] if enabled else []), (
+            "app-shell" if enabled else "app-shell geco-tooltip-disabled"
+        )
+
+    @app.callback(
+        Output("geco-settings-status", "children"),
+        Input("geco-settings-cv-folds", "value"),
+        prevent_initial_call=True,
+    )
+    def save_cv_fold_setting(folds: int | None) -> str:
+        if folds is None:
+            return ""
+        try:
+            _save_ui_settings(project.project_dir, cv_folds=int(folds))
+        except (OSError, ValueError) as error:
+            return f"Unable to save CV folds: {error}"
+        return f"Using up to {int(folds)} cross-validation folds."
+
+    @app.callback(
+        Output("topic-interpretation-details", "style"),
+        Input("topic-model-selector", "value"),
+    )
+    def show_topic_interpretation(model_id: int | None) -> dict[str, str]:
+        return {} if model_id is not None else {"display": "none"}
 
     register_representation_callbacks(
         app, project, html=html, dcc=dcc, Input=Input, Output=Output,
@@ -5516,6 +5609,7 @@ def create_app(
                 classifier_spec_ids=spec_ids,
                 tune=tune_hyperparameters,
                 retune_current=tune_hyperparameters,
+                folds=_read_ui_settings(project.project_dir)["cv_folds"],
             )
         except (KeyError, ValueError) as error:
             return str(error), int(refresh or 0)
@@ -5800,6 +5894,7 @@ def create_app(
                 code_id=int(next_request["code_id"]),
                 classifier_spec_ids=[int(i) for i in next_request["classifier_spec_ids"]],
                 tune=bool(next_request["tune"]),
+                folds=_read_ui_settings(project.project_dir)["cv_folds"],
             )
 
         completed = training_inbox.drain(fit)
