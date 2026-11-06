@@ -380,6 +380,32 @@ def _post_saved_apply_batch_training_request(
     return request, status.replace("Judgment saved", label)
 
 
+def _matching_recommendation_fit_id(
+    recommendation: dict[str, Any] | None, *,
+    unit_id: int, code_id: int, session_id: int, selected_unit_ids: list[int],
+) -> int | None:
+    """Attach a fit only to the exact atomic unit/code/session it recommended.
+
+    Manual navigation, another code, another session, or a span selection may
+    retain stale browser recommendation data; never misattribute their labels.
+    """
+    if not isinstance(recommendation, dict) or selected_unit_ids != [int(unit_id)]:
+        return None
+    try:
+        if (
+            int(recommendation["unit_id"]) != int(unit_id)
+            or int(recommendation["code_id"]) != int(code_id)
+            or int(recommendation["session_id"]) != int(session_id)
+        ):
+            return None
+        fit_ids = recommendation.get("classifier_fit_ids") or {}
+        if not isinstance(fit_ids, dict) or len(fit_ids) != 1:
+            return None
+        return int(next(iter(fit_ids.values())))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _recommend_without_fitting(
     project: GeometricCoder, *,
     code_id: int, session_id: int, strategy: str,
@@ -973,18 +999,26 @@ def create_app(
         Input("topic-component-selector", "value"),
         Input("topic-restore-snapshot", "data"),
         State("active-session-store", "data"),
+        State("topic-color-mode", "data"),
         prevent_initial_call=True,
     )
     def activate_topic_colors(
         model_id: int | None, display: str | None, component: str | None,
-        restored: dict[str, Any] | None, session_id: int,
+        restored: dict[str, Any] | None, session_id: int, current_mode: str | None,
     ) -> Any:
         # Session restore also changes topic selectors; those are not user actions.
-        if model_id is None or _is_restored_topic_selection(
-            model_id, display, component, restored, session_id
-        ):
+        if _is_restored_topic_selection(model_id, display, component, restored, session_id):
             return no_update
         triggered = callback_context.triggered_id
+        if model_id is None:
+            # Manual dropdown clear removes topic coloring, but a programmatic clear
+            # after choosing semantic colors must not erase the semantic selection.
+            return (
+                "plain"
+                if triggered == "topic-model-selector"
+                and current_mode in {"dominant", "intensity"}
+                else no_update
+            )
         if triggered == "topic-restore-snapshot":
             return no_update
         if triggered == "topic-component-selector" and display != "intensity":
@@ -1253,6 +1287,7 @@ def create_app(
         Output("semantic-range", "data", allow_duplicate=True),
         Output("metadata-filters-store", "data"),
         Output("metadata-filter-operator", "value"),
+        Output("explore-uncoded-only", "value"),
         Output("context-level", "value"),
         Output("context-window", "value"),
         Output("page-size", "value"),
@@ -1264,6 +1299,9 @@ def create_app(
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-active-classifier-dropdown", "value", allow_duplicate=True),
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
+        Output("focus-train-scope", "value"),
+        Output("focus-auto-retrain", "value"),
+        Output("focus-tune-hyperparameters", "value"),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
         Output("topic-color-mode", "data"),
@@ -1346,6 +1384,7 @@ def create_app(
             _normalize_boolean_operator(
                 state.get("metadata_filter_operator", "and")
             ),
+            (["uncoded_only"] if state.get("explore_uncoded_only", False) else []),
             context_level,
             context_window,
             str(max(1, int(state.get("page_size", 5000)))),
@@ -1357,6 +1396,9 @@ def create_app(
             focus_code_id,
             focus_classifier,
             focus_committee,
+            (["all"] if state.get("focus_train_all", False) else []),
+            (["auto"] if state.get("focus_auto_retrain", True) else []),
+            (["tune"] if state.get("focus_tune_hyperparameters", False) else []),
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
             "plain",
@@ -5669,7 +5711,14 @@ def create_app(
                     "train when the current labeling batch is ready."
                 )
         unit_id = int(result["unit_id"])
-        return unit_id, _append_navigation_history(history, unit_id), status, result
+        # The recommendation remains in a browser Store after navigation or code
+        # changes; retain its exact context to validate later label provenance.
+        return (
+            unit_id,
+            _append_navigation_history(history, unit_id),
+            status,
+            {**result, "code_id": int(code_id), "session_id": int(session_id)},
+        )
 
     @app.callback(
         Output("focus-auto-training-status", "children"),
@@ -5745,6 +5794,7 @@ def create_app(
         Input("focus-label-unsure", "n_clicks"),
         State("focus-code-dropdown", "value"),
         State("focal-unit-store", "data"),
+        State("active-session-store", "data"),
         State("focus-recommendation-store", "data"),
         State("focus-span-selection-store", "data"),
         State("focus-refresh-store", "data"),
@@ -5763,6 +5813,7 @@ def create_app(
         unsure_clicks: int,
         code_id: int | None,
         focal_unit_id: int | None,
+        session_id: int,
         recommendation: dict[str, Any] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
@@ -5795,8 +5846,13 @@ def create_app(
         current = _current_annotation_value(project, observation_id, int(code_id))
         if current == value:
             return "", int(refresh or 0), no_update, no_update
-        fit_ids = list((recommendation or {}).get("classifier_fit_ids", {}).values())
-        classifier_fit_id = int(fit_ids[0]) if len(fit_ids) == 1 else None
+        classifier_fit_id = _matching_recommendation_fit_id(
+            recommendation,
+            unit_id=int(focal_unit_id),
+            code_id=int(code_id),
+            session_id=int(session_id),
+            selected_unit_ids=selected,
+        )
         observation_id, _event_id = project.annotate_span(
             selected,
             int(code_id),
@@ -6907,7 +6963,8 @@ def create_app(
         if presentation_values.get("presentation", [None])[0] == "memo":
             return "Presentation mode leaves Explore session state unchanged."
         options = set(literal_options or [])
-        project.update_session_state(
+        # Preserve session keys independently owned by Focus Coding and other APIs.
+        project.patch_session_state(
             int(session_id),
             {
                 "geometry_id": geometry_id,
