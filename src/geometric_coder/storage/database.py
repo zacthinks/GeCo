@@ -2627,14 +2627,33 @@ class ProjectDatabase:
     def search_codes(
         self, *, query: str = "", scope: str = "full", hashtags: Iterable[str] = ()
     ) -> list[dict[str, Any]]:
-        """Search current code labels/descriptions and hashtags."""
+        """Search current code versions with one batched hashtag lookup."""
         if scope not in {"full", "label"}:
             raise ValueError("scope must be 'full' or 'label'")
         needle = query.strip().casefold()
         selected = {str(tag).strip().lstrip("#").casefold() for tag in hashtags if str(tag).strip().lstrip("#")}
+        versions = self.list_codes()
+        with self.connect() as connection:
+            tags = connection.execute(
+                """
+                SELECT cvh.code_version_id, cvh.hashtag
+                FROM codes c
+                JOIN code_versions cv ON cv.code_version_id = (
+                    SELECT cv2.code_version_id FROM code_versions cv2
+                    WHERE cv2.code_id = c.code_id
+                    ORDER BY cv2.version_number DESC LIMIT 1
+                )
+                JOIN code_version_hashtags cvh ON cvh.code_version_id = cv.code_version_id
+                ORDER BY cvh.code_version_id, cvh.hashtag
+                """
+            ).fetchall()
+        tags_by_version: dict[int, list[str]] = {}
+        for row in tags:
+            tags_by_version.setdefault(int(row["code_version_id"]), []).append(str(row["hashtag"]))
         results: list[dict[str, Any]] = []
-        for summary in self.list_codes():
-            code = self.get_code(int(summary["code_id"]))
+        for version in versions:
+            code = dict(version)
+            code["hashtags"] = tags_by_version.get(int(code["code_version_id"]), [])
             haystack = str(code["name"])
             if scope == "full":
                 haystack += "\n" + str(code["description"])
