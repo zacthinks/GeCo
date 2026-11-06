@@ -1591,11 +1591,15 @@ def create_app(
     def show_one_dimensional_jitter(view_id: int | None) -> dict[str, str]:
         if view_id is None:
             return {"display": "none"}
-        return (
-            {"display": "block"}
-            if project.view_coordinates(int(view_id)).shape[1] == 1
-            else {"display": "none"}
-        )
+        if int(view_id) < 0:
+            # Unified plot-ready representations declare their dimension in
+            # the registry; selecting one need not load its full matrix.
+            dimensions = int(project.database.get_representation(-int(view_id))["dimensions"])
+        else:
+            # Legacy view records do not store dimensionality. Preserve the
+            # existing read rather than guess from method or display name.
+            dimensions = int(project.view_coordinates(int(view_id)).shape[1])
+        return {"display": "block"} if dimensions == 1 else {"display": "none"}
 
     @app.callback(
         Output("projection-modal", "style"),
