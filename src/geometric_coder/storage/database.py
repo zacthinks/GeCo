@@ -3254,6 +3254,25 @@ class ProjectDatabase:
             ).fetchone()
         return int(row["n"]) if row is not None else 0
 
+    def classifier_predictions_complete(self, classifier_fit_id: int) -> bool:
+        """Check active prediction coverage without materializing missing IDs."""
+        with self.connect() as connection:
+            missing = connection.execute(
+                """
+                SELECT 1
+                FROM observations AS o
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                LEFT JOIN classifier_predictions AS cp
+                  ON cp.observation_id = o.observation_id
+                 AND cp.classifier_fit_id = ?
+                WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND cp.observation_id IS NULL
+                LIMIT 1
+                """,
+                (int(classifier_fit_id),),
+            ).fetchone()
+        return missing is None
+
     def missing_classifier_prediction_observation_ids(
         self, classifier_fit_id: int
     ) -> list[int]:
