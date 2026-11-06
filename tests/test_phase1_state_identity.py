@@ -150,7 +150,7 @@ def test_ui_guards_apply_events_and_prediction_clicks_against_stale_identity() -
     click = source.split("def open_prediction_geometry_point(", 1)[1].split("\n    @app.callback(", 1)[0]
     assert "_prediction_geometry_matches_code(prediction_refresh, code_id)" in click
     probabilities = source.split("def update_focus_probabilities(", 1)[1].split(
-        "\\n    @app.callback(", 1
+        "\n    @app.callback(", 1
     )[0]
     assert "_recommendation_matches_context(" in probabilities
 
