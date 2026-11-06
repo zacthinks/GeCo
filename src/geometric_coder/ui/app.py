@@ -9121,40 +9121,40 @@ def _focus_layout(
                                                     else []
                                                 ),
                                             ),
-                                            dcc.Checklist(
-                                                id="focus-auto-retrain",
-                                                options=[
-                                                    {
-                                                        "label": "Automatically train selected models after saved coding changes",
-                                                        "value": "auto",
-                                                    }
+                                            html.Div(
+                                                [
+                                                    dcc.Checklist(
+                                                        id="focus-auto-retrain",
+                                                        options=[
+                                                            {"label": "Automatically train", "value": "auto"}
+                                                        ],
+                                                        value=(
+                                                            ["auto"]
+                                                            if bool(
+                                                                initial_state.get(
+                                                                    "focus_auto_retrain", True
+                                                                )
+                                                            )
+                                                            else []
+                                                        ),
+                                                    ),
+                                                    html.Span(
+                                                        "ⓘ",
+                                                        className="classifier-auto-train-help",
+                                                        title=(
+                                                            "Train selected classifiers after saved label changes "
+                                                            "for the code currently selected in Develop, once both "
+                                                            "Present and Absent examples exist. Recommendations and "
+                                                            "draft review changes do not trigger training."
+                                                        ),
+                                                        tabIndex=0,
+                                                        **{"aria-label": "About automatic training"},
+                                                    ),
                                                 ],
-                                                value=(
-                                                    ["auto"]
-                                                    if bool(
-                                                        initial_state.get(
-                                                            "focus_auto_retrain", True
-                                                        )
-                                                    )
-                                                    else []
-                                                ),
+                                                className="classifier-auto-train-row",
                                             ),
                                         ],
                                         className="classifier-training-options",
-                                    ),
-                                    html.Small(
-                                        "With automatic training off, only explicit Train actions fit models; "
-                                        "saved changes can leave frozen predictions stale but usable. With it on, "
-                                        "saved judgments in Develop, Explore, or Code Center, teaching-example changes, "
-                                        "and Apply commits or undos that change assignments can request training only "
-                                        "when the affected code matches the code selected in Develop. Apply draft "
-                                        "decisions, proposal generation, zero-assignment commits, and recommendation "
-                                        "or navigation clicks never start training. The scope is the active classifier "
-                                        "or selected committee members, unless Train All is explicitly chosen. "
-                                        "Training waits for both Present and Absent evidence; optional cross-validation "
-                                        "tuning can be slower. Learned committees require explicit Train committee; "
-                                        "fixed committees require Prepare selected committee.",
-                                        className="focus-help",
                                     ),
                                     html.Div(
                                         [
