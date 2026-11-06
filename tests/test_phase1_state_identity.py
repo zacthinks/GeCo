@@ -19,13 +19,14 @@ def test_recommendation_fit_requires_exact_atomic_code_session_and_unit() -> Non
         "session_id": 3,
         "classifier_fit_ids": {"classifier-a": 41},
     }
-    match = lambda rec, **kw: _matching_recommendation_fit_id(
-        rec,
-        unit_id=kw.get("unit_id", 10),
-        code_id=kw.get("code_id", 5),
-        session_id=kw.get("session_id", 3),
-        selected_unit_ids=kw.get("selected_unit_ids", [10]),
-    )
+    def match(rec, **kw):
+        return _matching_recommendation_fit_id(
+            rec,
+            unit_id=kw.get("unit_id", 10),
+            code_id=kw.get("code_id", 5),
+            session_id=kw.get("session_id", 3),
+            selected_unit_ids=kw.get("selected_unit_ids", [10]),
+        )
     assert match(recommended) == 41
     assert match(recommended, unit_id=11) is None
     assert match(recommended, code_id=6) is None
