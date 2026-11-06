@@ -7304,7 +7304,7 @@ def _explore_layout(
                     ),
                     html.Div(
                         [
-                            html.H3(_tooltip_label(html, "Semantic search", "Represent your search text in the selected geometry and calculate its similarity to other units. Only available for geometries that can represent new queries."), className="control-block-title"),
+                            html.H3(_tooltip_label(html, "Semantic search", "Calculate similarity between search text and other units using the selected geometry. Requires support for new translations."), className="control-block-title"),
                             html.Div(
                                 [
                                     html.Div(
