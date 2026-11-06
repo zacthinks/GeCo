@@ -3239,7 +3239,7 @@ class GeometricCoder:
             )
             prediction_complete = False
             if latest is not None:
-                prediction_complete = not self.database.missing_classifier_prediction_observation_ids(
+                prediction_complete = self.database.classifier_predictions_complete(
                     int(latest["classifier_fit_id"])
                 )
             rows.append(
