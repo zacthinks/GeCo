@@ -6273,13 +6273,17 @@ def create_app(
         Input("focus-prediction-page-size", "value"),
         Input("focus-prediction-page-number", "value"),
         Input("focus-prediction-display-options", "value"),
+        Input("focus-code-dropdown", "value"),
     )
     def render_prediction_geometry(
         refresh_state: dict[str, Any] | None,
         page_size: Any,
         page_number: Any,
         display_options: list[str] | None,
+        code_id: int | None,
     ) -> tuple[Any, str]:
+        if not _prediction_geometry_matches_code(refresh_state, code_id):
+            return go.Figure(), "Code changed. Refresh the score view for this code."
         geometry = _prediction_geometry_from_cache(
             prediction_geometry_cache, refresh_state
         )
@@ -6376,7 +6380,14 @@ def create_app(
         focal_unit_id: int | None,
         history: dict[str, Any] | None,
     ) -> tuple[Any, Any, Any]:
-        if not click_data or not click_data.get("points"):
+        if (
+            not _prediction_geometry_matches_code(prediction_refresh, code_id)
+            or not _prediction_geometry_from_cache(
+                prediction_geometry_cache, prediction_refresh
+            )
+            or not click_data
+            or not click_data.get("points")
+        ):
             return no_update, no_update, no_update
         customdata = click_data["points"][0].get("customdata")
         if not isinstance(customdata, (list, tuple)) or len(customdata) < 3:
@@ -11279,6 +11290,18 @@ def _observation_display_key(
         else f"{atomic_name}: {first_value}–{last_value}"
     )
     return f"{parent} › {interval}" if parent else f"Span {interval}"
+
+
+def _prediction_geometry_matches_code(
+    refresh_state: dict[str, Any] | None, code_id: int | None,
+) -> bool:
+    """Reject a prediction snapshot rendered for a different Develop code."""
+    if not isinstance(refresh_state, dict) or code_id is None:
+        return False
+    try:
+        return int(refresh_state["code_id"]) == int(code_id)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _prediction_geometry_from_cache(
