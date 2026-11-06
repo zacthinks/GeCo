@@ -71,6 +71,7 @@ def _committee_ref(project: GeometricCoder, committee_id: int) -> GeCoPredictorR
 def test_predictor_discovery_unifies_classifiers_and_committees(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     committee_id = project.create_classifier_committee(
         code_id=code_id,
@@ -92,7 +93,9 @@ def test_classifier_and_committee_names_share_one_project_wide_active_namespace(
 ) -> None:
     project = _project(tmp_path)
     code_a = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_a)
     code_b = project.create_code("relevance")
+    project.ensure_default_classifier_specs(code_id=code_b)
     classifier_a = project.classifier_specs(code_id=code_a)[0]
     classifier_b = project.classifier_specs(code_id=code_b)[0]
     classifier_a_id = int(classifier_a["classifier_spec_id"])
@@ -148,6 +151,7 @@ def test_classifier_and_committee_names_share_one_project_wide_active_namespace(
 def test_deleting_predictor_frees_name_for_other_predictor_kind(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
 
@@ -165,6 +169,7 @@ def test_deleting_predictor_frees_name_for_other_predictor_kind(tmp_path: Path) 
 def test_predictor_discovery_rejects_legacy_active_name_collision(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
     now = project.database.get_classifier_spec(classifier_id)["created_at"]
@@ -188,6 +193,7 @@ def test_predictor_discovery_rejects_legacy_active_name_collision(tmp_path: Path
 def test_single_classifier_export_reproduces_retained_predictions(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
@@ -215,6 +221,7 @@ def test_single_classifier_export_reproduces_retained_predictions(tmp_path: Path
 def test_export_rejects_stale_by_default_and_allows_explicit_freeze(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     classifier_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
     project.train_classifier(code_id=code_id, classifier_spec_id=classifier_id)
@@ -233,6 +240,7 @@ def test_export_rejects_stale_by_default_and_allows_explicit_freeze(tmp_path: Pa
 def test_fixed_committee_deduplicates_shared_geometry_source(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
     first_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
@@ -276,6 +284,7 @@ def test_learned_committee_export_uses_separate_sparse_dense_sources_and_matches
 ) -> None:
     project = _project(tmp_path, multi_geometry=True)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     specs = {str(row["geometry_name"]): row for row in project.classifier_specs(code_id=code_id)}
     lexical_id = int(specs["lexical"]["classifier_spec_id"])
@@ -315,6 +324,7 @@ def test_learned_committee_export_uses_separate_sparse_dense_sources_and_matches
 def test_learned_committee_stale_export_never_substitutes_new_member_fit(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
     first_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
@@ -348,6 +358,7 @@ def test_learned_committee_stale_export_never_substitutes_new_member_fit(tmp_pat
 def test_export_validates_source_count_row_alignment_and_feature_width(tmp_path: Path) -> None:
     project = _project(tmp_path, multi_geometry=True)
     code_id = project.create_code("quality")
+    project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     specs = project.classifier_specs(code_id=code_id)
     project.train_classifiers(
