@@ -10770,6 +10770,7 @@ def _prepared_metadata_matcher(
             nonlocal prepared, right, upper
             if _is_missing(raw):
                 return False
+            left = float(raw) if kind == "numeric" else _coerce_datetime(raw)
             if not prepared:
                 if kind == "numeric":
                     right = float(value)
@@ -10778,7 +10779,6 @@ def _prepared_metadata_matcher(
                     right = _coerce_datetime(value)
                     upper = _coerce_datetime(value2) if condition == "between" else None
                 prepared = True
-            left = float(raw) if kind == "numeric" else _coerce_datetime(raw)
             if kind == "datetime" and (left is None or right is None):
                 raise ValueError("enter a valid date")
             return _ordered_comparison(left, condition, right, upper)
