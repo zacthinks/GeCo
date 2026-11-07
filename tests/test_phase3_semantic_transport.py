@@ -79,3 +79,33 @@ def test_saved_query_replaced_with_same_text_does_not_reuse_old_token(tmp_path):
     new = callbacks["display_active_semantic"]("needle", geometry_id)
     assert new["query_id"] == new_id
     assert new["token"] != old["token"]
+
+
+def test_evicted_semantic_token_rehydrates_only_same_score_snapshot(tmp_path):
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "semantic-eviction.geco",
+        data=pd.DataFrame({"id": [1, 2], "text": ["one", "two"]}),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    geometry_id = int(project.database.get_geometry_by_name("lexical")["geometry_id"])
+    qid = project.saved_semantic_searches.store("needle", geometry_id, [0.2, 0.7])
+    callbacks = _callbacks(create_app(project))
+    create = callbacks["display_active_semantic"]
+    slider = callbacks["update_semantic_range"]
+    first = create("needle", geometry_id)
+    token = {key: first[key] for key in ("query", "geometry_id", "query_id", "token")}
+
+    # Eight more requests evict the first token from the bounded in-memory map.
+    for _ in range(9):
+        create("needle", geometry_id)
+    # Durable cache can safely restore the same immutable score snapshot.
+    assert slider(token, geometry_id, "needle", None)[0:2] == pytest.approx((0.2, 0.7))
+
+    for _ in range(9):
+        create("needle", geometry_id)
+    assert project.saved_semantic_searches.store(
+        "needle", geometry_id, [0.9, 0.1], expected_query_id=qid
+    ) == qid
+    # The same query ID with a replaced vector must not reinterpret an old token.
+    assert slider(token, geometry_id, "needle", None)[5] == {"display": "none"}
