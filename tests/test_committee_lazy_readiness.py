@@ -219,3 +219,24 @@ def test_frozen_learned_scores_not_attributed_to_retrained_member(tmp_path):
     assert project.database.latest_classifier_committee_fit(
         committee_id=committee_id, code_id=code_id
     )["committee_fit_id"] == old_committee_fit["committee_fit_id"]
+
+
+def test_apply_from_stale_stacker_records_frozen_member_ids(tmp_path):
+    project, code_id, (first, _), _, committee_id, observations = _trained_committee(
+        tmp_path, "logistic_stack"
+    )
+    frozen = project.train_classifier_committee(
+        code_id=code_id, committee_id=committee_id
+    )
+    original_ids = frozen["training_snapshot"]["member_fit_ids"]
+    project.annotate(int(observations[2]["observation_id"]), code_id, "positive")
+    newer = project.train_classifier(code_id=code_id, classifier_spec_id=first)
+    assert int(newer["classifier_fit_id"]) not in original_ids
+    apply_id = project.create_apply_run(
+        code_id=code_id, source_kind="committee",
+        source_id=committee_id, threshold=0.5,
+    )
+    draft = project.apply_run(apply_id)
+    assert draft["committee_fit_id"] == frozen["committee_fit_id"]
+    assert sorted(draft["classifier_fit_ids"]) == sorted(original_ids)
+    assert int(newer["classifier_fit_id"]) not in draft["classifier_fit_ids"]
