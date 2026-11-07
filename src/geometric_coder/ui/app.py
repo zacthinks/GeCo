@@ -923,6 +923,7 @@ def create_app(
                     _classifier_manager_modal(
                         dcc=dcc, html=html, dash_table=dash_table
                     ),
+                    _new_committee_modal(dcc=dcc, html=html),
                     _committee_modal(
                         dcc=dcc, html=html, dash_table=dash_table
                     ),
@@ -1543,7 +1544,7 @@ def create_app(
             focus_committee,
             (["all"] if state.get("focus_train_all", False) else []),
             (["auto"] if state.get("focus_auto_retrain", True) else []),
-            (["tune"] if state.get("focus_tune_hyperparameters", False) else []),
+            (["tune"] if state.get("focus_tune_hyperparameters", True) else []),
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
             "plain",
@@ -8616,28 +8617,26 @@ def _classifier_manager_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     )
 
 
-def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
-    """Return the code-specific classifier-committee manager."""
+def _new_committee_modal(*, dcc: Any, html: Any) -> Any:
+    """Dedicated creation flow, parallel to New classifier."""
     return html.Div(
         [
             html.Div(
                 [
                     html.Div(
                         [
-                            html.H3("Classifier committees"),
+                            html.H3("New committee"),
                             html.Button(
-                                "×",
-                                id="committee-close",
-                                n_clicks=0,
-                                className="modal-close-icon",
-                                title="Close",
+                                "×", id="committee-create-close", n_clicks=0,
+                                className="modal-close-icon", title="Close",
                                 **{"aria-label": "Close"},
                             ),
                         ],
                         className="modal-heading-row",
                     ),
                     html.P(
-                        "A committee is an intentional named set of classifier specifications for the active code. Rename an existing committee without changing its members, aggregation, or learned fitted state; classifier and committee names share one project-wide active predictor namespace.",
+                        "Combine trained classifiers into a fixed or learned aggregation. "
+                        "Fixed committees need no separate training or preparation.",
                         className="focus-help",
                     ),
                     html.Label("Committee name"),
@@ -8673,6 +8672,40 @@ def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         className="primary-action",
                     ),
                     html.Div(id="committee-status", className="control-status"),
+                ],
+                className="modal-card committee-modal-card",
+            )
+        ],
+        id="committee-create-modal",
+        className="modal-overlay",
+        style={"display": "none"},
+    )
+
+
+def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
+    """Return the code-specific classifier-committee manager."""
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.H3("Manage committees"),
+                            html.Button(
+                                "×",
+                                id="committee-close",
+                                n_clicks=0,
+                                className="modal-close-icon",
+                                title="Close",
+                                **{"aria-label": "Close"},
+                            ),
+                        ],
+                        className="modal-heading-row",
+                    ),
+                    html.P(
+                        "A committee is an intentional named set of classifier specifications for the active code. Rename an existing committee without changing its members, aggregation, or learned fitted state; classifier and committee names share one project-wide active predictor namespace.",
+                        className="focus-help",
+                    ),
                     html.H4("Existing committees"),
                     dash_table.DataTable(
                         id="committee-table",
@@ -9243,7 +9276,7 @@ def _focus_layout(
                                                     ["tune"]
                                                     if bool(
                                                         initial_state.get(
-                                                            "focus_tune_hyperparameters", False
+                                                            "focus_tune_hyperparameters", True
                                                         )
                                                     )
                                                     else []
@@ -9315,25 +9348,30 @@ def _focus_layout(
                                         clearable=True,
                                         placeholder="Select a saved committee",
                                     ),
+                                    html.Button(
+                                        "Train committee",
+                                        id="focus-train-committee",
+                                        n_clicks=0,
+                                        className="primary-action classifier-train-button",
+                                    ),
                                     html.Div(
                                         [
+                                            html.Button(
+                                                "New committee",
+                                                id="focus-new-committee",
+                                                n_clicks=0,
+                                            ),
                                             html.Button(
                                                 "Manage committees",
                                                 id="focus-manage-committees",
                                                 n_clicks=0,
                                             ),
-                                            html.Button(
-                                                "Train committee",
-                                                id="focus-train-committee",
-                                                n_clicks=0,
-                                            ),
-                                            html.Button(
-                                                "Prepare selected committee",
-                                                id="focus-prepare-committee",
-                                                n_clicks=0,
-                                            ),
                                         ],
-                                        className="classifier-action-row",
+                                        className="classifier-management-row",
+                                    ),
+                                    html.Div(
+                                        id="focus-committee-badge",
+                                        className="classifier-status-badge status-not-trained",
                                     ),
                                     html.Div(
                                         id="focus-committee-status",
