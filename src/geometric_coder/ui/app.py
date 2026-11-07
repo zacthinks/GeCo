@@ -580,6 +580,12 @@ def create_app(
     codes = project.codes()
     classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
+    # Short-lived, app-local snapshots of the *visible* Explore points only.
+    # A revision token matches a plot to its overlay callback, even when
+    # callbacks complete out of order. No browser-to-server figure State.
+    overlay_frames: dict[str, tuple[int, dict[str, Any]]] = {}
+    overlay_frame_order: deque[str] = deque()
+    overlay_frame_lock = Lock()
     training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
@@ -2405,9 +2411,9 @@ def create_app(
         topic_revision: int | None,
         focal_unit_id: int | None,
         base_revision: int | None,
-    ) -> tuple[Any, str, str, Any, int]:
-        del map_filter_refresh, topic_revision
-        next_revision = int(base_revision or 0) + 1
+    ) -> tuple[Any, str, str, Any, str]:
+        del map_filter_refresh, topic_revision, base_revision
+        next_revision = uuid.uuid4().hex
         if view_id is None or geometry_id is None:
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
@@ -2512,6 +2518,13 @@ def create_app(
         if selected_color_mode in {"dominant", "intensity"}:
             page_status += f" · {color_status}"
         legend = topic_legend_content(html, page_topics) if page_topics is not None else ""
+        overlay_frame = _geometry_overlay_frame(figure)
+        if overlay_frame is not None:
+            with overlay_frame_lock:
+                overlay_frames[next_revision] = (int(session_id), overlay_frame)
+                overlay_frame_order.append(next_revision)
+                while len(overlay_frame_order) > 4:
+                    overlay_frames.pop(overlay_frame_order.popleft(), None)
         return figure, literal_status, page_status, legend, next_revision
 
     @app.callback(
@@ -2520,24 +2533,25 @@ def create_app(
         Input("explore-focal-unit-store", "data"),
         Input("geometry-map-base-revision-store", "data"),
         Input("session-dropdown", "value"),
-        State("geometry-map", "figure"),
         prevent_initial_call=True,
     )
     def update_map_navigation_overlays(
         focal_unit_id: int | None,
-        base_revision: int | None,
+        base_revision: str | int | None,
         session_id: int,
-        current_figure: dict[str, Any] | None,
     ) -> tuple[Any, str]:
-        del base_revision
         seen = project.database.seen_unit_ids(int(session_id))
         progress = f"Visited {len(seen):,} of {len(units):,}"
         if callback_context.triggered_id == "session-dropdown":
             # The base-map callback will rebuild for the new session and then
             # advance geometry-map-base-revision-store. Patch only after that.
             return no_update, progress
+        with overlay_frame_lock:
+            retained = overlay_frames.get(str(base_revision))
+        if retained is None or retained[0] != int(session_id):
+            return no_update, progress
         payload = _geometry_overlay_payload(
-            current_figure,
+            retained[1],
             seen_unit_ids=seen,
             focal_unit_id=focal_unit_id,
         )
@@ -11413,6 +11427,29 @@ def _current_annotation_value(
         observation_id=int(observation_id), code_id=int(code_id)
     )
     return str(annotation["value"]) if annotation is not None else None
+
+
+def _geometry_overlay_frame(figure: go.Figure) -> dict[str, Any] | None:
+    """Retain only plotted point identities and coordinates for overlay patches.
+
+    The complete Plotly figure never needs to travel back from the browser just
+    to update visited and focal outlines.  Capture the two base traces while
+    they are built, not their colors, styling, or layout/camera.
+    """
+    if len(figure.data) <= EXPLORE_FOCAL_TRACE_INDEX:
+        return None
+    names = tuple(str(trace.name) for trace in figure.data[:4])
+    if names != EXPLORE_TRACE_NAMES:
+        return None
+    data: list[dict[str, Any]] = []
+    for index, trace in enumerate(figure.data[:4]):
+        row: dict[str, Any] = {"name": trace.name}
+        if index in {EXPLORE_FILTERED_TRACE_INDEX, EXPLORE_ELIGIBLE_TRACE_INDEX}:
+            for field in ("x", "y", "customdata", "hovertext"):
+                value = getattr(trace, field)
+                row[field] = list(value) if value is not None else []
+        data.append(row)
+    return {"data": data}
 
 
 def _geometry_overlay_payload(
