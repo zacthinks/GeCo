@@ -10135,7 +10135,9 @@ def _apply_layout(
                                 "mode": "multiRow",
                                 "checkboxes": True,
                                 "headerCheckbox": True,
-                                "selectAll": "currentPage",
+                                # AG Grid only holds one server page at a time.
+                                # "all" selects that loaded page, not the draft.
+                                "selectAll": "all",
                             },
                             "selectionColumnDef": {
                                 "width": 44,
