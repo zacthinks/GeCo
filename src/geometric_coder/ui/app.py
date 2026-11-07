@@ -3462,6 +3462,7 @@ def create_app(
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-saved-filter", "value"),
         Input("memo-presentation-location", "hash"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-page-number", "value"),
     )
     def update_memo_presentation_page(
@@ -3470,9 +3471,12 @@ def create_app(
         page_size: Any,
         saved_filter_id: str | None,
         location_hash: str | None,
+        location_search: str | None,
         current_page: Any,
-    ) -> tuple[int, int]:
+    ) -> tuple[Any, Any]:
         del previous_clicks, next_clicks
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         size = _coerce_positive_int(page_size, default=5000)
         filters, operator = _presentation_filter_definition(
             saved_filter_sets_path,
@@ -3516,13 +3520,17 @@ def create_app(
         Output("memo-presentation-view", "value"),
         Input("representation-refresh-store", "data"),
         Input("view-refresh-store", "data"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-view", "value"),
     )
     def refresh_presentation_views(
         _representation_revision: int | None,
         _view_revision: int | None,
+        location_search: str | None,
         current_view_id: int | None,
-    ) -> tuple[list[dict[str, Any]], int | None]:
+    ) -> tuple[Any, Any]:
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         current_geometries = project.geometries(public_only=True)
         records = _presentation_view_records(project, current_geometries)
         presentation_view_by_id.clear()
@@ -3548,6 +3556,7 @@ def create_app(
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-page-number", "value"),
         Input("memo-presentation-location", "hash"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-map", "relayoutData"),
     )
     def update_memo_presentation_map(
@@ -3558,15 +3567,22 @@ def create_app(
         page_size: Any,
         page_number: Any,
         location_hash: str | None,
+        location_search: str | None,
         relayout_data: dict[str, Any] | None,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, Any]:
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         if view_id is None or int(view_id) not in presentation_view_by_id:
             return _empty_figure("No compatible display representation is available."), ""
         view_record = presentation_view_by_id[int(view_id)]
         geometry_id = int(view_record["geometry_id"])
-        geometry_record = geometry_by_id.get(geometry_id)
+        geometry_record = next(
+            (record for record in project.geometries(public_only=True)
+             if int(record["geometry_id"]) == geometry_id),
+            None,
+        )
         if geometry_record is None:
-            return _empty_figure("This 2D view does not belong to a public geometry."), ""
+            return _empty_figure("This view does not belong to a public geometry."), ""
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
         filters, operator = _presentation_filter_definition(
@@ -3588,7 +3604,7 @@ def create_app(
             if focal_position not in display_positions:
                 display_positions.append(focal_position)
         display = np.asarray(display_positions, dtype=int)
-        coordinates = project.view_coordinates(int(view_id))[display]
+        coordinates = project.view_coordinate_rows(int(view_id), display.tolist())
         page_units = [units[int(position)] for position in display]
         eligible = mask[display] if display.size else np.asarray([], dtype=bool)
         figure = build_geometry_figure(
@@ -10428,6 +10444,11 @@ def _display_view_records(
 ) -> list[dict[str, Any]]:
     """Include numerical descendants, not just owned legacy 2D views."""
     return project.views(int(geometry_id), include_descendants=True)
+
+
+def _memo_presentation_is_active(search: str | None) -> bool:
+    """Only a presentation URL may trigger expensive map/filter work."""
+    return parse_qs((search or "").lstrip("?")).get("presentation") == ["memo"]
 
 
 def _presentation_view_records(
