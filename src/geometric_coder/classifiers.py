@@ -430,7 +430,8 @@ def hyperparameter_summary(algorithm: str, hyperparameters: dict[str, Any] | Non
         return f"λ={float(values['regularization']):g}"
     if algorithm == "rbf_svm":
         gamma = values["gamma"]
-        return f"λ={float(values['regularization']):g} · γ={gamma if isinstance(gamma, str) else format(gamma, '.3g')}"
+        gamma_label = gamma if isinstance(gamma, str) else f"{gamma:.3g}"
+        return f"λ={float(values['regularization']):g} · γ={gamma_label}"
     if algorithm == "logistic_elasticnet":
         return (
             f"λ={float(values['regularization']):g} · "
