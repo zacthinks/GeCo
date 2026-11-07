@@ -1828,45 +1828,64 @@ class GeometricCoder:
         state = self.artifacts.load_view_state(self.project_dir, view["state_path"])
         return transform_view(vector, state)
 
-    def can_transform_new_observations(self) -> bool:
-        """Whether all registered geometries can represent newly authored text."""
-        geometries = self.database.list_geometries(public_only=False)
-        if not geometries:
-            return False if self.is_external_backed else True
-        external = [
-            row
-            for row in geometries
-            if str(row.get("storage_kind", "local")) == "external"
-        ]
-        if not external:
-            return True
-        if not all(bool(row.get("supports_text_transform")) for row in external):
-            return False
+    def transformable_geometry_ids(self) -> set[int]:
+        """Geometries able to represent newly authored span/teaching text.
+
+        Capability belongs to the geometry, not to the project as a whole.
+        External providers need both an advertised transform and a callable
+        implementation; local fitted geometries retain their usual support.
+        """
+        records = self.database.list_geometries(public_only=False)
         provider = self.external_provider
-        return provider is not None and callable(getattr(provider, "transform_texts", None))
+        external_supported = (
+            provider is not None
+            and callable(getattr(provider, "transform_texts", None))
+        )
+        return {
+            int(record["geometry_id"])
+            for record in records
+            if (
+                str(record.get("storage_kind", "local")) != "external"
+                or (
+                    external_supported
+                    and bool(record.get("supports_text_transform"))
+                )
+            )
+        }
+
+    def can_transform_new_observations(self) -> bool:
+        """Whether at least one geometry can represent newly authored text."""
+        available = self.database.list_geometries(public_only=False)
+        if not available:
+            return not self.is_external_backed
+        return bool(self.transformable_geometry_ids())
 
     def _transform_observation_text(
         self, text: str, *, token: str
     ) -> dict[int, tuple[str, bool]]:
-        """Transform and persist a new observation through every compatible geometry."""
-        if not self.can_transform_new_observations():
+        """Persist derived vectors only for geometries that support new text."""
+        supported = self.transformable_geometry_ids()
+        if not supported:
             raise ConfigurationError(
-                "This project cannot create spans or teaching examples because one or "
-                "more required external geometries do not support new-text transformation, "
-                "or the connected provider does not implement transform_texts()."
+                "No registered geometry can transform new text. Add or connect "
+                "a geometry with new-text transformation to create spans or "
+                "teaching examples."
             )
-        runtime = self.runtime_geometries()
+        records = [
+            record for record in self.database.list_geometries(public_only=False)
+            if int(record["geometry_id"]) in supported
+        ]
+        local_runtime = (
+            self.runtime_geometries()
+            if any(str(row.get("storage_kind", "local")) != "external" for row in records)
+            else {}
+        )
         vectors: dict[int, tuple[str, bool]] = {}
-        for record in self.database.list_geometries(public_only=False):
+        for record in records:
             name = str(record["name"])
             if str(record.get("storage_kind", "local")) == "external":
-                if not bool(record.get("supports_text_transform")):
-                    raise ConfigurationError(
-                        f"External geometry {name!r} does not support new-text transformation."
-                    )
                 provider = self._require_external_provider()
-                transform = getattr(provider, "transform_texts")
-                vector = transform(record["external_ref"], [text])
+                vector = provider.transform_texts(record["external_ref"], [text])
                 if sparse.issparse(vector):
                     normalized: Matrix = sparse.csr_matrix(vector)
                 else:
@@ -1879,8 +1898,7 @@ class GeometricCoder:
                     )
                 vector = normalized
             else:
-                geometry = runtime[name]
-                vector = geometry.transform_texts([text])
+                vector = local_runtime[name].transform_texts([text])
             vectors[int(record["geometry_id"])] = self.artifacts.save_observation_vector(
                 token, name, vector
             )
