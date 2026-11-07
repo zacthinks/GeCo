@@ -2338,6 +2338,15 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return an annotation event ID.")
             return int(event.lastrowid)
 
+    def derived_observation_ids_for_geometry(self, geometry_id: int) -> set[int]:
+        """Return derived observations having a persisted vector in this geometry."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT observation_id FROM observation_geometry_vectors WHERE geometry_id = ?",
+                (int(geometry_id),),
+            ).fetchall()
+        return {int(row["observation_id"]) for row in rows}
+
     def observation_vector_record(
         self, observation_id: int, geometry_id: int
     ) -> dict[str, Any] | None:
@@ -3299,11 +3308,18 @@ class ProjectDatabase:
                 LEFT JOIN classifier_predictions AS cp
                   ON cp.observation_id = o.observation_id
                  AND cp.classifier_fit_id = ?
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id
+                 AND ogv.geometry_id = (
+                   SELECT geometry_id FROM classifier_fits
+                   WHERE classifier_fit_id = ?
+                 )
                 WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND (o.kind = 'atomic' OR ogv.observation_id IS NOT NULL)
                   AND cp.observation_id IS NULL
                 LIMIT 1
                 """,
-                (int(classifier_fit_id),),
+                (int(classifier_fit_id), int(classifier_fit_id)),
             ).fetchone()
         return missing is None
 
@@ -3320,11 +3336,18 @@ class ProjectDatabase:
                 LEFT JOIN classifier_predictions AS cp
                   ON cp.observation_id = o.observation_id
                  AND cp.classifier_fit_id = ?
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id
+                 AND ogv.geometry_id = (
+                   SELECT geometry_id FROM classifier_fits
+                   WHERE classifier_fit_id = ?
+                 )
                 WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND (o.kind = 'atomic' OR ogv.observation_id IS NOT NULL)
                   AND cp.observation_id IS NULL
                 ORDER BY o.observation_id
                 """,
-                (int(classifier_fit_id),),
+                (int(classifier_fit_id), int(classifier_fit_id)),
             ).fetchall()
         return [int(row["observation_id"]) for row in rows]
 
