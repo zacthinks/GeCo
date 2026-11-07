@@ -69,6 +69,10 @@ def test_unified_local_views_and_analytic_rows_match_full_view(tmp_path):
     positions = [2, 0, 2]
     rep_view = project.database.representation_for_legacy("view", vid)
     rep_geometry = project.database.representation_for_legacy("geometry", gid)
+    # Direct fixture registrations do not infer dimensions from the artifact.
+    project.database.record_representation_dimensions(
+        int(rep_geometry["representation_id"]), 2
+    )
     np.testing.assert_allclose(
         project.view_coordinate_rows(-int(rep_view["representation_id"]), positions),
         project.view_coordinates(vid)[positions],
