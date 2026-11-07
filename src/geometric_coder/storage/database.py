@@ -551,6 +551,9 @@ CREATE TABLE apply_proposals (
 );
 CREATE INDEX apply_proposals_run_label_idx
 ON apply_proposals(apply_run_id, proposed_label, decision);
+CREATE INDEX apply_proposals_active_probability_rank_idx
+ON apply_proposals(apply_run_id, probability DESC, unit_id ASC)
+WHERE removed_at IS NULL AND committed_annotation_event_id IS NULL;
 
 CREATE VIEW current_annotations AS
 SELECT latest.annotation_event_id,
@@ -891,6 +894,13 @@ class ProjectDatabase:
         while SQLite builds each B-tree; repeated opens do not rebuild it.
         """
         with self.connect() as connection:
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS apply_proposals_active_probability_rank_idx
+                ON apply_proposals(apply_run_id, probability DESC, unit_id ASC)
+                WHERE removed_at IS NULL AND committed_annotation_event_id IS NULL
+                """
+            )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS classifier_predictions_probability_rank_idx
@@ -2328,6 +2338,46 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return an annotation event ID.")
             return int(event.lastrowid)
 
+    def unrepresented_derived_observation_ids(self, geometry_id: int) -> set[int]:
+        """Identify unsupported derived IDs without loading the corpus or text."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id FROM observations AS o
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id AND ogv.geometry_id = ?
+                WHERE o.kind != 'atomic' AND ogv.observation_id IS NULL
+                """,
+                (int(geometry_id),),
+            ).fetchall()
+        return {int(row["observation_id"]) for row in rows}
+
+    def derived_observation_ids_for_geometry(self, geometry_id: int) -> set[int]:
+        """Return derived observations having a persisted vector in this geometry."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT observation_id FROM observation_geometry_vectors WHERE geometry_id = ?",
+                (int(geometry_id),),
+            ).fetchall()
+        return {int(row["observation_id"]) for row in rows}
+
+    def persist_derived_geometry_vectors(
+        self, geometry_id: int, vectors: Mapping[int, tuple[str, bool]]
+    ) -> None:
+        """Publish completed derived vectors atomically; never replace existing ones."""
+        if not vectors:
+            return
+        with self.connect() as connection:
+            connection.executemany(
+                """INSERT OR IGNORE INTO observation_geometry_vectors(
+                    observation_id, geometry_id, artifact_path, matrix_sparse, created_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (int(observation_id), int(geometry_id), path, int(is_sparse), utc_now())
+                    for observation_id, (path, is_sparse) in vectors.items()
+                ],
+            )
+
     def observation_vector_record(
         self, observation_id: int, geometry_id: int
     ) -> dict[str, Any] | None:
@@ -3289,11 +3339,18 @@ class ProjectDatabase:
                 LEFT JOIN classifier_predictions AS cp
                   ON cp.observation_id = o.observation_id
                  AND cp.classifier_fit_id = ?
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id
+                 AND ogv.geometry_id = (
+                   SELECT geometry_id FROM classifier_fits
+                   WHERE classifier_fit_id = ?
+                 )
                 WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND (o.kind = 'atomic' OR ogv.observation_id IS NOT NULL)
                   AND cp.observation_id IS NULL
                 LIMIT 1
                 """,
-                (int(classifier_fit_id),),
+                (int(classifier_fit_id), int(classifier_fit_id)),
             ).fetchone()
         return missing is None
 
@@ -3310,11 +3367,18 @@ class ProjectDatabase:
                 LEFT JOIN classifier_predictions AS cp
                   ON cp.observation_id = o.observation_id
                  AND cp.classifier_fit_id = ?
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id
+                 AND ogv.geometry_id = (
+                   SELECT geometry_id FROM classifier_fits
+                   WHERE classifier_fit_id = ?
+                 )
                 WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND (o.kind = 'atomic' OR ogv.observation_id IS NOT NULL)
                   AND cp.observation_id IS NULL
                 ORDER BY o.observation_id
                 """,
-                (int(classifier_fit_id),),
+                (int(classifier_fit_id), int(classifier_fit_id)),
             ).fetchall()
         return [int(row["observation_id"]) for row in rows]
 
@@ -3899,11 +3963,22 @@ class ProjectDatabase:
     def missing_classifier_committee_prediction_observation_ids(
         self, committee_fit_id: int
     ) -> list[int]:
-        """Return active observations lacking a learned-committee prediction."""
+        """Return missing predictions only where all frozen members have vectors."""
+        fit = self.get_classifier_committee_fit(int(committee_fit_id))
+        common_derived: set[int] | None = None
+        for member_fit_id in fit["member_fit_ids"]:
+            member = self.get_classifier_fit(int(member_fit_id))
+            available = self.derived_observation_ids_for_geometry(
+                int(member["geometry_id"])
+            )
+            common_derived = (
+                available if common_derived is None
+                else common_derived.intersection(available)
+            )
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT o.observation_id
+                SELECT o.observation_id, o.kind
                 FROM observations AS o
                 LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
                 LEFT JOIN classifier_committee_predictions AS ccp
@@ -3915,7 +3990,11 @@ class ProjectDatabase:
                 """,
                 (int(committee_fit_id),),
             ).fetchall()
-        return [int(row["observation_id"]) for row in rows]
+        return [
+            int(row["observation_id"]) for row in rows
+            if row["kind"] == "atomic"
+            or int(row["observation_id"]) in (common_derived or set())
+        ]
 
     def classifier_committee_atomic_probabilities(
         self, committee_fit_id: int
@@ -4498,24 +4577,17 @@ class ProjectDatabase:
         result["classifier_names"] = [str(item["classifier_name"]) for item in fit_rows]
         return result
 
-    def list_apply_proposals(
-        self,
-        apply_run_id: int,
-        *,
+    @staticmethod
+    def _apply_proposal_where(
+        apply_run_id: int, *,
         proposed_label: str | None = None,
         decision: str | None = None,
         include_unreviewed: bool = True,
         include_inactive: bool = False,
         probability_min: float | None = None,
         probability_max: float | None = None,
-        limit: int | None = None,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        """Return proposal rows joined to their atomic text and metadata.
-
-        Deliberately unreviewed proposals remain visible until a commit removes
-        them from the active draft. Inactive rows remain available for audit.
-        """
+    ) -> tuple[str, list[Any]]:
+        """One authoritative predicate for paged data and matching-row counts."""
         clauses = ["ap.apply_run_id = ?"]
         parameters: list[Any] = [int(apply_run_id)]
         if not include_inactive:
@@ -4547,6 +4619,85 @@ class ProjectDatabase:
             and float(probability_min) > float(probability_max)
         ):
             raise ValueError("probability_min may not exceed probability_max")
+
+        return " AND ".join(clauses), parameters
+
+    @staticmethod
+    def _apply_proposal_order(sort_by: Sequence[tuple[str, str]] | None) -> str:
+        """Translate client sort requests using only a fixed SQL column whitelist."""
+        sortable = {
+            "unit_id": "ap.unit_id",
+            "key": "u.user_key_json COLLATE NOCASE",
+            "text": "u.text COLLATE NOCASE",
+            "probability": "ap.probability",
+            "proposed_label": "ap.proposed_label",
+            "decision": """(CASE ap.decision
+                WHEN 'accept' THEN 'Accept proposal'
+                WHEN 'positive' THEN 'Assign positive'
+                WHEN 'negative' THEN 'Assign negative'
+                WHEN 'unsure' THEN 'Assign unsure'
+                WHEN 'unreviewed' THEN 'Leave unreviewed'
+                ELSE 'Pending' END)""",
+        }
+        if not sort_by:
+            return "ap.probability DESC, ap.unit_id ASC"
+        parts: list[str] = []
+        for field, direction in sort_by[:3]:
+            column = sortable.get(str(field))
+            if column is None or direction not in {"asc", "desc"}:
+                raise ValueError("Unsupported Apply proposal sort.")
+            parts.append(f"{column} {'ASC' if direction == 'asc' else 'DESC'}")
+        return ", ".join([*parts, "ap.unit_id ASC"])
+
+    def count_apply_proposals(
+        self, apply_run_id: int, *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        include_unreviewed: bool = True,
+        include_inactive: bool = False,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+    ) -> int:
+        """Count precisely the proposals matching a bounded page query."""
+        where, parameters = self._apply_proposal_where(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            include_unreviewed=include_unreviewed,
+            include_inactive=include_inactive,
+            probability_min=probability_min, probability_max=probability_max,
+        )
+        with self.connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM apply_proposals AS ap WHERE {where}",
+                parameters,
+            ).fetchone()
+        return int(row[0])
+
+    def list_apply_proposals(
+        self,
+        apply_run_id: int,
+        *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        include_unreviewed: bool = True,
+        include_inactive: bool = False,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        sort_by: Sequence[tuple[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return proposal rows joined to their atomic text and metadata.
+
+        Deliberately unreviewed proposals remain visible until a commit removes
+        them from the active draft. Inactive rows remain available for audit.
+        """
+        where, parameters = self._apply_proposal_where(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            include_unreviewed=include_unreviewed,
+            include_inactive=include_inactive,
+            probability_min=probability_min, probability_max=probability_max,
+        )
+        order = self._apply_proposal_order(sort_by)
         limit_sql = ""
         if limit is not None:
             if limit < 1:
@@ -4559,8 +4710,8 @@ class ProjectDatabase:
                 SELECT ap.*, u.row_position, u.text, u.user_key_json, u.metadata_json
                 FROM apply_proposals AS ap
                 JOIN units AS u ON u.unit_id = ap.unit_id
-                WHERE {' AND '.join(clauses)}
-                ORDER BY ap.probability DESC, ap.unit_id
+                WHERE {where}
+                ORDER BY {order}
                 {limit_sql}
                 """,
                 parameters,

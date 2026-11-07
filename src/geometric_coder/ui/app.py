@@ -718,6 +718,8 @@ def create_app(
                     "semantic-result-candidate": "data",
                     "view-refresh-store": "data",
                     "focus-refresh-store": "data",
+                    "explore-code-status": "children",
+                    "focus-annotation-status": "children",
                     "focus-model-refresh-store": "data",
                     "focus-auto-training-status": "children",
                     "classifier-spec-refresh-store": "data",
@@ -806,6 +808,8 @@ def create_app(
                 dcc.Store(id="prediction-geometry-refresh-store", data=None),
                 dcc.Store(id="prediction-geometry-page-token", data=None),
                 dcc.Store(id="apply-refresh-store", data=0),
+                dcc.Store(id="apply-page-index", data=0),
+                dcc.Store(id="apply-page-snapshot", data=None),
                 dcc.Store(id="memo-refresh-store", data=0),
                 dcc.Store(id="active-memo-store", data=None),
                 dcc.Store(id="explore-code-refresh-store", data=0),
@@ -2960,7 +2964,7 @@ def create_app(
             key_columns=list(metadata["key_columns"]),
             selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="explore-span-checkbox",
-            span_selection_enabled=project.can_transform_new_observations(),
+            span_selection_enabled=True,
         )
         metadata_children = _metadata_table(html, focal["metadata"])
         return key_label, context_children, metadata_children
@@ -3460,6 +3464,7 @@ def create_app(
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-saved-filter", "value"),
         Input("memo-presentation-location", "hash"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-page-number", "value"),
     )
     def update_memo_presentation_page(
@@ -3468,9 +3473,12 @@ def create_app(
         page_size: Any,
         saved_filter_id: str | None,
         location_hash: str | None,
+        location_search: str | None,
         current_page: Any,
-    ) -> tuple[int, int]:
+    ) -> tuple[Any, Any]:
         del previous_clicks, next_clicks
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         size = _coerce_positive_int(page_size, default=5000)
         filters, operator = _presentation_filter_definition(
             saved_filter_sets_path,
@@ -3514,13 +3522,17 @@ def create_app(
         Output("memo-presentation-view", "value"),
         Input("representation-refresh-store", "data"),
         Input("view-refresh-store", "data"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-view", "value"),
     )
     def refresh_presentation_views(
         _representation_revision: int | None,
         _view_revision: int | None,
+        location_search: str | None,
         current_view_id: int | None,
-    ) -> tuple[list[dict[str, Any]], int | None]:
+    ) -> tuple[Any, Any]:
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         current_geometries = project.geometries(public_only=True)
         records = _presentation_view_records(project, current_geometries)
         presentation_view_by_id.clear()
@@ -3546,6 +3558,7 @@ def create_app(
         Input("memo-presentation-page-size", "value"),
         Input("memo-presentation-page-number", "value"),
         Input("memo-presentation-location", "hash"),
+        Input("memo-presentation-location", "search"),
         State("memo-presentation-map", "relayoutData"),
     )
     def update_memo_presentation_map(
@@ -3556,15 +3569,22 @@ def create_app(
         page_size: Any,
         page_number: Any,
         location_hash: str | None,
+        location_search: str | None,
         relayout_data: dict[str, Any] | None,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, Any]:
+        if not _memo_presentation_is_active(location_search):
+            return no_update, no_update
         if view_id is None or int(view_id) not in presentation_view_by_id:
             return _empty_figure("No compatible display representation is available."), ""
         view_record = presentation_view_by_id[int(view_id)]
         geometry_id = int(view_record["geometry_id"])
-        geometry_record = geometry_by_id.get(geometry_id)
+        geometry_record = next(
+            (record for record in project.geometries(public_only=True)
+             if int(record["geometry_id"]) == geometry_id),
+            None,
+        )
         if geometry_record is None:
-            return _empty_figure("This 2D view does not belong to a public geometry."), ""
+            return _empty_figure("This view does not belong to a public geometry."), ""
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
         filters, operator = _presentation_filter_definition(
@@ -3586,7 +3606,7 @@ def create_app(
             if focal_position not in display_positions:
                 display_positions.append(focal_position)
         display = np.asarray(display_positions, dtype=int)
-        coordinates = project.view_coordinates(int(view_id))[display]
+        coordinates = project.view_coordinate_rows(int(view_id), display.tolist())
         page_units = [units[int(position)] for position in display]
         eligible = mask[display] if display.size else np.asarray([], dtype=bool)
         figure = build_geometry_figure(
@@ -3894,7 +3914,8 @@ def create_app(
     def enable_teaching_example_manager(
         code_center_id: int | None, focus_code_id: int | None
     ) -> tuple[bool, bool]:
-        can_create = project.can_transform_new_observations()
+        # Authoring a teaching example never requires an eager transform.
+        can_create = True
         return code_center_id is None or not can_create, focus_code_id is None or not can_create
 
     @app.callback(
@@ -5610,6 +5631,8 @@ def create_app(
         Input("teaching-example-refresh-store", "data"),
         Input("focus-model-refresh-store", "data"),
         Input("classifier-spec-refresh-store", "data"),
+        Input("apply-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
     )
     def update_focus_active_classifier_status(
         code_id: int | None,
@@ -5618,8 +5641,12 @@ def create_app(
         teaching_refresh: int | None,
         model_refresh: int | None,
         spec_refresh: int | None,
-    ) -> tuple[str, str, str]:
-        del focus_refresh, teaching_refresh, model_refresh, spec_refresh
+        apply_refresh: int | None,
+        workspace: str | None,
+    ) -> tuple[Any, Any, Any]:
+        del focus_refresh, teaching_refresh, model_refresh, spec_refresh, apply_refresh
+        if workspace != "focus":
+            return no_update, no_update, no_update
         if code_id is None:
             return "No code", "classifier-status-badge status-not-trained", ""
         if classifier_spec_id is None:
@@ -5651,6 +5678,8 @@ def create_app(
         Input("focus-model-refresh-store", "data"),
         Input("committee-refresh-store", "data"),
         Input("classifier-spec-refresh-store", "data"),
+        Input("apply-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
     )
     def update_focus_committee_status(
         code_id: int | None,
@@ -5660,8 +5689,12 @@ def create_app(
         model_refresh: int | None,
         committee_refresh: int | None,
         spec_refresh: int | None,
-    ) -> tuple[str, str, str]:
-        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh
+        apply_refresh: int | None,
+        workspace: str | None,
+    ) -> tuple[Any, Any, Any]:
+        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh, apply_refresh
+        if workspace != "focus":
+            return no_update, no_update, no_update
         if code_id is None:
             return "Select a code first.", "No code", "classifier-status-badge status-not-trained"
         if committee_id is None:
@@ -6007,9 +6040,18 @@ def create_app(
                     "selected classifier(s)."
                 )
             elif str(result["status"]) == "awaiting_two_classes":
-                message = f"{saved_label}; training awaits both positive and negative evidence."
+                message = (
+                    f"{saved_label}; training awaits positive and negative "
+                    "evidence within each selected classifier's geometry."
+                )
             else:
                 message = f"{saved_label}; selected classifier(s) are current."
+            awaiting = list((result or {}).get("awaiting_classifier_spec_ids", []))
+            if awaiting and str(result["status"]) == "trained":
+                message += (
+                    f" {len(awaiting)} other classifier(s) lack both training "
+                    "classes in their own geometry."
+                )
             messages[origin] = message
         return (
             messages.get("develop", no_update),
@@ -6244,7 +6286,7 @@ def create_app(
             key_columns=list(metadata["key_columns"]),
             selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="focus-span-checkbox",
-            span_selection_enabled=project.can_transform_new_observations(),
+            span_selection_enabled=True,
         )
         return key_label, children, _metadata_table(html, focal["metadata"])
 
@@ -6740,6 +6782,7 @@ def create_app(
         Input("committee-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
         State("apply-source-dropdown", "value"),
     )
     def refresh_apply_sources(
@@ -6749,9 +6792,12 @@ def create_app(
         committee_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
+        workspace: str | None,
         current_value: str | None,
-    ) -> tuple[list[dict[str, Any]], str | None]:
+    ) -> tuple[Any, Any]:
         del model_refresh, spec_refresh, committee_refresh, focus_refresh, teaching_refresh
+        if workspace != "apply":
+            return no_update, no_update
         if code_id is None:
             return [], None
         status_rows = project.classifier_status(code_id=int(code_id))["classifiers"]
@@ -6850,12 +6896,50 @@ def create_app(
         )
 
     @app.callback(
-        Output("apply-table", "rowData"),
-        Output("apply-run-summary", "children"),
+        Output("apply-page-index", "data"),
+        Input("apply-page-previous", "n_clicks"),
+        Input("apply-page-next", "n_clicks"),
         Input("apply-run-dropdown", "value"),
         Input("apply-proposed-filter", "value"),
         Input("apply-decision-filter", "value"),
         Input("apply-probability-range", "value"),
+        Input("apply-page-size", "value"),
+        Input("apply-table", "columnState"),
+        State("apply-page-snapshot", "data"),
+        prevent_initial_call=True,
+    )
+    def navigate_apply_page(
+        previous: int, next_clicks: int, draft_id: int | None,
+        proposed: str | None, decision: str | None, probability: list[float] | None,
+        size: int | None, columns: list[dict[str, Any]] | None,
+        snapshot: dict[str, Any] | None,
+    ) -> int:
+        del previous, next_clicks, proposed, decision, probability, size, columns
+        current = dict(snapshot or {})
+        if current.get("draft_id") != draft_id:
+            return 0
+        if callback_context.triggered_id == "apply-page-previous":
+            return max(0, int(current.get("page_index", 0)) - 1)
+        if callback_context.triggered_id == "apply-page-next":
+            return min(int(current.get("page_count", 1)) - 1,
+                       int(current.get("page_index", 0)) + 1)
+        # Sorting, filtering and page-size changes always start from page one.
+        return 0
+
+    @app.callback(
+        Output("apply-table", "rowData"),
+        Output("apply-run-summary", "children"),
+        Output("apply-page-status", "children"),
+        Output("apply-page-previous", "disabled"),
+        Output("apply-page-next", "disabled"),
+        Output("apply-page-snapshot", "data"),
+        Input("apply-run-dropdown", "value"),
+        Input("apply-proposed-filter", "value"),
+        Input("apply-decision-filter", "value"),
+        Input("apply-probability-range", "value"),
+        Input("apply-page-index", "data"),
+        Input("apply-page-size", "value"),
+        Input("apply-table", "columnState"),
         Input("apply-refresh-store", "data"),
     )
     def load_apply_table(
@@ -6863,12 +6947,25 @@ def create_app(
         proposed_filter: str | None,
         decision_filter: str | None,
         probability_range: list[float] | None,
-        refresh: int,
-    ) -> tuple[list[dict[str, Any]], Any]:
-        del refresh
+        page_index: int | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
+        refresh: int | None,
+    ) -> tuple[list[dict[str, Any]], Any, str, bool, bool, dict[str, Any] | None]:
         if draft_id is None:
-            return [], "No proposal draft has been generated for this code."
+            return [], "No proposal draft has been generated for this code.", "", True, True, None
         lower, upper = _normalized_probability_range(probability_range)
+        chosen_size = int(page_size or 25)
+        if chosen_size not in {25, 50, 100}:
+            chosen_size = 25
+        ordering = _apply_sort_spec(column_state)
+        count = project.count_apply_proposals(
+            int(draft_id), proposed_label=proposed_filter or None,
+            decision=decision_filter or None,
+            probability_min=lower, probability_max=upper,
+        )
+        pages = max(1, (count + chosen_size - 1) // chosen_size)
+        index = min(max(0, int(page_index or 0)), pages - 1)
         draft = project.apply_run(int(draft_id))
         proposals = project.apply_proposals(
             int(draft_id),
@@ -6876,6 +6973,7 @@ def create_app(
             decision=decision_filter or None,
             probability_min=lower,
             probability_max=upper,
+            limit=chosen_size, offset=index * chosen_size, sort_by=ordering,
         )
         data = [
             {
@@ -6900,7 +6998,20 @@ def create_app(
         )
         if int(draft.get("unreviewed_count", 0)):
             summary += f" · {int(draft['unreviewed_count']):,} marked Leave unreviewed"
-        return data, summary
+        page_status = (
+            f"Page {index + 1:,} of {pages:,} · {count:,} matching proposals"
+        )
+        snapshot = {
+            "draft_id": int(draft_id),
+            "page_index": index, "page_count": pages,
+            "page_size": chosen_size, "count": count,
+            "unit_ids": [int(row["unit_id"]) for row in proposals],
+            "proposed": proposed_filter or "", "decision": decision_filter or "",
+            "range": [lower, upper],
+            "sort": [list(pair) for pair in ordering],
+            "refresh": int(refresh or 0),
+        }
+        return data, summary, page_status, index <= 0, index >= pages - 1, snapshot
 
     @app.callback(
         Output("apply-status", "children", allow_duplicate=True),
@@ -6908,25 +7019,46 @@ def create_app(
         Input("apply-table", "cellValueChanged"),
         State("apply-run-dropdown", "value"),
         State("apply-refresh-store", "data"),
+        State("apply-page-snapshot", "data"),
+        State("apply-proposed-filter", "value"),
+        State("apply-decision-filter", "value"),
+        State("apply-probability-range", "value"),
+        State("apply-page-size", "value"),
+        State("apply-table", "columnState"),
         prevent_initial_call=True,
     )
     def persist_apply_table_edits(
         changed: dict[str, Any] | list[dict[str, Any]] | None,
         draft_id: int | None,
         refresh: int | None,
+        snapshot: dict[str, Any] | None,
+        proposed_filter: str | None,
+        decision_filter: str | None,
+        probability_range: list[float] | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
     ) -> tuple[Any, int]:
         if not changed or draft_id is None:
             return no_update, int(refresh or 0)
         events = changed if isinstance(changed, list) else [changed]
         count = 0
         try:
+            valid_ids = set(_verified_apply_page(
+                project, draft_id=int(draft_id), snapshot=snapshot,
+                proposed_filter=proposed_filter, decision_filter=decision_filter,
+                probability_range=probability_range, page_size=page_size,
+                column_state=column_state, refresh=refresh,
+            ))
             for event in events:
                 if str(event.get("colId", "")) != "decision":
                     continue
                 row = dict(event.get("data") or {})
-                if not _apply_rows_match_draft([row], int(draft_id)):
+                if (
+                    not _apply_rows_match_draft([row], int(draft_id))
+                    or int(row["unit_id"]) not in valid_ids
+                ):
                     return (
-                        "Draft changed before the edit was saved; reload the selected draft.",
+                        "The edited proposal is not on the current verified page.",
                         int(refresh or 0),
                     )
                 decision = _normalize_apply_decision(row.get("decision"))
@@ -6961,10 +7093,13 @@ def create_app(
         Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         *apply_action_inputs,
         State("apply-run-dropdown", "value"),
-        State("apply-table", "rowData"),
-        State("apply-table", "virtualRowData"),
-        State("apply-table", "paginationInfo"),
+        State("apply-page-snapshot", "data"),
         State("apply-table", "selectedRows"),
+        State("apply-proposed-filter", "value"),
+        State("apply-decision-filter", "value"),
+        State("apply-probability-range", "value"),
+        State("apply-page-size", "value"),
+        State("apply-table", "columnState"),
         State("apply-bulk-decision", "value"),
         State("apply-bulk-scope", "value"),
         State("apply-refresh-store", "data"),
@@ -6985,10 +7120,13 @@ def create_app(
         commit_visible_clicks: int,
         undo_clicks: int,
         draft_id: int | None,
-        rows: list[dict[str, Any]] | None,
-        virtual_rows: list[dict[str, Any]] | None,
-        pagination_info: dict[str, Any] | None,
+        snapshot: dict[str, Any] | None,
         selected_rows: list[dict[str, Any]] | None,
+        proposed_filter: str | None,
+        decision_filter: str | None,
+        probability_range: list[float] | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
         bulk_decision: str | None,
         bulk_scope: str | None,
         refresh: int | None,
@@ -7011,29 +7149,33 @@ def create_app(
         if draft_id is None:
             return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
-        if not all(
-            _apply_rows_match_draft(table_rows, int(draft_id))
-            for table_rows in (rows, virtual_rows, selected_rows)
-        ):
-            return (
-                "Draft changed while the table was updating; reload it before reviewing.",
-                int(refresh or 0),
-                no_update,
-                no_update,
-            )
-        current_page_rows = _apply_current_page_rows(
-            virtual_rows if virtual_rows is not None else (rows or []),
-            pagination_info,
-        )
-        current_page_ids = [int(row["unit_id"]) for row in current_page_rows]
         clear_selection: Any = no_update
         training_request: Any = no_update
         try:
+            current_page_ids = _verified_apply_page(
+                project, draft_id=int(draft_id), snapshot=snapshot,
+                proposed_filter=proposed_filter, decision_filter=decision_filter,
+                probability_range=probability_range, page_size=page_size,
+                column_state=column_state, refresh=refresh,
+            )
+            if triggered == "apply-bulk-apply" and bulk_scope == "selected":
+                if not _apply_rows_match_draft(selected_rows, int(draft_id)):
+                    raise ValueError("Selection belongs to another Apply draft.")
+                page_ids = set(current_page_ids)
+                if any(
+                    int(row["unit_id"]) not in page_ids
+                    for row in (selected_rows or [])
+                ):
+                    raise ValueError(
+                        "Selection changed pages. Select proposals on the displayed page."
+                    )
             if triggered == "apply-bulk-apply":
                 decision = _normalize_apply_decision(bulk_decision)
                 unit_ids = _apply_bulk_scope_unit_ids(
                     scope=str(bulk_scope or "selected"),
-                    current_page_rows=current_page_rows,
+                    current_page_rows=[
+                        {"unit_id": unit_id} for unit_id in current_page_ids
+                    ],
                     selected_rows=selected_rows or [],
                 )
                 if bulk_scope == "selected" and not unit_ids:
@@ -9495,9 +9637,10 @@ def _focus_layout(
                                         className="control-status",
                                     ),
                                     html.Button(
-                                        "Testing Center",
+                                        "Testing Center (beta)",
                                         id="focus-testing-center-button",
                                         n_clicks=0,
+                                        style={"width": "100%"},
                                     ),
                                 ],
                                 className="focus-sidebar",
@@ -10010,16 +10153,16 @@ def _apply_layout(
                         dashGridOptions={
                             "theme": GECO_AG_GRID_THEME,
                             "animateRows": False,
-                            "pagination": True,
-                            "paginationPageSize": 25,
-                            "paginationPageSizeSelector": [25, 50, 100],
+                            "pagination": False,
                             "singleClickEdit": True,
                             "stopEditingWhenCellsLoseFocus": True,
                             "rowSelection": {
                                 "mode": "multiRow",
                                 "checkboxes": True,
                                 "headerCheckbox": True,
-                                "selectAll": "currentPage",
+                                # AG Grid only holds one server page at a time.
+                                # "all" selects that loaded page, not the draft.
+                                "selectAll": "all",
                             },
                             "selectionColumnDef": {
                                 "width": 44,
@@ -10034,6 +10177,26 @@ def _apply_layout(
                         },
                         className="apply-review-grid",
                         style={"height": "690px", "width": "100%"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Rows per page", htmlFor="apply-page-size"),
+                            dcc.Dropdown(
+                                id="apply-page-size",
+                                options=[
+                                    {"label": str(size), "value": size}
+                                    for size in (25, 50, 100)
+                                ],
+                                value=25,
+                                clearable=False,
+                                searchable=False,
+                                className="apply-page-size",
+                            ),
+                            html.Button("Previous", id="apply-page-previous", n_clicks=0),
+                            html.Span(id="apply-page-status", className="page-status"),
+                            html.Button("Next", id="apply-page-next", n_clicks=0),
+                        ],
+                        className="pagination-bar apply-pagination",
                     ),
                     html.Div(
                         [
@@ -10066,7 +10229,7 @@ def _apply_layout(
                                                 options=[
                                                     {"label": "All proposals", "value": "all"},
                                                     {"label": "Current page", "value": "current_page"},
-                                                    {"label": "Selected proposals", "value": "selected"},
+                                                    {"label": "Selected proposals (this page)", "value": "selected"},
                                                 ],
                                                 value="selected",
                                                 clearable=False,
@@ -10175,6 +10338,69 @@ def _normalize_apply_decision(value: Any) -> str:
     raise ValueError(f"Unknown review decision {rendered!r}.")
 
 
+def _apply_sort_spec(
+    column_state: list[dict[str, Any]] | None,
+) -> list[tuple[str, str]]:
+    """Canonical server ordering matching AG Grid's sortable column state."""
+    sortable = {"unit_id", "key", "text", "probability", "proposed_label", "decision"}
+    entries = [
+        (index, str(column["colId"]), str(column["sort"]))
+        for index, column in enumerate(column_state or [])
+        if column.get("sort") in {"asc", "desc"}
+        and str(column.get("colId")) in sortable
+    ]
+    entries.sort(key=lambda item: (
+        int((column_state or [])[item[0]].get("sortIndex") or 0),
+        item[0],
+    ))
+    return [(field, direction) for _, field, direction in entries[:3]]
+
+
+def _verified_apply_page(
+    project: GeometricCoder, *,
+    draft_id: int, snapshot: dict[str, Any] | None,
+    proposed_filter: str | None, decision_filter: str | None,
+    probability_range: list[float] | None, page_size: int | None,
+    column_state: list[dict[str, Any]] | None,
+    refresh: int | None,
+) -> list[int]:
+    """Refuse a stale page identity instead of targeting a different row set."""
+    page = dict(snapshot or {})
+    lower, upper = _normalized_probability_range(probability_range)
+    ordering = _apply_sort_spec(column_state)
+    if (
+        page.get("draft_id") != int(draft_id)
+        or page.get("refresh") != int(refresh or 0)
+        or page.get("proposed") != (proposed_filter or "")
+        or page.get("decision") != (decision_filter or "")
+        or page.get("range") != [lower, upper]
+        or page.get("sort") != [list(pair) for pair in ordering]
+        or page.get("page_size") != int(page_size or 25)
+    ):
+        raise ValueError("Apply page changed. Let the table refresh before reviewing.")
+    count = project.count_apply_proposals(
+        int(draft_id), proposed_label=proposed_filter or None,
+        decision=decision_filter or None,
+        probability_min=lower, probability_max=upper,
+    )
+    if count != int(page.get("count", -1)):
+        raise ValueError("Apply proposals changed. Refresh the current page.")
+    ids = [
+        int(row["unit_id"])
+        for row in project.apply_proposals(
+            int(draft_id), proposed_label=proposed_filter or None,
+            decision=decision_filter or None,
+            probability_min=lower, probability_max=upper,
+            limit=int(page["page_size"]),
+            offset=int(page["page_index"]) * int(page["page_size"]),
+            sort_by=ordering,
+        )
+    ]
+    if ids != page.get("unit_ids"):
+        raise ValueError("Apply page changed. Refresh before reviewing these proposals.")
+    return ids
+
+
 def _apply_current_page_rows(
     rows: list[dict[str, Any]], pagination_info: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
@@ -10249,6 +10475,11 @@ def _display_view_records(
 ) -> list[dict[str, Any]]:
     """Include numerical descendants, not just owned legacy 2D views."""
     return project.views(int(geometry_id), include_descendants=True)
+
+
+def _memo_presentation_is_active(search: str | None) -> bool:
+    """Only a presentation URL may trigger expensive map/filter work."""
+    return parse_qs((search or "").lstrip("?")).get("presentation") == ["memo"]
 
 
 def _presentation_view_records(

@@ -84,6 +84,7 @@ class GeometricCoder:
         # Serialize first-use materialization within this project instance.
         # The database publishes the completed ranking in one transaction.
         self._committee_ranking_lock = RLock()
+        self._derived_materialization_lock = RLock()
         # In-process cache of exact persisted evidence snapshots. A cheap DB
         # revision changes whenever relevant annotations or teaching state change.
         self._recommendation_freshness: dict[
@@ -957,13 +958,6 @@ class GeometricCoder:
                 )
             raise ConfigurationError(f"Geometry {clean_name!r} is already registered.")
         provider = self._require_external_provider()
-        derived = self.database.list_observations(kinds=["span", "teaching_example"])
-        if derived:
-            raise ConfigurationError(
-                "Additional external geometries must be registered before creating "
-                "spans or teaching examples. GeCo does not backfill geometry "
-                "vectors for already-created derived observations."
-            )
         if supports_query and not callable(getattr(provider, "transform_query", None)):
             raise ConfigurationError(
                 f"External geometry {clean_name!r} was declared queryable, but the "
@@ -1828,63 +1822,104 @@ class GeometricCoder:
         state = self.artifacts.load_view_state(self.project_dir, view["state_path"])
         return transform_view(vector, state)
 
-    def can_transform_new_observations(self) -> bool:
-        """Whether all registered geometries can represent newly authored text."""
-        geometries = self.database.list_geometries(public_only=False)
-        if not geometries:
-            return False if self.is_external_backed else True
-        external = [
-            row
-            for row in geometries
-            if str(row.get("storage_kind", "local")) == "external"
-        ]
-        if not external:
-            return True
-        if not all(bool(row.get("supports_text_transform")) for row in external):
-            return False
-        provider = self.external_provider
-        return provider is not None and callable(getattr(provider, "transform_texts", None))
+    def transformable_geometry_ids(self) -> set[int]:
+        """Geometries able to represent newly authored span/teaching text.
 
-    def _transform_observation_text(
-        self, text: str, *, token: str
-    ) -> dict[int, tuple[str, bool]]:
-        """Transform and persist a new observation through every compatible geometry."""
-        if not self.can_transform_new_observations():
-            raise ConfigurationError(
-                "This project cannot create spans or teaching examples because one or "
-                "more required external geometries do not support new-text transformation, "
-                "or the connected provider does not implement transform_texts()."
+        Capability belongs to the geometry, not to the project as a whole.
+        External providers need both an advertised transform and a callable
+        implementation; local fitted geometries retain their usual support.
+        """
+        records = self.database.list_geometries(public_only=False)
+        provider = self.external_provider
+        external_supported = (
+            provider is not None
+            and callable(getattr(provider, "transform_texts", None))
+        )
+        return {
+            int(record["geometry_id"])
+            for record in records
+            if (
+                str(record.get("storage_kind", "local")) != "external"
+                or (
+                    external_supported
+                    and bool(record.get("supports_text_transform"))
+                )
             )
-        runtime = self.runtime_geometries()
-        vectors: dict[int, tuple[str, bool]] = {}
-        for record in self.database.list_geometries(public_only=False):
-            name = str(record["name"])
-            if str(record.get("storage_kind", "local")) == "external":
-                if not bool(record.get("supports_text_transform")):
-                    raise ConfigurationError(
-                        f"External geometry {name!r} does not support new-text transformation."
-                    )
+        }
+
+    def can_transform_new_observations(self) -> bool:
+        """Whether at least one geometry can represent newly authored text."""
+        available = self.database.list_geometries(public_only=False)
+        if not available:
+            return not self.is_external_backed
+        return bool(self.transformable_geometry_ids())
+
+    def materialize_derived_vectors(
+        self, geometry_id: int, observation_ids: Sequence[int] | None = None
+    ) -> list[int]:
+        """Create missing derived vectors for a single compatible geometry.
+
+        This runs only for consumers of numerical derived observations. The
+        persisted text and span membership remain the source of truth.
+        """
+        geometry_id = int(geometry_id)
+        geometry = self.database.get_geometry(geometry_id)
+        if geometry_id not in self.transformable_geometry_ids():
+            return []
+        with self._derived_materialization_lock:
+            candidates = self.database.list_observations(
+                kinds=["span", "teaching_example"]
+            )
+            if observation_ids is not None:
+                wanted = {int(value) for value in observation_ids}
+                candidates = [
+                    row for row in candidates
+                    if int(row["observation_id"]) in wanted
+                ]
+            existing = self.database.derived_observation_ids_for_geometry(
+                geometry_id
+            )
+            missing = [
+                row for row in candidates
+                if int(row["observation_id"]) not in existing
+            ]
+            if not missing:
+                return []
+            texts = [str(row["text"]) for row in missing]
+            if str(geometry.get("storage_kind", "local")) == "external":
                 provider = self._require_external_provider()
-                transform = getattr(provider, "transform_texts")
-                vector = transform(record["external_ref"], [text])
-                if sparse.issparse(vector):
-                    normalized: Matrix = sparse.csr_matrix(vector)
-                else:
-                    normalized = np.asarray(vector)
-                corpus = self.geometry_matrix(int(record["geometry_id"]))
-                if normalized.ndim != 2 or normalized.shape != (1, corpus.shape[1]):
-                    raise ValueError(
-                        f"transform_texts for external geometry {name!r} must return "
-                        f"shape (1, {corpus.shape[1]}), got {normalized.shape}."
-                    )
-                vector = normalized
+                transformed = provider.transform_texts(geometry["external_ref"], texts)
             else:
-                geometry = runtime[name]
-                vector = geometry.transform_texts([text])
-            vectors[int(record["geometry_id"])] = self.artifacts.save_observation_vector(
-                token, name, vector
+                transformed = self.runtime_geometries()[str(geometry["name"])].transform_texts(texts)
+            matrix: Matrix = (
+                sparse.csr_matrix(transformed) if sparse.issparse(transformed)
+                else np.asarray(transformed)
             )
-        return vectors
+            representation = self.database.representation_for_legacy("geometry", geometry_id)
+            dimensions = representation.get("dimensions")
+            if (
+                matrix.ndim != 2
+                or matrix.shape[0] != len(missing)
+                or (dimensions is not None and matrix.shape[1] != int(dimensions))
+            ):
+                raise ValueError(
+                    f"Derived transform for {geometry['name']!r} returned shape "
+                    f"{matrix.shape}; expected ({len(missing)}, {dimensions})."
+                )
+            artifacts: dict[int, tuple[str, bool]] = {}
+            try:
+                for position, row in enumerate(missing):
+                    observation_id = int(row["observation_id"])
+                    artifacts[observation_id] = self.artifacts.save_observation_vector(
+                        f"derived_{observation_id}_{uuid.uuid4().hex}",
+                        str(geometry["name"]), matrix[position : position + 1],
+                    )
+                self.database.persist_derived_geometry_vectors(geometry_id, artifacts)
+            except Exception:
+                for artifact_path, _is_sparse in artifacts.values():
+                    (self.project_dir / artifact_path).unlink(missing_ok=True)
+                raise
+            return [int(row["observation_id"]) for row in missing]
 
     def annotate_span(
         self,
@@ -1915,11 +1950,9 @@ class GeometricCoder:
         self.database.validate_span_members(members)
         selected = [self.database.get_unit(unit_id) for unit_id in members]
         text = "\n".join(str(unit["text"]) for unit in selected)
-        token = f"span_{uuid.uuid4().hex}"
-        vectors = self._transform_observation_text(text, token=token)
         return self.database.create_span_with_annotation(
             member_unit_ids=members, text=text, code_id=code_id, value=value,
-            origin=origin, geometry_vectors=vectors, classifier_fit_id=classifier_fit_id,
+            origin=origin, geometry_vectors={}, classifier_fit_id=classifier_fit_id,
         )
 
     def create_teaching_example(
@@ -1937,21 +1970,24 @@ class GeometricCoder:
             raise ValueError("Teaching-example text may not be empty.")
         if label not in {"positive", "negative"}:
             raise ValueError("Teaching-example label must be positive or negative.")
-        token = f"teaching_{uuid.uuid4().hex}"
-        vectors = self._transform_observation_text(clean_text, token=token)
+        observation_id = self.database.create_teaching_example(
+            code_id=code_id, text=clean_text, label=label, note=note,
+            geometry_vectors={},
+        )
         latest_by_spec: dict[int, dict[str, Any]] = {}
         if assess_before_training:
+            supported = self.transformable_geometry_ids()
             for spec in self.database.list_classifier_specs(code_id=int(code_id)):
                 fit = self.database.latest_classifier_fit(
                     classifier_spec_id=int(spec["classifier_spec_id"]),
                     code_id=int(code_id),
                 )
-                if fit is not None:
+                if fit is not None and int(fit["geometry_id"]) in supported:
                     latest_by_spec[int(spec["classifier_spec_id"])] = fit
-        observation_id = self.database.create_teaching_example(
-            code_id=code_id, text=clean_text, label=label, note=note,
-            geometry_vectors=vectors,
-        )
+            for geometry_id in {
+                int(fit["geometry_id"]) for fit in latest_by_spec.values()
+            }:
+                self.materialize_derived_vectors(geometry_id, [observation_id])
         for fit in latest_by_spec.values():
             vector = self.observation_vector(
                 observation_id, int(fit["geometry_id"])
@@ -2276,9 +2312,12 @@ class GeometricCoder:
             raise TypeError("export_predictor() requires a GeCoPredictorRef from predictors().")
 
         code = self.database.get_code(int(ref.code_id))
-        snapshot = self._classifier_training_snapshot(
-            int(ref.code_id), self.database.current_annotations(int(ref.code_id))
-        )
+        annotations = self.database.current_annotations(int(ref.code_id))
+
+        def member_snapshot(spec: Mapping[str, Any]) -> dict[str, Any]:
+            return self._classifier_training_snapshot(
+                int(ref.code_id), annotations, int(spec["geometry_id"])
+            )
 
         if ref.kind == "classifier":
             spec = self.database.get_classifier_spec(int(ref.id))
@@ -2294,7 +2333,9 @@ class GeometricCoder:
             )
             if fit is None:
                 raise ValueError(f"Classifier {spec['name']!r} has not been trained.")
-            stale = self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot)
+            stale = self._classifier_fit_stale(
+                spec=spec, fit=fit, snapshot=member_snapshot(spec)
+            )
             if stale and not allow_stale:
                 raise ValueError(
                     f"Classifier {spec['name']!r} has a stale retained fit. "
@@ -2384,7 +2425,9 @@ class GeometricCoder:
             if expected_snapshot is None or committee_fit["training_snapshot"] != expected_snapshot:
                 stale_reasons.append("learned committee fit no longer matches the current committee/training state")
             for spec, fit in zip(member_specs, member_fits, strict=True):
-                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                if self._classifier_fit_stale(
+                    spec=spec, fit=fit, snapshot=member_snapshot(spec)
+                ):
                     stale_reasons.append(f"member {spec['name']!r} is stale")
             stacker = self.artifacts.load_model(
                 self.project_dir, str(committee_fit["artifact_path"])
@@ -2406,7 +2449,9 @@ class GeometricCoder:
                         f"Train {spec['name']!r} before exporting committee {committee['name']!r}."
                     )
                 member_fits.append(fit)
-                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                if self._classifier_fit_stale(
+                    spec=spec, fit=fit, snapshot=member_snapshot(spec)
+                ):
                     stale_reasons.append(f"member {spec['name']!r} is stale")
 
         stale = bool(stale_reasons)
@@ -2468,10 +2513,15 @@ class GeometricCoder:
         )
         return self.export_predictor(ref)
 
-    def training_label_counts(self, code_id: int) -> dict[str, int]:
-        """Count positive and negative labels currently eligible for training."""
-        eligible = self._eligible_training_annotations(
-            code_id, self.database.current_annotations(code_id)
+    def training_label_counts(
+        self, code_id: int, *, geometry_id: int | None = None
+    ) -> dict[str, int]:
+        """Count eligible labels, optionally restricted to one representation."""
+        annotations = self.database.current_annotations(int(code_id))
+        eligible = (
+            self._eligible_training_annotations(int(code_id), annotations)
+            if geometry_id is None
+            else self._geometry_training_labels(int(code_id), annotations, int(geometry_id))
         )
         return {
             "positive": sum(row["value"] == "positive" for row in eligible),
@@ -2686,11 +2736,37 @@ class GeometricCoder:
         """Delete a committee definition without deleting its historical fits."""
         self.database.delete_classifier_committee(int(committee_id))
 
+    def _geometry_training_labels(
+        self, code_id: int, annotations: Sequence[dict[str, Any]],
+        geometry_id: int,
+    ) -> list[dict[str, Any]]:
+        """Select eligible labels actually represented in one geometry."""
+        candidates = self._eligible_training_annotations(code_id, annotations)
+        if int(geometry_id) in self.transformable_geometry_ids():
+            return candidates
+        unavailable = self.database.unrepresented_derived_observation_ids(
+            int(geometry_id)
+        )
+        return [
+            row for row in candidates
+            if int(row["observation_id"]) not in unavailable
+        ]
+
     def _classifier_training_snapshot(
-        self, code_id: int, annotations: Sequence[dict[str, Any]]
+        self, code_id: int, annotations: Sequence[dict[str, Any]],
+        geometry_id: int | None = None,
     ) -> dict[str, Any]:
-        """Return the reproducible training state for one code."""
-        labeled = self._eligible_training_annotations(code_id, annotations)
+        """Record only evidence applicable to this classifier's geometry."""
+        labeled = (
+            self._eligible_training_annotations(code_id, annotations)
+            if geometry_id is None else
+            self._geometry_training_labels(code_id, annotations, geometry_id)
+        )
+        supported_derived = (
+            None if geometry_id is None
+            or int(geometry_id) in self.transformable_geometry_ids()
+            else self.database.derived_observation_ids_for_geometry(int(geometry_id))
+        )
         return {
             "annotations": [
                 {
@@ -2708,6 +2784,8 @@ class GeometricCoder:
                 for example in self.database.list_teaching_examples(
                     code_id, include_deleted=True
                 )
+                if supported_derived is None
+                or int(example["observation_id"]) in supported_derived
             ],
         }
 
@@ -2723,7 +2801,14 @@ class GeometricCoder:
         """
         observations = self.database.list_observations()
         atomic = [row for row in observations if row["kind"] == "atomic"]
-        derived = [row for row in observations if row["kind"] != "atomic"]
+        supported_ids = self.database.derived_observation_ids_for_geometry(
+            int(geometry_id)
+        )
+        derived = [
+            row for row in observations
+            if row["kind"] != "atomic"
+            and int(row["observation_id"]) in supported_ids
+        ]
         observation_ids = [
             *[int(row["observation_id"]) for row in atomic],
             *[int(row["observation_id"]) for row in derived],
@@ -2750,11 +2835,13 @@ class GeometricCoder:
         )
 
     def _classifier_training_evidence(
-        self, *, code_id: int
+        self, *, code_id: int, geometry_id: int
     ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
-        """Return eligible labels and snapshot without touching geometry artifacts."""
+        """Return geometry-supported labels without loading numerical artifacts."""
         annotations = self.database.current_annotations(int(code_id))
-        labeled = self._eligible_training_annotations(int(code_id), annotations)
+        labeled = self._geometry_training_labels(
+            int(code_id), annotations, int(geometry_id)
+        )
         if not any(row["value"] == "positive" for row in labeled) or not any(
             row["value"] == "negative" for row in labeled
         ):
@@ -2764,7 +2851,9 @@ class GeometricCoder:
         labels = np.asarray(
             [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
         )
-        snapshot = self._classifier_training_snapshot(int(code_id), annotations)
+        snapshot = self._classifier_training_snapshot(
+            int(code_id), annotations, int(geometry_id)
+        )
         return labeled, labels, snapshot
 
     def _classifier_training_rows(
@@ -2817,7 +2906,12 @@ class GeometricCoder:
         self, *, code_id: int, geometry_id: int
     ) -> tuple[list[dict[str, Any]], Matrix, np.ndarray, dict[str, Any]]:
         """Return eligible evidence, vectors, labels, and the exact training snapshot."""
-        labeled, labels, snapshot = self._classifier_training_evidence(code_id=int(code_id))
+        labeled, labels, snapshot = self._classifier_training_evidence(
+            code_id=int(code_id), geometry_id=int(geometry_id)
+        )
+        self.materialize_derived_vectors(
+            int(geometry_id), [int(row["observation_id"]) for row in labeled],
+        )
         training_matrix, _ = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(geometry_id)
         )
@@ -2988,7 +3082,7 @@ class GeometricCoder:
         # we know a new fit is actually required.  This keeps the common active-learning
         # path -- Train on an already-current classifier -- effectively metadata-only.
         labeled, labels, snapshot = self._classifier_training_evidence(
-            code_id=int(code_id)
+            code_id=int(code_id), geometry_id=int(spec["geometry_id"])
         )
 
         # Fast path: ordinary recommendation requests should not rerun CV or reload a
@@ -3010,6 +3104,9 @@ class GeometricCoder:
             }
             return result
 
+        # A genuine fit makes every compatible derived observation available for
+        # this geometry's frozen predictions, not only the current code's labels.
+        self.materialize_derived_vectors(int(spec["geometry_id"]))
         training_matrix, atomic_matrix = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(spec["geometry_id"])
         )
@@ -3149,19 +3246,21 @@ class GeometricCoder:
         missing_ids = self.database.missing_classifier_prediction_observation_ids(fit_id)
         if not missing_ids:
             return
-        observations = self.database.list_observations()
-        observation_ids = [int(row["observation_id"]) for row in observations]
-        position_by_id = {observation_id: position for position, observation_id in enumerate(observation_ids)}
-        missing_positions = [position_by_id[observation_id] for observation_id in missing_ids]
         scored_ids, scoring_matrix = self._classifier_scoring_matrix(
             int(fit["geometry_id"])
         )
-        if scored_ids != observation_ids:
-            raise RuntimeError("Classifier scoring observation order changed unexpectedly.")
+        position_by_id = {
+            observation_id: position
+            for position, observation_id in enumerate(scored_ids)
+        }
+        if any(observation_id not in position_by_id for observation_id in missing_ids):
+            raise RuntimeError("Predictions requested for unsupported observations.")
         estimator = self.artifacts.load_model(
             self.project_dir, str(fit["artifact_path"])
         )
-        missing_matrix = scoring_matrix[missing_positions]
+        missing_matrix = scoring_matrix[
+            [position_by_id[observation_id] for observation_id in missing_ids]
+        ]
         outputs = score_classifier(
             estimator=estimator,
             algorithm=str(fit["algorithm"]),
@@ -3169,10 +3268,10 @@ class GeometricCoder:
             matrix=missing_matrix,
         )
         predictions = []
-        for output_position, matrix_position in enumerate(missing_positions):
+        for output_position, observation_id in enumerate(missing_ids):
             predictions.append(
                 {
-                    "observation_id": observation_ids[matrix_position],
+                    "observation_id": observation_id,
                     "predicted_label": (
                         "positive"
                         if int(outputs.predicted_labels[output_position]) == 1
@@ -3250,14 +3349,8 @@ class GeometricCoder:
                 "status": "no_classifiers", "trained_fit_ids": {},
                 "reused_classifier_spec_ids": [], "requested_classifier_spec_ids": [],
             }
-        # An event that leaves just one training class must not fail or fit.
-        labels = self.training_label_counts(int(code_id))
-        if not (labels["positive"] and labels["negative"]):
-            return {
-                "status": "awaiting_two_classes", "trained_fit_ids": {},
-                "reused_classifier_spec_ids": [],
-                "requested_classifier_spec_ids": selected,
-            }
+        # A derived teaching example may be available to some geometries but
+        # not others. Eligibility must be checked for each selected model.
         classifier_rows = self.classifier_status(
             code_id=int(code_id), classifier_spec_ids=selected
         )["classifiers"]
@@ -3272,15 +3365,39 @@ class GeometricCoder:
                 "reused_classifier_spec_ids": selected,
                 "requested_classifier_spec_ids": selected,
             }
+        trainable_ids: list[int] = []
+        awaiting_ids: list[int] = []
+        for row in classifier_rows:
+            spec_id = int(row["classifier_spec_id"])
+            if spec_id not in pending_ids:
+                continue
+            labels = self.training_label_counts(
+                int(code_id), geometry_id=int(row["geometry_id"])
+            )
+            if labels["positive"] and labels["negative"]:
+                trainable_ids.append(spec_id)
+            else:
+                awaiting_ids.append(spec_id)
+        if not trainable_ids:
+            return {
+                "status": "awaiting_two_classes",
+                "trained_fit_ids": {},
+                "reused_classifier_spec_ids": [
+                    spec_id for spec_id in selected if spec_id not in pending_ids
+                ],
+                "requested_classifier_spec_ids": selected,
+                "awaiting_classifier_spec_ids": awaiting_ids,
+            }
         fits = self.train_classifiers(
             code_id=int(code_id),
-            classifier_spec_ids=pending_ids,
+            classifier_spec_ids=trainable_ids,
             tune=bool(tune),
             retune_current=False,
             folds=int(folds),
         )
         return {
-            "status": "trained", "trained_fit_ids": {
+            "status": "trained",
+            "awaiting_classifier_spec_ids": awaiting_ids, "trained_fit_ids": {
                 int(spec_id): int(fit["classifier_fit_id"])
                 for spec_id, fit in fits.items()
             },
@@ -3295,7 +3412,6 @@ class GeometricCoder:
     ) -> dict[str, Any]:
         """Report not-trained, current, or stale status for classifiers."""
         annotations = self.database.current_annotations(int(code_id))
-        snapshot = self._classifier_training_snapshot(int(code_id), annotations)
         selected = (
             self.database.list_classifier_specs(code_id=int(code_id))
             if classifier_spec_ids is None
@@ -3308,6 +3424,9 @@ class GeometricCoder:
         for spec in selected:
             if int(spec["code_id"]) != int(code_id):
                 raise ValueError("A selected classifier belongs to another code.")
+            snapshot = self._classifier_training_snapshot(
+                int(code_id), annotations, int(spec["geometry_id"])
+            )
             latest = self.database.latest_classifier_fit(
                 code_id=int(code_id),
                 classifier_spec_id=int(spec["classifier_spec_id"]),
@@ -3340,7 +3459,9 @@ class GeometricCoder:
                     ),
                 }
             )
-        return {"classifiers": rows, "snapshot": snapshot}
+        return {"classifiers": rows, "snapshot": (
+            self._classifier_training_snapshot(int(code_id), annotations)
+        )}
 
     def tune_classifier_regularization(
         self,
@@ -3415,8 +3536,26 @@ class GeometricCoder:
         member_fit_ids: Sequence[int],
     ) -> dict[str, Any]:
         annotations = self.database.current_annotations(int(code_id))
+        unsupported_derived: set[int] = set()
+        transformable = self.transformable_geometry_ids()
+        for fit_id in member_fit_ids:
+            member = self.database.get_classifier_fit(int(fit_id))
+            geometry_id = int(member["geometry_id"])
+            if geometry_id not in transformable:
+                unsupported_derived.update(
+                    self.database.unrepresented_derived_observation_ids(geometry_id)
+                )
+        applicable = [
+            row for row in annotations
+            if int(row["observation_id"]) not in unsupported_derived
+        ]
+        training_snapshot = self._classifier_training_snapshot(int(code_id), applicable)
+        training_snapshot["teaching_status"] = [
+            row for row in training_snapshot["teaching_status"]
+            if int(row["observation_id"]) not in unsupported_derived
+        ]
         return {
-            "training": self._classifier_training_snapshot(int(code_id), annotations),
+            "training": training_snapshot,
             "committee_id": int(committee["committee_id"]),
             "committee_updated_at": str(committee["updated_at"]),
             "aggregation": str(committee["aggregation"]),
@@ -3467,14 +3606,20 @@ class GeometricCoder:
         member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
 
         annotations = self.database.current_annotations(int(code_id))
-        labeled = self._eligible_training_annotations(int(code_id), annotations)
+        labeled = [
+            row for row in self._eligible_training_annotations(int(code_id), annotations)
+            if all(
+                int(row["observation_id"]) in scores for scores in member_score_maps
+            )
+        ]
         if not any(row["value"] == "positive" for row in labeled) or not any(
             row["value"] == "negative" for row in labeled
         ):
-            raise ValueError("Committee training requires Present and Absent examples.")
+            raise ValueError(
+                "Committee training requires Present and Absent examples "
+                "represented by every member classifier."
+            )
         training_ids = [int(row["observation_id"]) for row in labeled]
-        if any(any(obs_id not in scores for obs_id in training_ids) for scores in member_score_maps):
-            raise ValueError("A member classifier is missing scores for committee training examples.")
         training_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in training_ids] for scores in member_score_maps]
         )
@@ -3483,9 +3628,13 @@ class GeometricCoder:
         )
 
         observations = self.database.list_observations()
-        scoring_ids = [int(row["observation_id"]) for row in observations]
-        if any(any(obs_id not in scores for obs_id in scoring_ids) for scores in member_score_maps):
-            raise ValueError("A member classifier is missing scores for committee observations.")
+        scoring_ids = [
+            int(row["observation_id"])
+            for row in observations
+            if all(
+                int(row["observation_id"]) in scores for scores in member_score_maps
+            )
+        ]
         scoring_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in scoring_ids] for scores in member_score_maps]
         )
@@ -3650,13 +3799,14 @@ class GeometricCoder:
         self, *, code_id: int, committee: Mapping[str, Any]
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Return latest member-fit metadata using one shared training snapshot."""
-        snapshot = self._classifier_training_snapshot(
-            int(code_id), self.database.current_annotations(int(code_id))
-        )
+        annotations = self.database.current_annotations(int(code_id))
         states: list[dict[str, Any]] = []
         for member in committee["members"]:
             spec_id = int(member["classifier_spec_id"])
             spec = self.database.get_classifier_spec(spec_id)
+            snapshot = self._classifier_training_snapshot(
+                int(code_id), annotations, int(spec["geometry_id"])
+            )
             fit = self.database.latest_classifier_fit(
                 code_id=int(code_id), classifier_spec_id=spec_id
             )
@@ -3682,7 +3832,7 @@ class GeometricCoder:
                     "stale": stale,
                 }
             )
-        return states, snapshot
+        return states, self._classifier_training_snapshot(int(code_id), annotations)
 
     def _latest_trainable_committee_scores(
         self, *, code_id: int, committee_id: int
@@ -3752,7 +3902,8 @@ class GeometricCoder:
         if any(unit_id not in score_by_unit for unit_id in unit_ids):
             return None
         snapshot = self._classifier_training_snapshot(
-            int(code_id), self.database.current_annotations(int(code_id))
+            int(code_id), self.database.current_annotations(int(code_id)),
+            int(spec["geometry_id"]),
         )
         return {
             "fit": fit,
@@ -3963,7 +4114,7 @@ class GeometricCoder:
                     stale = (
                         fit["training_snapshot"]
                         != self._classifier_training_snapshot(
-                            int(code_id), annotations_now
+                            int(code_id), annotations_now, int(spec["geometry_id"])
                         )
                         or int(fit["geometry_id"]) != int(spec["geometry_id"])
                         or str(fit["algorithm"]) != str(spec["algorithm"])
@@ -4347,7 +4498,9 @@ class GeometricCoder:
                         return None
                     stale = (
                         fit["training_snapshot"]
-                        != self._classifier_training_snapshot(int(code_id), annotations)
+                        != self._classifier_training_snapshot(
+                            int(code_id), annotations, int(spec["geometry_id"])
+                        )
                         or int(fit["geometry_id"]) != int(spec["geometry_id"])
                         or str(fit["algorithm"]) != str(spec["algorithm"])
                         or fit["hyperparameters"] != spec["hyperparameters"]
@@ -4815,6 +4968,7 @@ class GeometricCoder:
         probability_max: float | None = None,
         limit: int | None = None,
         offset: int = 0,
+        sort_by: Sequence[tuple[str, str]] | None = None,
         include_component_probabilities: bool = False,
     ) -> list[dict[str, Any]]:
         """Return review rows for an Apply run."""
@@ -4828,6 +4982,7 @@ class GeometricCoder:
             probability_max=probability_max,
             limit=limit,
             offset=offset,
+            sort_by=sort_by,
         )
         if not include_component_probabilities or not proposals:
             return proposals
@@ -4851,6 +5006,19 @@ class GeometricCoder:
                 for classifier_fit_id, probabilities in components.items()
             }
         return proposals
+
+    def count_apply_proposals(
+        self, apply_run_id: int, *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+    ) -> int:
+        """Count the same active, filtered Apply rows as the page query."""
+        return self.database.count_apply_proposals(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            probability_min=probability_min, probability_max=probability_max,
+        )
 
     def review_apply_proposal(
         self,

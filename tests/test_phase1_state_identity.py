@@ -144,7 +144,12 @@ def test_ui_guards_apply_events_and_prediction_clicks_against_stale_identity() -
     ).read_text(encoding="utf-8")
     assert '"apply_run_id": int(draft_id)' in source
     assert "_apply_rows_match_draft([row], int(draft_id))" in source
-    assert "_apply_rows_match_draft(table_rows, int(draft_id))" in source
+    # Phase 5 verifies the server-paged draft, filter, sort and page identity
+    # before any edit or bulk/commit action; the old client-side
+    # virtualRowData guard is no longer authoritative.
+    assert "def _verified_apply_page(" in source
+    assert source.count("current_page_ids = _verified_apply_page(") == 1
+    assert "valid_ids = set(_verified_apply_page(" in source
     render = source.split("def render_prediction_geometry(", 1)[1].split("\n    @app.callback(", 1)[0]
     assert "_prediction_geometry_matches_code(refresh_state, code_id)" in render
     click = source.split("def open_prediction_geometry_point(", 1)[1].split("\n    @app.callback(", 1)[0]

@@ -537,6 +537,10 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 
 /* Apply and Review uses AG Grid's own theme API; CSS here is layout-only. */
 .apply-review-grid { margin-top: 0.35rem; }
+.apply-pagination { border: 1px solid var(--geco-border); border-top: 0; border-radius: 0 0 9px 9px; }
+.apply-pagination .apply-page-size { width: 104px; min-width: 104px; }
+.apply-pagination .page-status { margin-left: 0; }
+
 
 /* 0.4.16 focused UI cleanup */
 .project-summary-separator {
