@@ -3150,10 +3150,9 @@ class GeometricCoder:
             }
             return result
 
-        self.materialize_derived_vectors(
-            int(spec["geometry_id"]),
-            [int(row["observation_id"]) for row in labeled],
-        )
+        # A genuine fit makes every compatible derived observation available for
+        # this geometry's frozen predictions, not only the current code's labels.
+        self.materialize_derived_vectors(int(spec["geometry_id"]))
         training_matrix, atomic_matrix = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(spec["geometry_id"])
         )
