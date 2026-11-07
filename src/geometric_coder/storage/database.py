@@ -4509,38 +4509,38 @@ class ProjectDatabase:
         probability_max: float | None = None,
     ) -> tuple[str, list[Any]]:
         """One authoritative predicate for paged data and matching-row counts."""
-            clauses = ["ap.apply_run_id = ?"]
-            parameters: list[Any] = [int(apply_run_id)]
-            if not include_inactive:
-                clauses.extend([
-                    "ap.removed_at IS NULL",
-                    "ap.committed_annotation_event_id IS NULL",
-                ])
-            if proposed_label is not None:
-                clauses.append("ap.proposed_label = ?")
-                parameters.append(str(proposed_label))
-            if decision is not None:
-                clauses.append("ap.decision = ?")
-                parameters.append(str(decision))
-            elif not include_unreviewed:
-                clauses.append("ap.decision != 'unreviewed'")
-            if probability_min is not None:
-                if not 0.0 <= float(probability_min) <= 1.0:
-                    raise ValueError("probability_min must lie in [0, 1]")
-                clauses.append("ap.probability >= ?")
-                parameters.append(float(probability_min))
-            if probability_max is not None:
-                if not 0.0 <= float(probability_max) <= 1.0:
-                    raise ValueError("probability_max must lie in [0, 1]")
-                clauses.append("ap.probability <= ?")
-                parameters.append(float(probability_max))
-            if (
-                probability_min is not None
-                and probability_max is not None
-                and float(probability_min) > float(probability_max)
-            ):
-                raise ValueError("probability_min may not exceed probability_max")
-    
+        clauses = ["ap.apply_run_id = ?"]
+        parameters: list[Any] = [int(apply_run_id)]
+        if not include_inactive:
+            clauses.extend([
+                "ap.removed_at IS NULL",
+                "ap.committed_annotation_event_id IS NULL",
+            ])
+        if proposed_label is not None:
+            clauses.append("ap.proposed_label = ?")
+            parameters.append(str(proposed_label))
+        if decision is not None:
+            clauses.append("ap.decision = ?")
+            parameters.append(str(decision))
+        elif not include_unreviewed:
+            clauses.append("ap.decision != 'unreviewed'")
+        if probability_min is not None:
+            if not 0.0 <= float(probability_min) <= 1.0:
+                raise ValueError("probability_min must lie in [0, 1]")
+            clauses.append("ap.probability >= ?")
+            parameters.append(float(probability_min))
+        if probability_max is not None:
+            if not 0.0 <= float(probability_max) <= 1.0:
+                raise ValueError("probability_max must lie in [0, 1]")
+            clauses.append("ap.probability <= ?")
+            parameters.append(float(probability_max))
+        if (
+            probability_min is not None
+            and probability_max is not None
+            and float(probability_min) > float(probability_max)
+        ):
+            raise ValueError("probability_min may not exceed probability_max")
+
         return " AND ".join(clauses), parameters
 
     @staticmethod
