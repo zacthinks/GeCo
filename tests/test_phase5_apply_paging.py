@@ -130,3 +130,74 @@ def test_all_scope_does_not_mean_visible_page(tmp_path: Path) -> None:
     assert reviewed["processed"] == count
     assert reviewed["removed_unreviewed"] == count
     assert reviewed["committed"] == 0
+
+
+def test_hidden_workspace_skips_apply_sources_and_presentation_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dash import no_update
+
+    from geometric_coder.ui.app import _memo_presentation_is_active, create_app
+
+    project, _run_id = _draft(tmp_path)
+    app = create_app(project)
+
+    assert _memo_presentation_is_active("?presentation=memo&memo_id=1")
+    assert not _memo_presentation_is_active("")
+    assert not _memo_presentation_is_active("?presentation=other")
+
+    callbacks = app.callback_map
+    source_entries = [
+        entry["callback"].__wrapped__
+        for name, entry in callbacks.items()
+        if "apply-source-dropdown.options" in name
+        and "apply-source-dropdown.value" in name
+    ]
+    assert len(source_entries) == 1
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Hidden Apply must not inspect classifier status")
+
+    monkeypatch.setattr(project, "classifier_status", forbidden)
+    hidden = source_entries[0](None, 0, 0, 0, 0, 0, "explore", None)
+    assert hidden == (no_update, no_update)
+
+    map_entries = [
+        entry["callback"].__wrapped__
+        for name, entry in callbacks.items()
+        if "memo-presentation-map.figure" in name
+        and "memo-presentation-page-status.children" in name
+    ]
+    assert len(map_entries) == 1
+    unused = map_entries[0](
+        None, 0, 0, "__all__", "5000", 1, None, "", None
+    )
+    assert unused == (no_update, no_update)
+
+
+def test_paging_ui_renders_only_one_server_page_at_a_time(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project, _run_id = _draft(tmp_path)
+    app = create_app(project)
+    callbacks = app.callback_map
+    matches = [
+        entry["callback"].__wrapped__
+        for name, entry in callbacks.items()
+        if "apply-table.rowData" in name
+        and "apply-run-summary.children" in name
+    ]
+    assert len(matches) == 1
+    grid_rows, summary, pager, previous_disabled, next_disabled, snapshot = matches[0](
+        _run_id, "", "", [0.0, 1.0], 0, 25, None, 0
+    )
+    assert len(grid_rows) == 25
+    assert snapshot["unit_ids"] == [row["unit_id"] for row in grid_rows]
+    assert snapshot["page_count"] == 3
+    assert previous_disabled is True and next_disabled is False
+    assert "60 matching" in pager
+    assert f"Draft {_run_id}" in summary
+    last = matches[0](_run_id, "", "", [0.0, 1.0], 99, 25, None, 0)
+    assert len(last[0]) == 10
+    assert last[5]["page_index"] == 2
+    assert last[3] is False and last[4] is True
