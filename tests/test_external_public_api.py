@@ -269,10 +269,9 @@ def test_mixed_geometry_derived_evidence_is_geometry_specific(tmp_path: Path) ->
         [int(units[0]["unit_id"]), int(units[1]["unit_id"])],
         code_id, "negative",
     )
+    assert project.database.observation_vector_record(teacher, available_id) is not None
+    assert project.database.observation_vector_record(span, available_id) is None
     for observation_id in (teacher, span):
-        assert project.database.observation_vector_record(
-            observation_id, available_id
-        ) is not None
         assert project.database.observation_vector_record(
             observation_id, unavailable_id
         ) is None
@@ -330,7 +329,7 @@ def test_mixed_geometry_derived_evidence_is_geometry_specific(tmp_path: Path) ->
     )["status"] == "current"
 
 
-def test_untransformable_external_project_still_disallows_derived_text(
+def test_untransformable_external_project_stores_derived_text_without_vectors(
     tmp_path: Path,
 ) -> None:
     project = _external_project(tmp_path)
@@ -340,10 +339,12 @@ def test_untransformable_external_project_still_disallows_derived_text(
     )
     assert not project.can_transform_new_observations()
     code_id = project.create_code("unsupported")
-    with pytest.raises(ConfigurationError, match="No registered geometry"):
-        project.create_teaching_example(
-            code_id=code_id, text="not representable", label="positive"
-        )
+    observation_id = project.create_teaching_example(
+        code_id=code_id, text="not representable", label="positive"
+    )
+    assert project.database.observation_vector_record(
+        observation_id, project.database.list_geometries()[0]["geometry_id"]
+    ) is None
 
 
 def test_partial_compatibility_keeps_teaching_controls_enabled(
