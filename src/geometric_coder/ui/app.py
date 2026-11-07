@@ -6112,23 +6112,18 @@ def create_app(
             "unsure": "#d39a22",
         }[value]
         patch: Any = no_update
-        if (
-            prediction_page_token
-            and _prediction_geometry_matches_code(prediction_refresh, code_id)
-        ):
+        if prediction_page_token:
             with prediction_page_lock:
                 page = prediction_page_indexes.get(str(prediction_page_token))
-            if (
-                page is not None
-                and page[0] == int(code_id)
-                and page[1] == str(prediction_refresh.get("cache_key"))
-            ):
-                location = page[2].get(int(observation_id))
-                if location is not None:
-                    trace_index, position = location
-                    patch = Patch()
-                    patch["data"][trace_index]["marker"]["color"][position] = color
-                    patch["data"][trace_index]["marker"]["line"]["color"][position] = color
+            location = _matching_prediction_page_point(
+                page, code_id=code_id, refresh_state=prediction_refresh,
+                observation_id=int(observation_id),
+            )
+            if location is not None:
+                trace_index, position = location
+                patch = Patch()
+                patch["data"][trace_index]["marker"]["color"][position] = color
+                patch["data"][trace_index]["marker"]["line"]["color"][position] = color
         # The persisted human judgment always wins over a possibly stale UI
         # classifier selection. Report scope errors without discarding the
         # normal annotation-store/figure refresh.
@@ -11728,6 +11723,19 @@ def _prediction_geometry_page_index(figure: go.Figure) -> dict[int, tuple[int, i
             if isinstance(value, (list, tuple, np.ndarray)) and len(value):
                 points[int(value[0])] = (trace_index, position)
     return points
+
+
+def _matching_prediction_page_point(
+    page: tuple[int, str, dict[int, tuple[int, int]]] | None,
+    *, code_id: int | None, refresh_state: dict[str, Any] | None,
+    observation_id: int,
+) -> tuple[int, int] | None:
+    """Resolve a plotted point only for the active frozen score snapshot."""
+    if page is None or not _prediction_geometry_matches_code(refresh_state, code_id):
+        return None
+    if page[0] != int(code_id) or page[1] != str(refresh_state.get("cache_key")):
+        return None
+    return page[2].get(int(observation_id))
 
 
 def _build_prediction_geometry_figure(
