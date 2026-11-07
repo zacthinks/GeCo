@@ -328,6 +328,22 @@ def effective_hyperparameters(
     return values
 
 
+def _stratified_candidates(*, count: int, dimensions: int) -> np.ndarray:
+    """Deterministic, bounded space-filling samples without a Cartesian grid.
+
+    Each continuous parameter receives one sample in every equally sized
+    interval of its search range. Shuffling dimensions independently covers
+    joint spaces without multiplying the evaluation budget.
+    """
+    rng = np.random.default_rng(0)
+    samples = np.empty((count, dimensions), dtype=float)
+    for dimension in range(dimensions):
+        values = (np.arange(count) + rng.random(count)) / count
+        rng.shuffle(values)
+        samples[:, dimension] = values
+    return samples
+
+
 def tuning_candidates(
     algorithm: str,
     hyperparameters: dict[str, Any] | None,
@@ -335,29 +351,27 @@ def tuning_candidates(
     max_neighbors: int | None = None,
     training_matrix: Matrix | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a compact, family-specific CV candidate plan.
+    """Return a bounded family-specific cross-validation candidate plan.
 
-    The grids intentionally remain small. Develop is an interactive exploratory
-    environment, not an AutoML system; Train should improve the current fit without
-    turning each recommendation into an expensive model-selection job.
+    Continuous parameters use reproducible stratified sampling; small finite
+    categorical/integer spaces use exhaustive combinations. The current saved
+    configuration is always included as a candidate.
     """
     base = normalize_hyperparameters(algorithm, hyperparameters)
-    regularization_grid = [10.0**power for power in (-3, -2, -1, 0, 1, 2, 3)]
 
     if algorithm in {"logistic_l2", "logistic_l1", "linear_svm"}:
         return [
-            normalize_hyperparameters(
-                algorithm, {**base, "regularization": float(value)}
-            )
-            for value in regularization_grid
+            base,
+            *[
+                normalize_hyperparameters(
+                    algorithm, {**base, "regularization": float(10.0 ** (-3 + 6 * value))}
+                )
+                for value in _stratified_candidates(count=12, dimensions=1)[:, 0]
+            ],
         ]
     if algorithm == "rbf_svm":
-        # Joint space-filling log-scale search, not a Cartesian grid.
-        rng = np.random.default_rng(0)
-        budget = 24
-        first = (np.arange(budget) + rng.random(budget)) / budget
-        second = (np.arange(budget) + rng.random(budget)) / budget
-        rng.shuffle(second)
+        # Joint 2D search, with gamma centered on the representation's
+        # scale when its actual training feature matrix is available.
         if training_matrix is not None:
             dims = int(training_matrix.shape[1])
             if sparse.issparse(training_matrix):
@@ -371,33 +385,35 @@ def tuning_candidates(
         else:
             baseline_gamma = 1.0
         candidates = [base]
-        for log_lambda, log_gamma in zip(
-            -3.0 + 6.0 * first, -2.0 + 4.0 * second, strict=True,
-        ):
+        for first, second in _stratified_candidates(count=24, dimensions=2):
             candidates.append(normalize_hyperparameters(
                 algorithm, {
                     **base,
-                    "regularization": float(10.0**log_lambda),
-                    "gamma": float(baseline_gamma * 10.0**log_gamma),
+                    "regularization": float(10.0 ** (-3.0 + 6.0 * first)),
+                    "gamma": float(baseline_gamma * 10.0 ** (-2.0 + 4.0 * second)),
                 },
             ))
         return candidates
     if algorithm == "logistic_elasticnet":
-        return [
-            normalize_hyperparameters(
-                algorithm,
-                {
+        candidates = [base]
+        for first, second in _stratified_candidates(count=24, dimensions=2):
+            candidates.append(normalize_hyperparameters(
+                algorithm, {
                     **base,
-                    "regularization": float(value),
-                    "l1_ratio": float(ratio),
+                    "regularization": float(10.0 ** (-3.0 + 6.0 * first)),
+                    "l1_ratio": float(0.05 + 0.9 * second),
                 },
-            )
-            for value, ratio in product(regularization_grid, (0.25, 0.5, 0.75))
-        ]
+            ))
+        return candidates
     if algorithm == "complement_nb":
         return [
-            normalize_hyperparameters(algorithm, {**base, "alpha": float(alpha)})
-            for alpha in (0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 10.0)
+            base,
+            *[
+                normalize_hyperparameters(
+                    algorithm, {**base, "alpha": float(10.0 ** (-3.0 + 4.0 * value))}
+                )
+                for value in _stratified_candidates(count=12, dimensions=1)[:, 0]
+            ],
         ]
     if algorithm == "decision_tree":
         return [
