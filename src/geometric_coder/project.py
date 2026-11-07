@@ -4815,6 +4815,7 @@ class GeometricCoder:
         probability_max: float | None = None,
         limit: int | None = None,
         offset: int = 0,
+        sort_by: Sequence[tuple[str, str]] | None = None,
         include_component_probabilities: bool = False,
     ) -> list[dict[str, Any]]:
         """Return review rows for an Apply run."""
@@ -4828,6 +4829,7 @@ class GeometricCoder:
             probability_max=probability_max,
             limit=limit,
             offset=offset,
+            sort_by=sort_by,
         )
         if not include_component_probabilities or not proposals:
             return proposals
@@ -4851,6 +4853,19 @@ class GeometricCoder:
                 for classifier_fit_id, probabilities in components.items()
             }
         return proposals
+
+    def count_apply_proposals(
+        self, apply_run_id: int, *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+    ) -> int:
+        """Count the same active, filtered Apply rows as the page query."""
+        return self.database.count_apply_proposals(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            probability_min=probability_min, probability_max=probability_max,
+        )
 
     def review_apply_proposal(
         self,
