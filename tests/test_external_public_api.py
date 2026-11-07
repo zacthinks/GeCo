@@ -160,13 +160,15 @@ def test_external_text_transform_capability_is_per_geometry(tmp_path: Path) -> N
     assert project.geometries()[0]["supports_text_transform"] is True
     assert project.can_transform_new_observations() is True
 
-    project.register_external_geometry(
+    incompatible_id = project.register_external_geometry(
         name="not_replayable",
         external_ref={"artifact": "minilm"},
         supports_query=False,
         supports_text_transform=False,
     )
-    assert project.can_transform_new_observations() is False
+    assert project.can_transform_new_observations() is True
+    assert project.transformable_geometry_ids() == {replayable_id}
+    assert incompatible_id not in project.transformable_geometry_ids()
 
 
 def test_external_text_transform_declaration_requires_provider_method(tmp_path: Path) -> None:
@@ -230,3 +232,115 @@ def test_semantic_search_reuses_matrix_when_transforming_query(
     # Direct transforms still validate width against the registered matrix.
     project.transform_query("minilm", "qualitative interview methods")
     assert len(fetched) == 2
+
+
+def test_mixed_geometry_derived_evidence_is_geometry_specific(tmp_path: Path) -> None:
+    """Unsupported geometries keep their atomic evidence and remain current."""
+    project = _transforming_external_project(tmp_path)
+    available_id = project.register_external_geometry(
+        name="transformable", external_ref={"artifact": "minilm"},
+        supports_text_transform=True,
+    )
+    unavailable_id = project.register_external_geometry(
+        name="fixed", external_ref={"artifact": "minilm"},
+        supports_text_transform=False,
+    )
+    code_id = project.create_code("mixed geometry coding")
+    available_spec = project.create_classifier_spec(
+        code_id=code_id, name="transformable classifier",
+        geometry_id=available_id,
+    )
+    unavailable_spec = project.create_classifier_spec(
+        code_id=code_id, name="fixed classifier",
+        geometry_id=unavailable_id,
+    )
+    units = project.database.list_units()
+    project.annotate(int(units[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(units[2]["observation_id"]), code_id, "negative")
+    project.train_classifiers(
+        code_id=code_id,
+        classifier_spec_ids=[available_spec, unavailable_spec],
+    )
+    teacher = project.create_teaching_example(
+        code_id=code_id, text="new teaching observation",
+        label="positive", assess_before_training=True,
+    )
+    span, _event = project.annotate_span(
+        [int(units[0]["unit_id"]), int(units[1]["unit_id"])],
+        code_id, "negative",
+    )
+    for observation_id in (teacher, span):
+        assert project.database.observation_vector_record(
+            observation_id, available_id
+        ) is not None
+        assert project.database.observation_vector_record(
+            observation_id, unavailable_id
+        ) is None
+
+    status = {
+        int(row["classifier_spec_id"]): row["status"]
+        for row in project.classifier_status(code_id=code_id)["classifiers"]
+    }
+    assert status[available_spec] == "stale"
+    assert status[unavailable_spec] == "current"
+    supported_fit = project.train_classifier(
+        code_id=code_id, classifier_spec_id=available_spec,
+    )
+    fixed_fit = project.train_classifier(
+        code_id=code_id, classifier_spec_id=unavailable_spec,
+    )
+    assert fixed_fit["training_selection"]["reason"] == "current_fit_reused"
+    supported_ids = {
+        int(row["observation_id"]) for row in
+        project.database.classifier_predictions(int(supported_fit["classifier_fit_id"]))
+    }
+    fixed_ids = {
+        int(row["observation_id"]) for row in
+        project.database.classifier_predictions(int(fixed_fit["classifier_fit_id"]))
+    }
+    assert {teacher, span} <= supported_ids
+    assert {teacher, span}.isdisjoint(fixed_ids)
+    assert project.database.classifier_predictions_complete(
+        int(fixed_fit["classifier_fit_id"])
+    )
+    assert not project.database.missing_classifier_prediction_observation_ids(
+        int(fixed_fit["classifier_fit_id"])
+    )
+    assert all(
+        row["status"] == "current"
+        for row in project.classifier_status(code_id=code_id)["classifiers"]
+    )
+
+    committee_id = project.create_classifier_committee(
+        code_id=code_id, name="mixed family committee",
+        classifier_spec_ids=[available_spec, unavailable_spec],
+        aggregation="logistic_stack",
+    )
+    committee_fit = project.train_classifier_committee(
+        code_id=code_id, committee_id=committee_id,
+    )
+    committee_predictions = project.database.classifier_committee_predictions(
+        int(committee_fit["committee_fit_id"])
+    )
+    assert {teacher, span}.isdisjoint({
+        int(row["observation_id"]) for row in committee_predictions
+    })
+    assert project.classifier_committee_status(
+        code_id=code_id, committee_id=committee_id
+    )["status"] == "current"
+
+
+def test_untransformable_external_project_still_disallows_derived_text(
+    tmp_path: Path,
+) -> None:
+    project = _external_project(tmp_path)
+    project.register_external_geometry(
+        name="fixed", external_ref={"artifact": "minilm"},
+        supports_text_transform=False,
+    )
+    assert not project.can_transform_new_observations()
+    code_id = project.create_code("unsupported")
+    with pytest.raises(ConfigurationError, match="No registered geometry"):
+        project.create_teaching_example(
+            code_id=code_id, text="not representable", label="positive"
+        )
