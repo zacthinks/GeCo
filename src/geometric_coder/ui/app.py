@@ -586,6 +586,11 @@ def create_app(
     codes = project.codes()
     classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
+    # Only visible point indices are retained for Develop judgment patches.
+    # Browser State carries a short token, never the complete Plotly figure.
+    prediction_page_indexes: dict[str, tuple[int, str, dict[int, tuple[int, int]]]] = {}
+    prediction_page_order: deque[str] = deque()
+    prediction_page_lock = Lock()
     # Short-lived, app-local snapshots of the *visible* Explore points only.
     # A revision token matches a plot to its overlay callback, even when
     # callbacks complete out of order. No browser-to-server figure State.
@@ -799,6 +804,7 @@ def create_app(
                 dcc.Store(id="classifier-spec-refresh-store", data=0),
                 dcc.Store(id="committee-refresh-store", data=0),
                 dcc.Store(id="prediction-geometry-refresh-store", data=None),
+                dcc.Store(id="prediction-geometry-page-token", data=None),
                 dcc.Store(id="apply-refresh-store", data=0),
                 dcc.Store(id="memo-refresh-store", data=0),
                 dcc.Store(id="active-memo-store", data=None),
@@ -6029,7 +6035,8 @@ def create_app(
         State("focus-recommendation-store", "data"),
         State("focus-span-selection-store", "data"),
         State("focus-refresh-store", "data"),
-        State("focus-prediction-map", "figure"),
+        State("prediction-geometry-page-token", "data"),
+        State("prediction-geometry-refresh-store", "data"),
         State("focus-auto-retrain", "value"),
         State("focus-train-scope", "value"),
         State("focus-tune-hyperparameters", "value"),
@@ -6048,7 +6055,8 @@ def create_app(
         recommendation: dict[str, Any] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
-        prediction_figure: dict[str, Any] | None,
+        prediction_page_token: str | None,
+        prediction_refresh: dict[str, Any] | None,
         auto_train_values: list[str] | None,
         train_scope_values: list[str] | None,
         tune_values: list[str] | None,
@@ -6104,20 +6112,23 @@ def create_app(
             "unsure": "#d39a22",
         }[value]
         patch: Any = no_update
-        if prediction_figure:
-            for trace_index, trace in enumerate(prediction_figure.get("data", [])):
-                for position, customdata in enumerate(trace.get("customdata") or []):
-                    if (
-                        isinstance(customdata, (list, tuple))
-                        and customdata
-                        and int(customdata[0]) == int(observation_id)
-                    ):
-                        patch = Patch()
-                        patch["data"][trace_index]["marker"]["color"][position] = color
-                        patch["data"][trace_index]["marker"]["line"]["color"][position] = color
-                        break
-                if patch is not no_update:
-                    break
+        if (
+            prediction_page_token
+            and _prediction_geometry_matches_code(prediction_refresh, code_id)
+        ):
+            with prediction_page_lock:
+                page = prediction_page_indexes.get(str(prediction_page_token))
+            if (
+                page is not None
+                and page[0] == int(code_id)
+                and page[1] == str(prediction_refresh.get("cache_key"))
+            ):
+                location = page[2].get(int(observation_id))
+                if location is not None:
+                    trace_index, position = location
+                    patch = Patch()
+                    patch["data"][trace_index]["marker"]["color"][position] = color
+                    patch["data"][trace_index]["marker"]["line"]["color"][position] = color
         # The persisted human judgment always wins over a possibly stale UI
         # classifier selection. Report scope errors without discarding the
         # normal annotation-store/figure refresh.
@@ -6507,6 +6518,7 @@ def create_app(
     @app.callback(
         Output("focus-prediction-map", "figure"),
         Output("focus-prediction-page-status", "children"),
+        Output("prediction-geometry-page-token", "data"),
         Input("prediction-geometry-refresh-store", "data"),
         Input("focus-prediction-page-size", "value"),
         Input("focus-prediction-page-number", "value"),
@@ -6519,17 +6531,17 @@ def create_app(
         page_number: Any,
         display_options: list[str] | None,
         code_id: int | None,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, str, str | None]:
         if not _prediction_geometry_matches_code(refresh_state, code_id):
-            return go.Figure(), "Code changed. Refresh the score view for this code."
+            return go.Figure(), "Code changed. Refresh the score view for this code.", None
         geometry = _prediction_geometry_from_cache(
             prediction_geometry_cache, refresh_state
         )
         if not geometry:
-            return go.Figure(), "Refresh the score view to display observations."
+            return go.Figure(), "Refresh the score view to display observations.", None
         visible = _prediction_geometry_visible_points(geometry, display_options)
         if not visible:
-            return go.Figure(), "No observations match the selected display options."
+            return go.Figure(), "No observations match the selected display options.", None
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
         include_coded = "coded" in set(display_options or [])
@@ -6564,7 +6576,16 @@ def create_app(
             status += f" · all {len(coded_positions):,} coded observations included"
             if extras:
                 status += f" ({extras:,} added beyond the page sample)"
-        return figure, status
+        token = uuid.uuid4().hex
+        index = _prediction_geometry_page_index(figure)
+        with prediction_page_lock:
+            prediction_page_indexes[token] = (
+                int(code_id), str(refresh_state["cache_key"]), index
+            )
+            prediction_page_order.append(token)
+            while len(prediction_page_order) > 8:
+                prediction_page_indexes.pop(prediction_page_order.popleft(), None)
+        return figure, status, token
 
     @app.callback(
         Output("focus-prediction-status", "children", allow_duplicate=True),
@@ -11679,6 +11700,19 @@ def _prediction_geometry_visible_points(
         for point in geometry.get("points", [])
         if str(point.get("kind")) in allowed
     ]
+
+
+def _prediction_geometry_page_index(figure: go.Figure) -> dict[int, tuple[int, int]]:
+    """Locate plotted observation IDs for small, identity-checked point patches."""
+    points: dict[int, tuple[int, int]] = {}
+    for trace_index, trace in enumerate(figure.data):
+        custom = getattr(trace, "customdata", None)
+        if custom is None:
+            continue
+        for position, value in enumerate(custom):
+            if isinstance(value, (list, tuple, np.ndarray)) and len(value):
+                points[int(value[0])] = (trace_index, position)
+    return points
 
 
 def _build_prediction_geometry_figure(
