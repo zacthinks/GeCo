@@ -11896,7 +11896,7 @@ def _display_local_browser_url(host: str, port: int) -> str:
 
 def _should_warm_semantic_runtime(project: GeometricCoder, *, mode: str) -> bool:
     """Only prewarm for standard workspaces with external queryable geometry."""
-    if mode != "standard" or not project.is_external_backed:
+    if mode != "standard" or not getattr(project, "is_external_backed", False):
         return False
     return any(
         str(record.get("storage_kind")) == "external"
