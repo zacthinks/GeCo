@@ -9346,11 +9346,20 @@ def _focus_layout(
                                         clearable=True,
                                         placeholder="Select a saved committee",
                                     ),
+                                    html.Div(
+                                        id="focus-committee-badge",
+                                        className="classifier-status-badge status-not-trained",
+                                    ),
+                                    html.Div(
+                                        id="focus-committee-status",
+                                        className="focus-model-status",
+                                    ),
                                     html.Button(
                                         "Train committee",
                                         id="focus-train-committee",
                                         n_clicks=0,
                                         className="primary-action classifier-train-button",
+                                        style={"display": "none"},
                                     ),
                                     html.Div(
                                         [
@@ -9366,14 +9375,6 @@ def _focus_layout(
                                             ),
                                         ],
                                         className="classifier-management-row",
-                                    ),
-                                    html.Div(
-                                        id="focus-committee-badge",
-                                        className="classifier-status-badge status-not-trained",
-                                    ),
-                                    html.Div(
-                                        id="focus-committee-status",
-                                        className="focus-model-status",
                                     ),
                                     html.Div(
                                         id="focus-committee-train-status",
