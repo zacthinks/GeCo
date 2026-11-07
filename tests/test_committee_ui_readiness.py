@@ -57,7 +57,7 @@ def test_develop_committee_layout_matches_active_classifier_controls():
     )[0]
 
     assert 'html.Label("Active classifier")' in panel
-    assert 'html.Label(_tooltip_label(html, "Active committee"' in panel
+    assert 'html.Label("Active committee")' in panel
     assert 'className="active-classifier-heading active-committee-heading"' in panel
     # Both badge/selector pairs use the same visual elements and order.
     badge = panel.index('id="focus-committee-badge"')

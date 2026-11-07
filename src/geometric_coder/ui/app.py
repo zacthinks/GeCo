@@ -9443,7 +9443,7 @@ def _focus_layout(
                                     ),
                                     html.Div(
                                         [
-                                            html.Label(_tooltip_label(html, "Active committee", "Combine multiple classifiers to make predictions and recommendations.")),
+                                            html.Label("Active committee"),
                                             html.Span(
                                                 "Not trained",
                                                 id="focus-committee-badge",
