@@ -5628,6 +5628,8 @@ def create_app(
         Input("teaching-example-refresh-store", "data"),
         Input("focus-model-refresh-store", "data"),
         Input("classifier-spec-refresh-store", "data"),
+        Input("apply-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
     )
     def update_focus_active_classifier_status(
         code_id: int | None,
@@ -5636,8 +5638,12 @@ def create_app(
         teaching_refresh: int | None,
         model_refresh: int | None,
         spec_refresh: int | None,
-    ) -> tuple[str, str, str]:
-        del focus_refresh, teaching_refresh, model_refresh, spec_refresh
+        apply_refresh: int | None,
+        workspace: str | None,
+    ) -> tuple[Any, Any, Any]:
+        del focus_refresh, teaching_refresh, model_refresh, spec_refresh, apply_refresh
+        if workspace != "focus":
+            return no_update, no_update, no_update
         if code_id is None:
             return "No code", "classifier-status-badge status-not-trained", ""
         if classifier_spec_id is None:
@@ -5669,6 +5675,8 @@ def create_app(
         Input("focus-model-refresh-store", "data"),
         Input("committee-refresh-store", "data"),
         Input("classifier-spec-refresh-store", "data"),
+        Input("apply-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
     )
     def update_focus_committee_status(
         code_id: int | None,
@@ -5678,8 +5686,12 @@ def create_app(
         model_refresh: int | None,
         committee_refresh: int | None,
         spec_refresh: int | None,
-    ) -> tuple[str, str, str]:
-        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh
+        apply_refresh: int | None,
+        workspace: str | None,
+    ) -> tuple[Any, Any, Any]:
+        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh, apply_refresh
+        if workspace != "focus":
+            return no_update, no_update, no_update
         if code_id is None:
             return "Select a code first.", "No code", "classifier-status-badge status-not-trained"
         if committee_id is None:
