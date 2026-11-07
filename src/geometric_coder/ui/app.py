@@ -6852,12 +6852,50 @@ def create_app(
         )
 
     @app.callback(
-        Output("apply-table", "rowData"),
-        Output("apply-run-summary", "children"),
+        Output("apply-page-index", "data"),
+        Input("apply-page-previous", "n_clicks"),
+        Input("apply-page-next", "n_clicks"),
         Input("apply-run-dropdown", "value"),
         Input("apply-proposed-filter", "value"),
         Input("apply-decision-filter", "value"),
         Input("apply-probability-range", "value"),
+        Input("apply-page-size", "value"),
+        Input("apply-table", "columnState"),
+        State("apply-page-snapshot", "data"),
+        prevent_initial_call=True,
+    )
+    def navigate_apply_page(
+        previous: int, next_clicks: int, draft_id: int | None,
+        proposed: str | None, decision: str | None, probability: list[float] | None,
+        size: int | None, columns: list[dict[str, Any]] | None,
+        snapshot: dict[str, Any] | None,
+    ) -> int:
+        del previous, next_clicks, proposed, decision, probability, size, columns
+        current = dict(snapshot or {})
+        if current.get("draft_id") != draft_id:
+            return 0
+        if callback_context.triggered_id == "apply-page-previous":
+            return max(0, int(current.get("page_index", 0)) - 1)
+        if callback_context.triggered_id == "apply-page-next":
+            return min(int(current.get("page_count", 1)) - 1,
+                       int(current.get("page_index", 0)) + 1)
+        # Sorting, filtering and page-size changes always start from page one.
+        return 0
+
+    @app.callback(
+        Output("apply-table", "rowData"),
+        Output("apply-run-summary", "children"),
+        Output("apply-page-status", "children"),
+        Output("apply-page-previous", "disabled"),
+        Output("apply-page-next", "disabled"),
+        Output("apply-page-snapshot", "data"),
+        Input("apply-run-dropdown", "value"),
+        Input("apply-proposed-filter", "value"),
+        Input("apply-decision-filter", "value"),
+        Input("apply-probability-range", "value"),
+        Input("apply-page-index", "data"),
+        Input("apply-page-size", "value"),
+        Input("apply-table", "columnState"),
         Input("apply-refresh-store", "data"),
     )
     def load_apply_table(
@@ -6865,12 +6903,25 @@ def create_app(
         proposed_filter: str | None,
         decision_filter: str | None,
         probability_range: list[float] | None,
-        refresh: int,
-    ) -> tuple[list[dict[str, Any]], Any]:
-        del refresh
+        page_index: int | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
+        refresh: int | None,
+    ) -> tuple[list[dict[str, Any]], Any, str, bool, bool, dict[str, Any] | None]:
         if draft_id is None:
-            return [], "No proposal draft has been generated for this code."
+            return [], "No proposal draft has been generated for this code.", "", True, True, None
         lower, upper = _normalized_probability_range(probability_range)
+        chosen_size = int(page_size or 25)
+        if chosen_size not in {25, 50, 100}:
+            chosen_size = 25
+        ordering = _apply_sort_spec(column_state)
+        count = project.count_apply_proposals(
+            int(draft_id), proposed_label=proposed_filter or None,
+            decision=decision_filter or None,
+            probability_min=lower, probability_max=upper,
+        )
+        pages = max(1, (count + chosen_size - 1) // chosen_size)
+        index = min(max(0, int(page_index or 0)), pages - 1)
         draft = project.apply_run(int(draft_id))
         proposals = project.apply_proposals(
             int(draft_id),
@@ -6878,6 +6929,7 @@ def create_app(
             decision=decision_filter or None,
             probability_min=lower,
             probability_max=upper,
+            limit=chosen_size, offset=index * chosen_size, sort_by=ordering,
         )
         data = [
             {
@@ -6902,7 +6954,20 @@ def create_app(
         )
         if int(draft.get("unreviewed_count", 0)):
             summary += f" · {int(draft['unreviewed_count']):,} marked Leave unreviewed"
-        return data, summary
+        page_status = (
+            f"Page {index + 1:,} of {pages:,} · {count:,} matching proposals"
+        )
+        snapshot = {
+            "draft_id": int(draft_id),
+            "page_index": index, "page_count": pages,
+            "page_size": chosen_size, "count": count,
+            "unit_ids": [int(row["unit_id"]) for row in proposals],
+            "proposed": proposed_filter or "", "decision": decision_filter or "",
+            "range": [lower, upper],
+            "sort": [list(pair) for pair in ordering],
+            "refresh": int(refresh or 0),
+        }
+        return data, summary, page_status, index <= 0, index >= pages - 1, snapshot
 
     @app.callback(
         Output("apply-status", "children", allow_duplicate=True),
