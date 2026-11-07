@@ -4431,21 +4431,18 @@ def create_app(
         Output("code-center-map", "figure", allow_duplicate=True),
         Input("code-center-focal-store", "data"),
         State("code-center-view", "value"),
-        State("code-center-map", "figure"),
+        State("code-center-page-status", "children"),
         prevent_initial_call=True,
     )
     def update_code_center_focal_marker(
         observation_id: int | None,
         view_id: int | None,
-        current_figure: dict[str, Any] | None,
+        page_status: str | None,
     ) -> Any:
-        if view_id is None:
-            return no_update
-        # Dash Patch updates require the target property and nested path to
-        # already exist in the browser. code-center-map is initialized with a
-        # stable focal-marker trace at data[0], and this guard also protects
-        # transient/dynamic-layout states before that structure is available.
-        if not current_figure or not current_figure.get("data"):
+        # Page status and the map are produced in the same callback.  The map
+        # has a stable focal trace at data[0] whenever it is valid, so a short
+        # readiness status replaces sending the entire Plotly figure as State.
+        if view_id is None or not page_status:
             return no_update
         patch = Patch()
         if observation_id is None:
