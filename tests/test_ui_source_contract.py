@@ -163,7 +163,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     ).read_text(encoding="utf-8")
     assert 'id="focus-tune-hyperparameters"' in app_source
     assert '_tooltip_label(html, "Tune hyperparameters with cross-validation"' in app_source
-    assert '"focus_tune_hyperparameters", False' in app_source
+    assert '"focus_tune_hyperparameters", True' in app_source
     assert 'tune=tune_hyperparameters' in app_source
     assert 'retune_current=tune_hyperparameters' in app_source
     # Cross-validation remains opt-in at the explicit training boundary, not
@@ -418,7 +418,7 @@ def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
     assert 'Output("committee-members", "value")' in app_source
     assert 'valid_member_ids = {int(row["classifier_spec_id"]) for row in specs}' in app_source
     assert 'if int(value) in valid_member_ids' in app_source
-    assert 'triggered == "focus-manage-committees"' in app_source
+    assert 'triggered in {"focus-manage-committees", "focus-new-committee"}' in app_source
 
 
 def test_auto_training_and_teaching_help_are_on_labels_not_inline_prose() -> None:

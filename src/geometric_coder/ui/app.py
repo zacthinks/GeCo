@@ -996,6 +996,7 @@ def create_app(
                     _classifier_manager_modal(
                         dcc=dcc, html=html, dash_table=dash_table
                     ),
+                    _new_committee_modal(dcc=dcc, html=html),
                     _committee_modal(
                         dcc=dcc, html=html, dash_table=dash_table
                     ),
@@ -1616,7 +1617,7 @@ def create_app(
             focus_committee,
             (["all"] if state.get("focus_train_all", False) else []),
             (["auto"] if state.get("focus_auto_retrain", True) else []),
-            (["tune"] if state.get("focus_tune_hyperparameters", False) else []),
+            (["tune"] if state.get("focus_tune_hyperparameters", True) else []),
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
             "plain",
@@ -5293,6 +5294,7 @@ def create_app(
 
     @app.callback(
         Output("committee-modal", "style"),
+        Output("committee-create-modal", "style"),
         Output("committee-members", "options"),
         Output("committee-members", "value"),
         Output("committee-table", "data"),
@@ -5300,6 +5302,8 @@ def create_app(
         Output("committee-status", "children"),
         Output("committee-refresh-store", "data", allow_duplicate=True),
         Input("focus-manage-committees", "n_clicks"),
+        Input("focus-new-committee", "n_clicks"),
+        Input("committee-create-close", "n_clicks"),
         Input("committee-close", "n_clicks"),
         Input("committee-save", "n_clicks"),
         Input("committee-rename", "n_clicks"),
@@ -5316,6 +5320,8 @@ def create_app(
     )
     def manage_committee_modal(
         open_clicks: int,
+        new_clicks: int,
+        create_close_clicks: int,
         close_clicks: int,
         save_clicks: int,
         rename_clicks: int,
@@ -5329,7 +5335,8 @@ def create_app(
         rename_name: str | None,
         refresh: int | None,
     ) -> tuple[
-        dict[str, str],
+        Any,
+        Any,
         list[dict[str, Any]],
         list[int],
         list[dict[str, Any]],
@@ -5337,12 +5344,16 @@ def create_app(
         str,
         int,
     ]:
-        del open_clicks, close_clicks, save_clicks, rename_clicks, delete_clicks
+        del open_clicks, new_clicks, create_close_clicks, close_clicks
+        del save_clicks, rename_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         if triggered == "committee-close":
-            return {"display": "none"}, [], [], [], [], "", int(refresh or 0)
+            return {"display": "none"}, no_update, [], [], [], [], "", int(refresh or 0)
+        if triggered == "committee-create-close":
+            return no_update, {"display": "none"}, [], [], [], [], "", int(refresh or 0)
         if code_id is None:
             return (
+                {"display": "none"},
                 {"display": "none"},
                 [],
                 [],
@@ -5363,11 +5374,13 @@ def create_app(
         # otherwise leave an invisible classifier from the previously active code
         # selected and submit it with the new code's visible classifiers.
         selected_member_ids = (
-            [] if triggered == "focus-manage-committees" else visible_member_ids
+            [] if triggered in {"focus-manage-committees", "focus-new-committee"}
+            else visible_member_ids
         )
         selected_committee_rows = list(selected_rows or [])
         message = ""
         next_refresh = int(refresh or 0)
+        created = False
         try:
             if triggered == "committee-save":
                 clean_name = (name or "").strip()
@@ -5386,6 +5399,7 @@ def create_app(
                 selected_committee_rows = []
                 next_refresh += 1
                 message = "Committee saved."
+                created = True
             elif triggered == "committee-rename":
                 rows = table_data or []
                 selection = selected_rows or []
@@ -5431,7 +5445,12 @@ def create_app(
             for row in committees
         ]
         return (
-            {"display": "flex"},
+            {"display": "flex"}
+            if triggered in {"focus-manage-committees", "committee-rename", "committee-delete"}
+            else no_update,
+            {"display": "none"} if created
+            else {"display": "flex"} if triggered == "focus-new-committee"
+            else no_update,
             member_options,
             selected_member_ids,
             rows,
@@ -5623,11 +5642,15 @@ def create_app(
 
     @app.callback(
         Output("focus-committee-status", "children"),
+        Output("focus-committee-badge", "children"),
+        Output("focus-committee-badge", "className"),
         Input("focus-code-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
         Input("focus-model-refresh-store", "data"),
+        Input("committee-refresh-store", "data"),
+        Input("classifier-spec-refresh-store", "data"),
     )
     def update_focus_committee_status(
         code_id: int | None,
@@ -5635,32 +5658,41 @@ def create_app(
         focus_refresh: int | None,
         teaching_refresh: int | None,
         model_refresh: int | None,
-    ) -> Any:
-        del focus_refresh, teaching_refresh, model_refresh
+        committee_refresh: int | None,
+        spec_refresh: int | None,
+    ) -> tuple[str, str, str]:
+        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh
         if code_id is None:
-            return "Select a code first."
+            return "Select a code first.", "No code", "classifier-status-badge status-not-trained"
         if committee_id is None:
-            return "No committee selected."
-        status = project.classifier_committee_status(
+            return "No committee selected.", "No committee", "classifier-status-badge status-not-trained"
+        result = project.classifier_committee_status(
             code_id=int(code_id), committee_id=int(committee_id)
         )
-        committee = status["committee"]
-        counts = status["member_counts"]
+        committee = result["committee"]
+        counts = result["member_counts"]
+        status = str(result["status"])
+        badge = {
+            "current": "Current",
+            "stale": "Stale",
+            "not_trained": "Not trained",
+        }[status]
+        aggregation = str(committee["aggregation"])
+        aggregation_label = COMMITTEE_AGGREGATION_LABELS.get(aggregation, aggregation)
         member_summary = (
             f"Members: {counts['current']} current · {counts['stale']} stale · "
             f"{counts['not_trained']} not trained"
         )
-        aggregation_label = COMMITTEE_AGGREGATION_LABELS.get(
-            str(committee["aggregation"]), str(committee["aggregation"])
+        detail = (
+            " · No separate committee training needed"
+            if aggregation != "logistic_stack"
+            else " · Learned stacking"
         )
-        if status["status"] == "no_training_required":
-            return f"{aggregation_label} · No committee training required · {member_summary}"
-        committee_fit_label = {
-            "current": "Current",
-            "stale": "Stale",
-            "not_trained": "Not trained",
-        }[str(status["status"])]
-        return f"{aggregation_label} · Committee fit: {committee_fit_label} · {member_summary}"
+        return (
+            f"{aggregation_label}{detail} · {member_summary}",
+            badge,
+            f"classifier-status-badge status-{status.replace('_', '-')}",
+        )
 
     @app.callback(
         Output("focus-train-action-status", "children"),
@@ -5796,39 +5828,6 @@ def create_app(
             f"Trained learned committee aggregation #{int(fit['committee_fit_id'])}.",
             int(refresh or 0) + 1,
         )
-
-    @app.callback(
-        Output("focus-prepare-committee", "disabled"),
-        Input("focus-committee-dropdown", "value"),
-        Input("committee-refresh-store", "data"),
-    )
-    def configure_prepare_committee(committee_id: int | None, refresh: int | None) -> bool:
-        del refresh
-        if committee_id is None:
-            return True
-        committee = project.database.get_classifier_committee(int(committee_id))
-        return str(committee["aggregation"]) == "logistic_stack"
-
-    @app.callback(
-        Output("focus-committee-train-status", "children", allow_duplicate=True),
-        Input("focus-prepare-committee", "n_clicks"),
-        State("focus-code-dropdown", "value"),
-        State("focus-committee-dropdown", "value"),
-        prevent_initial_call=True,
-    )
-    def prepare_committee(clicks: int, code_id: int | None,
-                          committee_id: int | None) -> str:
-        del clicks
-        if code_id is None or committee_id is None:
-            return "Select a code and committee first."
-        try:
-            result = project.prepare_selected_committee(
-                code_id=int(code_id), committee_id=int(committee_id)
-            )
-        except (KeyError, ValueError) as error:
-            return str(error)
-        return ("Prepared selected committee rankings." if result["prepared"]
-                else "Selected committee rankings already prepared.")
 
     @app.callback(
         Output("focus-disagreement", "style"),
@@ -8719,28 +8718,26 @@ def _classifier_manager_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     )
 
 
-def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
-    """Return the code-specific classifier-committee manager."""
+def _new_committee_modal(*, dcc: Any, html: Any) -> Any:
+    """Dedicated creation flow, parallel to New classifier."""
     return html.Div(
         [
             html.Div(
                 [
                     html.Div(
                         [
-                            html.H3("Classifier committees"),
+                            html.H3("New committee"),
                             html.Button(
-                                "×",
-                                id="committee-close",
-                                n_clicks=0,
-                                className="modal-close-icon",
-                                title="Close",
+                                "×", id="committee-create-close", n_clicks=0,
+                                className="modal-close-icon", title="Close",
                                 **{"aria-label": "Close"},
                             ),
                         ],
                         className="modal-heading-row",
                     ),
                     html.P(
-                        "A committee is an intentional named set of classifier specifications for the active code. Rename an existing committee without changing its members, aggregation, or learned fitted state; classifier and committee names share one project-wide active predictor namespace.",
+                        "Combine trained classifiers into a fixed or learned aggregation. "
+                        "Fixed committees need no separate training or preparation.",
                         className="focus-help",
                     ),
                     html.Label("Committee name"),
@@ -8776,6 +8773,40 @@ def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         className="primary-action",
                     ),
                     html.Div(id="committee-status", className="control-status"),
+                ],
+                className="modal-card committee-modal-card",
+            )
+        ],
+        id="committee-create-modal",
+        className="modal-overlay",
+        style={"display": "none"},
+    )
+
+
+def _committee_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
+    """Return the code-specific classifier-committee manager."""
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.H3("Manage committees"),
+                            html.Button(
+                                "×",
+                                id="committee-close",
+                                n_clicks=0,
+                                className="modal-close-icon",
+                                title="Close",
+                                **{"aria-label": "Close"},
+                            ),
+                        ],
+                        className="modal-heading-row",
+                    ),
+                    html.P(
+                        "A committee is an intentional named set of classifier specifications for the active code. Rename an existing committee without changing its members, aggregation, or learned fitted state; classifier and committee names share one project-wide active predictor namespace.",
+                        className="focus-help",
+                    ),
                     html.H4("Existing committees"),
                     dash_table.DataTable(
                         id="committee-table",
@@ -9346,7 +9377,7 @@ def _focus_layout(
                                                     ["tune"]
                                                     if bool(
                                                         initial_state.get(
-                                                            "focus_tune_hyperparameters", False
+                                                            "focus_tune_hyperparameters", True
                                                         )
                                                     )
                                                     else []
@@ -9419,28 +9450,34 @@ def _focus_layout(
                                         placeholder="Select a saved committee",
                                     ),
                                     html.Div(
+                                        id="focus-committee-badge",
+                                        className="classifier-status-badge status-not-trained",
+                                    ),
+                                    html.Div(
+                                        id="focus-committee-status",
+                                        className="focus-model-status",
+                                    ),
+                                    html.Button(
+                                        "Train committee",
+                                        id="focus-train-committee",
+                                        n_clicks=0,
+                                        className="primary-action classifier-train-button",
+                                        style={"display": "none"},
+                                    ),
+                                    html.Div(
                                         [
+                                            html.Button(
+                                                "New committee",
+                                                id="focus-new-committee",
+                                                n_clicks=0,
+                                            ),
                                             html.Button(
                                                 "Manage committees",
                                                 id="focus-manage-committees",
                                                 n_clicks=0,
                                             ),
-                                            html.Button(
-                                                "Train committee",
-                                                id="focus-train-committee",
-                                                n_clicks=0,
-                                            ),
-                                            html.Button(
-                                                "Prepare selected committee",
-                                                id="focus-prepare-committee",
-                                                n_clicks=0,
-                                            ),
                                         ],
-                                        className="classifier-action-row",
-                                    ),
-                                    html.Div(
-                                        id="focus-committee-status",
-                                        className="focus-model-status",
+                                        className="classifier-management-row",
                                     ),
                                     html.Div(
                                         id="focus-committee-train-status",

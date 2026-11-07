@@ -3204,6 +3204,30 @@ class ProjectDatabase:
                 """,
                 (classifier_fit_id, classifier_fit_id),
             )
+            # A new fitted member supersedes the numeric inputs for every
+            # fixed committee containing it. Drop only the disposable ranking
+            # cache, never an immutable learned committee fit. Evidence edits
+            # without refitting do not reach this path.
+            connection.execute(
+                """
+                DELETE FROM prepared_committee_scores
+                WHERE committee_id IN (
+                    SELECT committee_id FROM classifier_committee_members
+                    WHERE classifier_spec_id = ?
+                )
+                """,
+                (int(classifier_spec_id),),
+            )
+            connection.execute(
+                """
+                DELETE FROM prepared_committee_rankings
+                WHERE committee_id IN (
+                    SELECT committee_id FROM classifier_committee_members
+                    WHERE classifier_spec_id = ?
+                )
+                """,
+                (int(classifier_spec_id),),
+            )
             return classifier_fit_id
 
     def get_classifier_fit(self, classifier_fit_id: int) -> dict[str, Any]:
@@ -3632,6 +3656,16 @@ class ProjectDatabase:
                     (int(committee_id), classifier_spec_id, position)
                     for position, classifier_spec_id in enumerate(members)
                 ),
+            )
+            # The old aggregation or ordered member set no longer defines a
+            # reusable fixed ranking. Never touch historical learned fits.
+            connection.execute(
+                "DELETE FROM prepared_committee_scores WHERE committee_id = ?",
+                (int(committee_id),),
+            )
+            connection.execute(
+                "DELETE FROM prepared_committee_rankings WHERE committee_id = ?",
+                (int(committee_id),),
             )
 
     def rename_classifier_committee(self, committee_id: int, *, name: str) -> None:
