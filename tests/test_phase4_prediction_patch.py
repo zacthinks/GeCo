@@ -4,6 +4,7 @@ from pathlib import Path
 
 from geometric_coder.ui.app import (
     _build_prediction_geometry_figure,
+    _compact_prediction_geometry,
     _prediction_geometry_page_index,
 )
 
@@ -65,3 +66,29 @@ def test_develop_annotation_callback_never_sends_whole_prediction_figure():
     assert 'State("prediction-geometry-page-token", "data")' in source
     assert 'Output("prediction-geometry-page-token", "data")' in source
     assert 'page[1] == str(prediction_refresh.get("cache_key"))' in source
+
+
+def test_prediction_cache_drops_unneeded_payload_but_preserves_plot_and_fits():
+    from copy import deepcopy
+
+    points = _points()
+    for point in points:
+        point["text"] = "long observation text" * 200
+        point["scores"] = {"classifier A": 0.9, "classifier B": 0.2}
+    geometry = {
+        "classifier_fit_ids": [9, 10],
+        "axis_titles": ["A", "B"],
+        "method": "two_classifier_scores",
+        "points": points,
+    }
+    before = _build_prediction_geometry_figure(
+        geometry=geometry, points=geometry["points"], page_index=2
+    ).to_plotly_json()
+    compact = _compact_prediction_geometry(deepcopy(geometry))
+    assert compact["classifier_fit_ids"] == [9, 10]
+    assert compact["method"] == "two_classifier_scores"
+    assert all("text" not in p and "scores" not in p for p in compact["points"])
+    after = _build_prediction_geometry_figure(
+        geometry=compact, points=compact["points"], page_index=2
+    ).to_plotly_json()
+    assert after == before
