@@ -11894,6 +11894,47 @@ def _display_local_browser_url(host: str, port: int) -> str:
     return url
 
 
+def _should_warm_semantic_runtime(project: GeometricCoder, *, mode: str) -> bool:
+    """Only prewarm for standard workspaces with external queryable geometry."""
+    if mode != "standard" or not project.is_external_backed:
+        return False
+    return any(
+        str(record.get("storage_kind")) == "external"
+        and bool(record.get("supports_query"))
+        for record in project.geometries(public_only=True)
+    )
+
+
+def _warm_semantic_runtime_libraries() -> bool:
+    """Pay process-wide transformer import and first CPU-kernel costs at launch.
+
+    This does not reconstruct a frozen TeAL pipeline, load a particular model,
+    encode real text, or save a semantic query. Actual per-model initialization
+    still occurs on first use, preserving the provider's existing thread-local
+    project and model contracts.
+    """
+    import importlib
+    from time import perf_counter
+
+    start = perf_counter()
+    print("GeCo: preparing semantic-search libraries...", flush=True)
+    try:
+        torch = importlib.import_module("torch")
+        importlib.import_module("sentence_transformers")
+        # A minimal disposable similarity computation initializes the shared
+        # PyTorch CPU backend without consuming RNG state or using a model.
+        with torch.inference_mode():
+            query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+            _ = torch.matmul(query, query.T)
+    except (ImportError, OSError) as error:
+        # Optional transformer resources must never prevent unrelated GeCo
+        # capabilities (or non-transformer semantic search) from launching.
+        print(f"GeCo: semantic-library warm-up skipped ({error}).", flush=True)
+        return False
+    print(f"GeCo: semantic-search libraries ready ({perf_counter() - start:.1f}s).", flush=True)
+    return True
+
+
 def launch_app(
     project: GeometricCoder,
     *,
@@ -11910,6 +11951,8 @@ def launch_app(
     from geometric_coder.ui.server import GeCoServer
 
     app = create_app(project, mode=mode, focus_session_id=focus_session_id)
+    if _should_warm_semantic_runtime(project, mode=mode):
+        _warm_semantic_runtime_libraries()
     server = GeCoServer(app, host=host, port=port)
     server.start()
     _display_local_browser_url(host, server.port)
