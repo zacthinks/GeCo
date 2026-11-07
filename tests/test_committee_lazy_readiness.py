@@ -240,3 +240,32 @@ def test_apply_from_stale_stacker_records_frozen_member_ids(tmp_path):
     assert draft["committee_fit_id"] == frozen["committee_fit_id"]
     assert sorted(draft["classifier_fit_ids"]) == sorted(original_ids)
     assert int(newer["classifier_fit_id"]) not in draft["classifier_fit_ids"]
+
+
+def test_stale_learned_committee_uses_frozen_scores_with_unfitted_new_member(tmp_path):
+    project, code_id, (first, second), _, committee_id, _ = _trained_committee(
+        tmp_path, "logistic_stack"
+    )
+    frozen = project.train_classifier_committee(
+        code_id=code_id, committee_id=committee_id
+    )
+    third = project.create_classifier_spec(
+        code_id=code_id, name="brand new committee member",
+        geometry_id=int(project.geometries(public_only=True)[0]["geometry_id"])
+    )
+    project.update_classifier_committee(
+        committee_id, name="expanded learner",
+        classifier_spec_ids=[first, second, third],
+        aggregation="logistic_stack",
+    )
+    assert project.classifier_committee_status(
+        code_id=code_id, committee_id=committee_id
+    )["status"] == "stale"
+    candidate = _ranking_recommend(project, code_id, committee_id)
+    assert candidate and candidate["stale_committee"] is True
+    assert candidate["committee_probability"] is not None
+    assert candidate["probabilities"] == {}
+    draft_id = project.create_apply_run(
+        code_id=code_id, source_kind="committee", source_id=committee_id,
+    )
+    assert project.apply_run(draft_id)["committee_fit_id"] == frozen["committee_fit_id"]
