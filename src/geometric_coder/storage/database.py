@@ -1920,6 +1920,24 @@ class ProjectDatabase:
             ).fetchall()
         return [_unit_row(row) for row in rows]
 
+    def unit_keys_for_ids(self, unit_ids: Sequence[int]) -> dict[int, dict[str, Any]]:
+        """Read only requested atomic user keys, in SQLite-sized batches."""
+        unique_ids = list(dict.fromkeys(int(value) for value in unit_ids))
+        if not unique_ids:
+            return {}
+        found: dict[int, dict[str, Any]] = {}
+        with self.connect() as connection:
+            for start in range(0, len(unique_ids), 900):
+                batch = unique_ids[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT unit_id, user_key_json FROM units WHERE unit_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[int(row["unit_id"])] = json.loads(row["user_key_json"])
+        return found
+
     def missing_unit_ids(self, unit_ids: Sequence[int]) -> list[int]:
         """Validate only requested atomic unit IDs without reading all units.
 
@@ -1982,26 +2000,24 @@ class ProjectDatabase:
                 raise KeyError(
                     f"No hierarchy level {level_index} for unit_id {unit_id}."
                 )
+            # A context window only needs the sibling count, not every sibling
+            # row; the subsequent bounded query fetches the selected groups.
             if focal["parent_group_id"] is None:
-                sibling_rows = connection.execute(
+                sibling_count = int(connection.execute(
                     """
-                    SELECT group_id, position_within_parent FROM groups
+                    SELECT COUNT(*) FROM groups
                     WHERE level_index = ? AND parent_group_id IS NULL
-                    ORDER BY position_within_parent
                     """,
                     (level_index,),
-                ).fetchall()
+                ).fetchone()[0])
             else:
-                sibling_rows = connection.execute(
+                sibling_count = int(connection.execute(
                     """
-                    SELECT group_id, position_within_parent FROM groups
+                    SELECT COUNT(*) FROM groups
                     WHERE level_index = ? AND parent_group_id = ?
-                    ORDER BY position_within_parent
                     """,
                     (level_index, focal["parent_group_id"]),
-                ).fetchall()
-
-            sibling_count = len(sibling_rows)
+                ).fetchone()[0])
             desired = min(int(window), sibling_count)
             focal_position = int(focal["position_within_parent"])
             surrounding = desired - 1
@@ -2629,14 +2645,33 @@ class ProjectDatabase:
     def search_codes(
         self, *, query: str = "", scope: str = "full", hashtags: Iterable[str] = ()
     ) -> list[dict[str, Any]]:
-        """Search current code labels/descriptions and hashtags."""
+        """Search current code versions with one batched hashtag lookup."""
         if scope not in {"full", "label"}:
             raise ValueError("scope must be 'full' or 'label'")
         needle = query.strip().casefold()
         selected = {str(tag).strip().lstrip("#").casefold() for tag in hashtags if str(tag).strip().lstrip("#")}
+        versions = self.list_codes()
+        with self.connect() as connection:
+            tags = connection.execute(
+                """
+                SELECT cvh.code_version_id, cvh.hashtag
+                FROM codes c
+                JOIN code_versions cv ON cv.code_version_id = (
+                    SELECT cv2.code_version_id FROM code_versions cv2
+                    WHERE cv2.code_id = c.code_id
+                    ORDER BY cv2.version_number DESC LIMIT 1
+                )
+                JOIN code_version_hashtags cvh ON cvh.code_version_id = cv.code_version_id
+                ORDER BY cvh.code_version_id, cvh.hashtag
+                """
+            ).fetchall()
+        tags_by_version: dict[int, list[str]] = {}
+        for row in tags:
+            tags_by_version.setdefault(int(row["code_version_id"]), []).append(str(row["hashtag"]))
         results: list[dict[str, Any]] = []
-        for summary in self.list_codes():
-            code = self.get_code(int(summary["code_id"]))
+        for version in versions:
+            code = dict(version)
+            code["hashtags"] = tags_by_version.get(int(code["code_version_id"]), [])
             haystack = str(code["name"])
             if scope == "full":
                 haystack += "\n" + str(code["description"])
@@ -3218,6 +3253,25 @@ class ProjectDatabase:
                 (int(classifier_fit_id),),
             ).fetchone()
         return int(row["n"]) if row is not None else 0
+
+    def classifier_predictions_complete(self, classifier_fit_id: int) -> bool:
+        """Check active prediction coverage without materializing missing IDs."""
+        with self.connect() as connection:
+            missing = connection.execute(
+                """
+                SELECT 1
+                FROM observations AS o
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                LEFT JOIN classifier_predictions AS cp
+                  ON cp.observation_id = o.observation_id
+                 AND cp.classifier_fit_id = ?
+                WHERE (o.kind != 'teaching_example' OR te.status != 'deleted')
+                  AND cp.observation_id IS NULL
+                LIMIT 1
+                """,
+                (int(classifier_fit_id),),
+            ).fetchone()
+        return missing is None
 
     def missing_classifier_prediction_observation_ids(
         self, classifier_fit_id: int
@@ -5038,16 +5092,50 @@ class ProjectDatabase:
         self, *, query: str = "", scope: str = "full", hashtags: Iterable[str] = (),
         hashtag_operator: str = "and",
     ) -> list[dict[str, Any]]:
-        """Search latest memo versions by text and composable hashtag filters."""
+        """Search latest memo versions without per-memo database queries."""
         if scope not in {"full", "title"}:
             raise ValueError("scope must be 'full' or 'title'")
         if hashtag_operator not in {"and", "or", "xor"}:
             raise ValueError("hashtag_operator must be 'and', 'or', or 'xor'")
         needle = query.strip().casefold()
         selected = {str(tag).strip().lstrip("#").casefold() for tag in hashtags if str(tag).strip().lstrip("#")}
+        versions = self.list_memos()
+        latest_versions_sql = """
+            SELECT mv.memo_version_id FROM memos m
+            JOIN memo_versions mv ON mv.memo_version_id = (
+                SELECT mv2.memo_version_id FROM memo_versions mv2
+                WHERE mv2.memo_id = m.memo_id
+                ORDER BY mv2.version_number DESC LIMIT 1
+            )
+        """
+        with self.connect() as connection:
+            tag_rows = connection.execute(
+                f"""SELECT memo_version_id, hashtag FROM memo_version_hashtags
+                    WHERE memo_version_id IN ({latest_versions_sql})
+                    ORDER BY memo_version_id, hashtag"""
+            ).fetchall()
+            reference_rows = connection.execute(
+                f"""SELECT memo_version_id, reference_id, unit_id, token
+                    FROM memo_version_unit_references
+                    WHERE memo_version_id IN ({latest_versions_sql})
+                    ORDER BY memo_version_id, reference_id"""
+            ).fetchall()
+        tags_by_version: dict[int, list[str]] = {}
+        for row in tag_rows:
+            tags_by_version.setdefault(int(row["memo_version_id"]), []).append(str(row["hashtag"]))
+        references_by_version: dict[int, list[dict[str, Any]]] = {}
+        for row in reference_rows:
+            references_by_version.setdefault(int(row["memo_version_id"]), []).append({
+                "reference_id": int(row["reference_id"]),
+                "unit_id": int(row["unit_id"]),
+                "token": str(row["token"]),
+            })
         results: list[dict[str, Any]] = []
-        for summary in self.list_memos():
-            memo = self.get_memo(int(summary["memo_id"]))
+        for summary in versions:
+            memo = dict(summary)
+            version_id = int(memo["memo_version_id"])
+            memo["hashtags"] = tags_by_version.get(version_id, [])
+            memo["unit_references"] = references_by_version.get(version_id, [])
             haystack = str(memo["title"])
             if scope == "full":
                 haystack += "\n" + str(memo["body_markdown"])
@@ -5056,9 +5144,12 @@ class ProjectDatabase:
             memo_tags = {str(tag).casefold() for tag in memo["hashtags"]}
             if selected:
                 overlap = len(selected & memo_tags)
-                if hashtag_operator == "and" and not selected.issubset(memo_tags): continue
-                if hashtag_operator == "or" and overlap == 0: continue
-                if hashtag_operator == "xor" and overlap != 1: continue
+                if hashtag_operator == "and" and not selected.issubset(memo_tags):
+                    continue
+                if hashtag_operator == "or" and overlap == 0:
+                    continue
+                if hashtag_operator == "xor" and overlap != 1:
+                    continue
             results.append(memo)
         return results
 
@@ -5096,15 +5187,60 @@ class ProjectDatabase:
         return result
 
     def memo_versions(self, memo_id: int) -> list[dict[str, Any]]:
-        """Return every immutable version of one memo."""
+        """Return immutable memo versions and their evidence in three queries."""
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT version_number FROM memo_versions WHERE memo_id = ? ORDER BY version_number",
-                (memo_id,),
+                """
+                SELECT m.memo_id, m.created_at, mv.memo_version_id, mv.version_number,
+                       mv.title, mv.body_markdown, mv.created_at AS updated_at
+                FROM memos m
+                JOIN memo_versions mv ON mv.memo_id = m.memo_id
+                WHERE m.memo_id = ?
+                ORDER BY mv.version_number
+                """,
+                (int(memo_id),),
             ).fetchall()
-        if not rows:
-            raise KeyError(f"Unknown memo_id: {memo_id}")
-        return [self.get_memo(memo_id, int(row["version_number"])) for row in rows]
+            if not rows:
+                raise KeyError(f"Unknown memo_id: {memo_id}")
+            tag_rows = connection.execute(
+                """
+                SELECT mv.memo_version_id, h.hashtag
+                FROM memo_versions mv
+                JOIN memo_version_hashtags h ON h.memo_version_id = mv.memo_version_id
+                WHERE mv.memo_id = ?
+                ORDER BY mv.memo_version_id, h.hashtag
+                """,
+                (int(memo_id),),
+            ).fetchall()
+            ref_rows = connection.execute(
+                """
+                SELECT mv.memo_version_id, r.reference_id, r.unit_id, r.token
+                FROM memo_versions mv
+                JOIN memo_version_unit_references r
+                  ON r.memo_version_id = mv.memo_version_id
+                WHERE mv.memo_id = ?
+                ORDER BY mv.memo_version_id, r.reference_id
+                """,
+                (int(memo_id),),
+            ).fetchall()
+        tags: dict[int, list[str]] = {}
+        for row in tag_rows:
+            tags.setdefault(int(row["memo_version_id"]), []).append(str(row["hashtag"]))
+        references: dict[int, list[dict[str, Any]]] = {}
+        for row in ref_rows:
+            references.setdefault(int(row["memo_version_id"]), []).append({
+                "reference_id": int(row["reference_id"]),
+                "unit_id": int(row["unit_id"]),
+                "token": str(row["token"]),
+            })
+        versions = []
+        for row in rows:
+            version = dict(row)
+            version_id = int(row["memo_version_id"])
+            version["hashtags"] = tags.get(version_id, [])
+            version["unit_references"] = references.get(version_id, [])
+            versions.append(version)
+        return versions
 
     def update_memo(
         self, memo_id: int, *, title: str, body_markdown: str,

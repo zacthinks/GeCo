@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import UTC, date, datetime
 from html import escape as html_escape
+from hashlib import blake2b
 import json
 import re
 import uuid
@@ -27,6 +28,7 @@ from geometric_coder.explore import (
     InvalidRegexError,
     combine_filters,
     deterministic_page,
+    deterministic_page_count,
     deterministic_page_with_inclusions,
     recommend_page_unit,
 )
@@ -142,6 +144,11 @@ _TRANSIENT_EXPLORE_KEYS = frozenset({
     "semantic_query", "semantic_active_query", "semantic_range",
     "topic_color_mode", "topic_model_id", "topic_component_id",
 })
+
+
+def _semantic_vector_digest(scores: list[float]) -> str:
+    """Identify the exact stored float64 score snapshot across cache eviction."""
+    return blake2b(np.asarray(scores, dtype="<f8").tobytes(), digest_size=12).hexdigest()
 
 
 def _current_semantic_scores(
@@ -579,6 +586,71 @@ def create_app(
     codes = project.codes()
     classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
+    # Only visible point indices are retained for Develop judgment patches.
+    # Browser State carries a short token, never the complete Plotly figure.
+    prediction_page_indexes: dict[str, tuple[int, str, dict[int, tuple[int, int]]]] = {}
+    prediction_page_order: deque[str] = deque()
+    prediction_page_lock = Lock()
+    # Short-lived, app-local snapshots of the *visible* Explore points only.
+    # A revision token matches a plot to its overlay callback, even when
+    # callbacks complete out of order. No browser-to-server figure State.
+    overlay_frames: dict[str, tuple[int, dict[str, Any]]] = {}
+    overlay_frame_order: deque[str] = deque()
+    overlay_frame_lock = Lock()
+
+    # Retain similarity vectors on the server; the browser carries only a
+    # query/geometry/query-id/token selector.  Bounded retention avoids a
+    # permanent corpus-sized copy per past search.
+    semantic_vectors: dict[str, tuple[str, int, int, list[float]]] = {}
+    semantic_vector_order: deque[str] = deque()
+    semantic_vector_lock = Lock()
+
+    def selected_semantic_scores(
+        payload: dict[str, Any] | None,
+        query: str | None,
+        geometry_id: int | None,
+    ) -> dict[str, list[float]]:
+        if not isinstance(payload, dict) or not query or geometry_id is None:
+            return {}
+        clean = str(query).strip()
+        if payload.get("query") != clean or str(payload.get("geometry_id")) != str(geometry_id):
+            return {}
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            return _current_semantic_scores(payload, query, geometry_id)
+        try:
+            expected_query_id = int(payload["query_id"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        # Check identity even on a cache hit: a deleted query must never be
+        # revived by an older browser tab or a later query with the same text.
+        if project.saved_semantic_searches.query_id(clean) != expected_query_id:
+            return {}
+        with semantic_vector_lock:
+            retained = semantic_vectors.get(token)
+        if retained is None:
+            try:
+                restored = project.saved_semantic_searches.find(
+                    clean, int(geometry_id), expected_query_id=expected_query_id
+                )
+            except (ValueError, KeyError, ConfigurationError):
+                return {}
+            if restored is None:
+                return {}
+            # A query can be recomputed under the same query ID. An evicted
+            # token must never silently resolve to a different score snapshot.
+            if not token.endswith("." + _semantic_vector_digest(restored["scores"])):
+                return {}
+            retained = (clean, int(geometry_id), expected_query_id, restored["scores"])
+            with semantic_vector_lock:
+                semantic_vectors[token] = retained
+                semantic_vector_order.append(token)
+                while len(semantic_vector_order) > 8:
+                    semantic_vectors.pop(semantic_vector_order.popleft(), None)
+        if retained[:3] != (clean, int(geometry_id), expected_query_id):
+            return {}
+        name = str(geometry_by_id[int(geometry_id)]["name"])
+        return {name: retained[3]}
     training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
@@ -732,6 +804,7 @@ def create_app(
                 dcc.Store(id="classifier-spec-refresh-store", data=0),
                 dcc.Store(id="committee-refresh-store", data=0),
                 dcc.Store(id="prediction-geometry-refresh-store", data=None),
+                dcc.Store(id="prediction-geometry-page-token", data=None),
                 dcc.Store(id="apply-refresh-store", data=0),
                 dcc.Store(id="memo-refresh-store", data=0),
                 dcc.Store(id="active-memo-store", data=None),
@@ -1590,11 +1663,15 @@ def create_app(
     def show_one_dimensional_jitter(view_id: int | None) -> dict[str, str]:
         if view_id is None:
             return {"display": "none"}
-        return (
-            {"display": "block"}
-            if project.view_coordinates(int(view_id)).shape[1] == 1
-            else {"display": "none"}
-        )
+        if int(view_id) < 0:
+            # Unified plot-ready representations declare their dimension in
+            # the registry; selecting one need not load its full matrix.
+            dimensions = int(project.database.get_representation(-int(view_id))["dimensions"])
+        else:
+            # Legacy view records do not store dimensionality. Preserve the
+            # existing read rather than guess from method or display name.
+            dimensions = int(project.view_coordinates(int(view_id)).shape[1])
+        return {"display": "block"} if dimensions == 1 else {"display": "none"}
 
     @app.callback(
         Output("projection-modal", "style"),
@@ -1842,8 +1919,19 @@ def create_app(
         if cache.query_id(clean) != qid:
             return {"query": clean, "geometry_id": geometry_id, "scores": {},
                     "status": "This saved query was deleted.", "range": None}
+        retained_scores = [float(value) for value in scores]
+        token = f"{uuid.uuid4().hex}.{_semantic_vector_digest(retained_scores)}"
+        with semantic_vector_lock:
+            semantic_vectors[token] = (clean, int(geometry_id), int(qid), retained_scores)
+            semantic_vector_order.append(token)
+            while len(semantic_vector_order) > 8:
+                semantic_vectors.pop(semantic_vector_order.popleft(), None)
+        bounds = (
+            [float(min(retained_scores)), float(max(retained_scores))]
+            if retained_scores else None
+        )
         return {"query": clean, "geometry_id": int(geometry_id), "query_id": qid,
-                "scores": {str(selected["name"]): scores}, "status": "",
+                "token": token, "bounds": bounds, "status": "",
                 "range": current_range}
 
     app.clientside_callback(
@@ -1853,9 +1941,10 @@ def create_app(
                 || String(candidate.geometry_id) !== String(geometryId)) {
                 return [no, no, no, no, no];
             }
-            const payload = candidate.scores && Object.keys(candidate.scores).length
+            const payload = candidate.token
                 ? {query: candidate.query, geometry_id: candidate.geometry_id,
-                   query_id: candidate.query_id, scores: candidate.scores}
+                   query_id: candidate.query_id, token: candidate.token,
+                   bounds: candidate.bounds}
                 : {};
             // Clearing the semantic query when selecting a Topic Model must not
             // undo topic coloring. Only an active semantic color or an attempted
@@ -1911,7 +2000,7 @@ def create_app(
         if geometry_id is None or not all_scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
-        scores = _current_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
+        scores = selected_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
         if not scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
@@ -2400,14 +2489,14 @@ def create_app(
         topic_revision: int | None,
         focal_unit_id: int | None,
         base_revision: int | None,
-    ) -> tuple[Any, str, str, Any, int]:
-        del map_filter_refresh, topic_revision
-        next_revision = int(base_revision or 0) + 1
+    ) -> tuple[Any, str, str, Any, str]:
+        del map_filter_refresh, topic_revision, base_revision
+        next_revision = uuid.uuid4().hex
         if view_id is None or geometry_id is None:
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
-        semantic_scores = _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
+        semantic_scores = selected_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
         try:
             filters = combine_filters(
                 texts,
@@ -2445,6 +2534,16 @@ def create_app(
             page_number=number,
             additional_mask=uncoded_mask,
         )
+        # Validate the selected descendant view *before* asking a provider to
+        # load its entire coordinate universe.
+        view = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view is None:
+            return (
+                _empty_figure("The selected view is unavailable for this geometry."),
+                literal_status, "", "", next_revision,
+            )
         all_view_coordinates = project.view_coordinates(int(view_id))
         coordinates = all_view_coordinates[positions]
         page_units = [units[int(position)] for position in positions]
@@ -2463,17 +2562,6 @@ def create_app(
                 mode=selected_color_mode, selected_topic=topic_component_id,
             )
         seen = project.database.seen_unit_ids(int(session_id))
-        # A canonical 1D/2D representation is selectable as a view without
-        # an additional legacy views-table row. Resolve both kinds using the
-        # same descendant-aware catalog as the Explorer dropdown.
-        view = _display_view_record(
-            project, geometry_id=int(geometry_id), view_id=int(view_id)
-        )
-        if view is None:
-            return (
-                _empty_figure("The selected view is unavailable for this geometry."),
-                literal_status, "", "", next_revision,
-            )
         figure = build_geometry_figure(
             coordinates=coordinates,
             units=page_units,
@@ -2507,6 +2595,13 @@ def create_app(
         if selected_color_mode in {"dominant", "intensity"}:
             page_status += f" · {color_status}"
         legend = topic_legend_content(html, page_topics) if page_topics is not None else ""
+        overlay_frame = _geometry_overlay_frame(figure)
+        if overlay_frame is not None:
+            with overlay_frame_lock:
+                overlay_frames[next_revision] = (int(session_id), overlay_frame)
+                overlay_frame_order.append(next_revision)
+                while len(overlay_frame_order) > 4:
+                    overlay_frames.pop(overlay_frame_order.popleft(), None)
         return figure, literal_status, page_status, legend, next_revision
 
     @app.callback(
@@ -2515,24 +2610,25 @@ def create_app(
         Input("explore-focal-unit-store", "data"),
         Input("geometry-map-base-revision-store", "data"),
         Input("session-dropdown", "value"),
-        State("geometry-map", "figure"),
         prevent_initial_call=True,
     )
     def update_map_navigation_overlays(
         focal_unit_id: int | None,
-        base_revision: int | None,
+        base_revision: str | int | None,
         session_id: int,
-        current_figure: dict[str, Any] | None,
     ) -> tuple[Any, str]:
-        del base_revision
         seen = project.database.seen_unit_ids(int(session_id))
         progress = f"Visited {len(seen):,} of {len(units):,}"
         if callback_context.triggered_id == "session-dropdown":
             # The base-map callback will rebuild for the new session and then
             # advance geometry-map-base-revision-store. Patch only after that.
             return no_update, progress
+        with overlay_frame_lock:
+            retained = overlay_frames.get(str(base_revision))
+        if retained is None or retained[0] != int(session_id):
+            return no_update, progress
         payload = _geometry_overlay_payload(
-            current_figure,
+            retained[1],
             seen_unit_ids=seen,
             focal_unit_id=focal_unit_id,
         )
@@ -2578,9 +2674,7 @@ def create_app(
             enabled="uncoded_only" in set(uncoded_only_values or []),
         )
         combined_mask = metadata_mask & uncoded_mask
-        page_count = deterministic_page(
-            int(combined_mask.sum()), page_size=size
-        ).page_count
+        page_count = deterministic_page_count(int(combined_mask.sum()), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {
@@ -2678,7 +2772,7 @@ def create_app(
                 geometry_by_id[int(geometry_id)] if geometry_id is not None else None
             )
             semantic_scores = (
-                _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
+                selected_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
                 if geometry_record is not None
                 else None
             )
@@ -2756,7 +2850,7 @@ def create_app(
                             "The focal point is not on the current page. "
                             "Select a point on this page first.",
                         )
-                    matrix = project.geometry_matrix(int(geometry_id))
+                    matrix = project.geometry_page_rows(int(geometry_id), positions)
 
                 try:
                     unit_id = recommend_page_unit(
@@ -2765,7 +2859,7 @@ def create_app(
                         page_positions=positions,
                         seen_unit_ids=seen,
                         eligible=filters.eligible,
-                        matrix=matrix,
+                        page_matrix=matrix,
                         focal_unit_id=(
                             int(focal_unit_id)
                             if focal_unit_id is not None
@@ -3383,7 +3477,7 @@ def create_app(
             metadata_profiles,
         )
         mask, _errors = _evaluate_metadata_filters(units, filters, operator=operator)
-        page_count = deterministic_page(int(mask.sum()), page_size=size).page_count
+        page_count = deterministic_page_count(int(mask.sum()), page_size=size)
         current = min(max(1, _coerce_positive_int(current_page, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {"memo-presentation-page-size", "memo-presentation-saved-filter"}:
@@ -4206,7 +4300,7 @@ def create_app(
         if view_record is None:
             return _empty_figure("This view is no longer available."), ""
         figure = build_geometry_figure(
-            coordinates=project.view_coordinates(int(view_id))[positions],
+            coordinates=project.view_coordinate_rows(int(view_id), positions),
             units=page_units,
             eligible=page_eligible,
             focal_unit_id=None,
@@ -4343,21 +4437,18 @@ def create_app(
         Output("code-center-map", "figure", allow_duplicate=True),
         Input("code-center-focal-store", "data"),
         State("code-center-view", "value"),
-        State("code-center-map", "figure"),
+        State("code-center-page-status", "children"),
         prevent_initial_call=True,
     )
     def update_code_center_focal_marker(
         observation_id: int | None,
         view_id: int | None,
-        current_figure: dict[str, Any] | None,
+        page_status: str | None,
     ) -> Any:
-        if view_id is None:
-            return no_update
-        # Dash Patch updates require the target property and nested path to
-        # already exist in the browser. code-center-map is initialized with a
-        # stable focal-marker trace at data[0], and this guard also protects
-        # transient/dynamic-layout states before that structure is available.
-        if not current_figure or not current_figure.get("data"):
+        # Page status and the map are produced in the same callback.  The map
+        # has a stable focal trace at data[0] whenever it is valid, so a short
+        # readiness status replaces sending the entire Plotly figure as State.
+        if view_id is None or not page_status:
             return no_update
         patch = Patch()
         if observation_id is None:
@@ -4398,7 +4489,7 @@ def create_app(
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks
         size = _coerce_positive_int(page_size, default=5000)
-        page_count = deterministic_page(len(units), page_size=size).page_count
+        page_count = deterministic_page_count(len(units), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered == "code-center-page-size":
@@ -5944,7 +6035,8 @@ def create_app(
         State("focus-recommendation-store", "data"),
         State("focus-span-selection-store", "data"),
         State("focus-refresh-store", "data"),
-        State("focus-prediction-map", "figure"),
+        State("prediction-geometry-page-token", "data"),
+        State("prediction-geometry-refresh-store", "data"),
         State("focus-auto-retrain", "value"),
         State("focus-train-scope", "value"),
         State("focus-tune-hyperparameters", "value"),
@@ -5963,7 +6055,8 @@ def create_app(
         recommendation: dict[str, Any] | None,
         selected_unit_ids: list[int] | None,
         refresh: int | None,
-        prediction_figure: dict[str, Any] | None,
+        prediction_page_token: str | None,
+        prediction_refresh: dict[str, Any] | None,
         auto_train_values: list[str] | None,
         train_scope_values: list[str] | None,
         tune_values: list[str] | None,
@@ -6019,20 +6112,18 @@ def create_app(
             "unsure": "#d39a22",
         }[value]
         patch: Any = no_update
-        if prediction_figure:
-            for trace_index, trace in enumerate(prediction_figure.get("data", [])):
-                for position, customdata in enumerate(trace.get("customdata") or []):
-                    if (
-                        isinstance(customdata, (list, tuple))
-                        and customdata
-                        and int(customdata[0]) == int(observation_id)
-                    ):
-                        patch = Patch()
-                        patch["data"][trace_index]["marker"]["color"][position] = color
-                        patch["data"][trace_index]["marker"]["line"]["color"][position] = color
-                        break
-                if patch is not no_update:
-                    break
+        if prediction_page_token:
+            with prediction_page_lock:
+                page = prediction_page_indexes.get(str(prediction_page_token))
+            location = _matching_prediction_page_point(
+                page, code_id=code_id, refresh_state=prediction_refresh,
+                observation_id=int(observation_id),
+            )
+            if location is not None:
+                trace_index, position = location
+                patch = Patch()
+                patch["data"][trace_index]["marker"]["color"][position] = color
+                patch["data"][trace_index]["marker"]["line"]["color"][position] = color
         # The persisted human judgment always wins over a possibly stale UI
         # classifier selection. Report scope errors without discarding the
         # normal annotation-store/figure refresh.
@@ -6351,8 +6442,10 @@ def create_app(
             return no_update, "Train these classifiers first: " + ", ".join(missing) + "."
         fit_ids = [int(row["classifier_fit_id"]) for row in status_rows]
         try:
-            geometry = project.classifier_prediction_geometry(
-                code_id=int(code_id), classifier_fit_ids=fit_ids
+            geometry = _compact_prediction_geometry(
+                project.classifier_prediction_geometry(
+                    code_id=int(code_id), classifier_fit_ids=fit_ids
+                )
             )
         except (KeyError, ValueError) as error:
             return no_update, str(error)
@@ -6404,7 +6497,7 @@ def create_app(
         )
         visible = _prediction_geometry_visible_points(geometry, display_options)
         size = _coerce_positive_int(page_size, default=5000)
-        page_count = deterministic_page(len(visible), page_size=size).page_count
+        page_count = deterministic_page_count(len(visible), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {
@@ -6422,6 +6515,7 @@ def create_app(
     @app.callback(
         Output("focus-prediction-map", "figure"),
         Output("focus-prediction-page-status", "children"),
+        Output("prediction-geometry-page-token", "data"),
         Input("prediction-geometry-refresh-store", "data"),
         Input("focus-prediction-page-size", "value"),
         Input("focus-prediction-page-number", "value"),
@@ -6434,17 +6528,17 @@ def create_app(
         page_number: Any,
         display_options: list[str] | None,
         code_id: int | None,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, str, str | None]:
         if not _prediction_geometry_matches_code(refresh_state, code_id):
-            return go.Figure(), "Code changed. Refresh the score view for this code."
+            return go.Figure(), "Code changed. Refresh the score view for this code.", None
         geometry = _prediction_geometry_from_cache(
             prediction_geometry_cache, refresh_state
         )
         if not geometry:
-            return go.Figure(), "Refresh the score view to display observations."
+            return go.Figure(), "Refresh the score view to display observations.", None
         visible = _prediction_geometry_visible_points(geometry, display_options)
         if not visible:
-            return go.Figure(), "No observations match the selected display options."
+            return go.Figure(), "No observations match the selected display options.", None
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
         include_coded = "coded" in set(display_options or [])
@@ -6479,7 +6573,16 @@ def create_app(
             status += f" · all {len(coded_positions):,} coded observations included"
             if extras:
                 status += f" ({extras:,} added beyond the page sample)"
-        return figure, status
+        token = uuid.uuid4().hex
+        index = _prediction_geometry_page_index(figure)
+        with prediction_page_lock:
+            prediction_page_indexes[token] = (
+                int(code_id), str(refresh_state["cache_key"]), index
+            )
+            prediction_page_order.append(token)
+            while len(prediction_page_order) > 8:
+                prediction_page_indexes.pop(prediction_page_order.popleft(), None)
+        return figure, status, token
 
     @app.callback(
         Output("focus-prediction-status", "children", allow_duplicate=True),
@@ -7938,7 +8041,7 @@ def _memo_presentation_layout(
         and any(int(view["view_id"]) == int(initial_view_id) for view in public_views)
         else (int(public_views[0]["view_id"]) if public_views else None)
     )
-    initial_page_count = deterministic_page(total_units, page_size=5000).page_count
+    initial_page_count = deterministic_page_count(total_units, page_size=5000)
     return html.Div(
         [
             html.Header(
@@ -8097,7 +8200,7 @@ def _code_center_layout(
     total_units: int,
 ) -> Any:
     """Return the versioned Code Center with list and geometric views."""
-    initial_page_count = deterministic_page(total_units, page_size=5000).page_count
+    initial_page_count = deterministic_page_count(total_units, page_size=5000)
     return html.Div(
         [
             html.Aside(
@@ -10686,17 +10789,11 @@ def _evaluate_metadata_filters(
         value = clause.get("value")
         value2 = clause.get("value2")
         try:
+            matches = _prepared_metadata_matcher(
+                kind=kind, condition=condition, value=value, value2=value2,
+            )
             mask = np.asarray(
-                [
-                    _metadata_value_matches(
-                        unit.get("metadata", {}).get(field),
-                        kind=kind,
-                        condition=condition,
-                        value=value,
-                        value2=value2,
-                    )
-                    for unit in units
-                ],
+                [matches(unit.get("metadata", {}).get(field)) for unit in units],
                 dtype=bool,
             )
         except (TypeError, ValueError, re.error) as error:
@@ -10712,6 +10809,88 @@ def _evaluate_metadata_filters(
     else:
         combined = np.all(stacked, axis=0)
     return combined, errors
+
+
+def _prepared_metadata_matcher(
+    *, kind: str, condition: str, value: Any, value2: Any,
+) -> Any:
+    """Prepare one clause once rather than repeat setup for every unit.
+
+    Defer parsing/regex validation until the first nonmissing value so invalid
+    clauses retain the original all-missing behavior and error semantics.
+    """
+    if condition == "missing":
+        return _is_missing
+    if condition == "not_missing":
+        return lambda raw: not _is_missing(raw)
+    if kind == "boolean":
+        return lambda raw: (
+            False if _is_missing(raw)
+            else (bool(raw) if condition == "true" else not bool(raw))
+        )
+    if kind == "categorical":
+        selected = value if isinstance(value, list) else [value]
+        choices = {str(item).casefold() for item in selected}
+        return lambda raw: (
+            False if _is_missing(raw)
+            else ((str(raw).casefold() in choices) != (condition == "not_in"))
+        )
+    if kind == "text":
+        target = str(value or "")
+        folded = target.casefold()
+        expression: re.Pattern[str] | None = None
+
+        def match_text(raw: Any) -> bool:
+            nonlocal expression
+            if _is_missing(raw):
+                return False
+            text = str(raw)
+            lowered = text.casefold()
+            if condition == "contains":
+                return folded in lowered
+            if condition == "excludes":
+                return folded not in lowered
+            if condition == "eq":
+                return lowered == folded
+            if condition == "neq":
+                return lowered != folded
+            if condition == "starts":
+                return lowered.startswith(folded)
+            if condition == "ends":
+                return lowered.endswith(folded)
+            if condition == "regex":
+                if expression is None:
+                    expression = re.compile(target, flags=re.IGNORECASE)
+                return expression.search(text) is not None
+            raise ValueError(f"unsupported condition {condition!r}")
+
+        return match_text
+    if kind in {"numeric", "datetime"}:
+        prepared = False
+        right: Any = None
+        upper: Any = None
+
+        def match_ordered(raw: Any) -> bool:
+            nonlocal prepared, right, upper
+            if _is_missing(raw):
+                return False
+            left = float(raw) if kind == "numeric" else _coerce_datetime(raw)
+            if not prepared:
+                if kind == "numeric":
+                    right = float(value)
+                    upper = float(value2) if condition == "between" else None
+                else:
+                    right = _coerce_datetime(value)
+                    upper = _coerce_datetime(value2) if condition == "between" else None
+                prepared = True
+            if kind == "datetime" and (left is None or right is None):
+                raise ValueError("enter a valid date")
+            return _ordered_comparison(left, condition, right, upper)
+
+        return match_ordered
+    return lambda raw: _metadata_value_matches(
+        raw, kind=kind, condition=condition, value=value, value2=value2,
+    )
 
 
 def _metadata_value_matches(
@@ -10921,16 +11100,17 @@ def _render_memo_preview(
         return html.P("Memo preview will appear here.", className="memo-preview-empty")
 
     placeholders: dict[str, str] = {}
+    reference_ids = [int(match.group(1)) for match in _MEMO_REFERENCE_PATTERN.finditer(body)]
+    reference_keys = project.database.unit_keys_for_ids(reference_ids) if reference_ids else {}
 
     def replace_reference(match: re.Match[str]) -> str:
         unit_id = int(match.group(1))
-        try:
-            unit = project.unit(unit_id)
-            label = " › ".join(
-                f"{name}: {value}" for name, value in unit["user_key"].items()
-            )
-        except KeyError:
-            label = f"unit {unit_id}"
+        user_key = reference_keys.get(unit_id)
+        label = (
+            " › ".join(f"{name}: {value}" for name, value in user_key.items())
+            if user_key is not None
+            else f"unit {unit_id}"
+        )
         token = f"GECOREFERENCE{len(placeholders)}TOKEN"
         placeholders[token] = (
             f"[{_escape_markdown_label(label)}](#{unit_hash_prefix}{unit_id})"
@@ -11335,6 +11515,29 @@ def _current_annotation_value(
     return str(annotation["value"]) if annotation is not None else None
 
 
+def _geometry_overlay_frame(figure: go.Figure) -> dict[str, Any] | None:
+    """Retain only plotted point identities and coordinates for overlay patches.
+
+    The complete Plotly figure never needs to travel back from the browser just
+    to update visited and focal outlines.  Capture the two base traces while
+    they are built, not their colors, styling, or layout/camera.
+    """
+    if len(figure.data) <= EXPLORE_FOCAL_TRACE_INDEX:
+        return None
+    names = tuple(str(trace.name) for trace in figure.data[:4])
+    if names != EXPLORE_TRACE_NAMES:
+        return None
+    data: list[dict[str, Any]] = []
+    for index, trace in enumerate(figure.data[:4]):
+        row: dict[str, Any] = {"name": trace.name}
+        if index in {EXPLORE_FILTERED_TRACE_INDEX, EXPLORE_ELIGIBLE_TRACE_INDEX}:
+            for field in ("x", "y", "customdata", "hovertext"):
+                value = getattr(trace, field)
+                row[field] = list(value) if value is not None else []
+        data.append(row)
+    return {"data": data}
+
+
 def _geometry_overlay_payload(
     figure: dict[str, Any] | None,
     *,
@@ -11467,6 +11670,19 @@ def _prediction_geometry_matches_code(
         return False
 
 
+def _compact_prediction_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the already computed display data in the short-lived plot cache.
+
+    Projection and PCA are computed against every selected immutable fit *before*
+    compaction. Individual point texts and score dictionaries are not used by
+    the prediction plot, so retaining them four times wastes memory.
+    """
+    for point in geometry.get("points", []):
+        point.pop("text", None)
+        point.pop("scores", None)
+    return geometry
+
+
 def _prediction_geometry_from_cache(
     cache: dict[str, dict[str, Any]],
     refresh_state: dict[str, Any] | None,
@@ -11494,6 +11710,32 @@ def _prediction_geometry_visible_points(
         for point in geometry.get("points", [])
         if str(point.get("kind")) in allowed
     ]
+
+
+def _prediction_geometry_page_index(figure: go.Figure) -> dict[int, tuple[int, int]]:
+    """Locate plotted observation IDs for small, identity-checked point patches."""
+    points: dict[int, tuple[int, int]] = {}
+    for trace_index, trace in enumerate(figure.data):
+        custom = getattr(trace, "customdata", None)
+        if custom is None:
+            continue
+        for position, value in enumerate(custom):
+            if isinstance(value, (list, tuple, np.ndarray)) and len(value):
+                points[int(value[0])] = (trace_index, position)
+    return points
+
+
+def _matching_prediction_page_point(
+    page: tuple[int, str, dict[int, tuple[int, int]]] | None,
+    *, code_id: int | None, refresh_state: dict[str, Any] | None,
+    observation_id: int,
+) -> tuple[int, int] | None:
+    """Resolve a plotted point only for the active frozen score snapshot."""
+    if page is None or not _prediction_geometry_matches_code(refresh_state, code_id):
+        return None
+    if page[0] != int(code_id) or page[1] != str(refresh_state.get("cache_key")):
+        return None
+    return page[2].get(int(observation_id))
 
 
 def _build_prediction_geometry_figure(
@@ -11706,6 +11948,48 @@ def _display_local_browser_url(host: str, port: int) -> str:
     return url
 
 
+def _should_warm_semantic_runtime(project: GeometricCoder, *, mode: str) -> bool:
+    """Only prewarm for standard workspaces with external queryable geometry."""
+    if mode != "standard" or not getattr(project, "is_external_backed", False):
+        return False
+    return any(
+        str(record.get("storage_kind")) == "external"
+        and bool(record.get("supports_query"))
+        for record in project.geometries(public_only=True)
+    )
+
+
+def _warm_semantic_runtime_libraries() -> bool:
+    """Pay process-wide transformer import and first CPU-kernel costs at launch.
+
+    This does not reconstruct a frozen TeAL pipeline, load a particular model,
+    encode real text, or save a semantic query. Actual per-model initialization
+    still occurs on first use, preserving the provider's existing thread-local
+    project and model contracts.
+    """
+    import importlib
+    from time import perf_counter
+
+    start = perf_counter()
+    print("GeCo: preparing semantic-search libraries...", flush=True)
+    try:
+        torch = importlib.import_module("torch")
+        importlib.import_module("sentence_transformers")
+        # A minimal disposable similarity computation initializes the shared
+        # PyTorch CPU backend without consuming RNG state or using a model.
+        with torch.inference_mode():
+            query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+            _ = torch.matmul(query, query.T)
+    except Exception as error:
+        # Optional transformer resources must never prevent unrelated GeCo
+        # capabilities (or non-transformer semantic search) from launching.
+        # Backend initialization can raise errors beyond ImportError/OSError.
+        print(f"GeCo: semantic-library warm-up skipped ({error}).", flush=True)
+        return False
+    print(f"GeCo: semantic-search libraries ready ({perf_counter() - start:.1f}s).", flush=True)
+    return True
+
+
 def launch_app(
     project: GeometricCoder,
     *,
@@ -11722,6 +12006,8 @@ def launch_app(
     from geometric_coder.ui.server import GeCoServer
 
     app = create_app(project, mode=mode, focus_session_id=focus_session_id)
+    if _should_warm_semantic_runtime(project, mode=mode):
+        _warm_semantic_runtime_libraries()
     server = GeCoServer(app, host=host, port=port)
     server.start()
     _display_local_browser_url(host, server.port)
