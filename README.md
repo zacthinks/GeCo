@@ -36,6 +36,8 @@ Classifiers include logistic regression, linear and **RBF-kernel support vector 
 
 Once a code-specific classifier or committee is useful, use it to generate coding proposals for observations you have not yet reviewed. GeCo's **Apply & Review** workspace puts those proposals in a review table, where you can inspect suggested labels and probabilities, filter the results, accept or revise individual decisions, and take bulk actions when appropriate.
 
+The proposal table loads only a page at a time, with sorting and filters applied across the draft. You can apply bulk decisions to selected proposals **on the current page**, the entire current page, or the entire draft. Committing all reviewed proposals still covers the complete draft, not just the page being viewed.
+
 You retain control over what becomes a coding decision. You can change a proposal to **Present**, **Absent**, or **Unsure**, or deliberately leave it unreviewed. Machine predictions are kept separate from human assignments until you commit reviewed decisions; existing annotations are not silently overwritten.
 
 ### Move back and forth
