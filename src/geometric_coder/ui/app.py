@@ -6037,9 +6037,18 @@ def create_app(
                     "selected classifier(s)."
                 )
             elif str(result["status"]) == "awaiting_two_classes":
-                message = f"{saved_label}; training awaits both positive and negative evidence."
+                message = (
+                    f"{saved_label}; training awaits positive and negative "
+                    "evidence within each selected classifier's geometry."
+                )
             else:
                 message = f"{saved_label}; selected classifier(s) are current."
+            awaiting = list(result.get("awaiting_classifier_spec_ids", []))
+            if awaiting and str(result["status"]) == "trained":
+                message += (
+                    f" {len(awaiting)} other classifier(s) lack both training "
+                    "classes in their own geometry."
+                )
             messages[origin] = message
         return (
             messages.get("develop", no_update),
