@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 import pytest
 
@@ -162,3 +164,34 @@ def test_learned_committee_stale_fit_remains_usable_without_retraining(tmp_path,
         committee_id=committee_id, code_id=code_id
     )
     assert current["committee_fit_id"] == fitted["committee_fit_id"]
+
+
+def test_first_use_by_multiple_request_threads_publishes_one_complete_ranking(tmp_path):
+    project, code_id, _, _, committee_id, _ = _trained_committee(tmp_path)
+    def prepare(_):
+        return project.prepare_selected_committee(
+            code_id=code_id, committee_id=committee_id
+        )
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(prepare, range(4)))
+    assert sum(bool(row["prepared"]) for row in results) == 1
+    assert all(row["unit_count"] == 12 for row in results)
+    prepared = project.database.prepared_committee_ranking(committee_id)
+    assert prepared is not None and prepared["prediction_count"] == 12
+
+
+def test_definition_change_deletes_only_disposable_ranking(tmp_path):
+    project, code_id, specs, _, committee_id, _ = _trained_committee(tmp_path)
+    assert _ranking_recommend(project, code_id, committee_id)
+    assert project.database.prepared_committee_ranking(committee_id)
+    project.update_classifier_committee(
+        committee_id, name="new mean", classifier_spec_ids=list(reversed(specs)),
+        aggregation="mean"
+    )
+    assert project.database.prepared_committee_ranking(committee_id) is None
+    assert project.classifier_committee_status(
+        code_id=code_id, committee_id=committee_id
+    )["status"] == "current"
+    assert _ranking_recommend(project, code_id, committee_id)
+    prepared = project.database.prepared_committee_ranking(committee_id)
+    assert prepared["aggregation"] == "mean"
