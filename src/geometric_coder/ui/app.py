@@ -5203,6 +5203,7 @@ def create_app(
 
     @app.callback(
         Output("committee-modal", "style"),
+        Output("committee-create-modal", "style"),
         Output("committee-members", "options"),
         Output("committee-members", "value"),
         Output("committee-table", "data"),
@@ -5210,6 +5211,8 @@ def create_app(
         Output("committee-status", "children"),
         Output("committee-refresh-store", "data", allow_duplicate=True),
         Input("focus-manage-committees", "n_clicks"),
+        Input("focus-new-committee", "n_clicks"),
+        Input("committee-create-close", "n_clicks"),
         Input("committee-close", "n_clicks"),
         Input("committee-save", "n_clicks"),
         Input("committee-rename", "n_clicks"),
@@ -5226,6 +5229,8 @@ def create_app(
     )
     def manage_committee_modal(
         open_clicks: int,
+        new_clicks: int,
+        create_close_clicks: int,
         close_clicks: int,
         save_clicks: int,
         rename_clicks: int,
@@ -5239,7 +5244,8 @@ def create_app(
         rename_name: str | None,
         refresh: int | None,
     ) -> tuple[
-        dict[str, str],
+        Any,
+        Any,
         list[dict[str, Any]],
         list[int],
         list[dict[str, Any]],
@@ -5247,12 +5253,16 @@ def create_app(
         str,
         int,
     ]:
-        del open_clicks, close_clicks, save_clicks, rename_clicks, delete_clicks
+        del open_clicks, new_clicks, create_close_clicks, close_clicks
+        del save_clicks, rename_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         if triggered == "committee-close":
-            return {"display": "none"}, [], [], [], [], "", int(refresh or 0)
+            return {"display": "none"}, no_update, [], [], [], [], "", int(refresh or 0)
+        if triggered == "committee-create-close":
+            return no_update, {"display": "none"}, [], [], [], [], "", int(refresh or 0)
         if code_id is None:
             return (
+                {"display": "none"},
                 {"display": "none"},
                 [],
                 [],
@@ -5273,11 +5283,13 @@ def create_app(
         # otherwise leave an invisible classifier from the previously active code
         # selected and submit it with the new code's visible classifiers.
         selected_member_ids = (
-            [] if triggered == "focus-manage-committees" else visible_member_ids
+            [] if triggered in {"focus-manage-committees", "focus-new-committee"}
+            else visible_member_ids
         )
         selected_committee_rows = list(selected_rows or [])
         message = ""
         next_refresh = int(refresh or 0)
+        created = False
         try:
             if triggered == "committee-save":
                 clean_name = (name or "").strip()
@@ -5296,6 +5308,7 @@ def create_app(
                 selected_committee_rows = []
                 next_refresh += 1
                 message = "Committee saved."
+                created = True
             elif triggered == "committee-rename":
                 rows = table_data or []
                 selection = selected_rows or []
@@ -5341,7 +5354,12 @@ def create_app(
             for row in committees
         ]
         return (
-            {"display": "flex"},
+            {"display": "flex"}
+            if triggered in {"focus-manage-committees", "committee-rename", "committee-delete"}
+            else no_update,
+            {"display": "none"} if created
+            else {"display": "flex"} if triggered == "focus-new-committee"
+            else no_update,
             member_options,
             selected_member_ids,
             rows,
