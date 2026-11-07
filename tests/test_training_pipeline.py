@@ -1330,6 +1330,47 @@ def test_apply_bulk_model_commits_preserve_training_eligibility_and_undo(tmp_pat
     assert zero is None
 
 
+def test_apply_commit_reconciles_classifier_badge_on_develop_return(
+    tmp_path: Path,
+) -> None:
+    """Committed evidence marks a frozen fit stale without opening its manager."""
+    from dash import no_update
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    code_id = project.create_code("badge reconciliation")
+    project.ensure_default_classifier_specs(code_id=code_id)
+    spec_id = int(project.classifier_specs(code_id=code_id)[0]["classifier_spec_id"])
+    observations = project.database.list_observations()
+    for position, value in [(0, "positive"), (1, "positive"),
+                            (3, "negative"), (4, "negative")]:
+        project.annotate(int(observations[position]["observation_id"]), code_id, value)
+    project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    app = create_app(project)
+    callbacks = [
+        entry["callback"].__wrapped__
+        for name, entry in app.callback_map.items()
+        if "focus-active-classifier-status.children" in name
+        and "focus-active-classifier-detail.children" in name
+    ]
+    assert len(callbacks) == 1
+    status = callbacks[0]
+    current = status(code_id, spec_id, 0, 0, 0, 0, 0, "focus")
+    assert current[0] == "Current"
+    run_id = project.create_apply_run(
+        code_id=code_id, source_kind="classifier", source_id=spec_id
+    )
+    project.bulk_review_apply_proposals(apply_run_id=run_id, decision="accept")
+    result = project.commit_apply_run(run_id)
+    assert result["committed"] > 0
+    assert status(code_id, spec_id, 0, 0, 0, 0, 1, "apply") == (
+        no_update, no_update, no_update,
+    )
+    updated = status(code_id, spec_id, 0, 0, 0, 0, 1, "focus")
+    assert updated[0] == "Stale"
+    assert "status-stale" in updated[1]
+
+
 def test_develop_summary_reconciles_apply_and_explore_on_tab_return(tmp_path: Path) -> None:
     """Auto-off cross-workspace saves are visible on return, without focal scans."""
     from geometric_coder.ui.app import create_app
