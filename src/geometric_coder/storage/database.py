@@ -2338,6 +2338,20 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return an annotation event ID.")
             return int(event.lastrowid)
 
+    def unrepresented_derived_observation_ids(self, geometry_id: int) -> set[int]:
+        """Identify unsupported derived IDs without loading the corpus or text."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id FROM observations AS o
+                LEFT JOIN observation_geometry_vectors AS ogv
+                  ON ogv.observation_id = o.observation_id AND ogv.geometry_id = ?
+                WHERE o.kind != 'atomic' AND ogv.observation_id IS NULL
+                """,
+                (int(geometry_id),),
+            ).fetchall()
+        return {int(row["observation_id"]) for row in rows}
+
     def derived_observation_ids_for_geometry(self, geometry_id: int) -> set[int]:
         """Return derived observations having a persisted vector in this geometry."""
         with self.connect() as connection:
