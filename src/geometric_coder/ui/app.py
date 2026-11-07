@@ -11926,9 +11926,10 @@ def _warm_semantic_runtime_libraries() -> bool:
         with torch.inference_mode():
             query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
             _ = torch.matmul(query, query.T)
-    except (ImportError, OSError) as error:
+    except Exception as error:
         # Optional transformer resources must never prevent unrelated GeCo
         # capabilities (or non-transformer semantic search) from launching.
+        # Backend initialization can raise errors beyond ImportError/OSError.
         print(f"GeCo: semantic-library warm-up skipped ({error}).", flush=True)
         return False
     print(f"GeCo: semantic-search libraries ready ({perf_counter() - start:.1f}s).", flush=True)
