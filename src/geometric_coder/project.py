@@ -2788,6 +2788,8 @@ class GeometricCoder:
     ) -> list[dict[str, Any]]:
         """Select eligible labels actually represented in one geometry."""
         candidates = self._eligible_training_annotations(code_id, annotations)
+        if int(geometry_id) in self.transformable_geometry_ids():
+            return candidates
         unavailable = self.database.unrepresented_derived_observation_ids(
             int(geometry_id)
         )
@@ -2807,8 +2809,9 @@ class GeometricCoder:
             self._geometry_training_labels(code_id, annotations, geometry_id)
         )
         supported_derived = (
-            self.database.derived_observation_ids_for_geometry(int(geometry_id))
-            if geometry_id is not None else None
+            None if geometry_id is None
+            or int(geometry_id) in self.transformable_geometry_ids()
+            else self.database.derived_observation_ids_for_geometry(int(geometry_id))
         )
         return {
             "annotations": [
@@ -2951,6 +2954,9 @@ class GeometricCoder:
         """Return eligible evidence, vectors, labels, and the exact training snapshot."""
         labeled, labels, snapshot = self._classifier_training_evidence(
             code_id=int(code_id), geometry_id=int(geometry_id)
+        )
+        self.materialize_derived_vectors(
+            int(geometry_id), [int(row["observation_id"]) for row in labeled],
         )
         training_matrix, _ = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(geometry_id)
@@ -3144,6 +3150,10 @@ class GeometricCoder:
             }
             return result
 
+        self.materialize_derived_vectors(
+            int(spec["geometry_id"]),
+            [int(row["observation_id"]) for row in labeled],
+        )
         training_matrix, atomic_matrix = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(spec["geometry_id"])
         )
@@ -3574,13 +3584,14 @@ class GeometricCoder:
     ) -> dict[str, Any]:
         annotations = self.database.current_annotations(int(code_id))
         unsupported_derived: set[int] = set()
+        transformable = self.transformable_geometry_ids()
         for fit_id in member_fit_ids:
             member = self.database.get_classifier_fit(int(fit_id))
-            unsupported_derived.update(
-                self.database.unrepresented_derived_observation_ids(
-                    int(member["geometry_id"])
+            geometry_id = int(member["geometry_id"])
+            if geometry_id not in transformable:
+                unsupported_derived.update(
+                    self.database.unrepresented_derived_observation_ids(geometry_id)
                 )
-            )
         applicable = [
             row for row in annotations
             if int(row["observation_id"]) not in unsupported_derived
