@@ -117,6 +117,7 @@ def test_finite_classifier_search_still_uses_small_discrete_spaces() -> None:
     assert neighbors
     assert {int(row["n_neighbors"]) for row in neighbors} <= {1, 3, 5}
 
+
 def test_rbf_svm_fits_nonlinear_pattern_and_monotone_probabilities() -> None:
     # Center versus ring is not linearly separable in the original two axes.
     x = np.asarray([
