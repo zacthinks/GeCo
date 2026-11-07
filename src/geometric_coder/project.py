@@ -1865,6 +1865,9 @@ class GeometricCoder:
     ) -> dict[int, tuple[str, bool]]:
         """Persist derived vectors only for geometries that support new text."""
         supported = self.transformable_geometry_ids()
+        if not supported and not self.database.list_geometries(public_only=False):
+            if not self.is_external_backed:
+                return {}
         if not supported:
             raise ConfigurationError(
                 "No registered geometry can transform new text. Add or connect "
@@ -2719,17 +2722,12 @@ class GeometricCoder:
     ) -> list[dict[str, Any]]:
         """Select eligible labels actually represented in one geometry."""
         candidates = self._eligible_training_annotations(code_id, annotations)
-        observations = {
-            int(row["observation_id"]): str(row["kind"])
-            for row in self.database.list_observations()
-        }
-        supported = self.database.derived_observation_ids_for_geometry(
+        unavailable = self.database.unrepresented_derived_observation_ids(
             int(geometry_id)
         )
         return [
             row for row in candidates
-            if observations.get(int(row["observation_id"])) == "atomic"
-            or int(row["observation_id"]) in supported
+            if int(row["observation_id"]) not in unavailable
         ]
 
     def _classifier_training_snapshot(
