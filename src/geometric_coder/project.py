@@ -3997,7 +3997,7 @@ class GeometricCoder:
                         int(value) for value in
                         learned_fit["training_snapshot"]["member_fit_ids"]
                     ]
-                    same_members = fitted_ids == selected_fit_ids
+                    same_members = members_complete and fitted_ids == selected_fit_ids
                     point_scores = (
                         self.database.classifier_scores_for_unit(
                             selected_fit_ids, int(ranked_committee["unit_id"])
@@ -4007,11 +4007,15 @@ class GeometricCoder:
                     probabilities: dict[str, float] = {}
                     fit_ids_by_name: dict[str, int] = {}
                     stale_names: list[str] = []
-                    for state, fit_id in zip(member_states, selected_fit_ids, strict=True):
+                    for state in member_states:
                         name = str(state["classifier_name"])
-                        if same_members and fit_id in point_scores:
-                            probabilities[name] = float(point_scores[fit_id])
+                        # An unfitted member has no current fit ID. Only
+                        # attribute member scores when the full frozen set
+                        # still matches the currently configured committee.
                         if same_members:
+                            fit_id = int(state["fit"]["classifier_fit_id"])
+                            if fit_id in point_scores:
+                                probabilities[name] = float(point_scores[fit_id])
                             fit_ids_by_name[name] = fit_id
                         if state["stale"]:
                             stale_names.append(name)
