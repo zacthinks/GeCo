@@ -1854,53 +1854,6 @@ class GeometricCoder:
             return not self.is_external_backed
         return bool(self.transformable_geometry_ids())
 
-    def _transform_observation_text(
-        self, text: str, *, token: str
-    ) -> dict[int, tuple[str, bool]]:
-        """Persist derived vectors only for geometries that support new text."""
-        supported = self.transformable_geometry_ids()
-        if not supported and not self.database.list_geometries(public_only=False):
-            if not self.is_external_backed:
-                return {}
-        if not supported:
-            raise ConfigurationError(
-                "No registered geometry can transform new text. Add or connect "
-                "a geometry with new-text transformation to create spans or "
-                "teaching examples."
-            )
-        records = [
-            record for record in self.database.list_geometries(public_only=False)
-            if int(record["geometry_id"]) in supported
-        ]
-        local_runtime = (
-            self.runtime_geometries()
-            if any(str(row.get("storage_kind", "local")) != "external" for row in records)
-            else {}
-        )
-        vectors: dict[int, tuple[str, bool]] = {}
-        for record in records:
-            name = str(record["name"])
-            if str(record.get("storage_kind", "local")) == "external":
-                provider = self._require_external_provider()
-                vector = provider.transform_texts(record["external_ref"], [text])
-                if sparse.issparse(vector):
-                    normalized: Matrix = sparse.csr_matrix(vector)
-                else:
-                    normalized = np.asarray(vector)
-                corpus = self.geometry_matrix(int(record["geometry_id"]))
-                if normalized.ndim != 2 or normalized.shape != (1, corpus.shape[1]):
-                    raise ValueError(
-                        f"transform_texts for external geometry {name!r} must return "
-                        f"shape (1, {corpus.shape[1]}), got {normalized.shape}."
-                    )
-                vector = normalized
-            else:
-                vector = local_runtime[name].transform_texts([text])
-            vectors[int(record["geometry_id"])] = self.artifacts.save_observation_vector(
-                token, name, vector
-            )
-        return vectors
-
     def materialize_derived_vectors(
         self, geometry_id: int, observation_ids: Sequence[int] | None = None
     ) -> list[int]:
