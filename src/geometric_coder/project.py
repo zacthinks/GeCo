@@ -2863,6 +2863,7 @@ class GeometricCoder:
             str(spec["algorithm"]),
             base,
             max_neighbors=int(min_train_rows),
+            training_matrix=training_matrix,
         )
         results: list[dict[str, Any]] = []
         for candidate in candidates:
@@ -4534,13 +4535,16 @@ class GeometricCoder:
         return f"{parent} · {interval}" if parent else interval
 
     def classifier_prediction_geometry(
-        self, *, code_id: int, classifier_fit_ids: Sequence[int]
+        self, *, code_id: int, classifier_fit_ids: Sequence[int],
+        score_type: str = "probability",
     ) -> dict[str, Any]:
-        """Project observations through one or more classifier-score dimensions.
+        """Project frozen probability estimates or native decision margins.
 
-        Only observations scored by every selected immutable fit are included. Current
-        human assignments are attached for display but do not alter the fitted scores.
+        Each selected fit must expose the requested type. Switching score
+        types must never silently mix incompatible numeric scales.
         """
+        if score_type not in {"probability", "decision_score"}:
+            raise ValueError("score_type must be probability or decision_score.")
         fit_ids = list(dict.fromkeys(int(value) for value in classifier_fit_ids))
         if not fit_ids:
             raise ValueError("Select at least one classifier fit.")
@@ -4553,13 +4557,14 @@ class GeometricCoder:
                 raise ValueError("All selected fits must belong to the active code.")
             rows = self.database.classifier_predictions(fit_id)
             scores: dict[int, float] = {}
+            if any(row[score_type] is None for row in rows):
+                label = "estimated probabilities" if score_type == "probability" else "native decision scores"
+                raise ValueError(
+                    f"Classifier fit {fit_id} does not expose {label}. "
+                    "Choose a compatible score type or retrain the classifier."
+                )
             for row in rows:
-                raw_score = row["probability"]
-                if raw_score is None:
-                    raw_score = row["decision_score"]
-                if raw_score is None:
-                    continue
-                scores[int(row["observation_id"])] = float(raw_score)
+                scores[int(row["observation_id"])] = float(row[score_type])
             score_maps.append(scores)
             spec = self.database.get_classifier_spec(int(fit["classifier_spec_id"]))
             names.append(str(spec["name"]))
@@ -4612,6 +4617,7 @@ class GeometricCoder:
         }
         return {
             "method": method,
+            "score_type": score_type,
             "classifier_fit_ids": fit_ids,
             "classifier_names": names,
             "axis_titles": axis_titles,
