@@ -1490,6 +1490,52 @@ class GeometricCoder:
             return coordinates
         return self.artifacts.load_view(self.project_dir, view["artifact_path"])
 
+    def view_coordinate_rows(
+        self, view_id: int, positions: Sequence[int]
+    ) -> np.ndarray:
+        """Read only requested local plot rows; preserve external full-key contracts.
+
+        Legacy local 2D views and local dense unified 1D/2D representations are
+        saved as NumPy artifacts, so selecting memory-mapped rows avoids loading
+        the entire coordinate matrix. External resources retain their existing
+        validated full-corpus read and row-alignment guarantees.
+        """
+        requested = np.asarray(positions, dtype=int)
+        if requested.ndim != 1:
+            raise ValueError("positions must be one-dimensional")
+        if int(view_id) < 0:
+            registered = self.database.get_representation(-int(view_id))
+            if registered["dimensions"] not in (1, 2):
+                raise ValueError("Only 1D or 2D numerical representations are plot-ready.")
+            if registered["legacy_kind"] == "view":
+                return self.view_coordinate_rows(int(registered["legacy_id"]), requested)
+            if registered["legacy_kind"] == "geometry":
+                geometry = self.database.get_geometry(int(registered["legacy_id"]))
+                if (
+                    str(geometry.get("storage_kind", "local")) == "local"
+                    and not geometry["matrix_sparse"]
+                ):
+                    matrix = np.load(
+                        self.project_dir / geometry["matrix_path"],
+                        allow_pickle=False, mmap_mode="r",
+                    )
+                    if matrix.ndim != 2 or matrix.shape[1] != registered["dimensions"]:
+                        raise ValueError("The selected representation is not 1D or 2D.")
+                    return np.asarray(matrix[requested], dtype=np.float32)
+            return self.view_coordinates(view_id)[requested]
+        view = self.database.get_view(int(view_id))
+        if str(view.get("storage_kind", "local")) != "external":
+            matrix = np.load(
+                self.project_dir / view["artifact_path"],
+                allow_pickle=False, mmap_mode="r",
+            )
+            if matrix.ndim != 2 or matrix.shape[1] != 2:
+                raise ValueError(
+                    f"View artifact must have shape (n, 2), got {matrix.shape}."
+                )
+            return np.asarray(matrix[requested], dtype=np.float32)
+        return self.view_coordinates(view_id)[requested]
+
     def create_view(
         self,
         *,
@@ -1759,7 +1805,7 @@ class GeometricCoder:
                     "for the derived observation."
                 )
             position = int(observation["row_position"])
-            point = self.view_coordinates(view_id)[position : position + 1]
+            point = self.view_coordinate_rows(view_id, [position])
             if point.shape[1] == 1:
                 from geometric_coder.ui.figures import one_dimensional_display_y
                 unit_id = int(observation["unit_id"])
@@ -1771,7 +1817,7 @@ class GeometricCoder:
         view = self.database.get_view(view_id)
         if observation["kind"] == "atomic":
             row_position = int(observation["row_position"])
-            return self.view_coordinates(view_id)[row_position : row_position + 1]
+            return self.view_coordinate_rows(view_id, [row_position])
         if not view["supports_transform"]:
             raise ValueError(f"View {view_id} cannot transform derived observations.")
         vector = self.observation_vector(observation_id, int(view["geometry_id"]))
