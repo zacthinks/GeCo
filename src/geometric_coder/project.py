@@ -3975,16 +3975,19 @@ class GeometricCoder:
                         int(state["fit"]["classifier_fit_id"])
                         for state in member_states if state["fit"] is not None
                     ]
-                    if len(selected_fit_ids) != len(member_states):
-                        raise ValueError(
-                            "Train all committee classifiers before using it."
+                    # The persisted learned score index is usable even when
+                    # the committee's *current* membership includes an unfitted
+                    # replacement. Keep its old fit provenance and mark stale;
+                    # do not demand new training merely to read frozen results.
+                    members_complete = len(selected_fit_ids) == len(member_states)
+                    if members_complete:
+                        latest_snapshot = self._committee_training_snapshot(
+                            code_id=int(code_id), committee=chosen_committee,
+                            member_fit_ids=selected_fit_ids,
                         )
-                    latest_snapshot = self._committee_training_snapshot(
-                        code_id=int(code_id), committee=chosen_committee,
-                        member_fit_ids=selected_fit_ids,
-                    )
                     committee_stale = (
-                        learned_fit["training_snapshot"] != latest_snapshot
+                        not members_complete
+                        or learned_fit["training_snapshot"] != latest_snapshot
                         or any(bool(state["stale"]) for state in member_states)
                     )
                     # Learned aggregate predictions belong to the original
