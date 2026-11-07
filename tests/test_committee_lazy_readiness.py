@@ -195,3 +195,27 @@ def test_definition_change_deletes_only_disposable_ranking(tmp_path):
     assert _ranking_recommend(project, code_id, committee_id)
     prepared = project.database.prepared_committee_ranking(committee_id)
     assert prepared["aggregation"] == "mean"
+
+
+def test_frozen_learned_scores_not_attributed_to_retrained_member(tmp_path):
+    project, code_id, (first, _), _, committee_id, observations = _trained_committee(
+        tmp_path, "logistic_stack"
+    )
+    old_committee_fit = project.train_classifier_committee(
+        code_id=code_id, committee_id=committee_id
+    )
+    project.annotate(int(observations[2]["observation_id"]), code_id, "positive")
+    project.train_classifier(code_id=code_id, classifier_spec_id=first)
+    assert project.classifier_committee_status(
+        code_id=code_id, committee_id=committee_id
+    )["status"] == "stale"
+    frozen = _ranking_recommend(project, code_id, committee_id)
+    assert frozen and frozen["stale_committee"] is True
+    assert frozen["committee_probability"] is not None
+    # The aggregation is from the old trained committee, NOT an application
+    # of its coefficients to today's newly fitted member predictions.
+    assert frozen["probabilities"] == {}
+    assert frozen["classifier_fit_ids"] == {}
+    assert project.database.latest_classifier_committee_fit(
+        committee_id=committee_id, code_id=code_id
+    )["committee_fit_id"] == old_committee_fit["committee_fit_id"]
