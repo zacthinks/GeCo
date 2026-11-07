@@ -6043,7 +6043,7 @@ def create_app(
                 )
             else:
                 message = f"{saved_label}; selected classifier(s) are current."
-            awaiting = list(result.get("awaiting_classifier_spec_ids", []))
+            awaiting = list((result or {}).get("awaiting_classifier_spec_ids", []))
             if awaiting and str(result["status"]) == "trained":
                 message += (
                     f" {len(awaiting)} other classifier(s) lack both training "
