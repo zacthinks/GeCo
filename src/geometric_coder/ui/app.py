@@ -6414,12 +6414,14 @@ def create_app(
         Output("prediction-geometry-refresh-store", "data"),
         Output("focus-prediction-status", "children"),
         Input("focus-prediction-refresh", "n_clicks"),
+        Input("focus-prediction-score-type", "value"),
         State("focus-code-dropdown", "value"),
         State("focus-prediction-fits", "value"),
         prevent_initial_call=True,
     )
     def refresh_prediction_geometry(
         clicks: int,
+        score_type: str | None,
         code_id: int | None,
         classifier_spec_ids: list[int] | None,
     ) -> tuple[dict[str, Any] | Any, str]:
@@ -6443,7 +6445,8 @@ def create_app(
         try:
             geometry = _compact_prediction_geometry(
                 project.classifier_prediction_geometry(
-                    code_id=int(code_id), classifier_fit_ids=fit_ids
+                    code_id=int(code_id), classifier_fit_ids=fit_ids,
+                    score_type=str(score_type or "probability"),
                 )
             )
         except (KeyError, ValueError) as error:
@@ -6464,10 +6467,12 @@ def create_app(
                 "code_id": int(code_id),
                 "classifier_spec_ids": spec_ids,
                 "classifier_fit_ids": fit_ids,
+                "score_type": geometry["score_type"],
             },
             (
                 f"Refreshed {len(geometry['points']):,} scored observations using "
-                f"{method_labels[geometry['method']]}."
+                f"{method_labels[geometry['method']]} "
+                f"({ 'native decision scores' if geometry['score_type'] == 'decision_score' else 'estimated probabilities' })."
             ),
         )
 
@@ -9744,6 +9749,21 @@ def _focus_layout(
                                                     ),
                                                 ],
                                                 className="prediction-classifier-picker",
+                                            ),
+                                            html.Div(
+                                                [
+                                                    dcc.RadioItems(
+                                                        id="focus-prediction-score-type",
+                                                        options=[
+                                                            {"label": "Estimated probabilities", "value": "probability"},
+                                                            {"label": "Native decision scores", "value": "decision_score"},
+                                                        ],
+                                                        value="probability",
+                                                        inline=True,
+                                                        className="prediction-display-options",
+                                                    ),
+                                                ],
+                                                className="prediction-geometry-options",
                                             ),
                                             html.Div(
                                                 [

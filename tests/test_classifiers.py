@@ -76,3 +76,113 @@ def test_family_tuning_grids_are_nonempty_and_knn_respects_fold_size() -> None:
         assert candidates
         if algorithm == "knn":
             assert max(int(row["n_neighbors"]) for row in candidates) <= 4
+
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "field", "expected_count"),
+    [
+        ("logistic_l2", "regularization", 13),
+        ("logistic_l1", "regularization", 13),
+        ("linear_svm", "regularization", 13),
+        ("complement_nb", "alpha", 13),
+        ("logistic_elasticnet", "regularization", 25),
+    ],
+)
+def test_continuous_parameter_search_is_bounded_and_non_grid(
+    algorithm: str, field: str, expected_count: int,
+) -> None:
+    base = default_hyperparameters(algorithm)
+    first = tuning_candidates(algorithm, base)
+    second = tuning_candidates(algorithm, base)
+    assert first == second
+    assert len(first) == expected_count
+    assert first[0] == base
+    assert len({float(candidate[field]) for candidate in first[1:]}) == expected_count - 1
+    assert any(
+        not np.isclose(np.log10(float(candidate[field])), round(np.log10(float(candidate[field]))))
+        for candidate in first[1:]
+    )
+    if algorithm == "logistic_elasticnet":
+        assert len({float(candidate["l1_ratio"]) for candidate in first[1:]}) == 24
+        assert all(0 < float(candidate["l1_ratio"]) < 1 for candidate in first[1:])
+
+
+def test_finite_classifier_search_still_uses_small_discrete_spaces() -> None:
+    tree = tuning_candidates("decision_tree", default_hyperparameters("decision_tree"))
+    assert len(tree) == 15
+    neighbors = tuning_candidates(
+        "knn", default_hyperparameters("knn"), max_neighbors=5,
+    )
+    assert neighbors
+    assert {int(row["n_neighbors"]) for row in neighbors} <= {1, 3, 5}
+
+
+def test_rbf_svm_fits_nonlinear_pattern_and_monotone_probabilities() -> None:
+    # Center versus ring is not linearly separable in the original two axes.
+    x = np.asarray([
+        [0.0, 0.0], [0.1, 0.0], [-0.1, 0.0], [0.0, 0.1],
+        [2.0, 0.0], [-2.0, 0.0], [0.0, 2.0], [0.0, -2.0],
+    ])
+    labels = np.asarray([1, 1, 1, 1, 0, 0, 0, 0])
+    for matrix in (x, sparse.csr_matrix(x)):
+        fit = fit_classifier(
+            algorithm="rbf_svm",
+            hyperparameters={"regularization": 0.1, "gamma": "scale"},
+            training_matrix=matrix,
+            labels=labels,
+            scoring_matrix=matrix,
+        )
+        assert fit.outputs.decision_scores is not None
+        assert fit.outputs.probabilities is not None
+        margins = fit.outputs.decision_scores
+        scores = fit.outputs.probabilities
+        assert min(margins[:4]) > max(margins[4:])
+        assert np.all(np.diff(scores[np.argsort(margins)]) >= -1e-12)
+        assert np.all((0 <= scores) & (scores <= 1))
+        assert fit.estimator.calibration_method in {
+            "sigmoid_cv", "monotone_sigmoid_fallback"
+        }
+
+
+def test_svm_calibration_handles_minority_class_with_one_label() -> None:
+    matrix = np.asarray([[0.0], [0.3], [1.5], [2.0]])
+    for algorithm in ("linear_svm", "rbf_svm"):
+        fit = fit_classifier(
+            algorithm=algorithm, hyperparameters=None,
+            training_matrix=matrix, labels=[0, 0, 0, 1],
+            scoring_matrix=matrix,
+        )
+        assert fit.estimator.calibration_method == "monotone_sigmoid_fallback"
+        assert np.all(np.isfinite(fit.outputs.probabilities))
+        assert fit.outputs.decision_scores is not None
+
+
+def test_rbf_candidate_search_is_bounded_reproducible_and_joint() -> None:
+    data = sparse.csr_matrix(np.asarray([
+        [0., 1.], [1., 0.], [2., 1.], [1., 2.],
+    ]))
+    first = tuning_candidates(
+        "rbf_svm", default_hyperparameters("rbf_svm"), training_matrix=data,
+    )
+    second = tuning_candidates(
+        "rbf_svm", default_hyperparameters("rbf_svm"), training_matrix=data,
+    )
+    assert first == second
+    assert len(first) == 25
+    assert first[0]["gamma"] == "scale"
+    assert len({float(row["gamma"]) for row in first[1:]}) == 24
+    assert len({float(row["regularization"]) for row in first[1:]}) == 24
+    assert all(float(row["gamma"]) > 0 for row in first[1:])
+
+
+def test_svm_explicit_probability_false_retains_native_margin() -> None:
+    matrix = np.asarray([[0.], [1.], [2.], [3.]])
+    fit = fit_classifier(
+        algorithm="linear_svm",
+        hyperparameters={"probability": False},
+        training_matrix=matrix, labels=[0, 0, 1, 1],
+        scoring_matrix=matrix,
+    )
+    assert fit.outputs.probabilities is None
+    assert fit.outputs.decision_scores is not None

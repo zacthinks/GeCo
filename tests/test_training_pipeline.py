@@ -148,6 +148,7 @@ def test_new_families_train_through_common_pipeline(tmp_path: Path) -> None:
         "logistic_elasticnet",
         "complement_nb",
         "linear_svm",
+        "rbf_svm",
         "decision_tree",
         "knn",
     ]
@@ -1383,3 +1384,65 @@ def test_develop_summary_reconciles_apply_and_explore_on_tab_return(tmp_path: Pa
     after_explore = summary(code_id, 0, 0, "focus")
     assert after_explore[1] != after_apply[1]
     assert "Unsure 1" in str(after_explore[1])
+
+
+def test_rbf_end_to_end_reopen_apply_and_score_views(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("nonlinear")
+    observations = project.database.list_observations()
+    for index in (0, 1, 2):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "positive")
+    for index in (3, 4, 5):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "negative")
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    svm_id = project.create_classifier_spec(
+        code_id=code_id, name="rbf", geometry_id=geometry_id,
+        algorithm="rbf_svm",
+    )
+    fit = project.train_classifier(
+        code_id=code_id, classifier_spec_id=svm_id, tune=False,
+    )
+    fit_id = int(fit["classifier_fit_id"])
+    assert fit["score_kind"] == "probability"
+    estimates = project.classifier_prediction_geometry(
+        code_id=code_id, classifier_fit_ids=[fit_id],
+    )
+    raw = project.classifier_prediction_geometry(
+        code_id=code_id, classifier_fit_ids=[fit_id],
+        score_type="decision_score",
+    )
+    assert estimates["score_type"] == "probability"
+    assert raw["score_type"] == "decision_score"
+    assert len(estimates["points"]) == len(raw["points"])
+    assert any(abs(a["x"] - b["x"]) > 1e-7
+               for a, b in zip(estimates["points"], raw["points"], strict=True))
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.classifier_prediction_geometry(
+        code_id=code_id, classifier_fit_ids=[fit_id],
+        score_type="decision_score",
+    )["points"] == raw["points"]
+    run_id = reopened.create_apply_run(
+        code_id=code_id, source_kind="classifier", source_id=svm_id,
+    )
+    assert reopened.apply_run(run_id)["classifier_fit_ids"] == [fit_id]
+
+
+def test_prediction_geometry_rejects_missing_native_scores(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("tree")
+    observations = project.database.list_observations()
+    for index in (0, 1):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "positive")
+    for index in (3, 4):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "negative")
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    spec_id = project.create_classifier_spec(
+        code_id=code_id, name="tree", geometry_id=geometry_id,
+        algorithm="decision_tree",
+    )
+    fit = project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    with pytest.raises(ValueError, match="does not expose native decision scores"):
+        project.classifier_prediction_geometry(
+            code_id=code_id, classifier_fit_ids=[int(fit["classifier_fit_id"])],
+            score_type="decision_score",
+        )

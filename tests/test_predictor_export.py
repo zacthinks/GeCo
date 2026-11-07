@@ -382,3 +382,28 @@ def test_export_validates_source_count_row_alignment_and_feature_width(tmp_path:
     wrong_width = np.zeros((inputs[1].shape[0], inputs[1].shape[1] + 1), dtype=float)
     with pytest.raises(ValueError, match="requires .* features"):
         exported.predict_proba([inputs[0], wrong_width])
+
+def test_rbf_export_retains_calibrated_proba_and_native_margin(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    code_id = project.create_code("quality")
+    _label_training_examples(project, code_id)
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    spec_id = project.create_classifier_spec(
+        code_id=code_id, name="rbf quality",
+        geometry_id=geometry_id, algorithm="rbf_svm",
+    )
+    fit = project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    exported = project.export_predictor(_classifier_ref(project, spec_id))
+    assert exported.sources[0].n_features == project.geometry_matrix(geometry_id).shape[1]
+    assert exported.output_fields == ("prediction", "probability")
+    matrix = project.geometry_matrix(geometry_id)
+    expected = np.asarray([
+        row["probability"]
+        for row in project.database.classifier_predictions(
+            int(fit["classifier_fit_id"]), atomic_only=True
+        )
+    ], dtype=float)
+    np.testing.assert_allclose(exported.predict_proba([matrix]), expected)
+    margins = exported.members[0].estimator.decision_function(matrix)
+    assert np.all(np.isfinite(margins))
+    json.dumps(exported.manifest())

@@ -742,3 +742,35 @@ def test_explanatory_tooltips_disable_cursor_and_avoid_viewport_top_clipping() -
     assert "bottom: calc(100% + 7px);" not in css
     assert "Calculate similarity between search text and other units using the selected geometry." in app
     assert "Requires support for new translations." in app
+
+
+def test_develop_prediction_geometry_has_explicit_score_type_toggle() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'id="focus-prediction-score-type"' in source
+    assert '"Estimated probabilities", "value": "probability"' in source
+    assert '"Native decision scores", "value": "decision_score"' in source
+    assert 'Input("focus-prediction-score-type", "value")' in source
+    assert 'score_type=str(score_type or "probability")' in source
+
+
+def test_apply_action_cards_share_one_responsive_layout() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "geometric_coder" / "ui"
+    css = (root / "assets" / "geco.css").read_text(encoding="utf-8")
+    source = (root / "app.py").read_text(encoding="utf-8")
+    assert css.count(".apply-actions {") == 1
+    assert "container-type: inline-size;" in css
+    assert ".apply-bulk-action-group {" in css
+    assert "grid-column: 1 / -1;" in css
+    assert "@container (max-width: 660px)" in css
+    assert "@container (max-width: 520px)" in css
+    assert ".apply-action-group:not(.apply-bulk-action-group) button {" in css
+    # The layout fix must preserve all existing bulk and commit controls.
+    for control in (
+        "apply-bulk-decision", "apply-bulk-scope", "apply-bulk-apply",
+        "apply-clear-decisions", "apply-clear-visible", "apply-commit",
+        "apply-commit-visible", "apply-undo-last-commit",
+    ):
+        assert f'id="{control}"' in source

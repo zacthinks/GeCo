@@ -304,7 +304,6 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .apply-sidebar, .apply-main { padding: 0.9rem; }
 .apply-generation-controls { display: grid; gap: 0.5rem; margin-top: 0.8rem; }
 .apply-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; margin: 0.7rem 0; }
-.apply-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.7rem; }
 
 /* Memo Center */
 .memo-center-workspace { display: grid; grid-template-columns: minmax(360px, 0.72fr) minmax(0, 1.5fr); gap: 0.8rem; padding-top: 0.8rem; }
@@ -364,10 +363,34 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .danger-action:hover:not(:disabled) { border-color: #8b2929; color: #fff; background: #a83f3f; }
 .apply-filters { grid-template-columns: minmax(180px, 0.8fr) minmax(190px, 0.9fr) minmax(260px, 1.3fr); align-items: end; }
 .apply-probability-filter { min-width: 0; padding: 0 0.25rem; }
-.apply-actions { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 0.7rem; }
-.apply-action-group { padding: 0.7rem; border: 1px solid var(--geco-border); border-radius: 9px; background: #fafcfb; }
-.apply-action-group h4 { margin: 0 0 0.55rem; font-size: 0.88rem; }
-.apply-action-group button { margin: 0 0.35rem 0.35rem 0; }
+/* The three Apply action panels use one responsive layout, based on their
+   available width rather than the viewport's width. */
+.apply-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.7rem;
+  container-type: inline-size;
+}
+.apply-action-group {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--geco-border);
+  border-radius: 9px;
+  background: #fafcfb;
+}
+.apply-action-group h4 { margin: 0 0 0.65rem; font-size: 0.88rem; }
+.apply-action-group:not(.apply-bulk-action-group) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+.apply-action-group:not(.apply-bulk-action-group) button {
+  width: 100%;
+  margin: 0;
+  text-align: center;
+}
 
 /* Memo and Code centers */
 .center-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; }
@@ -389,7 +412,6 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 
 @media (max-width: 1100px) {
   .code-center-workspace { grid-template-columns: 1fr; }
-  .apply-actions { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .apply-draft-header, .code-center-geometry-controls, .apply-filters { grid-template-columns: 1fr; }
@@ -526,11 +548,12 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .code-center-content-tabs { margin-top: 1rem; }
 .apply-review-grid { --ag-cell-horizontal-padding: 8px; }
 
-/* 0.4.17 bulk review controls */
+/* Bulk actions occupy the full first row so dropdowns can remain readable. */
 .apply-bulk-action-group {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.8fr) auto;
-  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content;
+  gap: 0.65rem;
   align-items: end;
 }
 .apply-bulk-action-group h4 { grid-column: 1 / -1; }
@@ -547,10 +570,15 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   margin: 0 !important;
   white-space: nowrap;
 }
-@media (max-width: 860px) {
-  .apply-bulk-action-group { grid-template-columns: 1fr; }
-  .apply-bulk-action-group h4 { grid-column: auto; }
-  .apply-bulk-button { width: 100%; }
+/* Container queries follow the actual width inside Apply, including sidebar. */
+@container (max-width: 660px) {
+  .apply-bulk-action-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .apply-bulk-button { grid-column: 1 / -1; width: 100%; }
+}
+@container (max-width: 520px) {
+  .apply-actions > .apply-action-group { grid-column: 1 / -1; }
+  .apply-bulk-action-group { grid-template-columns: minmax(0, 1fr); }
+  .apply-bulk-action-group h4, .apply-bulk-button { grid-column: 1; }
 }
 
 /* GeCo 0.5 generalized-observation controls */
@@ -609,27 +637,9 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .teaching-example-action-group { display: grid; grid-template-columns: minmax(150px, 1fr) auto; gap: 0.55rem; align-items: end; }
 .teaching-example-action-group label { grid-column: 1 / -1; }
 
-/* Let the bulk panel claim the width required by its two dropdowns and button. */
-.apply-actions { grid-template-columns: minmax(430px, 1.7fr) repeat(2, minmax(210px, 0.8fr)); }
-.apply-action-group { min-width: 0; }
-.apply-bulk-action-group {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
-  gap: 0.55rem;
-  align-items: end;
-}
-.apply-bulk-action-group h4 { grid-column: 1 / -1; }
-.apply-bulk-button { margin: 0 0 0.35rem 0 !important; white-space: nowrap; }
-
-@media (max-width: 1320px) {
-  .apply-actions { grid-template-columns: 1fr 1fr; }
-  .apply-bulk-action-group { grid-column: 1 / -1; }
-}
 @media (max-width: 760px) {
   .focus-topbar,
-  .teaching-example-fields, .teaching-example-actions,
-  .apply-bulk-action-group { grid-template-columns: 1fr; }
-  .apply-bulk-action-group h4 { grid-column: auto; }
+  .teaching-example-fields, .teaching-example-actions { grid-template-columns: 1fr; }
 }
 
 /* Delayed global feedback for operations that take long enough to be ambiguous.
