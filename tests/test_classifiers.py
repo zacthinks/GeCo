@@ -78,6 +78,45 @@ def test_family_tuning_grids_are_nonempty_and_knn_respects_fold_size() -> None:
             assert max(int(row["n_neighbors"]) for row in candidates) <= 4
 
 
+
+@pytest.mark.parametrize(
+    ("algorithm", "field", "expected_count"),
+    [
+        ("logistic_l2", "regularization", 13),
+        ("logistic_l1", "regularization", 13),
+        ("linear_svm", "regularization", 13),
+        ("complement_nb", "alpha", 13),
+        ("logistic_elasticnet", "regularization", 25),
+    ],
+)
+def test_continuous_parameter_search_is_bounded_and_non_grid(
+    algorithm: str, field: str, expected_count: int,
+) -> None:
+    base = default_hyperparameters(algorithm)
+    first = tuning_candidates(algorithm, base)
+    second = tuning_candidates(algorithm, base)
+    assert first == second
+    assert len(first) == expected_count
+    assert first[0] == base
+    assert len({float(candidate[field]) for candidate in first[1:]}) == expected_count - 1
+    assert any(
+        not np.isclose(np.log10(float(candidate[field])), round(np.log10(float(candidate[field]))))
+        for candidate in first[1:]
+    )
+    if algorithm == "logistic_elasticnet":
+        assert len({float(candidate["l1_ratio"]) for candidate in first[1:]}) == 24
+        assert all(0 < float(candidate["l1_ratio"]) < 1 for candidate in first[1:])
+
+
+def test_finite_classifier_search_still_uses_small_discrete_spaces() -> None:
+    tree = tuning_candidates("decision_tree", default_hyperparameters("decision_tree"))
+    assert len(tree) == 15
+    neighbors = tuning_candidates(
+        "knn", default_hyperparameters("knn"), max_neighbors=5,
+    )
+    assert neighbors
+    assert {int(row["n_neighbors"]) for row in neighbors} <= {1, 3, 5}
+
 def test_rbf_svm_fits_nonlinear_pattern_and_monotone_probabilities() -> None:
     # Center versus ring is not linearly separable in the original two axes.
     x = np.asarray([
