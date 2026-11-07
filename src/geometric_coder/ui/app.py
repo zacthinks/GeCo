@@ -7049,10 +7049,13 @@ def create_app(
         Output("focus-auto-training-request-store", "data", allow_duplicate=True),
         *apply_action_inputs,
         State("apply-run-dropdown", "value"),
-        State("apply-table", "rowData"),
-        State("apply-table", "virtualRowData"),
-        State("apply-table", "paginationInfo"),
+        State("apply-page-snapshot", "data"),
         State("apply-table", "selectedRows"),
+        State("apply-proposed-filter", "value"),
+        State("apply-decision-filter", "value"),
+        State("apply-probability-range", "value"),
+        State("apply-page-size", "value"),
+        State("apply-table", "columnState"),
         State("apply-bulk-decision", "value"),
         State("apply-bulk-scope", "value"),
         State("apply-refresh-store", "data"),
@@ -7073,10 +7076,13 @@ def create_app(
         commit_visible_clicks: int,
         undo_clicks: int,
         draft_id: int | None,
-        rows: list[dict[str, Any]] | None,
-        virtual_rows: list[dict[str, Any]] | None,
-        pagination_info: dict[str, Any] | None,
+        snapshot: dict[str, Any] | None,
         selected_rows: list[dict[str, Any]] | None,
+        proposed_filter: str | None,
+        decision_filter: str | None,
+        probability_range: list[float] | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
         bulk_decision: str | None,
         bulk_scope: str | None,
         refresh: int | None,
@@ -7099,29 +7105,29 @@ def create_app(
         if draft_id is None:
             return "Select a draft first.", int(refresh or 0), no_update, no_update
         triggered = str(callback_context.triggered_id)
-        if not all(
-            _apply_rows_match_draft(table_rows, int(draft_id))
-            for table_rows in (rows, virtual_rows, selected_rows)
-        ):
-            return (
-                "Draft changed while the table was updating; reload it before reviewing.",
-                int(refresh or 0),
-                no_update,
-                no_update,
-            )
-        current_page_rows = _apply_current_page_rows(
-            virtual_rows if virtual_rows is not None else (rows or []),
-            pagination_info,
-        )
-        current_page_ids = [int(row["unit_id"]) for row in current_page_rows]
         clear_selection: Any = no_update
         training_request: Any = no_update
         try:
+            current_page_ids = _verified_apply_page(
+                project, draft_id=int(draft_id), snapshot=snapshot,
+                proposed_filter=proposed_filter, decision_filter=decision_filter,
+                probability_range=probability_range, page_size=page_size,
+                column_state=column_state, refresh=refresh,
+            )
+            if not _apply_rows_match_draft(selected_rows, int(draft_id)):
+                raise ValueError("Selection belongs to another Apply draft.")
+            if any(
+                int(row["unit_id"]) not in set(current_page_ids)
+                for row in (selected_rows or [])
+            ):
+                raise ValueError("Selection changed pages. Select proposals on the displayed page.")
             if triggered == "apply-bulk-apply":
                 decision = _normalize_apply_decision(bulk_decision)
                 unit_ids = _apply_bulk_scope_unit_ids(
                     scope=str(bulk_scope or "selected"),
-                    current_page_rows=current_page_rows,
+                    current_page_rows=[
+                        {"unit_id": unit_id} for unit_id in current_page_ids
+                    ],
                     selected_rows=selected_rows or [],
                 )
                 if bulk_scope == "selected" and not unit_ids:
