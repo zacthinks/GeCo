@@ -1256,6 +1256,30 @@ class GeometricCoder:
             record["matrix_sparse"],
         )
 
+    def geometry_page_rows(
+        self, geometry_id: int, positions: Sequence[int]
+    ) -> Matrix:
+        """Retrieve rows for page-limited navigation in canonical corpus order.
+
+        A local dense .npy artifact supports memory-mapped row selection. Sparse
+        and external matrices retain the existing validated full-matrix provider
+        contract; no subset semantics are imposed on an external provider.
+        """
+        requested = np.asarray(positions, dtype=int)
+        if requested.ndim != 1:
+            raise ValueError("positions must be one-dimensional")
+        record = self.database.get_geometry(int(geometry_id))
+        if str(record.get("storage_kind", "local")) == "local" and not record["matrix_sparse"]:
+            path = self.project_dir / record["matrix_path"]
+            matrix = np.load(path, allow_pickle=False, mmap_mode="r")
+            if matrix.ndim != 2:
+                raise ValueError("Geometry matrix must be two-dimensional.")
+            return np.asarray(matrix[requested])
+        matrix = self.geometry_matrix(int(geometry_id))
+        if sparse.issparse(matrix):
+            return matrix[requested]
+        return np.asarray(matrix)[requested, :]
+
     def ingest(
         self,
         data: pd.DataFrame,
