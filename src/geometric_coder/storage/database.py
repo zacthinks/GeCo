@@ -2361,6 +2361,23 @@ class ProjectDatabase:
             ).fetchall()
         return {int(row["observation_id"]) for row in rows}
 
+    def persist_derived_geometry_vectors(
+        self, geometry_id: int, vectors: Mapping[int, tuple[str, bool]]
+    ) -> None:
+        """Publish completed derived vectors atomically; never replace existing ones."""
+        if not vectors:
+            return
+        with self.connect() as connection:
+            connection.executemany(
+                """INSERT OR IGNORE INTO observation_geometry_vectors(
+                    observation_id, geometry_id, artifact_path, matrix_sparse, created_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (int(observation_id), int(geometry_id), path, int(is_sparse), utc_now())
+                    for observation_id, (path, is_sparse) in vectors.items()
+                ],
+            )
+
     def observation_vector_record(
         self, observation_id: int, geometry_id: int
     ) -> dict[str, Any] | None:
