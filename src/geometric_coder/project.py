@@ -2733,7 +2733,10 @@ class GeometricCoder:
             if geometry_id is None else
             self._geometry_training_labels(code_id, annotations, geometry_id)
         )
-        eligible_ids = {int(row["observation_id"]) for row in labeled}
+        supported_derived = (
+            self.database.derived_observation_ids_for_geometry(int(geometry_id))
+            if geometry_id is not None else None
+        )
         return {
             "annotations": [
                 {
@@ -2751,9 +2754,8 @@ class GeometricCoder:
                 for example in self.database.list_teaching_examples(
                     code_id, include_deleted=True
                 )
-                if geometry_id is None
-                or int(example["observation_id"]) in
-                self.database.derived_observation_ids_for_geometry(int(geometry_id))
+                if supported_derived is None
+                or int(example["observation_id"]) in supported_derived
             ],
         }
 
@@ -3208,19 +3210,21 @@ class GeometricCoder:
         missing_ids = self.database.missing_classifier_prediction_observation_ids(fit_id)
         if not missing_ids:
             return
-        observations = self.database.list_observations()
-        observation_ids = [int(row["observation_id"]) for row in observations]
-        position_by_id = {observation_id: position for position, observation_id in enumerate(observation_ids)}
-        missing_positions = [position_by_id[observation_id] for observation_id in missing_ids]
         scored_ids, scoring_matrix = self._classifier_scoring_matrix(
             int(fit["geometry_id"])
         )
-        if scored_ids != observation_ids:
-            raise RuntimeError("Classifier scoring observation order changed unexpectedly.")
+        position_by_id = {
+            observation_id: position
+            for position, observation_id in enumerate(scored_ids)
+        }
+        if any(observation_id not in position_by_id for observation_id in missing_ids):
+            raise RuntimeError("Predictions requested for unsupported observations.")
         estimator = self.artifacts.load_model(
             self.project_dir, str(fit["artifact_path"])
         )
-        missing_matrix = scoring_matrix[missing_positions]
+        missing_matrix = scoring_matrix[
+            [position_by_id[observation_id] for observation_id in missing_ids]
+        ]
         outputs = score_classifier(
             estimator=estimator,
             algorithm=str(fit["algorithm"]),
@@ -3228,10 +3232,10 @@ class GeometricCoder:
             matrix=missing_matrix,
         )
         predictions = []
-        for output_position, matrix_position in enumerate(missing_positions):
+        for output_position, observation_id in enumerate(missing_ids):
             predictions.append(
                 {
-                    "observation_id": observation_ids[matrix_position],
+                    "observation_id": observation_id,
                     "predicted_label": (
                         "positive"
                         if int(outputs.predicted_labels[output_position]) == 1
@@ -3354,7 +3358,6 @@ class GeometricCoder:
     ) -> dict[str, Any]:
         """Report not-trained, current, or stale status for classifiers."""
         annotations = self.database.current_annotations(int(code_id))
-        snapshot = self._classifier_training_snapshot(int(code_id), annotations)
         selected = (
             self.database.list_classifier_specs(code_id=int(code_id))
             if classifier_spec_ids is None
@@ -3367,6 +3370,9 @@ class GeometricCoder:
         for spec in selected:
             if int(spec["code_id"]) != int(code_id):
                 raise ValueError("A selected classifier belongs to another code.")
+            snapshot = self._classifier_training_snapshot(
+                int(code_id), annotations, int(spec["geometry_id"])
+            )
             latest = self.database.latest_classifier_fit(
                 code_id=int(code_id),
                 classifier_spec_id=int(spec["classifier_spec_id"]),
@@ -3399,7 +3405,9 @@ class GeometricCoder:
                     ),
                 }
             )
-        return {"classifiers": rows, "snapshot": snapshot}
+        return {"classifiers": rows, "snapshot": (
+            self._classifier_training_snapshot(int(code_id), annotations)
+        )}
 
     def tune_classifier_regularization(
         self,
