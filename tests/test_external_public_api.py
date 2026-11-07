@@ -344,3 +344,30 @@ def test_untransformable_external_project_still_disallows_derived_text(
         project.create_teaching_example(
             code_id=code_id, text="not representable", label="positive"
         )
+
+
+def test_partial_compatibility_keeps_teaching_controls_enabled(
+    tmp_path: Path,
+) -> None:
+    """One unsupported geometry must not gray out the shared teaching manager."""
+    from geometric_coder.ui.app import create_app
+
+    project = _transforming_external_project(tmp_path)
+    project.register_external_geometry(
+        name="transformable", external_ref={"artifact": "minilm"},
+        supports_text_transform=True,
+    )
+    project.register_external_geometry(
+        name="fixed", external_ref={"artifact": "minilm"},
+        supports_text_transform=False,
+    )
+    code_id = project.create_code("some supported")
+    app = create_app(project)
+    choices = [
+        entry["callback"].__wrapped__
+        for output, entry in app.callback_map.items()
+        if "code-center-teaching-button.disabled" in output
+        and "focus-teaching-button.disabled" in output
+    ]
+    assert len(choices) == 1
+    assert choices[0](code_id, code_id) == (False, False)
