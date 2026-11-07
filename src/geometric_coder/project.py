@@ -3491,8 +3491,32 @@ class GeometricCoder:
         member_fit_ids: Sequence[int],
     ) -> dict[str, Any]:
         annotations = self.database.current_annotations(int(code_id))
+        shared_ids: set[int] | None = None
+        for fit_id in member_fit_ids:
+            member = self.database.get_classifier_fit(int(fit_id))
+            available = self.database.derived_observation_ids_for_geometry(
+                int(member["geometry_id"])
+            )
+            shared_ids = (
+                available if shared_ids is None else shared_ids.intersection(available)
+            )
+        member_derived = shared_ids or set()
+        observations = {
+            int(row["observation_id"]): str(row["kind"])
+            for row in self.database.list_observations()
+        }
+        applicable = [
+            row for row in annotations
+            if observations.get(int(row["observation_id"])) == "atomic"
+            or int(row["observation_id"]) in member_derived
+        ]
+        training_snapshot = self._classifier_training_snapshot(int(code_id), applicable)
+        training_snapshot["teaching_status"] = [
+            row for row in training_snapshot["teaching_status"]
+            if int(row["observation_id"]) in member_derived
+        ]
         return {
-            "training": self._classifier_training_snapshot(int(code_id), annotations),
+            "training": training_snapshot,
             "committee_id": int(committee["committee_id"]),
             "committee_updated_at": str(committee["updated_at"]),
             "aggregation": str(committee["aggregation"]),
@@ -3543,14 +3567,20 @@ class GeometricCoder:
         member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
 
         annotations = self.database.current_annotations(int(code_id))
-        labeled = self._eligible_training_annotations(int(code_id), annotations)
+        labeled = [
+            row for row in self._eligible_training_annotations(int(code_id), annotations)
+            if all(
+                int(row["observation_id"]) in scores for scores in member_score_maps
+            )
+        ]
         if not any(row["value"] == "positive" for row in labeled) or not any(
             row["value"] == "negative" for row in labeled
         ):
-            raise ValueError("Committee training requires Present and Absent examples.")
+            raise ValueError(
+                "Committee training requires Present and Absent examples "
+                "represented by every member classifier."
+            )
         training_ids = [int(row["observation_id"]) for row in labeled]
-        if any(any(obs_id not in scores for obs_id in training_ids) for scores in member_score_maps):
-            raise ValueError("A member classifier is missing scores for committee training examples.")
         training_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in training_ids] for scores in member_score_maps]
         )
@@ -3559,9 +3589,13 @@ class GeometricCoder:
         )
 
         observations = self.database.list_observations()
-        scoring_ids = [int(row["observation_id"]) for row in observations]
-        if any(any(obs_id not in scores for obs_id in scoring_ids) for scores in member_score_maps):
-            raise ValueError("A member classifier is missing scores for committee observations.")
+        scoring_ids = [
+            int(row["observation_id"])
+            for row in observations
+            if all(
+                int(row["observation_id"]) in scores for scores in member_score_maps
+            )
+        ]
         scoring_matrix = np.column_stack(
             [[scores[obs_id] for obs_id in scoring_ids] for scores in member_score_maps]
         )
