@@ -297,6 +297,7 @@ def recommend_page_unit(
     seen_unit_ids: Collection[int],
     eligible: Sequence[bool] | None = None,
     matrix: Matrix | None = None,
+    page_matrix: Matrix | None = None,
     focal_unit_id: int | None = None,
     semantic_scores: Sequence[float] | None = None,
     random_seed: int | None = None,
@@ -304,8 +305,8 @@ def recommend_page_unit(
     """Recommend strictly within one deterministic Explore page.
 
     ``eligible``, ``matrix``, and ``semantic_scores`` are corpus-wide inputs.
-    This helper slices all of them to the same page before delegating to
-    :func:`recommend_unit`, preventing accidental navigation to another page.
+    A preselected ``page_matrix`` is an optional shortcut for bounded local
+    row retrieval.  Never interpret page rows as corpus rows.
     """
     all_ids = np.asarray(unit_ids, dtype=int)
     positions = np.asarray(page_positions, dtype=int)
@@ -322,7 +323,14 @@ def recommend_page_unit(
         if all_eligible.shape != all_ids.shape:
             raise ValueError("eligible must contain one value per corpus unit")
         page_eligible = all_eligible[positions]
-    page_matrix = None if matrix is None else _matrix_rows(matrix, positions)
+    if matrix is not None and page_matrix is not None:
+        raise ValueError("Supply either matrix or page_matrix, not both")
+    if page_matrix is None:
+        selected_matrix = None if matrix is None else _matrix_rows(matrix, positions)
+    else:
+        if page_matrix.ndim != 2 or page_matrix.shape[0] != len(positions):
+            raise ValueError("page_matrix must contain one row per page position")
+        selected_matrix = page_matrix
     page_semantic = None
     if semantic_scores is not None:
         all_scores = np.asarray(semantic_scores, dtype=float)
@@ -334,7 +342,7 @@ def recommend_page_unit(
         unit_ids=page_ids,
         seen_unit_ids=seen_unit_ids,
         eligible=page_eligible,
-        matrix=page_matrix,
+        matrix=selected_matrix,
         focal_unit_id=focal_unit_id,
         semantic_scores=page_semantic,
         random_seed=random_seed,
