@@ -88,6 +88,9 @@ def test_external_provider_still_receives_complete_ordered_universe(tmp_path):
     geometry_id = project.register_external_geometry(
         name="external_dense", external_ref={"artifact": "external"},
     )
+    # Registration validates the provider once. Count only the subsequent
+    # page-read operation; it must make exactly one full-universe request.
+    provider.calls.clear()
     rows = project.geometry_page_rows(geometry_id, [2, 0])
     assert rows.tolist() == [[30.0], [10.0]]
     assert len(provider.calls) == 1
