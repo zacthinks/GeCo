@@ -5551,11 +5551,15 @@ def create_app(
 
     @app.callback(
         Output("focus-committee-status", "children"),
+        Output("focus-committee-badge", "children"),
+        Output("focus-committee-badge", "className"),
         Input("focus-code-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
         Input("focus-model-refresh-store", "data"),
+        Input("committee-refresh-store", "data"),
+        Input("classifier-spec-refresh-store", "data"),
     )
     def update_focus_committee_status(
         code_id: int | None,
@@ -5563,32 +5567,41 @@ def create_app(
         focus_refresh: int | None,
         teaching_refresh: int | None,
         model_refresh: int | None,
-    ) -> Any:
-        del focus_refresh, teaching_refresh, model_refresh
+        committee_refresh: int | None,
+        spec_refresh: int | None,
+    ) -> tuple[str, str, str]:
+        del focus_refresh, teaching_refresh, model_refresh, committee_refresh, spec_refresh
         if code_id is None:
-            return "Select a code first."
+            return "Select a code first.", "No code", "classifier-status-badge status-not-trained"
         if committee_id is None:
-            return "No committee selected."
-        status = project.classifier_committee_status(
+            return "No committee selected.", "No committee", "classifier-status-badge status-not-trained"
+        result = project.classifier_committee_status(
             code_id=int(code_id), committee_id=int(committee_id)
         )
-        committee = status["committee"]
-        counts = status["member_counts"]
+        committee = result["committee"]
+        counts = result["member_counts"]
+        status = str(result["status"])
+        badge = {
+            "current": "Current",
+            "stale": "Stale",
+            "not_trained": "Not trained",
+        }[status]
+        aggregation = str(committee["aggregation"])
+        aggregation_label = COMMITTEE_AGGREGATION_LABELS.get(aggregation, aggregation)
         member_summary = (
             f"Members: {counts['current']} current · {counts['stale']} stale · "
             f"{counts['not_trained']} not trained"
         )
-        aggregation_label = COMMITTEE_AGGREGATION_LABELS.get(
-            str(committee["aggregation"]), str(committee["aggregation"])
+        detail = (
+            " · No separate committee training needed"
+            if aggregation != "logistic_stack"
+            else " · Learned stacking"
         )
-        if status["status"] == "no_training_required":
-            return f"{aggregation_label} · No committee training required · {member_summary}"
-        committee_fit_label = {
-            "current": "Current",
-            "stale": "Stale",
-            "not_trained": "Not trained",
-        }[str(status["status"])]
-        return f"{aggregation_label} · Committee fit: {committee_fit_label} · {member_summary}"
+        return (
+            f"{aggregation_label}{detail} · {member_summary}",
+            badge,
+            f"classifier-status-badge status-{status.replace('_', '-')}",
+        )
 
     @app.callback(
         Output("focus-train-action-status", "children"),
@@ -5724,39 +5737,6 @@ def create_app(
             f"Trained learned committee aggregation #{int(fit['committee_fit_id'])}.",
             int(refresh or 0) + 1,
         )
-
-    @app.callback(
-        Output("focus-prepare-committee", "disabled"),
-        Input("focus-committee-dropdown", "value"),
-        Input("committee-refresh-store", "data"),
-    )
-    def configure_prepare_committee(committee_id: int | None, refresh: int | None) -> bool:
-        del refresh
-        if committee_id is None:
-            return True
-        committee = project.database.get_classifier_committee(int(committee_id))
-        return str(committee["aggregation"]) == "logistic_stack"
-
-    @app.callback(
-        Output("focus-committee-train-status", "children", allow_duplicate=True),
-        Input("focus-prepare-committee", "n_clicks"),
-        State("focus-code-dropdown", "value"),
-        State("focus-committee-dropdown", "value"),
-        prevent_initial_call=True,
-    )
-    def prepare_committee(clicks: int, code_id: int | None,
-                          committee_id: int | None) -> str:
-        del clicks
-        if code_id is None or committee_id is None:
-            return "Select a code and committee first."
-        try:
-            result = project.prepare_selected_committee(
-                code_id=int(code_id), committee_id=int(committee_id)
-            )
-        except (KeyError, ValueError) as error:
-            return str(error)
-        return ("Prepared selected committee rankings." if result["prepared"]
-                else "Selected committee rankings already prepared.")
 
     @app.callback(
         Output("focus-disagreement", "style"),
