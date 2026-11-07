@@ -257,11 +257,20 @@ def test_presentation_map_active_uses_page_rows_without_explore_visits(
     monkeypatch.setattr(project, "view_coordinate_rows", traced)
     monkeypatch.setattr(project, "view_coordinates", forbidden)
     monkeypatch.setattr(project, "record_visit", forbidden)
-    monkeypatch.setattr(ui, "callback_context", SimpleNamespace(triggered_id="memo-presentation-view"))
-    figure, message = callbacks[0](
-        view_id, 0, 0, "__all__", "20", 1, "",
-        "?presentation=memo&memo_id=1", None,
-    )
+    # create_app captures Dash's callback_context inside its closure rather
+    # than exposing it as an attribute of the imported UI module.
+    callback = callbacks[0]
+    closure = dict(zip(callback.__code__.co_freevars, callback.__closure__, strict=True))
+    context_cell = closure["callback_context"]
+    original_context = context_cell.cell_contents
+    try:
+        context_cell.cell_contents = SimpleNamespace(triggered_id="memo-presentation-view")
+        figure, message = callback(
+            view_id, 0, 0, "__all__", "20", 1, "",
+            "?presentation=memo&memo_id=1", None,
+        )
+    finally:
+        context_cell.cell_contents = original_context
     assert recorded and len(recorded[-1]) <= 20
     assert figure is not None
     assert "Page 1" in message
