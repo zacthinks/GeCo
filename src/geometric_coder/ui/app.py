@@ -10260,6 +10260,69 @@ def _normalize_apply_decision(value: Any) -> str:
     raise ValueError(f"Unknown review decision {rendered!r}.")
 
 
+def _apply_sort_spec(
+    column_state: list[dict[str, Any]] | None,
+) -> list[tuple[str, str]]:
+    """Canonical server ordering matching AG Grid's sortable column state."""
+    sortable = {"unit_id", "key", "text", "probability", "proposed_label", "decision"}
+    entries = [
+        (index, str(column["colId"]), str(column["sort"]))
+        for index, column in enumerate(column_state or [])
+        if column.get("sort") in {"asc", "desc"}
+        and str(column.get("colId")) in sortable
+    ]
+    entries.sort(key=lambda item: (
+        int((column_state or [])[item[0]].get("sortIndex") or 0),
+        item[0],
+    ))
+    return [(field, direction) for _, field, direction in entries[:3]]
+
+
+def _verified_apply_page(
+    project: GeometricCoder, *,
+    draft_id: int, snapshot: dict[str, Any] | None,
+    proposed_filter: str | None, decision_filter: str | None,
+    probability_range: list[float] | None, page_size: int | None,
+    column_state: list[dict[str, Any]] | None,
+    refresh: int | None,
+) -> list[int]:
+    """Refuse a stale page identity instead of targeting a different row set."""
+    page = dict(snapshot or {})
+    lower, upper = _normalized_probability_range(probability_range)
+    ordering = _apply_sort_spec(column_state)
+    if (
+        page.get("draft_id") != int(draft_id)
+        or page.get("refresh") != int(refresh or 0)
+        or page.get("proposed") != (proposed_filter or "")
+        or page.get("decision") != (decision_filter or "")
+        or page.get("range") != [lower, upper]
+        or page.get("sort") != [list(pair) for pair in ordering]
+        or page.get("page_size") != int(page_size or 25)
+    ):
+        raise ValueError("Apply page changed. Let the table refresh before reviewing.")
+    count = project.count_apply_proposals(
+        int(draft_id), proposed_label=proposed_filter or None,
+        decision=decision_filter or None,
+        probability_min=lower, probability_max=upper,
+    )
+    if count != int(page.get("count", -1)):
+        raise ValueError("Apply proposals changed. Refresh the current page.")
+    ids = [
+        int(row["unit_id"])
+        for row in project.apply_proposals(
+            int(draft_id), proposed_label=proposed_filter or None,
+            decision=decision_filter or None,
+            probability_min=lower, probability_max=upper,
+            limit=int(page["page_size"]),
+            offset=int(page["page_index"]) * int(page["page_size"]),
+            sort_by=ordering,
+        )
+    ]
+    if ids != page.get("unit_ids"):
+        raise ValueError("Apply page changed. Refresh before reviewing these proposals.")
+    return ids
+
+
 def _apply_current_page_rows(
     rows: list[dict[str, Any]], pagination_info: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
