@@ -4294,7 +4294,7 @@ def create_app(
         if view_record is None:
             return _empty_figure("This view is no longer available."), ""
         figure = build_geometry_figure(
-            coordinates=project.view_coordinates(int(view_id))[positions],
+            coordinates=project.view_coordinate_rows(int(view_id), positions),
             units=page_units,
             eligible=page_eligible,
             focal_unit_id=None,
