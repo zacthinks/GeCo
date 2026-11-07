@@ -3528,8 +3528,13 @@ class GeometricCoder:
         }
         aggregation = str(committee["aggregation"])
         if aggregation in FIXED_COMMITTEE_AGGREGATIONS:
-            status = "no_training_required"
             latest = None
+            if member_counts["not_trained"]:
+                status = "not_trained"
+            elif member_counts["stale"]:
+                status = "stale"
+            else:
+                status = "current"
         else:
             latest = self.database.latest_classifier_committee_fit(
                 committee_id=int(committee_id), code_id=int(code_id)
@@ -3546,7 +3551,12 @@ class GeometricCoder:
                 )
                 status = (
                     "current"
-                    if latest["training_snapshot"] == snapshot and prediction_complete
+                    if (
+                        latest["training_snapshot"] == snapshot
+                        and prediction_complete
+                        and member_counts["stale"] == 0
+                        and member_counts["not_trained"] == 0
+                    )
                     else "stale"
                 )
         return {
@@ -4004,12 +4014,12 @@ class GeometricCoder:
                     if any(state["fit"] is None for state in states):
                         raise ValueError("Train committee members before requesting recommendations.")
                     fit_ids = [int(state["fit"]["classifier_fit_id"]) for state in states]
-                    prepared = self.database.prepared_committee_ranking(int(committee_id))
-                    if (prepared is None or prepared["aggregation"] != str(selected_committee["aggregation"])
-                            or prepared["committee_updated_at"] != str(selected_committee["updated_at"])
-                            or prepared["member_fit_ids"] != fit_ids
-                            or self.database.prepared_committee_has_missing_atomic_scores(int(committee_id))):
-                        raise ValueError("Prepare selected committee after member training or committee changes.")
+                    # A fixed committee has no learned estimator. Its ranking
+                    # is a derived index, built only when absent/invalid. The
+                    # preparation method atomically replaces the old snapshot.
+                    self.prepare_selected_committee(
+                        code_id=int(code_id), committee_id=int(committee_id)
+                    )
                     ranked_strategy = ("classifier_disagreement" if strategy in {
                         "classifier_disagreement", "geometry_disagreement"
                     } else strategy)
@@ -4036,7 +4046,8 @@ class GeometricCoder:
                         "committee_probability": probability,
                         "classifier_fit_ids": dict(zip(names, fit_ids, strict=True)),
                         "stale_classifiers": [str(x["classifier_name"]) for x in states if x["stale"]],
-                        "stale_committee": False, "fallback": False,
+                        "stale_committee": any(bool(x["stale"]) for x in states),
+                        "fallback": False,
                     }
 
         units = self.units()
@@ -4366,7 +4377,11 @@ class GeometricCoder:
             "committee_probability": committee_probability,
             "classifier_fit_ids": classifier_fit_ids,
             "stale_classifiers": stale_classifiers,
-            "stale_committee": bool(learned and learned.get("stale")),
+            "stale_committee": (
+                bool(learned.get("stale")) if learned is not None
+                else any(bool(state.get("stale")) for state in member_states)
+                if use_committee else False
+            ),
             "fallback": False,
         }
 
