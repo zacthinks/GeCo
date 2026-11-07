@@ -2844,7 +2844,7 @@ def create_app(
                             "The focal point is not on the current page. "
                             "Select a point on this page first.",
                         )
-                    matrix = project.geometry_matrix(int(geometry_id))
+                    matrix = project.geometry_page_rows(int(geometry_id), positions)
 
                 try:
                     unit_id = recommend_page_unit(
@@ -2853,7 +2853,7 @@ def create_app(
                         page_positions=positions,
                         seen_unit_ids=seen,
                         eligible=filters.eligible,
-                        matrix=matrix,
+                        page_matrix=matrix,
                         focal_unit_id=(
                             int(focal_unit_id)
                             if focal_unit_id is not None
