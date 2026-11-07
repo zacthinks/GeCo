@@ -38,6 +38,10 @@ GeCo's optional training-time CV tunes classifier hyperparameters using shared s
 
 **Apply & Review** stores machine-generated proposals in drafts. Only committed researcher decisions become human assignment events; predictions are never silently accepted.
 
+Apply & Review now reads sorted, filtered proposal pages directly from SQLite (25, 50 or 100 rows per browser payload), with counts computed from the same predicate. Its page snapshot binds draft, filters, probability range, order, page size, refresh generation and displayed unit IDs; mutations verify those against the current database before proceeding. **Current page** operates only on the verified page, **selected** requires a selection on that page, and **all** still means the full active draft, not merely loaded rows. Individual edits, pending and deliberately unreviewed proposals, commit/undo, conflict provenance and optional post-commit training retain their previous semantics. Sort columns are constrained by an SQL whitelist and have a stable unit-ID tie-breaker.
+
+Apply classifier/committee source status is not computed while Apply is hidden; switching to Apply refreshes the current source list. Memo Presentation likewise defers map and page work until its presentation URL is active, resolves the current public view catalog, and accesses local display coordinates by page rows where possible. The rendered memo map is not an Explore visit and does not record navigation.
+
 ## Integration boundaries
 
 GeCo can operate on its own or use externally backed numerical data. External providers align their results with the project's original source keys; GeCo owns codes, observations, assignments, sessions, and other mutable exploratory state. The UI does not need to interpret an external provider's private storage layout.
