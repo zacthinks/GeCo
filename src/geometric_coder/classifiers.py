@@ -535,6 +535,11 @@ class CalibratedMarginEstimator:
         self.fallback_scale = float(fallback_scale)
         self.classes_ = np.asarray(margin_model.classes_)
 
+    @property
+    def n_features_in_(self) -> int:
+        """Preserve the fitted feature-width contract for frozen exports."""
+        return int(self.margin_model.n_features_in_)
+
     def decision_function(self, matrix: Matrix) -> np.ndarray:
         return np.asarray(self.margin_model.decision_function(matrix), dtype=float)
 
@@ -572,7 +577,7 @@ def _fit_calibrated_svm(
                 [np.argmin(training_margins), np.argmax(training_margins)]
             )
             ordered = calibrated.predict_proba(matrix[probes])[:, 1]
-            if ordered[1] >= ordered[0]:
+            if ordered[1] > ordered[0] + 1e-12:
                 return CalibratedMarginEstimator(
                     margin, calibrated, method="sigmoid_cv",
                 )
