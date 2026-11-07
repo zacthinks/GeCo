@@ -4498,6 +4498,101 @@ class ProjectDatabase:
         result["classifier_names"] = [str(item["classifier_name"]) for item in fit_rows]
         return result
 
+    @staticmethod
+    def _apply_proposal_where(
+        apply_run_id: int, *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        include_unreviewed: bool = True,
+        include_inactive: bool = False,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+    ) -> tuple[str, list[Any]]:
+        """One authoritative predicate for paged data and matching-row counts."""
+            clauses = ["ap.apply_run_id = ?"]
+            parameters: list[Any] = [int(apply_run_id)]
+            if not include_inactive:
+                clauses.extend([
+                    "ap.removed_at IS NULL",
+                    "ap.committed_annotation_event_id IS NULL",
+                ])
+            if proposed_label is not None:
+                clauses.append("ap.proposed_label = ?")
+                parameters.append(str(proposed_label))
+            if decision is not None:
+                clauses.append("ap.decision = ?")
+                parameters.append(str(decision))
+            elif not include_unreviewed:
+                clauses.append("ap.decision != 'unreviewed'")
+            if probability_min is not None:
+                if not 0.0 <= float(probability_min) <= 1.0:
+                    raise ValueError("probability_min must lie in [0, 1]")
+                clauses.append("ap.probability >= ?")
+                parameters.append(float(probability_min))
+            if probability_max is not None:
+                if not 0.0 <= float(probability_max) <= 1.0:
+                    raise ValueError("probability_max must lie in [0, 1]")
+                clauses.append("ap.probability <= ?")
+                parameters.append(float(probability_max))
+            if (
+                probability_min is not None
+                and probability_max is not None
+                and float(probability_min) > float(probability_max)
+            ):
+                raise ValueError("probability_min may not exceed probability_max")
+    
+        return " AND ".join(clauses), parameters
+
+    @staticmethod
+    def _apply_proposal_order(sort_by: Sequence[tuple[str, str]] | None) -> str:
+        """Translate client sort requests using only a fixed SQL column whitelist."""
+        sortable = {
+            "unit_id": "ap.unit_id",
+            "key": "u.user_key_json COLLATE NOCASE",
+            "text": "u.text COLLATE NOCASE",
+            "probability": "ap.probability",
+            "proposed_label": "ap.proposed_label",
+            "decision": """(CASE ap.decision
+                WHEN 'accept' THEN 'Accept proposal'
+                WHEN 'positive' THEN 'Assign positive'
+                WHEN 'negative' THEN 'Assign negative'
+                WHEN 'unsure' THEN 'Assign unsure'
+                WHEN 'unreviewed' THEN 'Leave unreviewed'
+                ELSE 'Pending' END)""",
+        }
+        if not sort_by:
+            return "ap.probability DESC, ap.unit_id ASC"
+        parts: list[str] = []
+        for field, direction in sort_by[:3]:
+            column = sortable.get(str(field))
+            if column is None or direction not in {"asc", "desc"}:
+                raise ValueError("Unsupported Apply proposal sort.")
+            parts.append(f"{column} {'ASC' if direction == 'asc' else 'DESC'}")
+        return ", ".join([*parts, "ap.unit_id ASC"])
+
+    def count_apply_proposals(
+        self, apply_run_id: int, *,
+        proposed_label: str | None = None,
+        decision: str | None = None,
+        include_unreviewed: bool = True,
+        include_inactive: bool = False,
+        probability_min: float | None = None,
+        probability_max: float | None = None,
+    ) -> int:
+        """Count precisely the proposals matching a bounded page query."""
+        where, parameters = self._apply_proposal_where(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            include_unreviewed=include_unreviewed,
+            include_inactive=include_inactive,
+            probability_min=probability_min, probability_max=probability_max,
+        )
+        with self.connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM apply_proposals AS ap WHERE {where}",
+                parameters,
+            ).fetchone()
+        return int(row[0])
+
     def list_apply_proposals(
         self,
         apply_run_id: int,
@@ -4510,43 +4605,20 @@ class ProjectDatabase:
         probability_max: float | None = None,
         limit: int | None = None,
         offset: int = 0,
+        sort_by: Sequence[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Return proposal rows joined to their atomic text and metadata.
 
         Deliberately unreviewed proposals remain visible until a commit removes
         them from the active draft. Inactive rows remain available for audit.
         """
-        clauses = ["ap.apply_run_id = ?"]
-        parameters: list[Any] = [int(apply_run_id)]
-        if not include_inactive:
-            clauses.extend([
-                "ap.removed_at IS NULL",
-                "ap.committed_annotation_event_id IS NULL",
-            ])
-        if proposed_label is not None:
-            clauses.append("ap.proposed_label = ?")
-            parameters.append(str(proposed_label))
-        if decision is not None:
-            clauses.append("ap.decision = ?")
-            parameters.append(str(decision))
-        elif not include_unreviewed:
-            clauses.append("ap.decision != 'unreviewed'")
-        if probability_min is not None:
-            if not 0.0 <= float(probability_min) <= 1.0:
-                raise ValueError("probability_min must lie in [0, 1]")
-            clauses.append("ap.probability >= ?")
-            parameters.append(float(probability_min))
-        if probability_max is not None:
-            if not 0.0 <= float(probability_max) <= 1.0:
-                raise ValueError("probability_max must lie in [0, 1]")
-            clauses.append("ap.probability <= ?")
-            parameters.append(float(probability_max))
-        if (
-            probability_min is not None
-            and probability_max is not None
-            and float(probability_min) > float(probability_max)
-        ):
-            raise ValueError("probability_min may not exceed probability_max")
+        where, parameters = self._apply_proposal_where(
+            apply_run_id, proposed_label=proposed_label, decision=decision,
+            include_unreviewed=include_unreviewed,
+            include_inactive=include_inactive,
+            probability_min=probability_min, probability_max=probability_max,
+        )
+        order = self._apply_proposal_order(sort_by)
         limit_sql = ""
         if limit is not None:
             if limit < 1:
@@ -4559,8 +4631,8 @@ class ProjectDatabase:
                 SELECT ap.*, u.row_position, u.text, u.user_key_json, u.metadata_json
                 FROM apply_proposals AS ap
                 JOIN units AS u ON u.unit_id = ap.unit_id
-                WHERE {' AND '.join(clauses)}
-                ORDER BY ap.probability DESC, ap.unit_id
+                WHERE {where}
+                ORDER BY {order}
                 {limit_sql}
                 """,
                 parameters,
