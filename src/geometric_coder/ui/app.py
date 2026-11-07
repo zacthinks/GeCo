@@ -6447,8 +6447,10 @@ def create_app(
             return no_update, "Train these classifiers first: " + ", ".join(missing) + "."
         fit_ids = [int(row["classifier_fit_id"]) for row in status_rows]
         try:
-            geometry = project.classifier_prediction_geometry(
-                code_id=int(code_id), classifier_fit_ids=fit_ids
+            geometry = _compact_prediction_geometry(
+                project.classifier_prediction_geometry(
+                    code_id=int(code_id), classifier_fit_ids=fit_ids
+                )
             )
         except (KeyError, ValueError) as error:
             return no_update, str(error)
@@ -11671,6 +11673,19 @@ def _prediction_geometry_matches_code(
         return int(refresh_state["code_id"]) == int(code_id)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _compact_prediction_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the already computed display data in the short-lived plot cache.
+
+    Projection and PCA are computed against every selected immutable fit *before*
+    compaction. Individual point texts and score dictionaries are not used by
+    the prediction plot, so retaining them four times wastes memory.
+    """
+    for point in geometry.get("points", []):
+        point.pop("text", None)
+        point.pop("scores", None)
+    return geometry
 
 
 def _prediction_geometry_from_cache(
