@@ -71,8 +71,11 @@ def test_code_center_patch_target_is_initialized_before_partial_updates() -> Non
         / "ui"
         / "app.py"
     ).read_text(encoding="utf-8")
-    assert 'State("code-center-map", "figure")' in app_source
-    assert 'if not current_figure or not current_figure.get("data"):' in app_source
+    # The focal callback no longer sends the full plotted figure to the
+    # server.  It uses the page readiness status produced with the figure.
+    assert 'State("code-center-map", "figure")' not in app_source
+    assert 'State("code-center-page-status", "children")' in app_source
+    assert 'if view_id is None or not page_status:' in app_source
 
 
 def test_public_debug_launch_disables_auto_reloader_by_default(monkeypatch) -> None:
@@ -160,7 +163,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     ).read_text(encoding="utf-8")
     assert 'id="focus-tune-hyperparameters"' in app_source
     assert '_tooltip_label(html, "Tune hyperparameters with cross-validation"' in app_source
-    assert '"focus_tune_hyperparameters", False' in app_source
+    assert '"focus_tune_hyperparameters", True' in app_source
     assert 'tune=tune_hyperparameters' in app_source
     assert 'retune_current=tune_hyperparameters' in app_source
     # Cross-validation remains opt-in at the explicit training boundary, not
@@ -415,7 +418,7 @@ def test_committee_manager_clears_hidden_cross_code_member_selection() -> None:
     assert 'Output("committee-members", "value")' in app_source
     assert 'valid_member_ids = {int(row["classifier_spec_id"]) for row in specs}' in app_source
     assert 'if int(value) in valid_member_ids' in app_source
-    assert 'triggered == "focus-manage-committees"' in app_source
+    assert 'triggered in {"focus-manage-committees", "focus-new-committee"}' in app_source
 
 
 def test_auto_training_and_teaching_help_are_on_labels_not_inline_prose() -> None:
@@ -723,7 +726,10 @@ def test_semantic_candidate_is_checked_against_current_browser_request() -> None
     assert 'String(candidate.geometry_id) !== String(geometryId)' in source
     assert 'State("semantic-active-query", "data")' in source
     assert 'State("geometry-dropdown", "value")' in source
-    assert '_current_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    # Phase 3 keeps full vectors server-side; callbacks resolve a validated
+    # query/geometry/snapshot selector rather than reading browser-held vectors.
+    assert 'selected_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    assert 'project.saved_semantic_searches.query_id(clean) != expected_query_id' in source
     assert "expected_query_id=qid" in source
 
 

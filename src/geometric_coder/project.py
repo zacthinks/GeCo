@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from threading import RLock
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -80,6 +81,9 @@ class GeometricCoder:
         self.artifacts = ArtifactStore(project_dir / self.ARTIFACT_DIRECTORY)
         self.external_provider = external_provider
         self._runtime_geometries: dict[str, Geometry] | None = None
+        # Serialize first-use materialization within this project instance.
+        # The database publishes the completed ranking in one transaction.
+        self._committee_ranking_lock = RLock()
         # In-process cache of exact persisted evidence snapshots. A cheap DB
         # revision changes whenever relevant annotations or teaching state change.
         self._recommendation_freshness: dict[
@@ -1256,6 +1260,30 @@ class GeometricCoder:
             record["matrix_sparse"],
         )
 
+    def geometry_page_rows(
+        self, geometry_id: int, positions: Sequence[int]
+    ) -> Matrix:
+        """Retrieve rows for page-limited navigation in canonical corpus order.
+
+        A local dense .npy artifact supports memory-mapped row selection. Sparse
+        and external matrices retain the existing validated full-matrix provider
+        contract; no subset semantics are imposed on an external provider.
+        """
+        requested = np.asarray(positions, dtype=int)
+        if requested.ndim != 1:
+            raise ValueError("positions must be one-dimensional")
+        record = self.database.get_geometry(int(geometry_id))
+        if str(record.get("storage_kind", "local")) == "local" and not record["matrix_sparse"]:
+            path = self.project_dir / record["matrix_path"]
+            matrix = np.load(path, allow_pickle=False, mmap_mode="r")
+            if matrix.ndim != 2:
+                raise ValueError("Geometry matrix must be two-dimensional.")
+            return np.asarray(matrix[requested])
+        matrix = self.geometry_matrix(int(geometry_id))
+        if sparse.issparse(matrix):
+            return matrix[requested]
+        return np.asarray(matrix)[requested, :]
+
     def ingest(
         self,
         data: pd.DataFrame,
@@ -1452,11 +1480,12 @@ class GeometricCoder:
         view = self.database.get_view(view_id)
         if str(view.get("storage_kind", "local")) == "external":
             provider = self._require_external_provider()
+            ordered_keys = self._ordered_user_keys()
             coordinates = np.asarray(
-                provider.view_coordinates(view["external_ref"], self._ordered_user_keys()),
+                provider.view_coordinates(view["external_ref"], ordered_keys),
                 dtype=np.float32,
             )
-            expected = len(self.database.list_units())
+            expected = len(ordered_keys)
             if coordinates.shape != (expected, 2):
                 raise ValueError(
                     f"External view {view['name']!r} must have shape ({expected}, 2), "
@@ -1464,6 +1493,52 @@ class GeometricCoder:
                 )
             return coordinates
         return self.artifacts.load_view(self.project_dir, view["artifact_path"])
+
+    def view_coordinate_rows(
+        self, view_id: int, positions: Sequence[int]
+    ) -> np.ndarray:
+        """Read only requested local plot rows; preserve external full-key contracts.
+
+        Legacy local 2D views and local dense unified 1D/2D representations are
+        saved as NumPy artifacts, so selecting memory-mapped rows avoids loading
+        the entire coordinate matrix. External resources retain their existing
+        validated full-corpus read and row-alignment guarantees.
+        """
+        requested = np.asarray(positions, dtype=int)
+        if requested.ndim != 1:
+            raise ValueError("positions must be one-dimensional")
+        if int(view_id) < 0:
+            registered = self.database.get_representation(-int(view_id))
+            if registered["dimensions"] not in (1, 2):
+                raise ValueError("Only 1D or 2D numerical representations are plot-ready.")
+            if registered["legacy_kind"] == "view":
+                return self.view_coordinate_rows(int(registered["legacy_id"]), requested)
+            if registered["legacy_kind"] == "geometry":
+                geometry = self.database.get_geometry(int(registered["legacy_id"]))
+                if (
+                    str(geometry.get("storage_kind", "local")) == "local"
+                    and not geometry["matrix_sparse"]
+                ):
+                    matrix = np.load(
+                        self.project_dir / geometry["matrix_path"],
+                        allow_pickle=False, mmap_mode="r",
+                    )
+                    if matrix.ndim != 2 or matrix.shape[1] != registered["dimensions"]:
+                        raise ValueError("The selected representation is not 1D or 2D.")
+                    return np.asarray(matrix[requested], dtype=np.float32)
+            return self.view_coordinates(view_id)[requested]
+        view = self.database.get_view(int(view_id))
+        if str(view.get("storage_kind", "local")) != "external":
+            matrix = np.load(
+                self.project_dir / view["artifact_path"],
+                allow_pickle=False, mmap_mode="r",
+            )
+            if matrix.ndim != 2 or matrix.shape[1] != 2:
+                raise ValueError(
+                    f"View artifact must have shape (n, 2), got {matrix.shape}."
+                )
+            return np.asarray(matrix[requested], dtype=np.float32)
+        return self.view_coordinates(view_id)[requested]
 
     def create_view(
         self,
@@ -1734,7 +1809,7 @@ class GeometricCoder:
                     "for the derived observation."
                 )
             position = int(observation["row_position"])
-            point = self.view_coordinates(view_id)[position : position + 1]
+            point = self.view_coordinate_rows(view_id, [position])
             if point.shape[1] == 1:
                 from geometric_coder.ui.figures import one_dimensional_display_y
                 unit_id = int(observation["unit_id"])
@@ -1746,7 +1821,7 @@ class GeometricCoder:
         view = self.database.get_view(view_id)
         if observation["kind"] == "atomic":
             row_position = int(observation["row_position"])
-            return self.view_coordinates(view_id)[row_position : row_position + 1]
+            return self.view_coordinate_rows(view_id, [row_position])
         if not view["supports_transform"]:
             raise ValueError(f"View {view_id} cannot transform derived observations.")
         vector = self.observation_vector(observation_id, int(view["geometry_id"]))
@@ -3238,7 +3313,7 @@ class GeometricCoder:
             )
             prediction_complete = False
             if latest is not None:
-                prediction_complete = not self.database.missing_classifier_prediction_observation_ids(
+                prediction_complete = self.database.classifier_predictions_complete(
                     int(latest["classifier_fit_id"])
                 )
             rows.append(
@@ -3528,14 +3603,23 @@ class GeometricCoder:
         }
         aggregation = str(committee["aggregation"])
         if aggregation in FIXED_COMMITTEE_AGGREGATIONS:
-            status = "no_training_required"
             latest = None
+            if member_counts["not_trained"]:
+                status = "not_trained"
+            elif member_counts["stale"]:
+                status = "stale"
+            else:
+                status = "current"
         else:
             latest = self.database.latest_classifier_committee_fit(
                 committee_id=int(committee_id), code_id=int(code_id)
             )
-            if latest is None or any(row["classifier_fit_id"] is None for row in member_rows):
+            if latest is None:
                 status = "not_trained"
+            elif any(row["classifier_fit_id"] is None for row in member_rows):
+                # The previous learned prediction snapshot remains intact.
+                # Missing *new* member fits make the fit stale, not unfitted.
+                status = "stale"
             else:
                 member_fit_ids = [int(row["classifier_fit_id"]) for row in member_rows]
                 snapshot = self._committee_training_snapshot(
@@ -3546,7 +3630,12 @@ class GeometricCoder:
                 )
                 status = (
                     "current"
-                    if latest["training_snapshot"] == snapshot and prediction_complete
+                    if (
+                        latest["training_snapshot"] == snapshot
+                        and prediction_complete
+                        and member_counts["stale"] == 0
+                        and member_counts["not_trained"] == 0
+                    )
                     else "stale"
                 )
         return {
@@ -3720,7 +3809,16 @@ class GeometricCoder:
         return results, committee
 
     def prepare_selected_committee(self, *, code_id: int, committee_id: int) -> dict[str, Any]:
-        """Explicitly prepare only the selected fixed committee's frozen rankings."""
+        """Ensure a fixed committee has a valid derived ranking, building lazily."""
+        with self._committee_ranking_lock:
+            return self._prepare_selected_committee_unlocked(
+                code_id=code_id, committee_id=committee_id
+            )
+
+    def _prepare_selected_committee_unlocked(
+        self, *, code_id: int, committee_id: int
+    ) -> dict[str, Any]:
+        """Recheck the fingerprint and atomically replace an invalid index."""
         committee = self.database.get_classifier_committee(int(committee_id))
         if int(committee["code_id"]) != int(code_id):
             raise ValueError("The selected committee belongs to another code.")
@@ -3948,29 +4046,48 @@ class GeometricCoder:
                         int(state["fit"]["classifier_fit_id"])
                         for state in member_states if state["fit"] is not None
                     ]
-                    if len(selected_fit_ids) != len(member_states):
-                        raise ValueError(
-                            "Train all committee classifiers before using it."
+                    # The persisted learned score index is usable even when
+                    # the committee's *current* membership includes an unfitted
+                    # replacement. Keep its old fit provenance and mark stale;
+                    # do not demand new training merely to read frozen results.
+                    members_complete = len(selected_fit_ids) == len(member_states)
+                    if members_complete:
+                        latest_snapshot = self._committee_training_snapshot(
+                            code_id=int(code_id), committee=chosen_committee,
+                            member_fit_ids=selected_fit_ids,
                         )
-                    latest_snapshot = self._committee_training_snapshot(
-                        code_id=int(code_id), committee=chosen_committee,
-                        member_fit_ids=selected_fit_ids,
-                    )
                     committee_stale = (
-                        learned_fit["training_snapshot"] != latest_snapshot
+                        not members_complete
+                        or learned_fit["training_snapshot"] != latest_snapshot
                         or any(bool(state["stale"]) for state in member_states)
                     )
-                    point_scores = self.database.classifier_scores_for_unit(
-                        selected_fit_ids, int(ranked_committee["unit_id"])
+                    # Learned aggregate predictions belong to the original
+                    # fitted member identities. Never display newer member
+                    # scores as though they generated an older stacker result.
+                    fitted_ids = [
+                        int(value) for value in
+                        learned_fit["training_snapshot"]["member_fit_ids"]
+                    ]
+                    same_members = members_complete and fitted_ids == selected_fit_ids
+                    point_scores = (
+                        self.database.classifier_scores_for_unit(
+                            selected_fit_ids, int(ranked_committee["unit_id"])
+                        )
+                        if same_members else {}
                     )
                     probabilities: dict[str, float] = {}
                     fit_ids_by_name: dict[str, int] = {}
                     stale_names: list[str] = []
-                    for state, fit_id in zip(member_states, selected_fit_ids, strict=True):
+                    for state in member_states:
                         name = str(state["classifier_name"])
-                        if fit_id in point_scores:
-                            probabilities[name] = float(point_scores[fit_id])
-                        fit_ids_by_name[name] = fit_id
+                        # An unfitted member has no current fit ID. Only
+                        # attribute member scores when the full frozen set
+                        # still matches the currently configured committee.
+                        if same_members:
+                            fit_id = int(state["fit"]["classifier_fit_id"])
+                            if fit_id in point_scores:
+                                probabilities[name] = float(point_scores[fit_id])
+                            fit_ids_by_name[name] = fit_id
                         if state["stale"]:
                             stale_names.append(name)
                     p = float(ranked_committee["probability"])
@@ -4004,12 +4121,12 @@ class GeometricCoder:
                     if any(state["fit"] is None for state in states):
                         raise ValueError("Train committee members before requesting recommendations.")
                     fit_ids = [int(state["fit"]["classifier_fit_id"]) for state in states]
-                    prepared = self.database.prepared_committee_ranking(int(committee_id))
-                    if (prepared is None or prepared["aggregation"] != str(selected_committee["aggregation"])
-                            or prepared["committee_updated_at"] != str(selected_committee["updated_at"])
-                            or prepared["member_fit_ids"] != fit_ids
-                            or self.database.prepared_committee_has_missing_atomic_scores(int(committee_id))):
-                        raise ValueError("Prepare selected committee after member training or committee changes.")
+                    # A fixed committee has no learned estimator. Its ranking
+                    # is a derived index, built only when absent/invalid. The
+                    # preparation method atomically replaces the old snapshot.
+                    self.prepare_selected_committee(
+                        code_id=int(code_id), committee_id=int(committee_id)
+                    )
                     ranked_strategy = ("classifier_disagreement" if strategy in {
                         "classifier_disagreement", "geometry_disagreement"
                     } else strategy)
@@ -4036,7 +4153,8 @@ class GeometricCoder:
                         "committee_probability": probability,
                         "classifier_fit_ids": dict(zip(names, fit_ids, strict=True)),
                         "stale_classifiers": [str(x["classifier_name"]) for x in states if x["stale"]],
-                        "stale_committee": False, "fallback": False,
+                        "stale_committee": any(bool(x["stale"]) for x in states),
+                        "fallback": False,
                     }
 
         units = self.units()
@@ -4317,14 +4435,25 @@ class GeometricCoder:
                 selected_fit_ids = [
                     int(state["fit"]["classifier_fit_id"]) for state in fitted_states
                 ]
-                selected_scores = self.database.classifier_scores_for_unit(
-                    selected_fit_ids, int(recommendation.unit_id)
+                same_members = (
+                    learned is None or
+                    selected_fit_ids == [
+                        int(value) for value in
+                        learned["fit"]["training_snapshot"]["member_fit_ids"]
+                    ]
+                )
+                selected_scores = (
+                    self.database.classifier_scores_for_unit(
+                        selected_fit_ids, int(recommendation.unit_id)
+                    )
+                    if same_members else {}
                 )
                 for state, fit_id in zip(fitted_states, selected_fit_ids, strict=True):
                     name = str(state["classifier_name"])
-                    if fit_id in selected_scores:
+                    if same_members and fit_id in selected_scores:
                         display_probabilities[name] = float(selected_scores[fit_id])
-                    classifier_fit_ids[name] = fit_id
+                    if same_members:
+                        classifier_fit_ids[name] = fit_id
                     if state.get("stale"):
                         stale_classifiers.append(name)
 
@@ -4366,7 +4495,11 @@ class GeometricCoder:
             "committee_probability": committee_probability,
             "classifier_fit_ids": classifier_fit_ids,
             "stale_classifiers": stale_classifiers,
-            "stale_committee": bool(learned and learned.get("stale")),
+            "stale_committee": (
+                bool(learned.get("stale")) if learned is not None
+                else any(bool(state.get("stale")) for state in member_states)
+                if use_committee else False
+            ),
             "fallback": False,
         }
 
@@ -4575,6 +4708,7 @@ class GeometricCoder:
                 "Apply requires at least one human-reviewed positive and one "
                 "human-reviewed negative label."
             )
+        committee_fit_id: int | None = None
         if source_kind == "classifier":
             result = self._latest_classifier_scores(
                 code_id=int(code_id), classifier_spec_id=int(source_id)
@@ -4584,24 +4718,43 @@ class GeometricCoder:
                 raise ValueError(f"Train {spec['name']} before generating proposals.")
             results = {str(result["classifier_name"]): result}
             aggregation = "mean"
-        else:
-            results, committee = self._resolve_committee_scores(
-                code_id=int(code_id), committee_id=int(source_id)
-            )
-            aggregation = str(committee["aggregation"])
-        unit_ids = [int(unit["unit_id"]) for unit in self.units()]
-        committee_fit_id: int | None = None
-        if source_kind == "committee" and aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
-            learned = self._latest_trainable_committee_scores(
-                code_id=int(code_id), committee_id=int(source_id)
-            )
-            probabilities = np.asarray(learned["probabilities"], dtype=float)
-            committee_fit_id = int(learned["fit"]["committee_fit_id"])
-        else:
             probabilities = aggregate_probabilities(
-                {name: result["probabilities"] for name, result in results.items()},
-                aggregation=aggregation,  # type: ignore[arg-type]
+                {name: row["probabilities"] for name, row in results.items()},
+                aggregation=aggregation,
             )
+            component_fit_ids = [
+                int(result["fit"]["classifier_fit_id"]) for result in results.values()
+            ]
+        else:
+            committee = self.database.get_classifier_committee(int(source_id))
+            if int(committee["code_id"]) != int(code_id):
+                raise ValueError("The selected committee belongs to another code.")
+            aggregation = str(committee["aggregation"])
+            if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
+                learned = self._latest_trainable_committee_scores(
+                    code_id=int(code_id), committee_id=int(source_id)
+                )
+                probabilities = np.asarray(learned["probabilities"], dtype=float)
+                committee_fit_id = int(learned["fit"]["committee_fit_id"])
+                # Apply provenance must identify the *frozen* component fits
+                # that produced this learned committee's scores, not new
+                # component models fitted after the stacker became stale.
+                component_fit_ids = [
+                    int(value) for value in
+                    learned["fit"]["training_snapshot"]["member_fit_ids"]
+                ]
+            else:
+                results, _ = self._resolve_committee_scores(
+                    code_id=int(code_id), committee_id=int(source_id)
+                )
+                probabilities = aggregate_probabilities(
+                    {name: row["probabilities"] for name, row in results.items()},
+                    aggregation=aggregation,  # type: ignore[arg-type]
+                )
+                component_fit_ids = [
+                    int(row["fit"]["classifier_fit_id"]) for row in results.values()
+                ]
+        unit_ids = [int(unit["unit_id"]) for unit in self.units()]
         reviewed_ids = {
             int(row["unit_id"])
             for row in annotations
@@ -4619,9 +4772,7 @@ class GeometricCoder:
             source_kind=source_kind,
             source_id=int(source_id),
             threshold=float(threshold),
-            classifier_fit_ids=[
-                int(result["fit"]["classifier_fit_id"]) for result in results.values()
-            ],
+            classifier_fit_ids=component_fit_ids,
             committee_fit_id=committee_fit_id,
             proposals=[
                 {
