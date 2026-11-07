@@ -752,5 +752,5 @@ def test_develop_prediction_geometry_has_explicit_score_type_toggle() -> None:
     assert 'id="focus-prediction-score-type"' in source
     assert '"Estimated probabilities", "value": "probability"' in source
     assert '"Native decision scores", "value": "decision_score"' in source
-    assert 'State("focus-prediction-score-type", "value")' in source
+    assert 'Input("focus-prediction-score-type", "value")' in source
     assert 'score_type=str(score_type or "probability")' in source
