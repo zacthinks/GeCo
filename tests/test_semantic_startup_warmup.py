@@ -1,5 +1,6 @@
 """Launch-time semantic-library warm-up is bounded and model-independent."""
 
+import importlib
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -64,7 +65,7 @@ def test_semantic_warmup_imports_libraries_and_runs_disposable_cpu_kernel(monkey
             return object()
         raise AssertionError(f"Unexpected import: {name}")
 
-    monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
     assert app_module._warm_semantic_runtime_libraries() is True
     assert imported == ["torch", "sentence_transformers"]
     assert computations == ["tensor", "matmul"]
@@ -74,13 +75,13 @@ def test_semantic_warmup_does_not_block_launch_if_optional_dependency_missing(mo
     def fake_import(name):
         raise ImportError(f"{name} not installed")
 
-    monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
     assert app_module._warm_semantic_runtime_libraries() is False
 
     def broken_backend(name):
         raise RuntimeError(f"{name}: broken optional backend")
 
-    monkeypatch.setattr("importlib.import_module", broken_backend)
+    monkeypatch.setattr(importlib, "import_module", broken_backend)
     assert app_module._warm_semantic_runtime_libraries() is False
 
 
