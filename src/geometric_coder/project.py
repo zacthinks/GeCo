@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from threading import RLock
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -80,6 +81,9 @@ class GeometricCoder:
         self.artifacts = ArtifactStore(project_dir / self.ARTIFACT_DIRECTORY)
         self.external_provider = external_provider
         self._runtime_geometries: dict[str, Geometry] | None = None
+        # Serialize first-use materialization within this project instance.
+        # The database publishes the completed ranking in one transaction.
+        self._committee_ranking_lock = RLock()
         # In-process cache of exact persisted evidence snapshots. A cheap DB
         # revision changes whenever relevant annotations or teaching state change.
         self._recommendation_freshness: dict[
@@ -3539,8 +3543,12 @@ class GeometricCoder:
             latest = self.database.latest_classifier_committee_fit(
                 committee_id=int(committee_id), code_id=int(code_id)
             )
-            if latest is None or any(row["classifier_fit_id"] is None for row in member_rows):
+            if latest is None:
                 status = "not_trained"
+            elif any(row["classifier_fit_id"] is None for row in member_rows):
+                # The previous learned prediction snapshot remains intact.
+                # Missing *new* member fits make the fit stale, not unfitted.
+                status = "stale"
             else:
                 member_fit_ids = [int(row["classifier_fit_id"]) for row in member_rows]
                 snapshot = self._committee_training_snapshot(
@@ -3730,7 +3738,16 @@ class GeometricCoder:
         return results, committee
 
     def prepare_selected_committee(self, *, code_id: int, committee_id: int) -> dict[str, Any]:
-        """Explicitly prepare only the selected fixed committee's frozen rankings."""
+        """Ensure a fixed committee has a valid derived ranking, building lazily."""
+        with self._committee_ranking_lock:
+            return self._prepare_selected_committee_unlocked(
+                code_id=code_id, committee_id=committee_id
+            )
+
+    def _prepare_selected_committee_unlocked(
+        self, *, code_id: int, committee_id: int
+    ) -> dict[str, Any]:
+        """Recheck the fingerprint and atomically replace an invalid index."""
         committee = self.database.get_classifier_committee(int(committee_id))
         if int(committee["code_id"]) != int(code_id):
             raise ValueError("The selected committee belongs to another code.")
