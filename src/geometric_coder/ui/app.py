@@ -2964,7 +2964,7 @@ def create_app(
             key_columns=list(metadata["key_columns"]),
             selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="explore-span-checkbox",
-            span_selection_enabled=project.can_transform_new_observations(),
+            span_selection_enabled=True,
         )
         metadata_children = _metadata_table(html, focal["metadata"])
         return key_label, context_children, metadata_children
@@ -3914,7 +3914,8 @@ def create_app(
     def enable_teaching_example_manager(
         code_center_id: int | None, focus_code_id: int | None
     ) -> tuple[bool, bool]:
-        can_create = project.can_transform_new_observations()
+        # Authoring a teaching example never requires an eager transform.
+        can_create = True
         return code_center_id is None or not can_create, focus_code_id is None or not can_create
 
     @app.callback(
@@ -6285,7 +6286,7 @@ def create_app(
             key_columns=list(metadata["key_columns"]),
             selected_unit_ids=[int(focal_unit_id)],
             checkbox_type="focus-span-checkbox",
-            span_selection_enabled=project.can_transform_new_observations(),
+            span_selection_enabled=True,
         )
         return key_label, children, _metadata_table(html, focal["metadata"])
 
