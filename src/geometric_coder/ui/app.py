@@ -6975,25 +6975,46 @@ def create_app(
         Input("apply-table", "cellValueChanged"),
         State("apply-run-dropdown", "value"),
         State("apply-refresh-store", "data"),
+        State("apply-page-snapshot", "data"),
+        State("apply-proposed-filter", "value"),
+        State("apply-decision-filter", "value"),
+        State("apply-probability-range", "value"),
+        State("apply-page-size", "value"),
+        State("apply-table", "columnState"),
         prevent_initial_call=True,
     )
     def persist_apply_table_edits(
         changed: dict[str, Any] | list[dict[str, Any]] | None,
         draft_id: int | None,
         refresh: int | None,
+        snapshot: dict[str, Any] | None,
+        proposed_filter: str | None,
+        decision_filter: str | None,
+        probability_range: list[float] | None,
+        page_size: int | None,
+        column_state: list[dict[str, Any]] | None,
     ) -> tuple[Any, int]:
         if not changed or draft_id is None:
             return no_update, int(refresh or 0)
         events = changed if isinstance(changed, list) else [changed]
         count = 0
         try:
+            valid_ids = set(_verified_apply_page(
+                project, draft_id=int(draft_id), snapshot=snapshot,
+                proposed_filter=proposed_filter, decision_filter=decision_filter,
+                probability_range=probability_range, page_size=page_size,
+                column_state=column_state, refresh=refresh,
+            ))
             for event in events:
                 if str(event.get("colId", "")) != "decision":
                     continue
                 row = dict(event.get("data") or {})
-                if not _apply_rows_match_draft([row], int(draft_id)):
+                if (
+                    not _apply_rows_match_draft([row], int(draft_id))
+                    or int(row["unit_id"]) not in valid_ids
+                ):
                     return (
-                        "Draft changed before the edit was saved; reload the selected draft.",
+                        "The edited proposal is not on the current verified page.",
                         int(refresh or 0),
                     )
                 decision = _normalize_apply_decision(row.get("decision"))
