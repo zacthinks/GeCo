@@ -9441,21 +9441,23 @@ def _focus_layout(
                                         role="status",
                                         **{"aria-live": "polite"},
                                     ),
-                                    html.H3(_tooltip_label(html, "Committee", "Combine multiple classifiers to make predictions and recommendations.")),
+                                    html.Div(
+                                        [
+                                            html.Label(_tooltip_label(html, "Active committee", "Combine multiple classifiers to make predictions and recommendations.")),
+                                            html.Span(
+                                                "Not trained",
+                                                id="focus-committee-badge",
+                                                className="classifier-status-badge status-not-trained",
+                                            ),
+                                        ],
+                                        className="active-classifier-heading active-committee-heading",
+                                    ),
                                     dcc.Dropdown(
                                         id="focus-committee-dropdown",
                                         options=[],
                                         value=None,
                                         clearable=True,
                                         placeholder="Select a saved committee",
-                                    ),
-                                    html.Div(
-                                        id="focus-committee-badge",
-                                        className="classifier-status-badge status-not-trained",
-                                    ),
-                                    html.Div(
-                                        id="focus-committee-status",
-                                        className="focus-model-status",
                                     ),
                                     html.Button(
                                         "Train committee",
@@ -9478,6 +9480,10 @@ def _focus_layout(
                                             ),
                                         ],
                                         className="classifier-management-row",
+                                    ),
+                                    html.Div(
+                                        id="focus-committee-status",
+                                        className="focus-model-detail",
                                     ),
                                     html.Div(
                                         id="focus-committee-train-status",
