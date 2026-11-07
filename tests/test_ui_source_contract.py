@@ -742,3 +742,15 @@ def test_explanatory_tooltips_disable_cursor_and_avoid_viewport_top_clipping() -
     assert "bottom: calc(100% + 7px);" not in css
     assert "Calculate similarity between search text and other units using the selected geometry." in app
     assert "Requires support for new translations." in app
+
+
+def test_develop_prediction_geometry_has_explicit_score_type_toggle() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert 'id="focus-prediction-score-type"' in source
+    assert '"Estimated probabilities", "value": "probability"' in source
+    assert '"Native decision scores", "value": "decision_score"' in source
+    assert 'State("focus-prediction-score-type", "value")' in source
+    assert 'score_type=str(score_type or "probability")' in source
