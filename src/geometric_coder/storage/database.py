@@ -551,6 +551,9 @@ CREATE TABLE apply_proposals (
 );
 CREATE INDEX apply_proposals_run_label_idx
 ON apply_proposals(apply_run_id, proposed_label, decision);
+CREATE INDEX apply_proposals_active_probability_rank_idx
+ON apply_proposals(apply_run_id, probability DESC, unit_id ASC)
+WHERE removed_at IS NULL AND committed_annotation_event_id IS NULL;
 
 CREATE VIEW current_annotations AS
 SELECT latest.annotation_event_id,
@@ -891,6 +894,13 @@ class ProjectDatabase:
         while SQLite builds each B-tree; repeated opens do not rebuild it.
         """
         with self.connect() as connection:
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS apply_proposals_active_probability_rank_idx
+                ON apply_proposals(apply_run_id, probability DESC, unit_id ASC)
+                WHERE removed_at IS NULL AND committed_annotation_event_id IS NULL
+                """
+            )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS classifier_predictions_probability_rank_idx
