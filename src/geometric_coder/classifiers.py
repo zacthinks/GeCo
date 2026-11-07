@@ -185,37 +185,6 @@ def default_hyperparameters(algorithm: str) -> dict[str, Any]:
         return dict(common_logistic)
     if algorithm == "logistic_l1":
         return dict(common_logistic)
-    if algorithm == "rbf_svm":
-        # Joint space-filling log-scale search, not a Cartesian grid.
-        rng = np.random.default_rng(0)
-        budget = 24
-        first = (np.arange(budget) + rng.random(budget)) / budget
-        second = (np.arange(budget) + rng.random(budget)) / budget
-        rng.shuffle(second)
-        if training_matrix is not None:
-            dims = int(training_matrix.shape[1])
-            if sparse.issparse(training_matrix):
-                mean = float(training_matrix.mean())
-                variance = max(0.0, float(training_matrix.power(2).mean()) - mean**2)
-            else:
-                variance = float(np.var(training_matrix))
-            baseline_gamma = (
-                1.0 / (dims * variance) if variance > 0 else 1.0 / max(1, dims)
-            )
-        else:
-            baseline_gamma = 1.0
-        candidates = [base]
-        for log_lambda, log_gamma in zip(
-            -3.0 + 6.0 * first, -2.0 + 4.0 * second, strict=True,
-        ):
-            candidates.append(normalize_hyperparameters(
-                algorithm, {
-                    **base,
-                    "regularization": float(10.0**log_lambda),
-                    "gamma": float(baseline_gamma * 10.0**log_gamma),
-                },
-            ))
-        return candidates
     if algorithm == "logistic_elasticnet":
         return {**common_logistic, "l1_ratio": 0.5}
     if algorithm == "complement_nb":
@@ -382,6 +351,37 @@ def tuning_candidates(
             )
             for value in regularization_grid
         ]
+    if algorithm == "rbf_svm":
+        # Joint space-filling log-scale search, not a Cartesian grid.
+        rng = np.random.default_rng(0)
+        budget = 24
+        first = (np.arange(budget) + rng.random(budget)) / budget
+        second = (np.arange(budget) + rng.random(budget)) / budget
+        rng.shuffle(second)
+        if training_matrix is not None:
+            dims = int(training_matrix.shape[1])
+            if sparse.issparse(training_matrix):
+                mean = float(training_matrix.mean())
+                variance = max(0.0, float(training_matrix.power(2).mean()) - mean**2)
+            else:
+                variance = float(np.var(training_matrix))
+            baseline_gamma = (
+                1.0 / (dims * variance) if variance > 0 else 1.0 / max(1, dims)
+            )
+        else:
+            baseline_gamma = 1.0
+        candidates = [base]
+        for log_lambda, log_gamma in zip(
+            -3.0 + 6.0 * first, -2.0 + 4.0 * second, strict=True,
+        ):
+            candidates.append(normalize_hyperparameters(
+                algorithm, {
+                    **base,
+                    "regularization": float(10.0**log_lambda),
+                    "gamma": float(baseline_gamma * 10.0**log_gamma),
+                },
+            ))
+        return candidates
     if algorithm == "logistic_elasticnet":
         return [
             normalize_hyperparameters(
