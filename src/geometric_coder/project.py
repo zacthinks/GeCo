@@ -2498,10 +2498,15 @@ class GeometricCoder:
         )
         return self.export_predictor(ref)
 
-    def training_label_counts(self, code_id: int) -> dict[str, int]:
-        """Count positive and negative labels currently eligible for training."""
-        eligible = self._eligible_training_annotations(
-            code_id, self.database.current_annotations(code_id)
+    def training_label_counts(
+        self, code_id: int, *, geometry_id: int | None = None
+    ) -> dict[str, int]:
+        """Count eligible labels, optionally restricted to one representation."""
+        annotations = self.database.current_annotations(int(code_id))
+        eligible = (
+            self._eligible_training_annotations(int(code_id), annotations)
+            if geometry_id is None
+            else self._geometry_training_labels(int(code_id), annotations, int(geometry_id))
         )
         return {
             "positive": sum(row["value"] == "positive" for row in eligible),
@@ -3320,14 +3325,8 @@ class GeometricCoder:
                 "status": "no_classifiers", "trained_fit_ids": {},
                 "reused_classifier_spec_ids": [], "requested_classifier_spec_ids": [],
             }
-        # An event that leaves just one training class must not fail or fit.
-        labels = self.training_label_counts(int(code_id))
-        if not (labels["positive"] and labels["negative"]):
-            return {
-                "status": "awaiting_two_classes", "trained_fit_ids": {},
-                "reused_classifier_spec_ids": [],
-                "requested_classifier_spec_ids": selected,
-            }
+        # A derived teaching example may be available to some geometries but
+        # not others. Eligibility must be checked for each selected model.
         classifier_rows = self.classifier_status(
             code_id=int(code_id), classifier_spec_ids=selected
         )["classifiers"]
@@ -3342,15 +3341,39 @@ class GeometricCoder:
                 "reused_classifier_spec_ids": selected,
                 "requested_classifier_spec_ids": selected,
             }
+        trainable_ids: list[int] = []
+        awaiting_ids: list[int] = []
+        for row in classifier_rows:
+            spec_id = int(row["classifier_spec_id"])
+            if spec_id not in pending_ids:
+                continue
+            labels = self.training_label_counts(
+                int(code_id), geometry_id=int(row["geometry_id"])
+            )
+            if labels["positive"] and labels["negative"]:
+                trainable_ids.append(spec_id)
+            else:
+                awaiting_ids.append(spec_id)
+        if not trainable_ids:
+            return {
+                "status": "awaiting_two_classes",
+                "trained_fit_ids": {},
+                "reused_classifier_spec_ids": [
+                    spec_id for spec_id in selected if spec_id not in pending_ids
+                ],
+                "requested_classifier_spec_ids": selected,
+                "awaiting_classifier_spec_ids": awaiting_ids,
+            }
         fits = self.train_classifiers(
             code_id=int(code_id),
-            classifier_spec_ids=pending_ids,
+            classifier_spec_ids=trainable_ids,
             tune=bool(tune),
             retune_current=False,
             folds=int(folds),
         )
         return {
-            "status": "trained", "trained_fit_ids": {
+            "status": "trained",
+            "awaiting_classifier_spec_ids": awaiting_ids, "trained_fit_ids": {
                 int(spec_id): int(fit["classifier_fit_id"])
                 for spec_id, fit in fits.items()
             },
