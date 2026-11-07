@@ -371,3 +371,48 @@ def test_partial_compatibility_keeps_teaching_controls_enabled(
     ]
     assert len(choices) == 1
     assert choices[0](code_id, code_id) == (False, False)
+
+
+def test_automatic_training_skips_geometry_missing_a_class(tmp_path: Path) -> None:
+    """New-text-only labels cannot force fitting a fixed geometry with one class."""
+    project = _transforming_external_project(tmp_path)
+    compatible_id = project.register_external_geometry(
+        name="transformable", external_ref={"artifact": "minilm"},
+        supports_text_transform=True,
+    )
+    incompatible_id = project.register_external_geometry(
+        name="fixed", external_ref={"artifact": "minilm"},
+        supports_text_transform=False,
+    )
+    code_id = project.create_code("unequal evidence")
+    compatible_spec = project.create_classifier_spec(
+        code_id=code_id, name="can use teacher",
+        geometry_id=compatible_id,
+    )
+    incompatible_spec = project.create_classifier_spec(
+        code_id=code_id, name="atomic only",
+        geometry_id=incompatible_id,
+    )
+    unit = project.database.list_units()[0]
+    project.annotate(int(unit["observation_id"]), code_id, "negative")
+    project.create_teaching_example(
+        code_id=code_id, text="authored positive training item",
+        label="positive",
+    )
+    assert project.training_label_counts(
+        code_id, geometry_id=compatible_id
+    ) == {"positive": 1, "negative": 1}
+    assert project.training_label_counts(
+        code_id, geometry_id=incompatible_id
+    ) == {"positive": 0, "negative": 1}
+
+    result = project.train_classifiers_after_evidence_change(
+        code_id=code_id,
+        classifier_spec_ids=[compatible_spec, incompatible_spec],
+    )
+    assert result["status"] == "trained"
+    assert list(result["trained_fit_ids"]) == [compatible_spec]
+    assert result["awaiting_classifier_spec_ids"] == [incompatible_spec]
+    assert project.classifier_status(
+        code_id=code_id, classifier_spec_ids=[incompatible_spec]
+    )["classifiers"][0]["status"] == "not_trained"
