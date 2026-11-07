@@ -7134,13 +7134,17 @@ def create_app(
                 probability_range=probability_range, page_size=page_size,
                 column_state=column_state, refresh=refresh,
             )
-            if not _apply_rows_match_draft(selected_rows, int(draft_id)):
-                raise ValueError("Selection belongs to another Apply draft.")
-            if any(
-                int(row["unit_id"]) not in set(current_page_ids)
-                for row in (selected_rows or [])
-            ):
-                raise ValueError("Selection changed pages. Select proposals on the displayed page.")
+            if triggered == "apply-bulk-apply" and bulk_scope == "selected":
+                if not _apply_rows_match_draft(selected_rows, int(draft_id)):
+                    raise ValueError("Selection belongs to another Apply draft.")
+                page_ids = set(current_page_ids)
+                if any(
+                    int(row["unit_id"]) not in page_ids
+                    for row in (selected_rows or [])
+                ):
+                    raise ValueError(
+                        "Selection changed pages. Select proposals on the displayed page."
+                    )
             if triggered == "apply-bulk-apply":
                 decision = _normalize_apply_decision(bulk_decision)
                 unit_ids = _apply_bulk_scope_unit_ids(
