@@ -77,6 +77,12 @@ def test_semantic_warmup_does_not_block_launch_if_optional_dependency_missing(mo
     monkeypatch.setattr("importlib.import_module", fake_import)
     assert app_module._warm_semantic_runtime_libraries() is False
 
+    def broken_backend(name):
+        raise RuntimeError(f"{name}: broken optional backend")
+
+    monkeypatch.setattr("importlib.import_module", broken_backend)
+    assert app_module._warm_semantic_runtime_libraries() is False
+
 
 def test_launch_warms_before_server_start_only_when_relevant(monkeypatch):
     events = []
