@@ -4630,6 +4630,7 @@ class GeometricCoder:
                 "Apply requires at least one human-reviewed positive and one "
                 "human-reviewed negative label."
             )
+        committee_fit_id: int | None = None
         if source_kind == "classifier":
             result = self._latest_classifier_scores(
                 code_id=int(code_id), classifier_spec_id=int(source_id)
@@ -4639,24 +4640,43 @@ class GeometricCoder:
                 raise ValueError(f"Train {spec['name']} before generating proposals.")
             results = {str(result["classifier_name"]): result}
             aggregation = "mean"
-        else:
-            results, committee = self._resolve_committee_scores(
-                code_id=int(code_id), committee_id=int(source_id)
-            )
-            aggregation = str(committee["aggregation"])
-        unit_ids = [int(unit["unit_id"]) for unit in self.units()]
-        committee_fit_id: int | None = None
-        if source_kind == "committee" and aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
-            learned = self._latest_trainable_committee_scores(
-                code_id=int(code_id), committee_id=int(source_id)
-            )
-            probabilities = np.asarray(learned["probabilities"], dtype=float)
-            committee_fit_id = int(learned["fit"]["committee_fit_id"])
-        else:
             probabilities = aggregate_probabilities(
-                {name: result["probabilities"] for name, result in results.items()},
-                aggregation=aggregation,  # type: ignore[arg-type]
+                {name: row["probabilities"] for name, row in results.items()},
+                aggregation=aggregation,
             )
+            component_fit_ids = [
+                int(result["fit"]["classifier_fit_id"]) for result in results.values()
+            ]
+        else:
+            committee = self.database.get_classifier_committee(int(source_id))
+            if int(committee["code_id"]) != int(code_id):
+                raise ValueError("The selected committee belongs to another code.")
+            aggregation = str(committee["aggregation"])
+            if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS:
+                learned = self._latest_trainable_committee_scores(
+                    code_id=int(code_id), committee_id=int(source_id)
+                )
+                probabilities = np.asarray(learned["probabilities"], dtype=float)
+                committee_fit_id = int(learned["fit"]["committee_fit_id"])
+                # Apply provenance must identify the *frozen* component fits
+                # that produced this learned committee's scores, not new
+                # component models fitted after the stacker became stale.
+                component_fit_ids = [
+                    int(value) for value in
+                    learned["fit"]["training_snapshot"]["member_fit_ids"]
+                ]
+            else:
+                results, _ = self._resolve_committee_scores(
+                    code_id=int(code_id), committee_id=int(source_id)
+                )
+                probabilities = aggregate_probabilities(
+                    {name: row["probabilities"] for name, row in results.items()},
+                    aggregation=aggregation,  # type: ignore[arg-type]
+                )
+                component_fit_ids = [
+                    int(row["fit"]["classifier_fit_id"]) for row in results.values()
+                ]
+        unit_ids = [int(unit["unit_id"]) for unit in self.units()]
         reviewed_ids = {
             int(row["unit_id"])
             for row in annotations
@@ -4674,9 +4694,7 @@ class GeometricCoder:
             source_kind=source_kind,
             source_id=int(source_id),
             threshold=float(threshold),
-            classifier_fit_ids=[
-                int(result["fit"]["classifier_fit_id"]) for result in results.values()
-            ],
+            classifier_fit_ids=component_fit_ids,
             committee_fit_id=committee_fit_id,
             proposals=[
                 {
