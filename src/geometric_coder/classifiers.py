@@ -8,6 +8,10 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 from scipy import sparse
+from scipy.special import expit
+from sklearn.base import clone
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.model_selection import StratifiedKFold
 from sklearn import __version__ as sklearn_version
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import ComplementNB
@@ -23,6 +27,7 @@ ClassifierAlgorithm = Literal[
     "logistic_elasticnet",
     "complement_nb",
     "linear_svm",
+    "rbf_svm",
     "decision_tree",
     "knn",
 ]
@@ -33,6 +38,7 @@ SUPPORTED_CLASSIFIER_ALGORITHMS: tuple[ClassifierAlgorithm, ...] = (
     "logistic_elasticnet",
     "complement_nb",
     "linear_svm",
+    "rbf_svm",
     "decision_tree",
     "knn",
 )
@@ -56,6 +62,7 @@ CLASSIFIER_ALGORITHM_LABELS: dict[str, str] = {
     "logistic_elasticnet": "Logistic regression · elastic net",
     "complement_nb": "Complement Naive Bayes",
     "linear_svm": "Linear SVM",
+    "rbf_svm": "RBF-kernel SVM",
     "decision_tree": "Decision tree",
     "knn": "k-nearest neighbors",
 }
@@ -105,6 +112,9 @@ _CLASSIFIER_CAPABILITIES: dict[str, ClassifierCapabilities] = {
     ),
     "linear_svm": ClassifierCapabilities(
         True, True, False, True, True, "probability_distance", ("regularization",)
+    ),
+    "rbf_svm": ClassifierCapabilities(
+        True, True, False, True, True, "probability_distance", ("regularization", "gamma")
     ),
     "decision_tree": ClassifierCapabilities(
         True,
@@ -175,17 +185,49 @@ def default_hyperparameters(algorithm: str) -> dict[str, Any]:
         return dict(common_logistic)
     if algorithm == "logistic_l1":
         return dict(common_logistic)
+    if algorithm == "rbf_svm":
+        # Joint space-filling log-scale search, not a Cartesian grid.
+        rng = np.random.default_rng(0)
+        budget = 24
+        first = (np.arange(budget) + rng.random(budget)) / budget
+        second = (np.arange(budget) + rng.random(budget)) / budget
+        rng.shuffle(second)
+        if training_matrix is not None:
+            dims = int(training_matrix.shape[1])
+            if sparse.issparse(training_matrix):
+                mean = float(training_matrix.mean())
+                variance = max(0.0, float(training_matrix.power(2).mean()) - mean**2)
+            else:
+                variance = float(np.var(training_matrix))
+            baseline_gamma = (
+                1.0 / (dims * variance) if variance > 0 else 1.0 / max(1, dims)
+            )
+        else:
+            baseline_gamma = 1.0
+        candidates = [base]
+        for log_lambda, log_gamma in zip(
+            -3.0 + 6.0 * first, -2.0 + 4.0 * second, strict=True,
+        ):
+            candidates.append(normalize_hyperparameters(
+                algorithm, {
+                    **base,
+                    "regularization": float(10.0**log_lambda),
+                    "gamma": float(baseline_gamma * 10.0**log_gamma),
+                },
+            ))
+        return candidates
     if algorithm == "logistic_elasticnet":
         return {**common_logistic, "l1_ratio": 0.5}
     if algorithm == "complement_nb":
         return {"alpha": 1.0, "fit_prior": True, "threshold": 0.5}
-    if algorithm == "linear_svm":
+    if algorithm in {"linear_svm", "rbf_svm"}:
         return {
             "regularization": 1.0,
             "class_weight": "balanced",
             "probability": True,
             "random_state": 0,
             "threshold": 0.5,
+            **({"gamma": "scale"} if algorithm == "rbf_svm" else {}),
         }
     if algorithm == "decision_tree":
         return {
@@ -222,6 +264,7 @@ def normalize_hyperparameters(
         "logistic_l1",
         "logistic_elasticnet",
         "linear_svm",
+        "rbf_svm",
     }:
         regularization = float(values["regularization"])
         if regularization <= 0:
@@ -241,8 +284,18 @@ def normalize_hyperparameters(
             if not 0.0 <= ratio <= 1.0:
                 raise ValueError("l1_ratio must lie in the closed interval [0, 1]")
             values["l1_ratio"] = ratio
-        if algorithm == "linear_svm":
+        if algorithm in {"linear_svm", "rbf_svm"}:
             values["probability"] = bool(values.get("probability", True))
+        if algorithm == "rbf_svm":
+            gamma = values.get("gamma", "scale")
+            if isinstance(gamma, str):
+                if gamma not in {"scale", "auto"}:
+                    raise ValueError("RBF gamma must be positive, scale, or auto.")
+            else:
+                gamma = float(gamma)
+                if not np.isfinite(gamma) or gamma <= 0:
+                    raise ValueError("RBF gamma must be finite and positive.")
+            values["gamma"] = gamma
         return values
 
     if algorithm == "complement_nb":
@@ -311,8 +364,9 @@ def tuning_candidates(
     hyperparameters: dict[str, Any] | None,
     *,
     max_neighbors: int | None = None,
+    training_matrix: Matrix | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a compact, family-specific CV search grid.
+    """Return a compact, family-specific CV candidate plan.
 
     The grids intentionally remain small. Develop is an interactive exploratory
     environment, not an AutoML system; Train should improve the current fit without
@@ -374,6 +428,9 @@ def hyperparameter_summary(algorithm: str, hyperparameters: dict[str, Any] | Non
     values = normalize_hyperparameters(algorithm, hyperparameters)
     if algorithm in {"logistic_l2", "logistic_l1", "linear_svm"}:
         return f"λ={float(values['regularization']):g}"
+    if algorithm == "rbf_svm":
+        gamma = values["gamma"]
+        return f"λ={float(values['regularization']):g} · γ={gamma if isinstance(gamma, str) else format(gamma, '.3g')}"
     if algorithm == "logistic_elasticnet":
         return (
             f"λ={float(values['regularization']):g} · "
@@ -438,12 +495,13 @@ def _build_estimator(
             alpha=float(parameters["alpha"]),
             fit_prior=bool(parameters["fit_prior"]),
         )
-    if algorithm == "linear_svm":
+    if algorithm in {"linear_svm", "rbf_svm"}:
         return SVC(
             C=1.0 / float(parameters["regularization"]),
-            kernel="linear",
+            kernel="linear" if algorithm == "linear_svm" else "rbf",
+            gamma=parameters.get("gamma", "scale"),
             class_weight=parameters["class_weight"],
-            probability=bool(parameters["probability"]),
+            probability=False,
             random_state=int(parameters["random_state"]),
         )
     if algorithm == "decision_tree":
@@ -461,6 +519,73 @@ def _build_estimator(
             algorithm="brute",
         )
     raise ValueError(f"Unsupported classifier algorithm: {algorithm!r}")
+
+
+
+class CalibratedMarginEstimator:
+    """Persistable margin model retaining native margins and probability estimates."""
+
+    def __init__(
+        self, margin_model: Any, calibrator: Any | None, *,
+        method: str, fallback_scale: float = 1.0,
+    ) -> None:
+        self.margin_model = margin_model
+        self.calibrator = calibrator
+        self.calibration_method = method
+        self.fallback_scale = float(fallback_scale)
+        self.classes_ = np.asarray(margin_model.classes_)
+
+    def decision_function(self, matrix: Matrix) -> np.ndarray:
+        return np.asarray(self.margin_model.decision_function(matrix), dtype=float)
+
+    def predict_proba(self, matrix: Matrix) -> np.ndarray:
+        if self.calibrator is not None:
+            return np.asarray(self.calibrator.predict_proba(matrix), dtype=float)
+        margins = self.decision_function(matrix)
+        positive = expit(margins / self.fallback_scale)
+        return np.column_stack([1.0 - positive, positive])
+
+    def predict(self, matrix: Matrix) -> np.ndarray:
+        return np.where(self.predict_proba(matrix)[:, 1] >= 0.5, 1, 0)
+
+
+def _fit_calibrated_svm(
+    estimator: SVC, matrix: Matrix, labels: np.ndarray, *, seed: int
+) -> CalibratedMarginEstimator:
+    """Fit a monotone probability mapping without scoring-set leakage.
+
+    When two stratified folds are impossible, the logistic fallback is an
+    unvalidated bounded estimate, not a claim of successful CV calibration.
+    """
+    folds = min(3, int(np.bincount(labels, minlength=2).min()))
+    if folds >= 2:
+        splitter = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
+        calibrated = CalibratedClassifierCV(
+            estimator=clone(estimator), method="sigmoid", cv=splitter,
+            ensemble=False,
+        )
+        calibrated.fit(matrix, labels)
+        margin = calibrated.calibrated_classifiers_[0].estimator
+        training_margins = np.asarray(margin.decision_function(matrix), dtype=float)
+        if np.ptp(training_margins) > 0:
+            probes = np.asarray(
+                [np.argmin(training_margins), np.argmax(training_margins)]
+            )
+            ordered = calibrated.predict_proba(matrix[probes])[:, 1]
+            if ordered[1] >= ordered[0]:
+                return CalibratedMarginEstimator(
+                    margin, calibrated, method="sigmoid_cv",
+                )
+        # Preserve original margin ordering if a tiny-label CV sigmoid inverts it.
+        estimator = margin
+    else:
+        estimator.fit(matrix, labels)
+    training_margins = np.asarray(estimator.decision_function(matrix), dtype=float)
+    scale = max(1.0, float(np.std(training_margins)))
+    return CalibratedMarginEstimator(
+        estimator, None, method="monotone_sigmoid_fallback",
+        fallback_scale=scale,
+    )
 
 
 def fit_classifier(
@@ -488,7 +613,12 @@ def fit_classifier(
     estimator = _build_estimator(
         algorithm=algorithm, parameters=parameters, training_rows=int(y.size)
     )
-    estimator.fit(training_matrix, y)
+    if algorithm in {"linear_svm", "rbf_svm"} and parameters["probability"]:
+        estimator = _fit_calibrated_svm(
+            estimator, training_matrix, y, seed=int(parameters["random_state"])
+        )
+    else:
+        estimator.fit(training_matrix, y)
     return FittedClassifier(
         estimator=estimator,
         outputs=score_classifier(
