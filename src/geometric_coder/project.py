@@ -84,6 +84,7 @@ class GeometricCoder:
         # Serialize first-use materialization within this project instance.
         # The database publishes the completed ranking in one transaction.
         self._committee_ranking_lock = RLock()
+        self._derived_materialization_lock = RLock()
         # In-process cache of exact persisted evidence snapshots. A cheap DB
         # revision changes whenever relevant annotations or teaching state change.
         self._recommendation_freshness: dict[
@@ -957,13 +958,6 @@ class GeometricCoder:
                 )
             raise ConfigurationError(f"Geometry {clean_name!r} is already registered.")
         provider = self._require_external_provider()
-        derived = self.database.list_observations(kinds=["span", "teaching_example"])
-        if derived:
-            raise ConfigurationError(
-                "Additional external geometries must be registered before creating "
-                "spans or teaching examples. GeCo does not backfill geometry "
-                "vectors for already-created derived observations."
-            )
         if supports_query and not callable(getattr(provider, "transform_query", None)):
             raise ConfigurationError(
                 f"External geometry {clean_name!r} was declared queryable, but the "
@@ -1936,11 +1930,9 @@ class GeometricCoder:
         self.database.validate_span_members(members)
         selected = [self.database.get_unit(unit_id) for unit_id in members]
         text = "\n".join(str(unit["text"]) for unit in selected)
-        token = f"span_{uuid.uuid4().hex}"
-        vectors = self._transform_observation_text(text, token=token)
         return self.database.create_span_with_annotation(
             member_unit_ids=members, text=text, code_id=code_id, value=value,
-            origin=origin, geometry_vectors=vectors, classifier_fit_id=classifier_fit_id,
+            origin=origin, geometry_vectors={}, classifier_fit_id=classifier_fit_id,
         )
 
     def create_teaching_example(
@@ -1958,21 +1950,24 @@ class GeometricCoder:
             raise ValueError("Teaching-example text may not be empty.")
         if label not in {"positive", "negative"}:
             raise ValueError("Teaching-example label must be positive or negative.")
-        token = f"teaching_{uuid.uuid4().hex}"
-        vectors = self._transform_observation_text(clean_text, token=token)
+        observation_id = self.database.create_teaching_example(
+            code_id=code_id, text=clean_text, label=label, note=note,
+            geometry_vectors={},
+        )
         latest_by_spec: dict[int, dict[str, Any]] = {}
         if assess_before_training:
+            supported = self.transformable_geometry_ids()
             for spec in self.database.list_classifier_specs(code_id=int(code_id)):
                 fit = self.database.latest_classifier_fit(
                     classifier_spec_id=int(spec["classifier_spec_id"]),
                     code_id=int(code_id),
                 )
-                if fit is not None and int(fit["geometry_id"]) in vectors:
+                if fit is not None and int(fit["geometry_id"]) in supported:
                     latest_by_spec[int(spec["classifier_spec_id"])] = fit
-        observation_id = self.database.create_teaching_example(
-            code_id=code_id, text=clean_text, label=label, note=note,
-            geometry_vectors=vectors,
-        )
+            for geometry_id in {
+                int(fit["geometry_id"]) for fit in latest_by_spec.values()
+            }:
+                self.materialize_derived_vectors(geometry_id, [observation_id])
         for fit in latest_by_spec.values():
             vector = self.observation_vector(
                 observation_id, int(fit["geometry_id"])
