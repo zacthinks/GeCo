@@ -1901,6 +1901,72 @@ class GeometricCoder:
             )
         return vectors
 
+    def materialize_derived_vectors(
+        self, geometry_id: int, observation_ids: Sequence[int] | None = None
+    ) -> list[int]:
+        """Create missing derived vectors for a single compatible geometry.
+
+        This runs only for consumers of numerical derived observations. The
+        persisted text and span membership remain the source of truth.
+        """
+        geometry_id = int(geometry_id)
+        geometry = self.database.get_geometry(geometry_id)
+        if geometry_id not in self.transformable_geometry_ids():
+            return []
+        with self._derived_materialization_lock:
+            candidates = self.database.list_observations(
+                kinds=["span", "teaching_example"]
+            )
+            if observation_ids is not None:
+                wanted = {int(value) for value in observation_ids}
+                candidates = [
+                    row for row in candidates
+                    if int(row["observation_id"]) in wanted
+                ]
+            missing = [
+                row for row in candidates
+                if self.database.observation_vector_record(
+                    int(row["observation_id"]), geometry_id
+                ) is None
+            ]
+            if not missing:
+                return []
+            texts = [str(row["text"]) for row in missing]
+            if str(geometry.get("storage_kind", "local")) == "external":
+                provider = self._require_external_provider()
+                transformed = provider.transform_texts(geometry["external_ref"], texts)
+            else:
+                transformed = self.runtime_geometries()[str(geometry["name"])].transform_texts(texts)
+            matrix: Matrix = (
+                sparse.csr_matrix(transformed) if sparse.issparse(transformed)
+                else np.asarray(transformed)
+            )
+            representation = self.database.representation_for_legacy("geometry", geometry_id)
+            dimensions = representation.get("dimensions")
+            if (
+                matrix.ndim != 2
+                or matrix.shape[0] != len(missing)
+                or (dimensions is not None and matrix.shape[1] != int(dimensions))
+            ):
+                raise ValueError(
+                    f"Derived transform for {geometry['name']!r} returned shape "
+                    f"{matrix.shape}; expected ({len(missing)}, {dimensions})."
+                )
+            artifacts: dict[int, tuple[str, bool]] = {}
+            try:
+                for position, row in enumerate(missing):
+                    observation_id = int(row["observation_id"])
+                    artifacts[observation_id] = self.artifacts.save_observation_vector(
+                        f"derived_{observation_id}_{uuid.uuid4().hex}",
+                        str(geometry["name"]), matrix[position : position + 1],
+                    )
+                self.database.persist_derived_geometry_vectors(geometry_id, artifacts)
+            except Exception:
+                for artifact_path, _is_sparse in artifacts.values():
+                    (self.project_dir / artifact_path).unlink(missing_ok=True)
+                raise
+            return [int(row["observation_id"]) for row in missing]
+
     def annotate_span(
         self,
         member_unit_ids: Sequence[int],
