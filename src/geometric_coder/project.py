@@ -1964,7 +1964,7 @@ class GeometricCoder:
                     classifier_spec_id=int(spec["classifier_spec_id"]),
                     code_id=int(code_id),
                 )
-                if fit is not None:
+                if fit is not None and int(fit["geometry_id"]) in vectors:
                     latest_by_spec[int(spec["classifier_spec_id"])] = fit
         observation_id = self.database.create_teaching_example(
             code_id=code_id, text=clean_text, label=label, note=note,
@@ -2704,11 +2704,36 @@ class GeometricCoder:
         """Delete a committee definition without deleting its historical fits."""
         self.database.delete_classifier_committee(int(committee_id))
 
+    def _geometry_training_labels(
+        self, code_id: int, annotations: Sequence[dict[str, Any]],
+        geometry_id: int,
+    ) -> list[dict[str, Any]]:
+        """Select eligible labels actually represented in one geometry."""
+        candidates = self._eligible_training_annotations(code_id, annotations)
+        observations = {
+            int(row["observation_id"]): str(row["kind"])
+            for row in self.database.list_observations()
+        }
+        supported = self.database.derived_observation_ids_for_geometry(
+            int(geometry_id)
+        )
+        return [
+            row for row in candidates
+            if observations.get(int(row["observation_id"])) == "atomic"
+            or int(row["observation_id"]) in supported
+        ]
+
     def _classifier_training_snapshot(
-        self, code_id: int, annotations: Sequence[dict[str, Any]]
+        self, code_id: int, annotations: Sequence[dict[str, Any]],
+        geometry_id: int | None = None,
     ) -> dict[str, Any]:
-        """Return the reproducible training state for one code."""
-        labeled = self._eligible_training_annotations(code_id, annotations)
+        """Record only evidence applicable to this classifier's geometry."""
+        labeled = (
+            self._eligible_training_annotations(code_id, annotations)
+            if geometry_id is None else
+            self._geometry_training_labels(code_id, annotations, geometry_id)
+        )
+        eligible_ids = {int(row["observation_id"]) for row in labeled}
         return {
             "annotations": [
                 {
@@ -2726,6 +2751,9 @@ class GeometricCoder:
                 for example in self.database.list_teaching_examples(
                     code_id, include_deleted=True
                 )
+                if geometry_id is None
+                or int(example["observation_id"]) in
+                self.database.derived_observation_ids_for_geometry(int(geometry_id))
             ],
         }
 
@@ -2741,7 +2769,14 @@ class GeometricCoder:
         """
         observations = self.database.list_observations()
         atomic = [row for row in observations if row["kind"] == "atomic"]
-        derived = [row for row in observations if row["kind"] != "atomic"]
+        supported_ids = self.database.derived_observation_ids_for_geometry(
+            int(geometry_id)
+        )
+        derived = [
+            row for row in observations
+            if row["kind"] != "atomic"
+            and int(row["observation_id"]) in supported_ids
+        ]
         observation_ids = [
             *[int(row["observation_id"]) for row in atomic],
             *[int(row["observation_id"]) for row in derived],
@@ -2768,11 +2803,13 @@ class GeometricCoder:
         )
 
     def _classifier_training_evidence(
-        self, *, code_id: int
+        self, *, code_id: int, geometry_id: int
     ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
-        """Return eligible labels and snapshot without touching geometry artifacts."""
+        """Return geometry-supported labels without loading numerical artifacts."""
         annotations = self.database.current_annotations(int(code_id))
-        labeled = self._eligible_training_annotations(int(code_id), annotations)
+        labeled = self._geometry_training_labels(
+            int(code_id), annotations, int(geometry_id)
+        )
         if not any(row["value"] == "positive" for row in labeled) or not any(
             row["value"] == "negative" for row in labeled
         ):
@@ -2782,7 +2819,9 @@ class GeometricCoder:
         labels = np.asarray(
             [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
         )
-        snapshot = self._classifier_training_snapshot(int(code_id), annotations)
+        snapshot = self._classifier_training_snapshot(
+            int(code_id), annotations, int(geometry_id)
+        )
         return labeled, labels, snapshot
 
     def _classifier_training_rows(
@@ -2835,7 +2874,9 @@ class GeometricCoder:
         self, *, code_id: int, geometry_id: int
     ) -> tuple[list[dict[str, Any]], Matrix, np.ndarray, dict[str, Any]]:
         """Return eligible evidence, vectors, labels, and the exact training snapshot."""
-        labeled, labels, snapshot = self._classifier_training_evidence(code_id=int(code_id))
+        labeled, labels, snapshot = self._classifier_training_evidence(
+            code_id=int(code_id), geometry_id=int(geometry_id)
+        )
         training_matrix, _ = self._classifier_training_rows(
             labeled=labeled, geometry_id=int(geometry_id)
         )
@@ -3006,7 +3047,7 @@ class GeometricCoder:
         # we know a new fit is actually required.  This keeps the common active-learning
         # path -- Train on an already-current classifier -- effectively metadata-only.
         labeled, labels, snapshot = self._classifier_training_evidence(
-            code_id=int(code_id)
+            code_id=int(code_id), geometry_id=int(spec["geometry_id"])
         )
 
         # Fast path: ordinary recommendation requests should not rerun CV or reload a
