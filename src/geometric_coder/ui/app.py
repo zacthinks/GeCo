@@ -586,6 +586,56 @@ def create_app(
     overlay_frames: dict[str, tuple[int, dict[str, Any]]] = {}
     overlay_frame_order: deque[str] = deque()
     overlay_frame_lock = Lock()
+
+    # Retain similarity vectors on the server; the browser carries only a
+    # query/geometry/query-id/token selector.  Bounded retention avoids a
+    # permanent corpus-sized copy per past search.
+    semantic_vectors: dict[str, tuple[str, int, int, list[float]]] = {}
+    semantic_vector_order: deque[str] = deque()
+    semantic_vector_lock = Lock()
+
+    def selected_semantic_scores(
+        payload: dict[str, Any] | None,
+        query: str | None,
+        geometry_id: int | None,
+    ) -> dict[str, list[float]]:
+        if not isinstance(payload, dict) or not query or geometry_id is None:
+            return {}
+        clean = str(query).strip()
+        if payload.get("query") != clean or str(payload.get("geometry_id")) != str(geometry_id):
+            return {}
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            return _current_semantic_scores(payload, query, geometry_id)
+        try:
+            expected_query_id = int(payload["query_id"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        # Check identity even on a cache hit: a deleted query must never be
+        # revived by an older browser tab or a later query with the same text.
+        if project.saved_semantic_searches.query_id(clean) != expected_query_id:
+            return {}
+        with semantic_vector_lock:
+            retained = semantic_vectors.get(token)
+        if retained is None:
+            try:
+                restored = project.saved_semantic_searches.find(
+                    clean, int(geometry_id), expected_query_id=expected_query_id
+                )
+            except (ValueError, KeyError, ConfigurationError):
+                return {}
+            if restored is None:
+                return {}
+            retained = (clean, int(geometry_id), expected_query_id, restored["scores"])
+            with semantic_vector_lock:
+                semantic_vectors[token] = retained
+                semantic_vector_order.append(token)
+                while len(semantic_vector_order) > 8:
+                    semantic_vectors.pop(semantic_vector_order.popleft(), None)
+        if retained[:3] != (clean, int(geometry_id), expected_query_id):
+            return {}
+        name = str(geometry_by_id[int(geometry_id)]["name"])
+        return {name: retained[3]}
     training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
@@ -1853,8 +1903,19 @@ def create_app(
         if cache.query_id(clean) != qid:
             return {"query": clean, "geometry_id": geometry_id, "scores": {},
                     "status": "This saved query was deleted.", "range": None}
+        token = uuid.uuid4().hex
+        retained_scores = [float(value) for value in scores]
+        with semantic_vector_lock:
+            semantic_vectors[token] = (clean, int(geometry_id), int(qid), retained_scores)
+            semantic_vector_order.append(token)
+            while len(semantic_vector_order) > 8:
+                semantic_vectors.pop(semantic_vector_order.popleft(), None)
+        bounds = (
+            [float(min(retained_scores)), float(max(retained_scores))]
+            if retained_scores else None
+        )
         return {"query": clean, "geometry_id": int(geometry_id), "query_id": qid,
-                "scores": {str(selected["name"]): scores}, "status": "",
+                "token": token, "bounds": bounds, "status": "",
                 "range": current_range}
 
     app.clientside_callback(
@@ -1864,9 +1925,10 @@ def create_app(
                 || String(candidate.geometry_id) !== String(geometryId)) {
                 return [no, no, no, no, no];
             }
-            const payload = candidate.scores && Object.keys(candidate.scores).length
+            const payload = candidate.token
                 ? {query: candidate.query, geometry_id: candidate.geometry_id,
-                   query_id: candidate.query_id, scores: candidate.scores}
+                   query_id: candidate.query_id, token: candidate.token,
+                   bounds: candidate.bounds}
                 : {};
             // Clearing the semantic query when selecting a Topic Model must not
             // undo topic coloring. Only an active semantic color or an attempted
@@ -1922,7 +1984,7 @@ def create_app(
         if geometry_id is None or not all_scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         geometry_name = str(geometry_by_id[int(geometry_id)]["name"])
-        scores = _current_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
+        scores = selected_semantic_scores(all_scores, active_query, geometry_id).get(geometry_name)
         if not scores:
             return 0.0, 1.0, 0.001, [0.0, 1.0], {}, hidden, hidden, hidden
         values = np.asarray(scores, dtype=float)
@@ -2418,7 +2480,7 @@ def create_app(
             return _empty_figure("No computed geometry view is available."), "", "", "", next_revision
         options = set(literal_options or [])
         geometry_record = geometry_by_id[int(geometry_id)]
-        semantic_scores = _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
+        semantic_scores = selected_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
         try:
             filters = combine_filters(
                 texts,
@@ -2695,7 +2757,7 @@ def create_app(
                 geometry_by_id[int(geometry_id)] if geometry_id is not None else None
             )
             semantic_scores = (
-                _current_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
+                selected_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
                 if geometry_record is not None
                 else None
             )
