@@ -30,6 +30,8 @@ Instead of labeling cases at random, you can ask GeCo to find informative observ
 
 The goal is not for the computer to define your code. **You define and refine the code; GeCo helps you develop computational representations that can recognize it across the corpus.**
 
+Classifiers include logistic regression, linear and **RBF-kernel support vector machines**, and several other families. The nonlinear RBF model can represent curved decision boundaries; optional cross-validation searches regularization and kernel width jointly. GeCo keeps each model's native decision scores distinct from its **estimated probabilities**. In Develop's prediction geometry, you can switch between estimated probabilities (the default) and native decision scores for models that expose them. Probabilities make recommendation, committee and Apply scoring easier to compare on a 0–1 scale, but they are estimates: calibration quality is not guaranteed, especially with few or selectively labeled examples.
+
 ### 3. Apply & Review — code broadly, review efficiently
 
 Once a code-specific classifier or committee is useful, use it to generate coding proposals for observations you have not yet reviewed. GeCo's **Apply & Review** workspace puts those proposals in a review table, where you can inspect suggested labels and probabilities, filter the results, accept or revise individual decisions, and take bulk actions when appropriate.
