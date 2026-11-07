@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import UTC, date, datetime
 from html import escape as html_escape
+from hashlib import blake2b
 import json
 import re
 import uuid
@@ -143,6 +144,11 @@ _TRANSIENT_EXPLORE_KEYS = frozenset({
     "semantic_query", "semantic_active_query", "semantic_range",
     "topic_color_mode", "topic_model_id", "topic_component_id",
 })
+
+
+def _semantic_vector_digest(scores: list[float]) -> str:
+    """Identify the exact stored float64 score snapshot across cache eviction."""
+    return blake2b(np.asarray(scores, dtype="<f8").tobytes(), digest_size=12).hexdigest()
 
 
 def _current_semantic_scores(
@@ -625,6 +631,10 @@ def create_app(
             except (ValueError, KeyError, ConfigurationError):
                 return {}
             if restored is None:
+                return {}
+            # A query can be recomputed under the same query ID. An evicted
+            # token must never silently resolve to a different score snapshot.
+            if not token.endswith("." + _semantic_vector_digest(restored["scores"])):
                 return {}
             retained = (clean, int(geometry_id), expected_query_id, restored["scores"])
             with semantic_vector_lock:
@@ -1903,8 +1913,8 @@ def create_app(
         if cache.query_id(clean) != qid:
             return {"query": clean, "geometry_id": geometry_id, "scores": {},
                     "status": "This saved query was deleted.", "range": None}
-        token = uuid.uuid4().hex
         retained_scores = [float(value) for value in scores]
+        token = f"{uuid.uuid4().hex}.{_semantic_vector_digest(retained_scores)}"
         with semantic_vector_lock:
             semantic_vectors[token] = (clean, int(geometry_id), int(qid), retained_scores)
             semantic_vector_order.append(token)
