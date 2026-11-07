@@ -63,3 +63,33 @@ def test_dense_local_geometry_rows_use_mmap_and_preserve_order(tmp_path, monkeyp
     assert result.tolist() == values[positions].tolist()
     assert captured == ["r"]
     assert project.geometry_page_rows(geometry_id, []).shape == (0, 2)
+
+
+def test_external_provider_still_receives_complete_ordered_universe(tmp_path):
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def geometry_matrix(self, external_ref, ordered_user_keys):
+            self.calls.append((external_ref, ordered_user_keys))
+            return np.array([[10.0], [20.0], [30.0]], dtype=float)
+
+        def view_coordinates(self, external_ref, ordered_user_keys):
+            raise AssertionError("No view should be requested")
+
+    provider = Provider()
+    project = GeometricCoder.create_external(
+        project_dir=tmp_path / "provider-rows.geco",
+        data=pd.DataFrame({
+            "id": [9, 2, 7], "text": ["alpha", "beta", "gamma"]
+        }),
+        keys=["id"], text="text", metadata=[], external_provider=provider,
+    )
+    geometry_id = project.register_external_geometry(
+        name="external_dense", external_ref={"artifact": "external"},
+    )
+    rows = project.geometry_page_rows(geometry_id, [2, 0])
+    assert rows.tolist() == [[30.0], [10.0]]
+    assert len(provider.calls) == 1
+    assert provider.calls[0][0] == {"artifact": "external"}
+    assert provider.calls[0][1] == [{"id": 9}, {"id": 2}, {"id": 7}]
