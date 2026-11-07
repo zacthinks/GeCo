@@ -215,3 +215,53 @@ def test_paging_index_is_installed_on_current_schema_reopen(tmp_path: Path) -> N
             )
         }
     assert "apply_proposals_active_probability_rank_idx" in names
+
+
+def test_presentation_map_active_uses_page_rows_without_explore_visits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import numpy as np
+    from types import SimpleNamespace
+    import geometric_coder.ui.app as ui
+
+    project, _run_id = _draft(tmp_path)
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    coordinates = np.column_stack((
+        np.linspace(-1.0, 1.0, 64),
+        np.linspace(1.0, -1.0, 64),
+    ))
+    artifact = project.artifacts.save_view("phase5_presentation", coordinates)
+    view_id = project.database.register_view(
+        geometry_id=geometry_id, name="phase5_presentation",
+        method="pca", parameters={}, artifact_path=artifact,
+    )
+    app = ui.create_app(project)
+    callbacks = [
+        entry["callback"].__wrapped__
+        for name, entry in app.callback_map.items()
+        if "memo-presentation-map.figure" in name
+        and "memo-presentation-page-status.children" in name
+    ]
+    assert len(callbacks) == 1
+    recorded: list[list[int]] = []
+    actual = project.view_coordinate_rows
+
+    def traced(view: int, positions: list[int]) -> np.ndarray:
+        assert view == view_id
+        recorded.append(positions)
+        return actual(view, positions)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Presentation must not read full views or record Explore visits")
+
+    monkeypatch.setattr(project, "view_coordinate_rows", traced)
+    monkeypatch.setattr(project, "view_coordinates", forbidden)
+    monkeypatch.setattr(project, "record_visit", forbidden)
+    monkeypatch.setattr(ui, "callback_context", SimpleNamespace(triggered_id="memo-presentation-view"))
+    figure, message = callbacks[0](
+        view_id, 0, 0, "__all__", "20", 1, "",
+        "?presentation=memo&memo_id=1", None,
+    )
+    assert recorded and len(recorded[-1]) <= 20
+    assert figure is not None
+    assert "Page 1" in message
