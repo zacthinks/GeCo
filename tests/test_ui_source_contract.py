@@ -723,7 +723,10 @@ def test_semantic_candidate_is_checked_against_current_browser_request() -> None
     assert 'String(candidate.geometry_id) !== String(geometryId)' in source
     assert 'State("semantic-active-query", "data")' in source
     assert 'State("geometry-dropdown", "value")' in source
-    assert '_current_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    # Phase 3 keeps full vectors server-side; callbacks resolve a validated
+    # query/geometry/snapshot selector rather than reading browser-held vectors.
+    assert 'selected_semantic_scores(all_semantic_scores, active_query, geometry_id)' in source
+    assert 'project.saved_semantic_searches.query_id(clean) != expected_query_id' in source
     assert "expected_query_id=qid" in source
 
 
