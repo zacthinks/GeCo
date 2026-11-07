@@ -6414,16 +6414,16 @@ def create_app(
         Output("prediction-geometry-refresh-store", "data"),
         Output("focus-prediction-status", "children"),
         Input("focus-prediction-refresh", "n_clicks"),
+        Input("focus-prediction-score-type", "value"),
         State("focus-code-dropdown", "value"),
         State("focus-prediction-fits", "value"),
-        State("focus-prediction-score-type", "value"),
         prevent_initial_call=True,
     )
     def refresh_prediction_geometry(
         clicks: int,
+        score_type: str | None,
         code_id: int | None,
         classifier_spec_ids: list[int] | None,
-        score_type: str | None,
     ) -> tuple[dict[str, Any] | Any, str]:
         del clicks
         if code_id is None:
