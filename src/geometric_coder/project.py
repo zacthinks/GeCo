@@ -2294,9 +2294,12 @@ class GeometricCoder:
             raise TypeError("export_predictor() requires a GeCoPredictorRef from predictors().")
 
         code = self.database.get_code(int(ref.code_id))
-        snapshot = self._classifier_training_snapshot(
-            int(ref.code_id), self.database.current_annotations(int(ref.code_id))
-        )
+        annotations = self.database.current_annotations(int(ref.code_id))
+
+        def member_snapshot(spec: Mapping[str, Any]) -> dict[str, Any]:
+            return self._classifier_training_snapshot(
+                int(ref.code_id), annotations, int(spec["geometry_id"])
+            )
 
         if ref.kind == "classifier":
             spec = self.database.get_classifier_spec(int(ref.id))
@@ -2312,7 +2315,9 @@ class GeometricCoder:
             )
             if fit is None:
                 raise ValueError(f"Classifier {spec['name']!r} has not been trained.")
-            stale = self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot)
+            stale = self._classifier_fit_stale(
+                spec=spec, fit=fit, snapshot=member_snapshot(spec)
+            )
             if stale and not allow_stale:
                 raise ValueError(
                     f"Classifier {spec['name']!r} has a stale retained fit. "
@@ -2402,7 +2407,9 @@ class GeometricCoder:
             if expected_snapshot is None or committee_fit["training_snapshot"] != expected_snapshot:
                 stale_reasons.append("learned committee fit no longer matches the current committee/training state")
             for spec, fit in zip(member_specs, member_fits, strict=True):
-                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                if self._classifier_fit_stale(
+                    spec=spec, fit=fit, snapshot=member_snapshot(spec)
+                ):
                     stale_reasons.append(f"member {spec['name']!r} is stale")
             stacker = self.artifacts.load_model(
                 self.project_dir, str(committee_fit["artifact_path"])
@@ -2424,7 +2431,9 @@ class GeometricCoder:
                         f"Train {spec['name']!r} before exporting committee {committee['name']!r}."
                     )
                 member_fits.append(fit)
-                if self._classifier_fit_stale(spec=spec, fit=fit, snapshot=snapshot):
+                if self._classifier_fit_stale(
+                    spec=spec, fit=fit, snapshot=member_snapshot(spec)
+                ):
                     stale_reasons.append(f"member {spec['name']!r} is stale")
 
         stale = bool(stale_reasons)
@@ -3717,13 +3726,14 @@ class GeometricCoder:
         self, *, code_id: int, committee: Mapping[str, Any]
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Return latest member-fit metadata using one shared training snapshot."""
-        snapshot = self._classifier_training_snapshot(
-            int(code_id), self.database.current_annotations(int(code_id))
-        )
+        annotations = self.database.current_annotations(int(code_id))
         states: list[dict[str, Any]] = []
         for member in committee["members"]:
             spec_id = int(member["classifier_spec_id"])
             spec = self.database.get_classifier_spec(spec_id)
+            snapshot = self._classifier_training_snapshot(
+                int(code_id), annotations, int(spec["geometry_id"])
+            )
             fit = self.database.latest_classifier_fit(
                 code_id=int(code_id), classifier_spec_id=spec_id
             )
@@ -3749,7 +3759,7 @@ class GeometricCoder:
                     "stale": stale,
                 }
             )
-        return states, snapshot
+        return states, self._classifier_training_snapshot(int(code_id), annotations)
 
     def _latest_trainable_committee_scores(
         self, *, code_id: int, committee_id: int
@@ -3819,7 +3829,8 @@ class GeometricCoder:
         if any(unit_id not in score_by_unit for unit_id in unit_ids):
             return None
         snapshot = self._classifier_training_snapshot(
-            int(code_id), self.database.current_annotations(int(code_id))
+            int(code_id), self.database.current_annotations(int(code_id)),
+            int(spec["geometry_id"]),
         )
         return {
             "fit": fit,
@@ -4030,7 +4041,7 @@ class GeometricCoder:
                     stale = (
                         fit["training_snapshot"]
                         != self._classifier_training_snapshot(
-                            int(code_id), annotations_now
+                            int(code_id), annotations_now, int(spec["geometry_id"])
                         )
                         or int(fit["geometry_id"]) != int(spec["geometry_id"])
                         or str(fit["algorithm"]) != str(spec["algorithm"])
@@ -4414,7 +4425,9 @@ class GeometricCoder:
                         return None
                     stale = (
                         fit["training_snapshot"]
-                        != self._classifier_training_snapshot(int(code_id), annotations)
+                        != self._classifier_training_snapshot(
+                            int(code_id), annotations, int(spec["geometry_id"])
+                        )
                         or int(fit["geometry_id"]) != int(spec["geometry_id"])
                         or str(fit["algorithm"]) != str(spec["algorithm"])
                         or fit["hyperparameters"] != spec["hyperparameters"]
