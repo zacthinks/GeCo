@@ -160,7 +160,7 @@ def test_develop_exposes_opt_in_cross_validation_tuning() -> None:
     ).read_text(encoding="utf-8")
     assert 'id="focus-tune-hyperparameters"' in app_source
     assert '_tooltip_label(html, "Tune hyperparameters with cross-validation"' in app_source
-    assert '"focus_tune_hyperparameters", False' in app_source
+    assert '"focus_tune_hyperparameters", True' in app_source
     assert 'tune=tune_hyperparameters' in app_source
     assert 'retune_current=tune_hyperparameters' in app_source
     # Cross-validation remains opt-in at the explicit training boundary, not
