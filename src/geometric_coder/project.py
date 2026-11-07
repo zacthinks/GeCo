@@ -1923,11 +1923,12 @@ class GeometricCoder:
                     row for row in candidates
                     if int(row["observation_id"]) in wanted
                 ]
+            existing = self.database.derived_observation_ids_for_geometry(
+                geometry_id
+            )
             missing = [
                 row for row in candidates
-                if self.database.observation_vector_record(
-                    int(row["observation_id"]), geometry_id
-                ) is None
+                if int(row["observation_id"]) not in existing
             ]
             if not missing:
                 return []
