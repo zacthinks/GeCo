@@ -6742,6 +6742,7 @@ def create_app(
         Input("committee-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
+        Input("workspace-tabs", "value"),
         State("apply-source-dropdown", "value"),
     )
     def refresh_apply_sources(
@@ -6751,9 +6752,12 @@ def create_app(
         committee_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
+        workspace: str | None,
         current_value: str | None,
-    ) -> tuple[list[dict[str, Any]], str | None]:
+    ) -> tuple[Any, Any]:
         del model_refresh, spec_refresh, committee_refresh, focus_refresh, teaching_refresh
+        if workspace != "apply":
+            return no_update, no_update
         if code_id is None:
             return [], None
         status_rows = project.classifier_status(code_id=int(code_id))["classifiers"]
