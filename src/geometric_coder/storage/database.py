@@ -3932,11 +3932,22 @@ class ProjectDatabase:
     def missing_classifier_committee_prediction_observation_ids(
         self, committee_fit_id: int
     ) -> list[int]:
-        """Return active observations lacking a learned-committee prediction."""
+        """Return missing predictions only where all frozen members have vectors."""
+        fit = self.get_classifier_committee_fit(int(committee_fit_id))
+        common_derived: set[int] | None = None
+        for member_fit_id in fit["member_fit_ids"]:
+            member = self.get_classifier_fit(int(member_fit_id))
+            available = self.derived_observation_ids_for_geometry(
+                int(member["geometry_id"])
+            )
+            common_derived = (
+                available if common_derived is None
+                else common_derived.intersection(available)
+            )
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT o.observation_id
+                SELECT o.observation_id, o.kind
                 FROM observations AS o
                 LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
                 LEFT JOIN classifier_committee_predictions AS ccp
@@ -3948,7 +3959,11 @@ class ProjectDatabase:
                 """,
                 (int(committee_fit_id),),
             ).fetchall()
-        return [int(row["observation_id"]) for row in rows]
+        return [
+            int(row["observation_id"]) for row in rows
+            if row["kind"] == "atomic"
+            or int(row["observation_id"]) in (common_derived or set())
+        ]
 
     def classifier_committee_atomic_probabilities(
         self, committee_fit_id: int
