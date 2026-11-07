@@ -2518,6 +2518,16 @@ def create_app(
             page_number=number,
             additional_mask=uncoded_mask,
         )
+        # Validate the selected descendant view *before* asking a provider to
+        # load its entire coordinate universe.
+        view = _display_view_record(
+            project, geometry_id=int(geometry_id), view_id=int(view_id)
+        )
+        if view is None:
+            return (
+                _empty_figure("The selected view is unavailable for this geometry."),
+                literal_status, "", "", next_revision,
+            )
         all_view_coordinates = project.view_coordinates(int(view_id))
         coordinates = all_view_coordinates[positions]
         page_units = [units[int(position)] for position in positions]
@@ -2536,17 +2546,6 @@ def create_app(
                 mode=selected_color_mode, selected_topic=topic_component_id,
             )
         seen = project.database.seen_unit_ids(int(session_id))
-        # A canonical 1D/2D representation is selectable as a view without
-        # an additional legacy views-table row. Resolve both kinds using the
-        # same descendant-aware catalog as the Explorer dropdown.
-        view = _display_view_record(
-            project, geometry_id=int(geometry_id), view_id=int(view_id)
-        )
-        if view is None:
-            return (
-                _empty_figure("The selected view is unavailable for this geometry."),
-                literal_status, "", "", next_revision,
-            )
         figure = build_geometry_figure(
             coordinates=coordinates,
             units=page_units,
