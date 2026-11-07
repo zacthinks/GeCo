@@ -5,6 +5,7 @@ from pathlib import Path
 from geometric_coder.ui.app import (
     _build_prediction_geometry_figure,
     _compact_prediction_geometry,
+    _matching_prediction_page_point,
     _prediction_geometry_page_index,
 )
 
@@ -65,7 +66,7 @@ def test_develop_annotation_callback_never_sends_whole_prediction_figure():
     assert 'State("focus-prediction-map", "figure")' not in source
     assert 'State("prediction-geometry-page-token", "data")' in source
     assert 'Output("prediction-geometry-page-token", "data")' in source
-    assert 'page[1] == str(prediction_refresh.get("cache_key"))' in source
+    assert '_matching_prediction_page_point(' in source
 
 
 def test_prediction_cache_drops_unneeded_payload_but_preserves_plot_and_fits():
@@ -92,3 +93,26 @@ def test_prediction_cache_drops_unneeded_payload_but_preserves_plot_and_fits():
         geometry=compact, points=compact["points"], page_index=2
     ).to_plotly_json()
     assert after == before
+
+
+def test_page_patch_rejects_wrong_code_stale_snapshot_and_hidden_points():
+    page = (7, "frozen-fit-a", {13: (4, 0), 20: (4, 1)})
+    state = {"code_id": 7, "cache_key": "frozen-fit-a"}
+    valid = _matching_prediction_page_point(
+        page, code_id=7, refresh_state=state, observation_id=20
+    )
+    assert valid == (4, 1)
+    assert _matching_prediction_page_point(
+        page, code_id=8, refresh_state=state, observation_id=20
+    ) is None
+    assert _matching_prediction_page_point(
+        page, code_id=7,
+        refresh_state={"code_id": 7, "cache_key": "new-frozen-fit"},
+        observation_id=20,
+    ) is None
+    assert _matching_prediction_page_point(
+        page, code_id=7, refresh_state=state, observation_id=999
+    ) is None
+    assert _matching_prediction_page_point(
+        None, code_id=7, refresh_state=state, observation_id=20
+    ) is None
