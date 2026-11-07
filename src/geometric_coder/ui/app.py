@@ -806,6 +806,8 @@ def create_app(
                 dcc.Store(id="prediction-geometry-refresh-store", data=None),
                 dcc.Store(id="prediction-geometry-page-token", data=None),
                 dcc.Store(id="apply-refresh-store", data=0),
+                dcc.Store(id="apply-page-index", data=0),
+                dcc.Store(id="apply-page-snapshot", data=None),
                 dcc.Store(id="memo-refresh-store", data=0),
                 dcc.Store(id="active-memo-store", data=None),
                 dcc.Store(id="explore-code-refresh-store", data=0),
@@ -10010,9 +10012,7 @@ def _apply_layout(
                         dashGridOptions={
                             "theme": GECO_AG_GRID_THEME,
                             "animateRows": False,
-                            "pagination": True,
-                            "paginationPageSize": 25,
-                            "paginationPageSizeSelector": [25, 50, 100],
+                            "pagination": False,
                             "singleClickEdit": True,
                             "stopEditingWhenCellsLoseFocus": True,
                             "rowSelection": {
@@ -10034,6 +10034,26 @@ def _apply_layout(
                         },
                         className="apply-review-grid",
                         style={"height": "690px", "width": "100%"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Rows per page", htmlFor="apply-page-size"),
+                            dcc.Dropdown(
+                                id="apply-page-size",
+                                options=[
+                                    {"label": str(size), "value": size}
+                                    for size in (25, 50, 100)
+                                ],
+                                value=25,
+                                clearable=False,
+                                searchable=False,
+                                className="apply-page-size",
+                            ),
+                            html.Button("Previous", id="apply-page-previous", n_clicks=0),
+                            html.Span(id="apply-page-status", className="page-status"),
+                            html.Button("Next", id="apply-page-next", n_clicks=0),
+                        ],
+                        className="pagination-bar apply-pagination",
                     ),
                     html.Div(
                         [
