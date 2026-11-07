@@ -10204,7 +10204,7 @@ def _apply_layout(
                                                 options=[
                                                     {"label": "All proposals", "value": "all"},
                                                     {"label": "Current page", "value": "current_page"},
-                                                    {"label": "Selected proposals", "value": "selected"},
+                                                    {"label": "Selected proposals (this page)", "value": "selected"},
                                                 ],
                                                 value="selected",
                                                 clearable=False,
