@@ -201,3 +201,17 @@ def test_paging_ui_renders_only_one_server_page_at_a_time(tmp_path: Path) -> Non
     assert len(last[0]) == 10
     assert last[5]["page_index"] == 2
     assert last[3] is False and last[4] is True
+
+
+def test_paging_index_is_installed_on_current_schema_reopen(tmp_path: Path) -> None:
+    project, _run_id = _draft(tmp_path)
+    with project.database.connect() as connection:
+        connection.execute("DROP INDEX apply_proposals_active_probability_rank_idx")
+    reopened = GeometricCoder.open(project.project_dir)
+    with reopened.database.connect() as connection:
+        names = {
+            str(row["name"]) for row in connection.execute(
+                "PRAGMA index_list('apply_proposals')"
+            )
+        }
+    assert "apply_proposals_active_probability_rank_idx" in names
