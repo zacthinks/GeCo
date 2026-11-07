@@ -3489,29 +3489,22 @@ class GeometricCoder:
         member_fit_ids: Sequence[int],
     ) -> dict[str, Any]:
         annotations = self.database.current_annotations(int(code_id))
-        shared_ids: set[int] | None = None
+        unsupported_derived: set[int] = set()
         for fit_id in member_fit_ids:
             member = self.database.get_classifier_fit(int(fit_id))
-            available = self.database.derived_observation_ids_for_geometry(
-                int(member["geometry_id"])
+            unsupported_derived.update(
+                self.database.unrepresented_derived_observation_ids(
+                    int(member["geometry_id"])
+                )
             )
-            shared_ids = (
-                available if shared_ids is None else shared_ids.intersection(available)
-            )
-        member_derived = shared_ids or set()
-        observations = {
-            int(row["observation_id"]): str(row["kind"])
-            for row in self.database.list_observations()
-        }
         applicable = [
             row for row in annotations
-            if observations.get(int(row["observation_id"])) == "atomic"
-            or int(row["observation_id"]) in member_derived
+            if int(row["observation_id"]) not in unsupported_derived
         ]
         training_snapshot = self._classifier_training_snapshot(int(code_id), applicable)
         training_snapshot["teaching_status"] = [
             row for row in training_snapshot["teaching_status"]
-            if int(row["observation_id"]) in member_derived
+            if int(row["observation_id"]) not in unsupported_derived
         ]
         return {
             "training": training_snapshot,
