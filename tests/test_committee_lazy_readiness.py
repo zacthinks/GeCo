@@ -109,8 +109,9 @@ def test_fixed_committee_refit_replaces_cache_on_first_next_use(tmp_path):
     project.annotate(int(observations[2]["observation_id"]), code_id, "positive")
     newer = project.train_classifier(code_id=code_id, classifier_spec_id=first)
     assert int(newer["classifier_fit_id"]) != int(before["member_fit_ids"][0])
-    # No eager cache rebuild happens as a side effect of training.
-    assert project.database.prepared_committee_ranking(committee_id) == before
+    # The obsolete numeric index is deleted with the changed fit; no eager
+    # replacement is computed until a recommendation first needs it.
+    assert project.database.prepared_committee_ranking(committee_id) is None
     result = _ranking_recommend(project, code_id, committee_id)
     assert result and result["stale_committee"] is True  # other member is still stale
     after = project.database.prepared_committee_ranking(committee_id)
