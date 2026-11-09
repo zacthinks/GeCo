@@ -99,8 +99,9 @@ def register_topic_details_callbacks(
     units: list[dict[str, Any]],
 ) -> None:
     """Wire the panel without changing the Explore/Develop/Apply callbacks."""
-    unit_positions = {int(unit["unit_id"]): i for i, unit in enumerate(units)}
-    by_unit = {int(unit["unit_id"]): unit for unit in units}
+    # Do not enumerate the complete corpus when registering callbacks.
+    # GeCo's UI units are now lazy: iteration would perform one SQLite
+    # lookup per document and make large linked workspaces hang at launch.
 
     @app.callback(
         Output("topic-model-new-name", "value"),
@@ -140,9 +141,14 @@ def register_topic_details_callbacks(
             return "", "", ""
         if not units:
             return "", "No atomic observations available.", ""
-        position = unit_positions.get(int(focal_unit_id)) if focal_unit_id is not None else None
-        if focal_unit_id is not None and position is None:
-            return "", "The focal observation no longer exists.", ""
+        unit = None
+        position = None
+        if focal_unit_id is not None:
+            try:
+                unit = project.unit(int(focal_unit_id))
+            except KeyError:
+                return "", "The focal observation no longer exists.", ""
+            position = int(unit["row_position"])
         try:
             # Read a single key. When no focal exists, sample one key only to
             # obtain the immutable topic axis and optional descriptors.
@@ -162,7 +168,7 @@ def register_topic_details_callbacks(
             focal_title: Any = "No focal observation selected."
             membership_display: Any = "Choose a point in Explore to inspect memberships."
         else:
-            unit = by_unit[int(focal_unit_id)]
+            assert unit is not None
             focal_title = html.Strong(
                 " › ".join(f"{key}: {value}" for key, value in unit["user_key"].items())
             )
