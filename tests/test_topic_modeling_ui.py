@@ -98,3 +98,42 @@ def test_standard_ui_registers_topic_model_workspace_and_focal_link():
     assert 'id="topic-model-new-name"' in app
     assert 'id="topic-component-new-label"' in app
     assert 'dcc.Store(id="topic-model-refresh-store", data=0)' in app
+
+
+def test_topic_callback_registration_never_enumerates_lazy_corpus():
+    """Large externally backed projects must register callbacks in O(1) reads."""
+    from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
+
+    class TrapUnits:
+        def __len__(self):
+            return 1_000_000
+
+        def __iter__(self):
+            raise AssertionError("Startup attempted to enumerate every document")
+
+        def __getitem__(self, item):
+            raise AssertionError("Startup attempted to load document data")
+
+    class FakeApp:
+        def __init__(self):
+            self.callbacks = []
+
+        def callback(self, *args, **kwargs):
+            def register(fn):
+                self.callbacks.append(fn)
+                return fn
+            return register
+
+    app = FakeApp()
+    register_topic_details_callbacks(
+        app,
+        object(),
+        html=object(),
+        Input=lambda *args: None,
+        Output=lambda *args: None,
+        State=lambda *args: None,
+        callback_context=object(),
+        no_update=object(),
+        units=TrapUnits(),
+    )
+    assert len(app.callbacks) >= 3
