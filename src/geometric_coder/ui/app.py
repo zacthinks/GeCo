@@ -2635,7 +2635,13 @@ def create_app(
             jitter_strength=float(jitter_strength if jitter_strength is not None else 1.0),
             jitter_spread=(
                 one_dimensional_jitter_spread(
-                    project.view_coordinates(int(view_id))[:, 0]
+                    project.view_coordinate_rows(
+                        int(view_id),
+                        np.linspace(
+                            0, max(0, len(units) - 1),
+                            num=min(len(units), 2048), dtype=int,
+                        ).tolist(),
+                    )[:, 0]
                 ) if coordinates.shape[1] == 1 else None
             ),
         )
