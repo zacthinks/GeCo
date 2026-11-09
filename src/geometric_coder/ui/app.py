@@ -33,6 +33,7 @@ from geometric_coder.explore import (
     deterministic_page_rank,
     deterministic_page_with_inclusions,
     recommend_page_unit,
+    recommend_unit,
 )
 from geometric_coder.ui.figures import (
     EXPLORE_ELIGIBLE_TRACE_INDEX,
@@ -2910,13 +2911,12 @@ def create_app(
                     matrix = project.geometry_page_rows(int(geometry_id), positions)
 
                 try:
-                    unit_id = recommend_page_unit(
+                    unit_id = recommend_unit(
                         strategy=strategy,  # type: ignore[arg-type]
-                        unit_ids=unit_ids,
-                        page_positions=positions,
+                        unit_ids=page_ids,
                         seen_unit_ids=seen,
-                        eligible=filters.eligible,
-                        page_matrix=matrix,
+                        eligible=np.asarray(filters.eligible, dtype=bool)[positions],
+                        matrix=matrix,
                         focal_unit_id=(
                             int(focal_unit_id)
                             if focal_unit_id is not None
