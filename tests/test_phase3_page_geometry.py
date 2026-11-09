@@ -65,14 +65,15 @@ def test_dense_local_geometry_rows_use_mmap_and_preserve_order(tmp_path, monkeyp
     assert project.geometry_page_rows(geometry_id, []).shape == (0, 2)
 
 
-def test_external_provider_still_receives_complete_ordered_universe(tmp_path):
+def test_external_provider_reads_only_requested_page_keys(tmp_path):
     class Provider:
         def __init__(self):
             self.calls = []
 
         def geometry_matrix(self, external_ref, ordered_user_keys):
             self.calls.append((external_ref, ordered_user_keys))
-            return np.array([[10.0], [20.0], [30.0]], dtype=float)
+            lookup = {9: [10.0], 2: [20.0], 7: [30.0]}
+            return np.array([lookup[key["id"]] for key in ordered_user_keys], dtype=float)
 
         def view_coordinates(self, external_ref, ordered_user_keys):
             raise AssertionError("No view should be requested")
@@ -88,11 +89,12 @@ def test_external_provider_still_receives_complete_ordered_universe(tmp_path):
     geometry_id = project.register_external_geometry(
         name="external_dense", external_ref={"artifact": "external"},
     )
-    # Registration validates the provider once. Count only the subsequent
-    # page-read operation; it must make exactly one full-universe request.
+    # Registration uses full-key validation; a page read must not.
     provider.calls.clear()
     rows = project.geometry_page_rows(geometry_id, [2, 0])
     assert rows.tolist() == [[30.0], [10.0]]
     assert len(provider.calls) == 1
     assert provider.calls[0][0] == {"artifact": "external"}
-    assert provider.calls[0][1] == [{"id": 9}, {"id": 2}, {"id": 7}]
+    assert provider.calls[0][1] == [{"id": 7}, {"id": 9}]
+    assert project.geometry_page_rows(geometry_id, []).shape == (0, 1)
+    assert len(provider.calls) == 1
