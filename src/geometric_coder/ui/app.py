@@ -30,6 +30,7 @@ from geometric_coder.explore import (
     combine_filters,
     deterministic_page,
     deterministic_page_count,
+    deterministic_page_rank,
     deterministic_page_with_inclusions,
     recommend_page_unit,
 )
@@ -11447,11 +11448,10 @@ def _deterministic_page_number_for_position(
     local = np.flatnonzero(eligible_positions == int(corpus_position))
     if local.size != 1:
         return None
-    permutation = np.random.default_rng(seed).permutation(len(eligible_positions))
-    rank = np.flatnonzero(permutation == int(local[0]))
-    if rank.size != 1:
-        return None
-    return int(rank[0]) // max(1, int(page_size)) + 1
+    rank = deterministic_page_rank(
+        len(eligible_positions), int(local[0]), seed=seed,
+    )
+    return rank // max(1, int(page_size)) + 1
 
 
 def _render_memo_preview(
