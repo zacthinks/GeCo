@@ -98,7 +98,10 @@ def compile_filter_sql(
                 raise ValueError(f"unsupported condition {condition!r}")
             target = str(value or "")
             if condition == "regex":
-                re.compile(target, flags=re.IGNORECASE)
+                try:
+                    re.compile(target, flags=re.IGNORECASE)
+                except re.error as error:
+                    raise ValueError(f"invalid regular expression: {error}") from error
                 comparison = f"GECO_REGEX(?, CAST({expr} AS TEXT)) = 1"
                 field_params = [path, target, path]
             else:
