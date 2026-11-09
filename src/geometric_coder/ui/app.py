@@ -1726,9 +1726,10 @@ def create_app(
             # the registry; selecting one need not load its full matrix.
             dimensions = int(project.database.get_representation(-int(view_id))["dimensions"])
         else:
-            # Legacy view records do not store dimensionality. Preserve the
-            # existing read rather than guess from method or display name.
-            dimensions = int(project.view_coordinates(int(view_id)).shape[1])
+            # Inspect a bounded local row, not an entire 2D view on selection.
+            dimensions = int(project.view_coordinate_rows(
+                int(view_id), [0] if len(units) else [],
+            ).shape[1])
         return {"display": "block"} if dimensions == 1 else {"display": "none"}
 
     @app.callback(
