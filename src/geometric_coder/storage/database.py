@@ -264,6 +264,7 @@ CREATE TABLE navigation_events (
     UNIQUE(session_id, event_index)
 );
 CREATE INDEX navigation_session_unit_idx ON navigation_events(session_id, unit_id);
+CREATE INDEX navigation_random_cursor_idx ON navigation_events(session_id, active_code_id, event_index DESC) WHERE navigation_method = 'focus_random';
 
 CREATE TABLE annotation_events (
     annotation_event_id INTEGER PRIMARY KEY,
@@ -894,6 +895,11 @@ class ProjectDatabase:
         while SQLite builds each B-tree; repeated opens do not rebuild it.
         """
         with self.connect() as connection:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS navigation_random_cursor_idx "
+                "ON navigation_events(session_id, active_code_id, event_index DESC) "
+                "WHERE navigation_method = 'focus_random'"
+            )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS apply_proposals_active_probability_rank_idx
@@ -2728,63 +2734,113 @@ class ProjectDatabase:
     def random_available_unit(
         self, *, code_id: int, session_id: int, random_seed: int | None = None,
     ) -> int | None:
-        """Select one unseen and unannotated atomic unit without loading the corpus.
+        """Advance a stable pseudorandom ordering using indexed row-position reads.
 
-        Random rejection probes are uniform over currently available units
-        when they succeed. An indexed pivot-and-wrap fallback guarantees a
-        result when eligible units are rare, using bounded Python memory.
-        A retracted judgment does not disqualify its unit.
-        """
-        import random
+        A session/code pair follows the same permutation across calls and process
+        restarts. No shuffle is materialized, and no random probes are repeated.
+        The latest *recorded* random visit is the persisted traversal cursor.
+        Eligibility still excludes every visit in this session and all effective
+        annotations under this code, regardless of how either was created.
 
-        rng = random.Random(random_seed)
-        eligible = """
-            NOT EXISTS (
-                SELECT 1 FROM navigation_events AS nv
-                WHERE nv.session_id = ? AND nv.unit_id = u.unit_id
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM annotation_events AS ae
-                WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
-                  AND NOT EXISTS (
-                      SELECT 1 FROM annotation_event_retractions AS aer
-                      WHERE aer.annotation_event_id = ae.annotation_event_id
-                  )
-            )
+        Corpus append changes the permutation modulus; visited/annotated rows
+        remain excluded, so existing projects require no migration or backfill.
         """
+        from geometric_coder.explore import (
+            deterministic_page_permutation_parameters,
+            deterministic_page_rank,
+        )
+
         with self.connect() as connection:
             total = int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
             if total == 0:
                 return None
-            # Primary random probes are indexed single-row queries. This avoids
-            # ORDER BY RANDOM(), full candidate lists, and N-element masks.
-            probe = (
-                "SELECT u.unit_id FROM units AS u "
-                f"WHERE u.row_position = ? AND {eligible} LIMIT 1"
+
+            # Stable once per session/code; explicit seeds are supported for
+            # programmatic reproducibility and small test projects.
+            seed = (
+                int(random_seed)
+                if random_seed is not None
+                else (
+                    (int(session_id) * 2654435761)
+                    ^ (int(code_id) * 2246822519)
+                ) & 0xFFFFFFFF
             )
-            checked: set[int] = set()
-            for _ in range(min(total, 24)):
-                position = rng.randrange(total)
-                if position in checked:
-                    continue
-                checked.add(position)
+            multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+
+            # Session navigation is already durable. Recover the current
+            # random-order cursor from its last recorded random visit rather
+            # than storing N random ranks or adding a new cursor table.
+            last = connection.execute(
+                """
+                SELECT u.row_position
+                FROM navigation_events AS nav
+                JOIN units AS u ON u.unit_id = nav.unit_id
+                WHERE nav.session_id = ? AND nav.active_code_id = ?
+                  AND nav.navigation_method = 'focus_random'
+                ORDER BY nav.event_index DESC
+                LIMIT 1
+                """,
+                (int(session_id), int(code_id)),
+            ).fetchone()
+            start_rank = (
+                (deterministic_page_rank(
+                    total, int(last["row_position"]), seed=seed,
+                ) + 1) % total
+                if last is not None else 0
+            )
+
+            eligibility = """
+                NOT EXISTS (
+                    SELECT 1 FROM navigation_events AS nv
+                    WHERE nv.session_id = ? AND nv.unit_id = u.unit_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM annotation_events AS ae
+                    WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM annotation_event_retractions AS aer
+                          WHERE aer.annotation_event_id = ae.annotation_event_id
+                      )
+                )
+            """
+            # Most clicks require one indexed read. Start with individual
+            # probes so a common sparse-history session is not forced to check
+            # a whole batch of 64 candidates.
+            one = (
+                "SELECT u.unit_id FROM units AS u "
+                f"WHERE u.row_position = ? AND {eligibility} LIMIT 1"
+            )
+            first = min(total, 8)
+            for offset in range(first):
+                rank = (start_rank + offset) % total
+                position = (multiplier * rank + shift) % total
                 row = connection.execute(
-                    probe, (position, int(session_id), int(code_id)),
+                    one, (position, int(session_id), int(code_id)),
                 ).fetchone()
                 if row is not None:
                     return int(row["unit_id"])
 
-            # When most units have been seen/coded, traverse the indexed
-            # row_position order from a random pivot and wrap once. Unlike
-            # repeated rejection sampling, this finishes even if just one
-            # eligible unit remains.
-            pivot = rng.randrange(total)
-            for comparison, boundary in ((">=", pivot), ("<", pivot)):
+            # When few candidates remain, amortize SQLite calls with a bounded
+            # VALUES probe. All lookups still hit the row_position unique index.
+            # Ordering by ordinal preserves the stable random traversal.
+            batch_size = 64
+            for begin in range(first, total, batch_size):
+                count = min(batch_size, total - begin)
+                pairs = [
+                    ((multiplier * ((start_rank + begin + j) % total) + shift) % total, j)
+                    for j in range(count)
+                ]
+                values = ", ".join("(?, ?)" for _ in pairs)
+                parameters = [
+                    part for pair in pairs for part in pair
+                ]
                 row = connection.execute(
-                    "SELECT u.unit_id FROM units AS u "
-                    f"WHERE u.row_position {comparison} ? AND {eligible} "
-                    "ORDER BY u.row_position LIMIT 1",
-                    (boundary, int(session_id), int(code_id)),
+                    f"WITH candidates(row_position, ordinal) AS (VALUES {values}) "
+                    "SELECT u.unit_id FROM candidates AS c "
+                    "JOIN units AS u ON u.row_position = c.row_position "
+                    f"WHERE {eligibility} "
+                    "ORDER BY c.ordinal LIMIT 1",
+                    (*parameters, int(session_id), int(code_id)),
                 ).fetchone()
                 if row is not None:
                     return int(row["unit_id"])
