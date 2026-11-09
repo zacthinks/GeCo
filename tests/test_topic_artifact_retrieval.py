@@ -136,3 +136,40 @@ def test_invalid_scores():
         ["max_feature", "max_value"], [0])
     with pytest.raises(ConfigurationError, match="Unassigned"):
         validate_topic_model_rows(model, membership, argmax, requested_count=1)
+
+
+def test_bounded_topic_page_never_reads_full_corpus(tmp_path, monkeypatch):
+    """Page and selector requests must query only their requested stable keys."""
+    provider = Provider()
+    project = make_project(tmp_path, provider)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Topic Model page attempted full-corpus unit loading")
+
+    monkeypatch.setattr(project, "_ordered_user_keys", forbidden)
+    monkeypatch.setattr(project.database, "list_units", forbidden)
+    expected = [{"interview": "A", "turn": 3}, {"interview": "A", "turn": 1}]
+    rows = project.topic_model_rows("T", positions=[3, 1])
+    assert rows.matched_positions == (0, 1)
+    assert provider.calls == [
+        ("membership", expected),
+        ("argmax", expected),
+    ]
+    provider.calls.clear()
+    options = project.topic_model_rows("T", positions=[0])
+    assert options.topic_ids == ("topic_0", "topic_1")
+    assert provider.calls == [
+        ("membership", [{"interview": "A", "turn": 0}]),
+        ("argmax", [{"interview": "A", "turn": 0}]),
+    ]
+
+
+def test_empty_topic_page_avoids_full_universe(tmp_path, monkeypatch):
+    project = make_project(tmp_path, Provider())
+    monkeypatch.setattr(
+        project, "_ordered_user_keys",
+        lambda: (_ for _ in ()).throw(AssertionError("eager corpus load")),
+    )
+    rows = project.topic_model_rows("T", positions=[])
+    assert rows.matched_positions == ()
+    assert rows.memberships.shape == (0, 2)
