@@ -31,6 +31,7 @@ from geometric_coder.explore import (
     deterministic_page,
     deterministic_page_count,
     deterministic_page_rank,
+    PageSlice,
     deterministic_page_with_inclusions,
     recommend_page_unit,
     recommend_unit,
@@ -2229,11 +2230,11 @@ def create_app(
         }
         candidate = [*(current_filters or []), clause]
         normalized = _normalize_metadata_filters(candidate, metadata_profiles)
-        _mask, errors = _evaluate_metadata_filters(
-            units, normalized, operator="and"
-        )
-        if errors:
-            return {"display": "flex"}, no_update, errors[0], no_update, no_update, no_update
+        try:
+            from geometric_coder.storage.metadata_queries import compile_filter_sql
+            compile_filter_sql(normalized, operator="and")
+        except (TypeError, ValueError, re.error) as error:
+            return {"display": "flex"}, no_update, str(error), no_update, no_update, no_update
         return {"display": "none"}, normalized, "", None, None, []
 
     @app.callback(
@@ -2297,7 +2298,14 @@ def create_app(
                 else "No active metadata filters."
             )
             return [html.Span("No active filters", className="filter-empty-state")], message
-        mask, errors = _evaluate_metadata_filters(units, clauses, operator=operator)
+        try:
+            match_count = project.database.filtered_unit_count(
+                clauses, operator=operator,
+            )
+            errors: list[str] = []
+        except (TypeError, ValueError, re.error) as error:
+            match_count = 0
+            errors = [str(error)]
         chips = []
         for clause in clauses:
             label = _filter_clause_label(clause)
@@ -2322,7 +2330,7 @@ def create_app(
         if errors:
             return chips, "; ".join(errors)
         mode = _normalize_boolean_operator(operator).upper()
-        return chips, f"{int(mask.sum()):,} of {len(units):,} units match · {mode}"
+        return chips, f"{match_count:,} of {len(units):,} units match · {mode}"
 
     @app.callback(
         Output("save-filter-set-modal", "style"),
@@ -2591,18 +2599,14 @@ def create_app(
 
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
-        uncoded_mask = _explore_uncoded_mask(
+        positions, page, filter_match_count = _sql_metadata_page(
             project,
-            units,
-            enabled="uncoded_only" in set(uncoded_only_values or []),
-        )
-        positions, page, combined_mask, _metadata_errors = _metadata_filtered_page(
-            units,
-            metadata_filters or [],
+            total_units=len(units),
+            filters=metadata_filters or [],
             operator=metadata_filter_operator,
+            uncoded_only="uncoded_only" in set(uncoded_only_values or []),
             page_size=size,
             page_number=number,
-            additional_mask=uncoded_mask,
         )
         # Validate the selected descendant view *before* asking a provider to
         # load its entire coordinate universe.
@@ -2662,7 +2666,6 @@ def create_app(
         if callback_context.triggered_id in {"view-dropdown", "geometry-dropdown"}:
             figure.update_xaxes(autorange=True)
             figure.update_yaxes(autorange=True)
-        filter_match_count = int(combined_mask.sum())
         page_status = (
             f"Page {page.page_index + 1} of {page.page_count} · "
             f"{len(positions):,} points shown · "
@@ -2741,16 +2744,12 @@ def create_app(
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks, map_filter_refresh
         size = _coerce_positive_int(page_size, default=5000)
-        metadata_mask, _errors = _evaluate_metadata_filters(
-            units, metadata_filters or [], operator=metadata_filter_operator
+        matching_count = project.database.filtered_unit_count(
+            metadata_filters or [],
+            operator=metadata_filter_operator,
+            uncoded_only="uncoded_only" in set(uncoded_only_values or []),
         )
-        uncoded_mask = _explore_uncoded_mask(
-            project,
-            units,
-            enabled="uncoded_only" in set(uncoded_only_values or []),
-        )
-        combined_mask = metadata_mask & uncoded_mask
-        page_count = deterministic_page_count(int(combined_mask.sum()), page_size=size)
+        page_count = deterministic_page_count(matching_count, page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {
@@ -2872,18 +2871,14 @@ def create_app(
                     f"Fix the regular expression before navigating: {error}",
                 )
 
-            uncoded_mask = _explore_uncoded_mask(
+            positions, _page, _match_count = _sql_metadata_page(
                 project,
-                units,
-                enabled="uncoded_only" in set(uncoded_only_values or []),
-            )
-            positions, _page, _combined_mask, _metadata_errors = _metadata_filtered_page(
-                units,
-                metadata_filters or [],
+                total_units=len(units),
+                filters=metadata_filters or [],
                 operator=metadata_filter_operator,
+                uncoded_only="uncoded_only" in set(uncoded_only_values or []),
                 page_size=_coerce_positive_int(page_size, default=5000),
                 page_number=_coerce_positive_int(page_number, default=1),
-                additional_mask=uncoded_mask,
             )
             page_ids = np.asarray([unit_ids[int(position)] for position in positions], dtype=int)
             avoid_seen = "new_only" in (new_only_values or [])
@@ -10844,6 +10839,36 @@ def _explore_uncoded_mask(
         ],
         dtype=bool,
     )
+
+def _sql_metadata_page(
+    project: GeometricCoder,
+    *,
+    total_units: int,
+    filters: list[dict[str, Any]],
+    operator: str | None,
+    uncoded_only: bool,
+    page_size: int,
+    page_number: int,
+) -> tuple[np.ndarray, PageSlice, int]:
+    """Page filtered units in SQLite; preserve bounded random unfiltered pages."""
+    if not filters and not uncoded_only:
+        page = deterministic_page(
+            total_units, page_size=page_size,
+            page_index=max(0, int(page_number) - 1), seed=0,
+        )
+        return page.positions, page, total_units
+    positions, count, selected = project.database.filtered_unit_page(
+        filters, operator=operator, uncoded_only=uncoded_only,
+        page_size=page_size, page_number=page_number,
+    )
+    result = np.asarray(positions, dtype=int)
+    page = PageSlice(
+        positions=result, page_index=selected - 1,
+        page_count=deterministic_page_count(count, page_size=page_size),
+        page_size=page_size,
+    )
+    return result, page, count
+
 
 def _metadata_filtered_page(
     units: list[dict[str, Any]],
