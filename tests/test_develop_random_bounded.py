@@ -99,3 +99,51 @@ def test_random_finds_last_eligible_unit_without_large_candidate_list(tmp_path):
     )
     assert result is not None
     assert result["unit_id"] == 100
+
+
+def test_random_has_stable_session_cursor_after_reopen(tmp_path):
+    from geometric_coder.explore import deterministic_page
+    project, code, session = _project(tmp_path, 73)
+    # The same session/code pair follows one permutation, with no replacement.
+    seed = ((session * 2654435761) ^ (code * 2246822519)) & 0xFFFFFFFF
+    expected = (deterministic_page(73, page_size=73, seed=seed).positions + 1).tolist()
+    selected = []
+    for index in range(15):
+        if index == 8:
+            project = GeometricCoder.open(project.project_dir)
+        result = project.focus_recommendation(
+            code_id=code, session_id=session, strategy="random",
+        )
+        assert result is not None
+        selected.append(result["unit_id"])
+        project.record_visit(
+            session, result["unit_id"], method="focus_random",
+            active_code_id=code,
+        )
+    assert selected == expected[:15]
+
+
+def test_random_skips_already_visited_and_annotated_in_permutation_order(tmp_path):
+    from geometric_coder.explore import deterministic_page
+    project, code, session = _project(tmp_path, 47)
+    seed = ((session * 2654435761) ^ (code * 2246822519)) & 0xFFFFFFFF
+    ordered = (deterministic_page(47, page_size=47, seed=seed).positions + 1).tolist()
+    project.record_visit(session, ordered[0], method="other")
+    project.annotate(project.observation_id_for_unit(ordered[1]), code, "unsure")
+    result = project.focus_recommendation(
+        code_id=code, session_id=session, strategy="random",
+    )
+    assert result["unit_id"] == ordered[2]
+
+
+def test_random_cursor_has_an_index_on_reopened_old_workspace(tmp_path):
+    project, _, _ = _project(tmp_path)
+    with project.database.connect() as connection:
+        connection.execute("DROP INDEX navigation_random_cursor_idx")
+    reopened = GeometricCoder.open(project.project_dir)
+    with reopened.database.connect() as connection:
+        indexes = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA index_list('navigation_events')")
+        }
+    assert "navigation_random_cursor_idx" in indexes
