@@ -1922,6 +1922,65 @@ class ProjectDatabase:
             for row in rows
         ]
 
+    def filtered_unit_count(
+        self,
+        filters: Sequence[dict[str, Any]],
+        *,
+        operator: str | None = "and",
+        uncoded_only: bool = False,
+    ) -> int:
+        """Count matches in SQLite without fetching or decoding document rows."""
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        predicate, params = compile_filter_sql(
+            filters, operator=operator, uncoded_only=uncoded_only,
+        )
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            return int(connection.execute(
+                f"SELECT COUNT(*) FROM units AS u WHERE {predicate}", params,
+            ).fetchone()[0])
+
+    def filtered_unit_page(
+        self,
+        filters: Sequence[dict[str, Any]],
+        *,
+        operator: str | None = "and",
+        uncoded_only: bool = False,
+        page_size: int = 5000,
+        page_number: int = 1,
+    ) -> tuple[list[int], int, int]:
+        """Return only the selected metadata-filtered page and match count.
+
+        Filtered pages use stable canonical row order. Unlike the old Python
+        filter, no all-corpus Python array or metadata JSON decoding is needed.
+        The page result returns (row_positions, total_matches, bounded_page).
+        """
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        predicate, params = compile_filter_sql(
+            filters, operator=operator, uncoded_only=uncoded_only,
+        )
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            count = int(connection.execute(
+                f"SELECT COUNT(*) FROM units AS u WHERE {predicate}", params,
+            ).fetchone()[0])
+            pages = max(1, (count + page_size - 1) // page_size)
+            selected = min(max(1, int(page_number)), pages)
+            rows = connection.execute(
+                f"SELECT u.row_position FROM units AS u WHERE {predicate} "
+                "ORDER BY u.row_position LIMIT ? OFFSET ?",
+                [*params, page_size, (selected - 1) * page_size],
+            ).fetchall()
+        return [int(row[0]) for row in rows], count, selected
+
     def unit_count(self) -> int:
         """Count atomic rows without decoding the corpus."""
         with self.connect() as connection:
