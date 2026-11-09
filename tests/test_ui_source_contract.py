@@ -566,7 +566,8 @@ def test_explorer_map_resolves_canonical_display_without_legacy_view_row():
     )[0]
     assert "_display_view_record(" in section
     assert "project.database.get_view(int(view_id))" not in section
-    assert "project.view_coordinates(int(view_id))" in section
+    assert "project.view_coordinate_rows(" in section
+    assert "project.view_coordinates(int(view_id))" not in section
 
 
 def test_one_dimensional_jitter_is_stable_and_scale_aware() -> None:
