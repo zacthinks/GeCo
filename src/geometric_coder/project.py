@@ -1182,22 +1182,29 @@ class GeometricCoder:
             raise ConfigurationError(
                 "This external provider does not support reading keyed Topic Model artifacts."
             )
-        all_keys = self._ordered_user_keys()
         if positions is None:
-            requested = all_keys
+            # Explicit whole-corpus inspection remains supported. Interactive
+            # Explore and Develop callers always request a bounded key subset.
+            requested = self._ordered_user_keys()
         else:
             indices = list(positions)
+            total = self.database.unit_count()
             if any(
                 isinstance(index, (bool, np.bool_))
                 or not isinstance(index, (int, np.integer))
                 or index < 0
-                or index >= len(all_keys)
+                or index >= total
                 for index in indices
             ) or len(set(indices)) != len(indices):
                 raise ConfigurationError(
                     "Topic Model requested positions must be unique valid indices."
                 )
-            requested = [all_keys[int(index)] for index in indices]
+            # Do not materialize every unit's text and metadata just to obtain
+            # page keys. This same API is used by selector option callbacks
+            # requesting only position [0] in a 300k+ unit TeAL project.
+            requested = self.database.unit_keys_at_positions(
+                [int(index) for index in indices]
+            )
 
         membership: ArtifactRows = reader(model["membership_artifact_id"], requested)
         dominant: ArtifactRows = reader(model["dominant_artifact_id"], requested)
