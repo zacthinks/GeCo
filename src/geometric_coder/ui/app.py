@@ -544,6 +544,17 @@ class _LazyUnits(Sequence[dict[str, Any]]):
             position += self._count
         return self.database.unit_rows_at_positions([position])[0]
 
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        """Stream in batches if a caller intentionally traverses all units.
+
+        Sequence's default __iter__ repeatedly calls __getitem__, which would
+        otherwise open a fresh SQLite connection for *every* corpus row.
+        """
+        for start in range(0, self._count, 900):
+            yield from self.database.unit_rows_at_positions(
+                range(start, min(self._count, start + 900))
+            )
+
     def at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
         return self.database.unit_rows_at_positions(positions)
 
