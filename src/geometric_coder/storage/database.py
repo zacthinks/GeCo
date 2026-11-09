@@ -2725,6 +2725,71 @@ class ProjectDatabase:
                 raise RuntimeError("SQLite did not return a navigation event ID.")
             return int(cursor.lastrowid)
 
+    def random_available_unit(
+        self, *, code_id: int, session_id: int, random_seed: int | None = None,
+    ) -> int | None:
+        """Select one unseen and unannotated atomic unit without loading the corpus.
+
+        Random rejection probes are uniform over currently available units
+        when they succeed. An indexed pivot-and-wrap fallback guarantees a
+        result when eligible units are rare, using bounded Python memory.
+        A retracted judgment does not disqualify its unit.
+        """
+        import random
+
+        rng = random.Random(random_seed)
+        eligible = """
+            NOT EXISTS (
+                SELECT 1 FROM navigation_events AS nv
+                WHERE nv.session_id = ? AND nv.unit_id = u.unit_id
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM annotation_events AS ae
+                WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM annotation_event_retractions AS aer
+                      WHERE aer.annotation_event_id = ae.annotation_event_id
+                  )
+            )
+        """
+        with self.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
+            if total == 0:
+                return None
+            # Primary random probes are indexed single-row queries. This avoids
+            # ORDER BY RANDOM(), full candidate lists, and N-element masks.
+            probe = (
+                "SELECT u.unit_id FROM units AS u "
+                f"WHERE u.row_position = ? AND {eligible} LIMIT 1"
+            )
+            checked: set[int] = set()
+            for _ in range(min(total, 24)):
+                position = rng.randrange(total)
+                if position in checked:
+                    continue
+                checked.add(position)
+                row = connection.execute(
+                    probe, (position, int(session_id), int(code_id)),
+                ).fetchone()
+                if row is not None:
+                    return int(row["unit_id"])
+
+            # When most units have been seen/coded, traverse the indexed
+            # row_position order from a random pivot and wrap once. Unlike
+            # repeated rejection sampling, this finishes even if just one
+            # eligible unit remains.
+            pivot = rng.randrange(total)
+            for comparison, boundary in ((">=", pivot), ("<", pivot)):
+                row = connection.execute(
+                    "SELECT u.unit_id FROM units AS u "
+                    f"WHERE u.row_position {comparison} ? AND {eligible} "
+                    "ORDER BY u.row_position LIMIT 1",
+                    (boundary, int(session_id), int(code_id)),
+                ).fetchone()
+                if row is not None:
+                    return int(row["unit_id"])
+        return None
+
     def seen_unit_ids(self, session_id: int) -> set[int]:
         """Return units focalized at least once in a session."""
         with self.connect() as connection:

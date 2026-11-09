@@ -4068,6 +4068,26 @@ class GeometricCoder:
     ) -> dict[str, Any] | None:
         """Generate one session-aware recommendation from explicit classifiers."""
         self.database.get_code(int(code_id))
+        # Random selection must not materialize TeAL-linked documents, all
+        # annotations, or any geometry. A single indexed SQL lookup supplies
+        # the next unseen/unreviewed atomic unit.
+        if strategy == "random":
+            unit_id = self.database.random_available_unit(
+                code_id=int(code_id),
+                session_id=int(session_id),
+                random_seed=random_seed,
+            )
+            if unit_id is None:
+                return None
+            return {
+                "unit_id": int(unit_id),
+                "strategy": "random",
+                "score": None,
+                "probabilities": {},
+                "committee_probability": None,
+                "classifier_fit_ids": {},
+                "fallback": False,
+            }
         # The common single-classifier path does not need any corpus-wide arrays.
         # It performs cheap fit/coverage checks and a single ordered SQLite lookup.
         direct_classifier = (
