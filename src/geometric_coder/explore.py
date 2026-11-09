@@ -6,7 +6,7 @@ import random
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, gcd
 from typing import Literal
 
 import numpy as np
@@ -116,6 +116,35 @@ def deterministic_page_count(total_units: int, *, page_size: int = 5_000) -> int
     return max(1, ceil(total_units / page_size))
 
 
+def deterministic_page_permutation_parameters(total_units: int, seed: int = 0) -> tuple[int, int]:
+    """Parameters of a stable, bijective, constant-space corpus permutation.
+
+    An affine permutation is deliberately used instead of materializing an
+    N-element NumPy shuffle.  Its inverse also supports direct page lookup.
+    This changes the previous seeded page assignments, but never unit identity.
+    """
+    if total_units <= 1:
+        return 1, 0
+    multiplier = (int(total_units * 0.6180339887498949) + 2 * abs(int(seed)) + 1) % total_units
+    multiplier = max(1, multiplier)
+    while gcd(multiplier, total_units) != 1:
+        multiplier = (multiplier + 1) % total_units or 1
+    shift = (int(seed) * 2654435761 + total_units // 3) % total_units
+    return multiplier, shift
+
+
+def deterministic_page_rank(
+    total_units: int, position: int, *, seed: int = 0,
+) -> int:
+    """Inverse permutation: locate one row without enumerating other pages."""
+    if not 0 <= int(position) < total_units:
+        raise IndexError("Corpus position out of range")
+    if total_units <= 1:
+        return 0
+    multiplier, shift = deterministic_page_permutation_parameters(total_units, seed)
+    return ((int(position) - shift) * pow(multiplier, -1, total_units)) % total_units
+
+
 def deterministic_page(
     total_units: int,
     *,
@@ -137,9 +166,11 @@ def deterministic_page(
     if total_units == 0:
         positions = np.asarray([], dtype=int)
     else:
-        permutation = np.random.default_rng(seed).permutation(total_units)
+        multiplier, shift = deterministic_page_permutation_parameters(total_units, seed)
         start = bounded_index * page_size
-        positions = np.asarray(permutation[start : start + page_size], dtype=int)
+        stop = min(start + page_size, total_units)
+        ranks = np.arange(start, stop, dtype=np.int64)
+        positions = (multiplier * ranks + shift) % total_units
     return PageSlice(
         positions=positions,
         page_index=bounded_index,
