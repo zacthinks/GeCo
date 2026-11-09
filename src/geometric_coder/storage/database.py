@@ -1955,6 +1955,34 @@ class ProjectDatabase:
             raise IndexError("Corpus position is out of range")
         return [found[position] for position in requested]
 
+    def unit_keys_at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
+        """Fetch only stable keys for requested positions, retaining order and duplicates.
+
+        External TeAL providers can resolve these keys to artifact-local matrix
+        positions. This avoids loading document text and metadata (or a complete
+        key universe) just to render one page.
+        """
+        requested = [int(position) for position in positions]
+        if not requested:
+            return []
+        if min(requested) < 0:
+            raise IndexError("Corpus position must be nonnegative")
+        unique = list(dict.fromkeys(requested))
+        found: dict[int, dict[str, Any]] = {}
+        with self.connect() as connection:
+            for start in range(0, len(unique), 900):
+                batch = unique[start:start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                for row in connection.execute(
+                    f"SELECT row_position, user_key_json FROM units "
+                    f"WHERE row_position IN ({placeholders})",
+                    batch,
+                ):
+                    found[int(row["row_position"])] = json.loads(row["user_key_json"])
+        if len(found) != len(unique):
+            raise IndexError("Corpus position is out of range")
+        return [dict(found[position]) for position in requested]
+
     def unit_metadata_at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
         """Sample metadata without reading source texts or user keys."""
         requested = list(dict.fromkeys(int(position) for position in positions))
