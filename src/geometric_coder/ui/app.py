@@ -10,6 +10,7 @@ import json
 import re
 import uuid
 from collections import deque
+from collections.abc import Iterator, Sequence
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, unquote
@@ -29,8 +30,10 @@ from geometric_coder.explore import (
     combine_filters,
     deterministic_page,
     deterministic_page_count,
+    deterministic_page_rank,
     deterministic_page_with_inclusions,
     recommend_page_unit,
+    recommend_unit,
 )
 from geometric_coder.ui.figures import (
     EXPLORE_ELIGIBLE_TRACE_INDEX,
@@ -522,6 +525,50 @@ class _ScopedTrainingInbox:
         return results
 
 
+class _LazyUnits(Sequence[dict[str, Any]]):
+    """Bounded document access for UI callbacks; no eager corpus fetch."""
+
+    def __init__(self, database: Any) -> None:
+        self.database = database
+        self._count = database.unit_count()
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            positions = range(*index.indices(self._count))
+            return self.database.unit_rows_at_positions(positions)
+        position = int(index)
+        if position < 0:
+            position += self._count
+        return self.database.unit_rows_at_positions([position])[0]
+
+    def at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
+        return self.database.unit_rows_at_positions(positions)
+
+    def metadata_rows(self) -> Iterator[dict[str, Any]]:
+        return self.database.iter_unit_metadata()
+
+
+class _LazyTexts(Sequence[str]):
+    """Only stream source text for an actual literal-search query."""
+
+    def __init__(self, units: _LazyUnits) -> None:
+        self.units = units
+
+    def __len__(self) -> int:
+        return len(self.units)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [unit["text"] for unit in self.units[index]]
+        return self.units[index]["text"]
+
+    def __iter__(self) -> Iterator[str]:
+        return self.units.database.iter_unit_texts()
+
+
 def create_app(
     project: GeometricCoder,
     *,
@@ -557,15 +604,21 @@ def create_app(
     from geometric_coder.ui.topic_creation import create_topic_model, topic_geometry_options, recipe_options, split_parameter_specs, standalone_primary_specs, teal_linked_project
 
     metadata = project.metadata
-    units = project.units()
-    unit_ids = [int(unit["unit_id"]) for unit in units]
-    unit_position_by_id = {unit_id: position for position, unit_id in enumerate(unit_ids)}
-    observation_id_by_unit_id = {
-        int(unit["unit_id"]): int(unit["observation_id"]) for unit in units
-    }
-    texts = [str(unit["text"]) for unit in units]
+    units = _LazyUnits(project.database)
+    # Atomic IDs are allocated sequentially from 1 and never deleted.
+    unit_ids = range(1, len(units) + 1)
+    texts = _LazyTexts(units)
     metadata_columns = [str(value) for value in metadata.get("metadata_columns", [])]
-    metadata_profiles = _build_metadata_profiles(units, metadata_columns)
+    # Representative bounded sample: exact corpus profiling can be added
+    # separately without blocking a large project's startup.
+    sample_positions = np.linspace(
+        0, max(0, len(units) - 1),
+        num=min(len(units), 2048), dtype=int,
+    ).tolist()
+    metadata_profiles = _build_metadata_profiles(
+        project.database.unit_metadata_at_positions(sample_positions),
+        metadata_columns,
+    )
     saved_filter_sets_path = project.project_dir / "saved_filter_sets.json"
     geometries = project.geometries(public_only=True)
     geometry_by_id = {int(record["geometry_id"]): record for record in geometries}
@@ -1673,9 +1726,10 @@ def create_app(
             # the registry; selecting one need not load its full matrix.
             dimensions = int(project.database.get_representation(-int(view_id))["dimensions"])
         else:
-            # Legacy view records do not store dimensionality. Preserve the
-            # existing read rather than guess from method or display name.
-            dimensions = int(project.view_coordinates(int(view_id)).shape[1])
+            # Inspect a bounded local row, not an entire 2D view on selection.
+            dimensions = int(project.view_coordinate_rows(
+                int(view_id), [0] if len(units) else [],
+            ).shape[1])
         return {"display": "block"} if dimensions == 1 else {"display": "none"}
 
     @app.callback(
@@ -2549,9 +2603,8 @@ def create_app(
                 _empty_figure("The selected view is unavailable for this geometry."),
                 literal_status, "", "", next_revision,
             )
-        all_view_coordinates = project.view_coordinates(int(view_id))
-        coordinates = all_view_coordinates[positions]
-        page_units = [units[int(position)] for position in positions]
+        coordinates = project.view_coordinate_rows(int(view_id), positions.tolist())
+        page_units = units.at_positions(positions.tolist())
         page_eligible = filters.eligible[positions]
         page_semantic = (
             np.asarray(semantic_scores, dtype=float)[positions]
@@ -2581,8 +2634,15 @@ def create_app(
             uirevision=f"view:{int(view_id)}:page:{page.page_index}",
             jitter_strength=float(jitter_strength if jitter_strength is not None else 1.0),
             jitter_spread=(
-                one_dimensional_jitter_spread(all_view_coordinates[:, 0])
-                if all_view_coordinates.shape[1] == 1 else None
+                one_dimensional_jitter_spread(
+                    project.view_coordinate_rows(
+                        int(view_id),
+                        np.linspace(
+                            0, max(0, len(units) - 1),
+                            num=min(len(units), 2048), dtype=int,
+                        ).tolist(),
+                    )[:, 0]
+                ) if coordinates.shape[1] == 1 else None
             ),
         )
         # Plotly's view-scoped uirevision preserves deliberate same-view zooms.
@@ -2858,13 +2918,12 @@ def create_app(
                     matrix = project.geometry_page_rows(int(geometry_id), positions)
 
                 try:
-                    unit_id = recommend_page_unit(
+                    unit_id = recommend_unit(
                         strategy=strategy,  # type: ignore[arg-type]
-                        unit_ids=unit_ids,
-                        page_positions=positions,
+                        unit_ids=page_ids,
                         seen_unit_ids=seen,
-                        eligible=filters.eligible,
-                        page_matrix=matrix,
+                        eligible=np.asarray(filters.eligible, dtype=bool)[positions],
+                        matrix=matrix,
                         focal_unit_id=(
                             int(focal_unit_id)
                             if focal_unit_id is not None
@@ -3497,10 +3556,14 @@ def create_app(
             current = min(page_count, current + 1)
         elif triggered == "memo-presentation-location":
             focal_unit_id = _presentation_unit_id(location_hash)
-            if focal_unit_id is not None and focal_unit_id in unit_position_by_id:
+            focal_position = (
+                project.database.unit_position_for_id(focal_unit_id)
+                if focal_unit_id is not None else None
+            )
+            if focal_position is not None:
                 target = _deterministic_page_number_for_position(
                     mask,
-                    corpus_position=unit_position_by_id[focal_unit_id],
+                    corpus_position=focal_position,
                     page_size=size,
                 )
                 if target is not None:
@@ -3601,13 +3664,16 @@ def create_app(
         )
         focal_unit_id = _presentation_unit_id(location_hash)
         display_positions = positions.tolist()
-        if focal_unit_id is not None and focal_unit_id in unit_position_by_id:
-            focal_position = int(unit_position_by_id[focal_unit_id])
+        focal_position = (
+            project.database.unit_position_for_id(focal_unit_id)
+            if focal_unit_id is not None else None
+        )
+        if focal_position is not None:
             if focal_position not in display_positions:
                 display_positions.append(focal_position)
         display = np.asarray(display_positions, dtype=int)
         coordinates = project.view_coordinate_rows(int(view_id), display.tolist())
-        page_units = [units[int(position)] for position in display]
+        page_units = units.at_positions(display.tolist())
         eligible = mask[display] if display.size else np.asarray([], dtype=bool)
         figure = build_geometry_figure(
             coordinates=coordinates,
@@ -4297,11 +4363,7 @@ def create_app(
             for observation in positive_observations
             if observation["kind"] == "atomic" and observation["unit_id"] is not None
         }
-        positive_positions = {
-            unit_position_by_id[unit_id]
-            for unit_id in positive
-            if unit_id in unit_position_by_id
-        }
+        positive_positions = set(project.database.unit_positions_for_ids(positive).values())
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
         include_all_positives = "include" in set(include_positive_values or [])
@@ -4313,7 +4375,7 @@ def create_app(
             include_positions=(positive_positions if include_all_positives else ()),
         )
         positions = page.positions
-        page_units = [units[int(position)] for position in positions]
+        page_units = units.at_positions(positions.tolist())
         page_eligible = [int(unit["unit_id"]) in positive for unit in page_units]
         geometry_record = geometry_by_id[int(geometry_id)]
         view_record = _display_view_record(
@@ -4538,7 +4600,7 @@ def create_app(
             clicked = _clicked_unit_id(click_data)
             if clicked is None:
                 return no_update
-            return observation_id_by_unit_id.get(int(clicked), int(clicked))
+            return project.observation_id_for_unit(int(clicked))
         if active_cell and rows:
             row_index = int(active_cell.get("row", -1))
             if 0 <= row_index < len(rows):
@@ -10761,7 +10823,14 @@ def _explore_uncoded_mask(
         and str(annotation.get("value")) == "positive"
     }
     return np.asarray(
-        [int(unit["unit_id"]) not in coded_unit_ids for unit in units],
+        [
+            int(unit_id) not in coded_unit_ids
+            for unit_id in (
+                range(1, len(units) + 1)
+                if isinstance(units, _LazyUnits)
+                else (unit["unit_id"] for unit in units)
+            )
+        ],
         dtype=bool,
     )
 
@@ -10781,6 +10850,13 @@ def _metadata_filtered_page(
         if extra.shape != mask.shape:
             raise ValueError("additional_mask must align with units")
         mask = mask & extra
+    # Unfiltered browsing must not build a corpus-sized positions array.
+    if not filters and (additional_mask is None or bool(np.all(additional_mask))):
+        page = deterministic_page(
+            len(units), page_size=page_size,
+            page_index=max(0, int(page_number) - 1), seed=0,
+        )
+        return page.positions, page, mask, errors
     matching_positions = np.flatnonzero(mask)
     page = deterministic_page(
         len(matching_positions),
@@ -11087,7 +11163,13 @@ def _evaluate_metadata_filters(
                 kind=kind, condition=condition, value=value, value2=value2,
             )
             mask = np.asarray(
-                [matches(unit.get("metadata", {}).get(field)) for unit in units],
+                [
+                    matches(unit.get("metadata", {}).get(field))
+                    for unit in (
+                        units.metadata_rows()
+                        if isinstance(units, _LazyUnits) else units
+                    )
+                ],
                 dtype=bool,
             )
         except (TypeError, ValueError, re.error) as error:
@@ -11373,11 +11455,10 @@ def _deterministic_page_number_for_position(
     local = np.flatnonzero(eligible_positions == int(corpus_position))
     if local.size != 1:
         return None
-    permutation = np.random.default_rng(seed).permutation(len(eligible_positions))
-    rank = np.flatnonzero(permutation == int(local[0]))
-    if rank.size != 1:
-        return None
-    return int(rank[0]) // max(1, int(page_size)) + 1
+    rank = deterministic_page_rank(
+        len(eligible_positions), int(local[0]), seed=seed,
+    )
+    return rank // max(1, int(page_size)) + 1
 
 
 def _render_memo_preview(

@@ -1267,6 +1267,17 @@ class GeometricCoder:
         if requested.ndim != 1:
             raise ValueError("positions must be one-dimensional")
         record = self.database.get_geometry(int(geometry_id))
+        if str(record.get("storage_kind", "local")) == "external":
+            if requested.size == 0:
+                return np.empty((0, self.database.representation_for_legacy(
+                    "geometry", int(geometry_id)
+                )["dimensions"]), dtype=np.float32)
+            provider = self._require_external_provider()
+            keys = self.database.unit_keys_at_positions(requested.tolist())
+            values = provider.geometry_matrix(record["external_ref"], keys)
+            if len(values.shape) != 2 or values.shape[0] != len(requested):
+                raise ValueError("External geometry page returned misaligned rows")
+            return values
         if str(record.get("storage_kind", "local")) == "local" and not record["matrix_sparse"]:
             path = self.project_dir / record["matrix_path"]
             matrix = np.load(path, allow_pickle=False, mmap_mode="r")
@@ -1520,6 +1531,16 @@ class GeometricCoder:
                     if matrix.ndim != 2 or matrix.shape[1] != registered["dimensions"]:
                         raise ValueError("The selected representation is not 1D or 2D.")
                     return np.asarray(matrix[requested], dtype=np.float32)
+            if registered["legacy_kind"] == "geometry":
+                geometry = self.database.get_geometry(int(registered["legacy_id"]))
+                if str(geometry.get("storage_kind", "local")) == "external":
+                    values = self.geometry_page_rows(int(registered["legacy_id"]), requested)
+                    if sparse.issparse(values):
+                        values = values.toarray()
+                    coordinates = np.asarray(values, dtype=np.float32)
+                    if coordinates.shape != (requested.size, int(registered["dimensions"])):
+                        raise ValueError("External display geometry returned misaligned rows")
+                    return coordinates
             return self.view_coordinates(view_id)[requested]
         view = self.database.get_view(int(view_id))
         if str(view.get("storage_kind", "local")) != "external":
@@ -1532,7 +1553,19 @@ class GeometricCoder:
                     f"View artifact must have shape (n, 2), got {matrix.shape}."
                 )
             return np.asarray(matrix[requested], dtype=np.float32)
-        return self.view_coordinates(view_id)[requested]
+        if requested.size == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        provider = self._require_external_provider()
+        keys = self.database.unit_keys_at_positions(requested.tolist())
+        coordinates = np.asarray(
+            provider.view_coordinates(view["external_ref"], keys), dtype=np.float32,
+        )
+        if coordinates.shape != (requested.size, 2):
+            raise ValueError(
+                f"External view {view['name']!r} returned {coordinates.shape}, "
+                f"expected ({requested.size}, 2)."
+            )
+        return coordinates
 
     def create_view(
         self,

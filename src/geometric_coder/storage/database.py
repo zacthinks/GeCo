@@ -1922,6 +1922,139 @@ class ProjectDatabase:
             for row in rows
         ]
 
+    def unit_count(self) -> int:
+        """Count atomic rows without decoding the corpus."""
+        with self.connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
+
+    def unit_rows_at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
+        """Fetch only requested zero-based corpus rows, preserving input order.
+
+        row_position is immutable and contiguous from zero, including after
+        append-only ingestion. Batching keeps queries under SQLite's variable
+        limit and avoids fetching any other document text or metadata.
+        """
+        requested = [int(position) for position in positions]
+        if not requested:
+            return []
+        if min(requested) < 0:
+            raise IndexError("Corpus position must be nonnegative")
+        found: dict[int, dict[str, Any]] = {}
+        unique = list(dict.fromkeys(requested))
+        with self.connect() as connection:
+            for start in range(0, len(unique), 900):
+                batch = unique[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT * FROM units WHERE row_position IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[int(row["row_position"])] = _unit_row(row)
+        if len(found) != len(unique):
+            raise IndexError("Corpus position is out of range")
+        return [found[position] for position in requested]
+
+    def unit_keys_at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
+        """Fetch only stable keys for requested positions, retaining order and duplicates.
+
+        External TeAL providers can resolve these keys to artifact-local matrix
+        positions. This avoids loading document text and metadata (or a complete
+        key universe) just to render one page.
+        """
+        requested = [int(position) for position in positions]
+        if not requested:
+            return []
+        if min(requested) < 0:
+            raise IndexError("Corpus position must be nonnegative")
+        unique = list(dict.fromkeys(requested))
+        found: dict[int, dict[str, Any]] = {}
+        with self.connect() as connection:
+            for start in range(0, len(unique), 900):
+                batch = unique[start:start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                for row in connection.execute(
+                    f"SELECT row_position, user_key_json FROM units "
+                    f"WHERE row_position IN ({placeholders})",
+                    batch,
+                ):
+                    found[int(row["row_position"])] = json.loads(row["user_key_json"])
+        if len(found) != len(unique):
+            raise IndexError("Corpus position is out of range")
+        return [dict(found[position]) for position in requested]
+
+    def unit_metadata_at_positions(self, positions: Sequence[int]) -> list[dict[str, Any]]:
+        """Sample metadata without reading source texts or user keys."""
+        requested = list(dict.fromkeys(int(position) for position in positions))
+        if not requested:
+            return []
+        if min(requested) < 0:
+            raise IndexError("Corpus position must be nonnegative")
+        found: dict[int, dict[str, Any]] = {}
+        with self.connect() as connection:
+            for start in range(0, len(requested), 900):
+                batch = requested[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT row_position, metadata_json FROM units "
+                    f"WHERE row_position IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[int(row["row_position"])] = {
+                        "metadata": json.loads(row["metadata_json"])
+                    }
+        if len(found) != len(requested):
+            raise IndexError("Corpus position is out of range")
+        return [found[position] for position in requested]
+
+    def unit_positions_for_ids(self, unit_ids: Iterable[int]) -> dict[int, int]:
+        """Resolve IDs to zero-based stable corpus positions, in batches."""
+        unique = list(dict.fromkeys(int(unit_id) for unit_id in unit_ids))
+        result: dict[int, int] = {}
+        with self.connect() as connection:
+            for start in range(0, len(unique), 900):
+                batch = unique[start : start + 900]
+                if not batch:
+                    continue
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT unit_id, row_position FROM units "
+                    f"WHERE unit_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                result.update(
+                    (int(row["unit_id"]), int(row["row_position"])) for row in rows
+                )
+        return result
+
+    def unit_position_for_id(self, unit_id: int) -> int | None:
+        """Find one corpus position without constructing an ID-to-row map."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT row_position FROM units WHERE unit_id = ?", (int(unit_id),)
+            ).fetchone()
+        return None if row is None else int(row["row_position"])
+
+    def iter_unit_metadata(self) -> Iterator[dict[str, Any]]:
+        """Stream just the fields needed by metadata/coverage predicates."""
+        with self.connect() as connection:
+            for row in connection.execute(
+                "SELECT unit_id, metadata_json FROM units ORDER BY row_position"
+            ):
+                yield {
+                    "unit_id": int(row["unit_id"]),
+                    "metadata": json.loads(row["metadata_json"]),
+                }
+
+    def iter_unit_texts(self) -> Iterator[str]:
+        """Stream text only when a literal search actually needs it."""
+        with self.connect() as connection:
+            for row in connection.execute(
+                "SELECT text FROM units ORDER BY row_position"
+            ):
+                yield str(row["text"])
+
     def list_units(self) -> list[dict[str, Any]]:
         """Return all atomic units in canonical row order."""
         with self.connect() as connection:

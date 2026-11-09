@@ -83,14 +83,15 @@ def test_unified_local_views_and_analytic_rows_match_full_view(tmp_path):
     )
 
 
-def test_external_view_preserves_full_provider_key_order(tmp_path):
+def test_external_view_reads_only_page_keys_in_requested_order(tmp_path):
     class Provider:
         def __init__(self):
             self.view_calls = []
 
         def view_coordinates(self, external_ref, ordered_user_keys):
             self.view_calls.append((external_ref, ordered_user_keys))
-            return np.array([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])
+            lookup = {8: [0.0, 1.0], 2: [2.0, 3.0], 7: [4.0, 5.0]}
+            return np.array([lookup[key["key"]] for key in ordered_user_keys])
 
     provider = Provider()
     project = GeometricCoder.create_external(
@@ -113,5 +114,5 @@ def test_external_view_preserves_full_provider_key_order(tmp_path):
     result = project.view_coordinate_rows(view_id, [2, 0])
     assert result.tolist() == [[4.0, 5.0], [0.0, 1.0]]
     assert provider.view_calls == [
-        ({"view": 2}, [{"key": 8}, {"key": 2}, {"key": 7}])
+        ({"view": 2}, [{"key": 7}, {"key": 8}])
     ]
