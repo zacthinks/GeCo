@@ -27,6 +27,8 @@ from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.ui.topic_explore import (load_topic_page_colors, normalize_color_mode, topic_legend_content)
 from geometric_coder.explore import (
     InvalidRegexError,
+    FilterResult,
+    literal_match_mask,
     combine_filters,
     deterministic_page,
     deterministic_page_count,
@@ -716,6 +718,46 @@ def create_app(
             return {}
         name = str(geometry_by_id[int(geometry_id)]["name"])
         return {name: retained[3]}
+    # A query change invalidates its key; unrelated map redraws reuse the mask.
+    literal_mask_cache: dict[tuple[str, bool, bool], np.ndarray] = {}
+    literal_mask_lock = Lock()
+
+    def cached_explore_filters(
+        *,
+        literal_query: str = "",
+        case_sensitive: bool = False,
+        regex: bool = False,
+        semantic_scores: Sequence[float] | None = None,
+        semantic_range: tuple[float, float] | None = None,
+    ) -> FilterResult:
+        key = (str(literal_query), bool(case_sensitive), bool(regex))
+        with literal_mask_lock:
+            literal = literal_mask_cache.get(key)
+        if literal is None:
+            literal = literal_match_mask(
+                texts, literal_query, case_sensitive=case_sensitive, regex=regex,
+            )
+            with literal_mask_lock:
+                literal_mask_cache[key] = literal
+                while len(literal_mask_cache) > 4:
+                    literal_mask_cache.pop(next(iter(literal_mask_cache)))
+        semantic = np.ones(len(texts), dtype=bool)
+        if semantic_scores is not None:
+            scores = np.asarray(semantic_scores, dtype=float)
+            if scores.shape != (len(texts),):
+                raise ValueError("semantic_scores must contain one value per text")
+            if semantic_range is None:
+                lower, upper = float(np.nanmin(scores)), float(np.nanmax(scores))
+            else:
+                lower, upper = semantic_range
+            if lower > upper:
+                lower, upper = upper, lower
+            semantic = np.isfinite(scores) & (scores >= lower) & (scores <= upper)
+        return FilterResult(
+            eligible=literal & semantic, literal_matches=literal,
+            semantic_in_range=semantic,
+        )
+
     training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
@@ -2576,8 +2618,7 @@ def create_app(
         geometry_record = geometry_by_id[int(geometry_id)]
         semantic_scores = selected_semantic_scores(all_semantic_scores, active_query, geometry_id).get(str(geometry_record["name"]))
         try:
-            filters = combine_filters(
-                texts,
+            filters = cached_explore_filters(
                 literal_query=literal_query or "",
                 case_sensitive="case" in options,
                 regex="regex" in options,
@@ -2594,7 +2635,7 @@ def create_app(
                 else ""
             )
         except InvalidRegexError as error:
-            filters = combine_filters(texts)
+            filters = cached_explore_filters()
             literal_status = f"Invalid regular expression: {error}"
 
         size = _coerce_positive_int(page_size, default=5000)
@@ -2852,8 +2893,7 @@ def create_app(
                 else None
             )
             try:
-                filters = combine_filters(
-                    texts,
+                filters = cached_explore_filters(
                     literal_query=literal_query or "",
                     case_sensitive="case" in options,
                     regex="regex" in options,
