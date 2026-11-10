@@ -1796,9 +1796,15 @@ class GeometricCoder:
         """Return one atomic unit."""
         return self.database.get_unit(unit_id)
 
-    def context(self, unit_id: int, *, level: int, window: int = 1) -> list[dict[str, Any]]:
-        """Return generic hierarchy-aware context around a focal unit."""
-        return self.database.context_units(unit_id=unit_id, level_index=level, window=window)
+    def context(
+        self, unit_id: int, *, level: int, window: int = 1,
+        max_units: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return hierarchy-aware context, optionally bounded for UI rendering."""
+        return self.database.context_units(
+            unit_id=unit_id, level_index=level, window=window,
+            max_units=max_units,
+        )
 
     def observation(self, observation_id: int) -> dict[str, Any]:
         """Return one generalized codable observation."""
