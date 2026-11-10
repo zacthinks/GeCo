@@ -325,4 +325,48 @@ def test_distribution_of_turn_level_positive_counts(turn_project):
     assert histogram["values"] == pytest.approx([0, 0.69, 1.1], abs=0.01)
     assert histogram["counts"] == [1, 1, 1]
     fig = analysis_figure(result)
-    assert fig.layout.xaxis.title.text == "Aggregated code value"
+    assert fig.layout.xaxis.title.text == "log(1 + positive sentence observations per turn)"
+    assert fig.layout.yaxis.title.text == "Number of turn groups"
+    assert "Question" in fig.layout.title.text
+
+
+def test_histogram_positive_count_changes_with_grouping(turn_project):
+    workspace, code_id = turn_project
+    from geometric_coder.analyses import compute_analysis
+
+    atomic = compute_analysis(workspace, {
+        "kind": "distribution", "measure": "count",
+        "variables": [_code(code_id)],
+    })
+    assert atomic["histograms"][0] == {
+        "values": [0.0, 1.0], "counts": [2, 3],
+    }
+    assert atomic["aggregation"] is None
+    assert "atomic level" in analysis_figure(atomic).layout.xaxis.title.text
+
+    grouped = compute_analysis(workspace, {
+        "kind": "distribution", "measure": "count",
+        "variables": [_code(code_id)],
+        "aggregation": {"level": "turn", "method": "count"},
+    })
+    assert grouped["histograms"][0] == {
+        "values": [0.0, 1.0, 2.0], "counts": [1, 1, 1],
+    }
+    assert grouped["aggregation"]["method"] == "count"
+    figure = analysis_figure(grouped)
+    assert figure.layout.xaxis.title.text == "Number of positive sentence observations per turn"
+    assert figure.layout.yaxis.title.text == "Number of turn groups"
+
+
+def test_histogram_preview_is_explicit_and_uses_unsaved_editor_settings():
+    from pathlib import Path
+    from geometric_coder.ui import analyses as ui_analyses
+
+    source = Path(ui_analyses.__file__).read_text(encoding="utf-8")
+    assert 'id="analysis-preview"' in source
+    assert 'Output("analysis-figure", "figure", allow_duplicate=True)' in source
+    assert 'Input("analysis-preview", "n_clicks")' in source
+    assert "compute_analysis(project, spec)" in source
+    assert 'id="analysis-visualization-help"' in source
+    assert '{"label": "Histogram", "value": "distribution"}' in source
+    assert '{"label": "Number of positive units per group", "value": "count"}' in source
