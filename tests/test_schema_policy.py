@@ -164,6 +164,7 @@ def test_14_to_15_preserves_legacy_ids_and_view_parent(tmp_path: Path) -> None:
     )
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE saved_analyses")
         con.execute("DROP TABLE semantic_search_results")
         con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
@@ -199,6 +200,7 @@ def test_14_to_15_migration_rolls_back_on_failure(
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE saved_analyses")
         con.execute("DROP TABLE semantic_search_results")
         con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
@@ -324,6 +326,7 @@ def test_unified_registry_deduplicates_same_provider_artifact(tmp_path: Path) ->
 
     # Recreate a genuine schema-14 database to test the migration separately.
     with sqlite3.connect(project.project_dir / project.DATABASE_FILENAME) as con:
+        con.execute("DROP TABLE saved_analyses")
         con.execute("DROP TABLE semantic_search_results")
         con.execute("DROP TABLE semantic_queries")
         con.execute("DROP TABLE representation_legacy_refs")
