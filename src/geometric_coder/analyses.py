@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import plotly.graph_objects as go
 
-_ALLOWED_KINDS = {"bar", "heatmap"}
+_ALLOWED_KINDS = {"bar", "heatmap", "distribution"}
 _ALLOWED_SOURCES = {"labels", "predictions", "hybrid"}
 _ALLOWED_MEASURES = {"count", "jaccard", "correlation"}
 _AGGREGATE_METHODS = {"any", "minimum", "mean", "log_count"}
@@ -27,8 +27,8 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     measure = str(spec.get("measure", "count"))
     if measure not in _ALLOWED_MEASURES:
         raise ValueError("Unsupported analysis measure.")
-    if kind == "bar" and measure != "count":
-        raise ValueError("Bar plots currently support positive counts only.")
+    if kind in {"bar", "distribution"} and measure != "count":
+        raise ValueError("Bar and distribution plots currently support counts only.")
     aggregate = spec.get("aggregation")
     if aggregate is not None:
         if not isinstance(aggregate, Mapping):
@@ -46,7 +46,7 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("Aggregation threshold must be nonnegative.")
         else:
             threshold = 1
-        if (kind != "heatmap" or measure != "correlation") and method in {"mean", "log_count"}:
+        if (kind not in {"distribution"} and not (kind == "heatmap" and measure == "correlation")) and method in {"mean", "log_count"}:
             raise ValueError("Continuous aggregation currently requires a correlation heatmap.")
         aggregate = {"level": level, "method": method, "threshold": threshold}
 
@@ -99,9 +99,11 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         if kind == "heatmap" and value != "binary":
             raise ValueError("Initial heatmaps use binary code values.")
         variables.append(result)
-    if kind == "bar":
+    if kind in {"bar", "distribution"}:
         if not any(v["type"] == "code" for v in variables):
-            raise ValueError("Bar analyses require at least one code.")
+            raise ValueError("Bar and distribution analyses require at least one code.")
+        if kind == "distribution" and any(v["type"] == "metadata" for v in variables):
+            raise ValueError("Distribution plots currently use code variables only.")
         if sum(v["type"] == "metadata" for v in variables) > 1:
             raise ValueError("Bar analyses support at most one metadata grouping.")
     if kind == "heatmap" and len(variables) < 2:
@@ -229,7 +231,7 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
     variables, warnings = _resolve_variables(project, normalized)
-    if normalized.get("aggregation") is not None or normalized["measure"] == "correlation" or (normalized["kind"] == "heatmap" and any(v["type"] == "metadata" for v in variables)):
+    if normalized.get("aggregation") is not None or normalized["kind"] == "distribution" or normalized["measure"] == "correlation" or (normalized["kind"] == "heatmap" and any(v["type"] == "metadata" for v in variables)):
         from geometric_coder.analysis_matrix import compute_expanded_analysis
         return compute_expanded_analysis(project, normalized, variables, warnings)
     codes = [v for v in variables if v["type"] == "code"]
@@ -298,7 +300,15 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
 def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
     """Convert the compact aggregate into an interactive Plotly figure."""
     fig = go.Figure()
-    if result["kind"] == "heatmap":
+    if result["kind"] == "distribution":
+        for name, hist in zip(result["names"], result["histograms"]):
+            fig.add_trace(go.Bar(
+                name=name, x=hist["values"], y=hist["counts"],
+                hovertemplate="Value %{x}: %{y} groups<extra>%{fullData.name}</extra>",
+            ))
+        fig.update_layout(barmode="group", xaxis_title="Aggregated code value",
+                          yaxis_title="Number of groups")
+    elif result["kind"] == "heatmap":
         correlation = result.get("measure") == "correlation"
         samples = result.get("samples")
         fig.add_trace(go.Heatmap(
