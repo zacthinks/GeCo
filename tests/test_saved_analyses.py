@@ -193,7 +193,7 @@ def test_analyses_is_top_level_and_code_center_has_no_analysis_tab():
     assert 'label="Analyses"' in source
     assert 'value="analyses"' in source
     assert 'label="Analysis", value="analysis"' not in code_center
-    assert 'children=analysis_tab(dcc=dcc, html=html)' in source
+    assert 'children=analysis_tab(dcc=dcc, html=html, project=project)' in source
     callback_source = Path(analyses_module.__file__).read_text(encoding="utf-8")
     assert 'Output("analysis-vars", "options")' in callback_source
     assert 'Input("explore-code-refresh-store", "data")' in callback_source
