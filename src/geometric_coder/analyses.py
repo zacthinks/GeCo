@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 _ALLOWED_KINDS = {"bar", "heatmap", "distribution"}
 _ALLOWED_SOURCES = {"labels", "predictions", "hybrid"}
 _ALLOWED_MEASURES = {"count", "jaccard", "correlation"}
-_AGGREGATE_METHODS = {"any", "minimum", "mean", "log_count"}
+_AGGREGATE_METHODS = {"any", "minimum", "count", "mean", "log_count"}
 _ALLOWED_VALUES = {"binary", "probability"}
 
 
@@ -46,7 +46,7 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("Aggregation threshold must be nonnegative.")
         else:
             threshold = 1
-        if (kind not in {"distribution"} and not (kind == "heatmap" and measure == "correlation")) and method in {"mean", "log_count"}:
+        if (kind not in {"distribution"} and not (kind == "heatmap" and measure == "correlation")) and method in {"count", "mean", "log_count"}:
             raise ValueError("Continuous aggregation currently requires a correlation heatmap.")
         aggregate = {"level": level, "method": method, "threshold": threshold}
 
@@ -301,13 +301,47 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
     """Convert the compact aggregate into an interactive Plotly figure."""
     fig = go.Figure()
     if result["kind"] == "distribution":
+        # Explain both the observational grain and the reduction. Without a
+        # parent aggregation this is a binary frequency plot, not a histogram
+        # of an unnamed 'aggregated code value'.
+        aggregation = result.get("aggregation")
+        if aggregation:
+            parent = str(aggregation["level"])
+            child = str(result.get("atomic_level", "atomic"))
+            method = aggregation["method"]
+            y_label = f"Number of {parent} groups"
+            if method == "count":
+                x_label = f"Number of positive {child} observations per {parent}"
+            elif method == "mean":
+                x_label = f"Proportion of observed {child} units positive per {parent}"
+            elif method == "log_count":
+                x_label = f"log(1 + positive {child} observations per {parent})"
+            elif method == "minimum":
+                threshold = aggregation.get("threshold", 1)
+                x_label = f"At least {threshold:g} positive {child} units per {parent} (0=no, 1=yes)"
+            else:
+                x_label = f"Any positive {child} unit per {parent} (0=no, 1=yes)"
+            title = f"Histogram of code values across {parent} groups"
+        else:
+            x_label = "Code judgment at atomic level (0=absent, 1=present)"
+            y_label = "Number of atomic observations"
+            title = "Code judgments across atomic observations"
         for name, hist in zip(result["names"], result["histograms"]):
+            observed = sum(hist["counts"])
             fig.add_trace(go.Bar(
                 name=name, x=hist["values"], y=hist["counts"],
-                hovertemplate="Value %{x}: %{y} groups<extra>%{fullData.name}</extra>",
+                hovertemplate=(
+                    "%{x}: %{y} observations<extra>%{fullData.name}</extra>"
+                    if not aggregation
+                    else "%{x}: %{y} groups<extra>%{fullData.name}</extra>"
+                ),
             ))
-        fig.update_layout(barmode="group", xaxis_title="Aggregated code value",
-                          yaxis_title="Number of groups")
+            if len(result["names"]) == 1:
+                title += f" — {name} ({observed:,} with observed values)"
+        fig.update_layout(
+            barmode="group", title=title,
+            xaxis_title=x_label, yaxis_title=y_label,
+        )
     elif result["kind"] == "heatmap":
         correlation = result.get("measure") == "correlation"
         samples = result.get("samples")
