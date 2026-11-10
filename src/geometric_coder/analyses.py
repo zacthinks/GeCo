@@ -299,10 +299,20 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
     """Convert the compact aggregate into an interactive Plotly figure."""
     fig = go.Figure()
     if result["kind"] == "heatmap":
+        correlation = result.get("measure") == "correlation"
+        samples = result.get("samples")
         fig.add_trace(go.Heatmap(
             x=result["names"], y=result["names"], z=result["values"],
-            colorscale="Greens",
-            hovertemplate="%{y} × %{x}: %{z:.3g}<extra></extra>",
+            customdata=samples if samples is not None else None,
+            colorscale="RdBu" if correlation else "Greens",
+            reversescale=correlation,
+            zmin=-1 if correlation else None,
+            zmax=1 if correlation else None,
+            hovertemplate=(
+                "%{y} × %{x}: %{z:.3f} (n=%{customdata})<extra></extra>"
+                if samples is not None
+                else "%{y} × %{x}: %{z:.3g}<extra></extra>"
+            ),
         ))
     else:
         for name, counts, denominators in zip(
