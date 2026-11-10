@@ -1429,3 +1429,18 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .semantic-search-control-block #semantic-search-loading:has(.control-status:empty) {
   min-height: 0;
 }
+
+
+/* Code Center: saved analyses */
+.analysis-manager { display: flex; flex-direction: column; gap: 0.9rem; padding: 0.85rem 0; }
+.analysis-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.6rem; }
+.analysis-actions button { white-space: nowrap; }
+.analysis-editor { border: 1px solid #d7e2da; border-radius: 9px; padding: 1rem; background: #fafcfb; }
+.analysis-editor > label { display: block; margin: 0.7rem 0 0.25rem; font-weight: 600; }
+.analysis-editor > .text-input { width: 100%; box-sizing: border-box; }
+.analysis-variable-settings { margin-top: 0.65rem; padding: 0.8rem; border: 1px solid #d7e2da; border-radius: 7px; background: white; }
+.analysis-variable-settings h4 { margin: 0 0 0.5rem; }
+.analysis-variable-settings label { display: block; margin: 0.65rem 0 0.25rem; }
+#analysis-delete-dialog { padding: 0.8rem; border: 1px solid #d7e2da; border-radius: 8px; }
+#analysis-delete-dialog button { margin-right: 0.6rem; }
+#analysis-figure { min-height: 360px; }
