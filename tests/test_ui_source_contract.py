@@ -289,7 +289,9 @@ def test_explore_ui_callbacks_are_partitioned_for_lightweight_interactions() -> 
 
     # Code Center can observe annotation refreshes, but must short-circuit while
     # hidden so Explore coding does not launch background map/table work.
-    assert app_source.count('if workspace != "codes":') >= 3
+    assert app_source.count('if workspace != "codes":') >= 1
+    assert 'if workspace != "codes" or content_tab != "list":' in app_source
+    assert 'if workspace != "codes" or content_tab != "geometry":' in app_source
 
     assert ".coding-panel-heading" in css_source
     assert "margin-bottom: 0.85rem" in css_source
