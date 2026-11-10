@@ -97,7 +97,7 @@ def test_latest_schema_skips_migration_function(
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, unexpected)
     reopened = GeometricCoder.open(project.project_dir)
     assert reopened.topic_models() == []
-    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (17, True)
+    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (18, True)
 
 
 def test_13_to_14_upgrade_is_transactional(
@@ -116,7 +116,7 @@ def test_13_to_14_upgrade_is_transactional(
     assert _version_and_topics(path) == (13, False)
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, original)
     assert GeometricCoder.open(project.project_dir).topic_models() == []
-    assert _version_and_topics(path) == (17, True)
+    assert _version_and_topics(path) == (18, True)
 
 
 def test_unsupported_older_and_newer_versions_fail_without_changes(
