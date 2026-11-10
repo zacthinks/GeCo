@@ -6,7 +6,6 @@ No models are trained and no result matrices are persisted by this module.
 from __future__ import annotations
 
 import json
-import math
 from typing import Any, Mapping
 
 import plotly.graph_objects as go
@@ -27,6 +26,8 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     measure = str(spec.get("measure", "count"))
     if measure not in _ALLOWED_MEASURES:
         raise ValueError("Unsupported analysis measure.")
+    if kind == "bar" and measure != "count":
+        raise ValueError("Bar plots currently support positive counts only.")
     raw = spec.get("variables")
     if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
         raise ValueError("Choose between 1 and 20 analysis variables.")
