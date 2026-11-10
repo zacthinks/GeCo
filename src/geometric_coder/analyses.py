@@ -321,7 +321,7 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                 x_label = f"At least {threshold:g} positive {child} units per {parent} (0=no, 1=yes)"
             else:
                 x_label = f"Any positive {child} unit per {parent} (0=no, 1=yes)"
-            title = f"Histogram of code values across {parent} groups"
+            title = f"Distribution across {parent} groups"
         else:
             x_label = "Code judgment at atomic level (0=absent, 1=present)"
             y_label = "Number of atomic observations"
