@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import inspect
 import statistics
 import tempfile
 import time
@@ -148,12 +149,22 @@ def exercise(project: GeometricCoder, *, page_size: int, repeats: int,
 
     hierarchy = project.database.hierarchy_levels()
     if hierarchy:
-        level = int(hierarchy[0]["level_index"])
-        result["context_200"] = timed(
-            "Context (max 200 units)",
-            lambda: project.context(focal_unit_id, level=level, window=1, max_units=200),
-            repeats=repeats,
-        )
+        if "max_units" in inspect.signature(project.context).parameters:
+            level = int(hierarchy[0]["level_index"])
+            result["context_200"] = timed(
+                "Context (max 200 units)",
+                lambda: project.context(
+                    focal_unit_id, level=level, window=1, max_units=200,
+                ),
+                repeats=repeats,
+            )
+        else:
+            # This feature lands in the separately reviewed context PR.
+            # Never substitute an unbounded context read on a 300k-unit corpus.
+            result["context_200"] = {
+                "status": "not_available",
+                "reason": "Requires GeCo bounded-context support (max_units)",
+            }
 
     codes = project.codes()
     sessions = project.sessions()
@@ -184,11 +195,18 @@ def exercise(project: GeometricCoder, *, page_size: int, repeats: int,
             ),
             repeats=repeats,
         )
-        result["filter_result_index"] = timed(
-            "Cached-position source query",
-            lambda: project.database.filtered_unit_positions(clauses),
-            repeats=repeats,
-        )
+        if callable(getattr(project.database, "filtered_unit_positions", None)):
+            result["filter_result_index"] = timed(
+                "Cached-position source query",
+                lambda: project.database.filtered_unit_positions(clauses),
+                repeats=repeats,
+            )
+        else:
+            # The compact result index arrives with its own GeCo PR.
+            result["filter_result_index"] = {
+                "status": "not_available",
+                "reason": "Requires GeCo filtered_unit_positions support",
+            }
 
     views = project.views()
     if views:
