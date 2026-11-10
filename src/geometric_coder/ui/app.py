@@ -1029,7 +1029,7 @@ def create_app(
                             dcc=dcc, html=html, dash_table=dash_table,
                             geometries=geometries, views=views_by_geometry.get(initial_geometry_id, []),
                             initial_geometry_id=initial_geometry_id, initial_view_id=initial_view_id,
-                            total_units=len(units),
+                            total_units=len(units), project=project,
                         ),
                     ),
                     dcc.Tab(
@@ -7507,6 +7507,8 @@ def create_app(
         )
         return "saved"
 
+    from geometric_coder.ui.analyses import register_analysis_callbacks
+    register_analysis_callbacks(app, project)
     return app
 
 
@@ -8411,9 +8413,10 @@ def _memo_presentation_layout(
 def _code_center_layout(
     *, dcc: Any, html: Any, dash_table: Any, geometries: list[dict[str, Any]],
     views: list[dict[str, Any]], initial_geometry_id: int | None, initial_view_id: int | None,
-    total_units: int,
+    total_units: int, project: GeometricCoder,
 ) -> Any:
     """Return the versioned Code Center with list and geometric views."""
+    from geometric_coder.ui.analyses import analysis_tab
     initial_page_count = deterministic_page_count(total_units, page_size=5000)
     return html.Div(
         [
@@ -8573,6 +8576,10 @@ def _code_center_layout(
                                         ),
                                     ], className="code-center-geometry-pane",
                                 ),
+                            ),
+                            dcc.Tab(
+                                label="Analysis", value="analysis",
+                                children=analysis_tab(dcc=dcc, html=html, project=project),
                             ),
                         ],
                     ),
