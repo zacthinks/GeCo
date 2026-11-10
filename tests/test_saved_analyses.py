@@ -161,4 +161,6 @@ def test_predictions_and_human_first_fallback_are_distinct(tmp_path):
     after = workspace.run_analysis(hybrid_id)
     expected -= int(predictions[observations[1]] == "positive")
     assert after["counts"] == [[expected]]
-    assert after["warnings"]
+    assert after["denominators"] == [[len(observations) - 1]]
+    # Unsure is not new binary training evidence, so a stale-model warning is not required.
+    assert after["warnings"] == []
