@@ -4276,6 +4276,7 @@ def create_app(
         Output("code-center-units-table", "data"),
         Input("code-center-selected-store", "data"),
         Input("workspace-tabs", "value"),
+        Input("code-center-view-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
@@ -4283,12 +4284,13 @@ def create_app(
     def load_code_center_units(
         code_id: int | None,
         workspace: str | None,
+        content_tab: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
     ) -> Any:
         del explore_refresh, focus_refresh, teaching_refresh
-        if workspace != "codes":
+        if workspace != "codes" or content_tab != "list":
             return no_update
         if code_id is None:
             return []
@@ -4335,6 +4337,7 @@ def create_app(
         Input("code-center-page-number", "value"),
         Input("code-center-include-positives", "value"),
         Input("workspace-tabs", "value"),
+        Input("code-center-view-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
@@ -4349,6 +4352,7 @@ def create_app(
         page_number: Any,
         include_positive_values: list[str] | None,
         workspace: str | None,
+        content_tab: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
@@ -4356,7 +4360,7 @@ def create_app(
         relayout_data: dict[str, Any] | None,
     ) -> tuple[Any, str]:
         del explore_refresh, focus_refresh, teaching_refresh
-        if workspace != "codes":
+        if workspace != "codes" or content_tab != "geometry":
             return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
