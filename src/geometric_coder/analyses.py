@@ -12,7 +12,8 @@ import plotly.graph_objects as go
 
 _ALLOWED_KINDS = {"bar", "heatmap"}
 _ALLOWED_SOURCES = {"labels", "predictions", "hybrid"}
-_ALLOWED_MEASURES = {"count", "jaccard"}
+_ALLOWED_MEASURES = {"count", "jaccard", "correlation"}
+_AGGREGATE_METHODS = {"any", "minimum", "mean", "log_count"}
 _ALLOWED_VALUES = {"binary", "probability"}
 
 
@@ -28,6 +29,27 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported analysis measure.")
     if kind == "bar" and measure != "count":
         raise ValueError("Bar plots currently support positive counts only.")
+    aggregate = spec.get("aggregation")
+    if aggregate is not None:
+        if not isinstance(aggregate, Mapping):
+            raise ValueError("Invalid aggregation settings.")
+        level = aggregate.get("level")
+        keys = list(project.metadata.get("key_columns", []))
+        if not isinstance(level, str) or level not in keys[:-1]:
+            raise ValueError("Select an existing parent key level for aggregation.")
+        method = str(aggregate.get("method", "any"))
+        if method not in _AGGREGATE_METHODS:
+            raise ValueError("Unsupported code aggregation method.")
+        threshold = aggregate.get("threshold", 1)
+        if method == "minimum":
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not (0 <= threshold < 1_000_000):
+                raise ValueError("Aggregation threshold must be nonnegative.")
+        else:
+            threshold = 1
+        if kind == "heatmap" and measure != "correlation" and method in {"mean", "log_count"}:
+            raise ValueError("Continuous aggregation requires a correlation heatmap.")
+        aggregate = {"level": level, "method": method, "threshold": threshold}
+
     raw = spec.get("variables")
     if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
         raise ValueError("Choose between 1 and 20 analysis variables.")
@@ -44,8 +66,6 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
             field = original.get("field")
             if not isinstance(field, str) or field not in metadata:
                 raise ValueError("Unknown metadata field.")
-            if kind == "heatmap":
-                raise ValueError("Initial heatmaps support codes only.")
             variables.append({"type": "metadata", "field": field})
             continue
         if vtype != "code":
@@ -84,10 +104,12 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Bar analyses require at least one code.")
         if sum(v["type"] == "metadata" for v in variables) > 1:
             raise ValueError("Bar analyses support at most one metadata grouping.")
+    if kind == "heatmap" and len(variables) < 2:
+        raise ValueError("Heatmaps require at least two variables.")
     if len({(v["type"], v.get("code_id", v.get("field"))) for v in variables}) != len(variables):
         raise ValueError("Each analysis variable may appear only once.")
     return {"schema_version": 1, "kind": kind, "measure": measure,
-            "variables": variables}
+            "variables": variables, **({"aggregation": aggregate} if aggregate is not None else {})}
 
 
 def list_analyses(project: Any) -> list[dict[str, Any]]:
@@ -207,6 +229,9 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
     variables, warnings = _resolve_variables(project, normalized)
+    if normalized.get("aggregation") is not None or normalized["measure"] == "correlation" or (normalized["kind"] == "heatmap" and any(v["type"] == "metadata" for v in variables)):
+        from geometric_coder.analysis_matrix import compute_expanded_analysis
+        return compute_expanded_analysis(project, normalized, variables, warnings)
     codes = [v for v in variables if v["type"] == "code"]
     grouping = next((v for v in variables if v["type"] == "metadata"), None)
     joins, expressions, params = [], [], []
