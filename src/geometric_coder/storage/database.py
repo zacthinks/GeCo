@@ -1928,6 +1928,30 @@ class ProjectDatabase:
             for row in rows
         ]
 
+    def filtered_unit_positions(
+        self,
+        filters: Sequence[dict[str, Any]],
+        *,
+        operator: str | None = "and",
+    ) -> list[int]:
+        """Materialize only matching row positions for a reusable UI filter index.
+
+        A filter-result cache can reuse this compact array for count, scrolling,
+        and page retrieval without repeatedly evaluating JSON SQL predicates.
+        No document text, keys or metadata are fetched from SQLite.
+        """
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+        predicate, params = compile_filter_sql(filters, operator=operator)
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            rows = connection.execute(
+                f"SELECT u.row_position FROM units AS u WHERE {predicate} "
+                "ORDER BY u.row_position", params,
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
     def filtered_unit_count(
         self,
         filters: Sequence[dict[str, Any]],
