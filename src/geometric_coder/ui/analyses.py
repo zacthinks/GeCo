@@ -46,8 +46,9 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             dcc.Dropdown(id="analysis-kind", options=[
                 {"label": "Bar plot", "value": "bar"},
                 {"label": "Heatmap", "value": "heatmap"},
-                {"label": "Code-value distribution", "value": "distribution"},
+                {"label": "Histogram", "value": "distribution"},
             ], value="bar", clearable=False),
+            html.Div(id="analysis-visualization-help"),
             html.Label("Measure"),
             dcc.Dropdown(id="analysis-measure", options=[
                 {"label": "Positive counts", "value": "count"},
@@ -68,9 +69,10 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("Aggregate code values"),
                 dcc.Dropdown(id="analysis-aggregate-method", clearable=False, value="any",
                              options=[
-                                 {"label": "Any observed positive", "value": "any"},
+                                 {"label": "Any observed positive (0 or 1)", "value": "any"},
+                                 {"label": "Number of positive units per group", "value": "count"},
                                  {"label": "Positive count at least threshold", "value": "minimum"},
-                                 {"label": "Mean of observed binary labels", "value": "mean"},
+                                 {"label": "Proportion positive among observed units", "value": "mean"},
                                  {"label": "Natural log(1 + positive count)", "value": "log_count"},
                              ]),
                 html.Label("Positive count threshold (threshold method only)"),
@@ -80,6 +82,8 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                        "within each group; otherwise the analysis reports an error."),
             ], id="analysis-aggregation-options", style={"display": "none"}),
             html.Div([
+                html.P("The displayed chart reflects the saved analysis. Preview changes before saving."),
+                html.Button("Preview Changes", id="analysis-preview", n_clicks=0),
                 html.Button("Create Analysis", id="analysis-save", n_clicks=0,
                             className="primary-action"),
                 html.Button("Cancel", id="analysis-cancel", n_clicks=0),
@@ -87,6 +91,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
         ], id="analysis-editor", style={"display": "none"},
             className="analysis-editor"),
         html.Div(id="analysis-status", className="control-status"),
+        html.Div(id="analysis-preview-status", className="control-status"),
         dcc.Graph(id="analysis-figure", figure=analysis_figure({
             "kind": "bar", "names": [], "counts": [],
             "denominators": [], "categories": [],
@@ -172,6 +177,34 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec.get("aggregation", {}).get("level", "none"),
             spec.get("aggregation", {}).get("method", "any"),
             spec.get("aggregation", {}).get("threshold", 1),
+        )
+
+    @app.callback(
+        Output("analysis-visualization-help", "children"),
+        Input("analysis-kind", "value"),
+        Input("analysis-aggregate-level", "value"),
+        Input("analysis-aggregate-method", "value"),
+    )
+    def explain_visualization(kind: str, level: str | None, method: str | None) -> str:
+        if kind != "distribution":
+            return ""
+        if not level or level == "none":
+            return (
+                "Without aggregation: this counts positive and negative "
+                "atomic observations (0=absent, 1=present). Choose a parent "
+                "level below to see values by turn or document."
+            )
+        descriptions = {
+            "any": "whether any observed unit is positive (0 or 1)",
+            "minimum": "whether positive count reaches the threshold (0 or 1)",
+            "count": "the number of positive units",
+            "mean": "the proportion of observed units positive",
+            "log_count": "log(1 + positive units)",
+        }
+        return (
+            f"Each {level} contributes one value: "
+            f"{descriptions.get(method, 'the selected reduction')}. "
+            f"The chart shows how many {level} groups have each value."
         )
 
     @app.callback(
@@ -263,6 +296,37 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 current["predictor_id"] = predictor
         return result if result != (existing or []) else no_update
 
+    def editor_spec(
+        kind: str, measure: str, values: list[str] | None,
+        aggregate_level: str | None, aggregate_method: str,
+        aggregate_threshold: int | float | None,
+        source_ids: list[dict[str, Any]], sources: list[str],
+        predictor_ids: list[dict[str, Any]], predictor_values: list[int | None],
+    ) -> dict[str, Any]:
+            by_source = {int(k["index"]): v for k, v in zip(source_ids, sources)}
+            by_predictor = {int(k["index"]): v for k, v in zip(predictor_ids, predictor_values)}
+            variables = []
+            for raw in values or []:
+                type_, value = raw.split(":", 1)
+                if type_ == "metadata":
+                    variables.append({"type": "metadata", "field": value})
+                    continue
+                cid = int(value)
+                source = by_source.get(cid, "labels")
+                variable = {"type": "code", "code_id": cid, "source": source,
+                            "value": "binary"}
+                if source != "labels":
+                    variable["predictor_id"] = by_predictor.get(cid)
+                variables.append(variable)
+            spec = {"kind": kind, "measure": measure, "variables": variables}
+        if aggregate_level and aggregate_level != "none":
+            spec["aggregation"] = {
+                "level": aggregate_level,
+                "method": aggregate_method,
+                "threshold": aggregate_threshold if aggregate_threshold is not None else 1,
+            }
+        return spec
+
     @app.callback(
         Output("analysis-refresh", "data"),
         Output("analysis-select", "value"),
@@ -295,29 +359,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 5
-        by_source = {int(k["index"]): v for k, v in zip(source_ids, sources)}
-        by_predictor = {int(k["index"]): v for k, v in zip(predictor_ids, predictor_values)}
-        variables = []
-        for raw in values or []:
-            type_, value = raw.split(":", 1)
-            if type_ == "metadata":
-                variables.append({"type": "metadata", "field": value})
-                continue
-            cid = int(value)
-            source = by_source.get(cid, "labels")
-            variable = {"type": "code", "code_id": cid, "source": source,
-                        "value": "binary"}
-            if source != "labels":
-                variable["predictor_id"] = by_predictor.get(cid)
-            variables.append(variable)
         try:
-            spec = {"kind": kind, "measure": measure, "variables": variables}
-            if aggregate_level and aggregate_level != "none":
-                spec["aggregation"] = {
-                    "level": aggregate_level,
-                    "method": aggregate_method,
-                    "threshold": aggregate_threshold if aggregate_threshold is not None else 1,
-                }
+            spec = editor_spec(
+                kind, measure, values, aggregate_level, aggregate_method,
+                aggregate_threshold, source_ids, sources,
+                predictor_ids, predictor_values,
+            )
             analysis_id = project.save_analysis(
                 name or "", spec, analysis_id=editing.get("id"),
             )
@@ -330,6 +377,51 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return (int(revision or 0) + 1, analysis_id, options,
                 "Analysis created." if editing.get("id") is None else "Changes saved.",
                 {"display": "none"})
+
+    @app.callback(
+        Output("analysis-figure", "figure", allow_duplicate=True),
+        Output("analysis-preview-status", "children"),
+        Input("analysis-preview", "n_clicks"),
+        State("analysis-editing", "data"),
+        State("analysis-kind", "value"),
+        State("analysis-measure", "value"),
+        State("analysis-vars", "value"),
+        State("analysis-aggregate-level", "value"),
+        State("analysis-aggregate-method", "value"),
+        State("analysis-aggregate-threshold", "value"),
+        State({"type": "analysis-source", "index": ALL}, "id"),
+        State({"type": "analysis-source", "index": ALL}, "value"),
+        State({"type": "analysis-predictor", "index": ALL}, "id"),
+        State({"type": "analysis-predictor", "index": ALL}, "value"),
+        prevent_initial_call=True,
+    )
+    def preview(
+        _clicks: int, editing: dict[str, Any] | None,
+        kind: str, measure: str, values: list[str] | None,
+        level: str | None, method: str, threshold: int | float | None,
+        source_ids: list[dict[str, Any]], sources: list[str],
+        predictor_ids: list[dict[str, Any]], predictor_values: list[int | None],
+    ) -> tuple[Any, str]:
+        if editing is None:
+            return no_update, ""
+        try:
+            from geometric_coder.analyses import compute_analysis
+            spec = editor_spec(
+                kind, measure, values, level, method, threshold,
+                source_ids, sources, predictor_ids, predictor_values,
+            )
+            result = compute_analysis(project, spec)
+            fig = analysis_figure(result)
+            if result.get("warnings"):
+                fig.add_annotation(
+                    text=" | ".join(result["warnings"]),
+                    xref="paper", yref="paper", x=0, y=1.14,
+                    xanchor="left", showarrow=False,
+                    font={"color": "#9a6510", "size": 11},
+                )
+            return fig, "Preview of unsaved analysis settings."
+        except (ValueError, KeyError) as exc:
+            return no_update, f"Preview unavailable: {exc}"
 
     @app.callback(
         Output("analysis-delete-dialog", "style"),
