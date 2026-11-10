@@ -112,6 +112,32 @@ def compute_expanded_analysis(
                     "Choose a finer parent key or remove the conflicting metadata."
                 )
 
+        if spec["kind"] == "distribution":
+            histograms = []
+            for column in code_columns:
+                # Bin continuous results to two decimals and aggregate on the
+                # database side, rather than sending individual group values.
+                bucket = f"ROUND({column}, 2)"
+                rows = conn.execute(
+                    cte + f" SELECT {bucket} AS value, COUNT(*) AS amount"
+                    f" FROM derived WHERE {column} IS NOT NULL"
+                    f" GROUP BY value ORDER BY value LIMIT 101", params
+                ).fetchall()
+                if len(rows) > 100:
+                    raise ValueError(
+                        "More than 100 distinct code-value bins; narrow the analysis."
+                    )
+                histograms.append({
+                    "values": [float(row["value"]) for row in rows],
+                    "counts": [int(row["amount"]) for row in rows],
+                })
+            return {
+                "kind": "distribution",
+                "names": [v["name"] for v in codes],
+                "histograms": histograms,
+                "warnings": warnings,
+            }
+
         if spec["kind"] == "bar":
             if not codes:
                 raise ValueError("Bar analyses require at least one code.")
