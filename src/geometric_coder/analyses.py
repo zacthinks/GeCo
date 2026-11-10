@@ -368,5 +368,12 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                 hovertemplate="%{x}: %{y} positive (of %{customdata} observed)<extra>%{fullData.name}</extra>",
             ))
         fig.update_layout(barmode="group", yaxis_title="Positive observations")
-    fig.update_layout(template="plotly_white", margin=dict(l=35, r=20, t=25, b=60))
+    fig.update_layout(
+        template="plotly_white",
+        margin=dict(l=50, r=20, t=70 if result["kind"] == "distribution" else 25,
+                    b=90 if result["kind"] == "distribution" else 60),
+    )
+    if result["kind"] == "distribution":
+        fig.update_xaxes(automargin=True)
+        fig.update_yaxes(automargin=True)
     return fig
