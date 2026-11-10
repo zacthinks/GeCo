@@ -164,3 +164,39 @@ def test_predictions_and_human_first_fallback_are_distinct(tmp_path):
     assert after["denominators"] == [[len(observations) - 1]]
     # Unsure is not new binary training evidence, so a stale-model warning is not required.
     assert after["warnings"] == []
+
+
+def test_analysis_variable_choices_refresh_after_new_and_renamed_codes(project):
+    from geometric_coder.ui.analyses import variable_options
+
+    workspace, equity, access, _ = project
+    initial = variable_options(workspace)
+    assert {"label": "Code: Equity", "value": f"code:{equity}"} in initial
+    assert {"label": "Metadata: group", "value": "metadata:group"} in initial
+    added = workspace.create_code("New theme")
+    updated = variable_options(workspace)
+    assert {"label": "Code: New theme", "value": f"code:{added}"} in updated
+    workspace.update_code(added, name="Renamed theme", description="")
+    refreshed = variable_options(workspace)
+    assert {"label": "Code: Renamed theme", "value": f"code:{added}"} in refreshed
+    assert {"label": "Code: New theme", "value": f"code:{added}"} not in refreshed
+
+
+def test_analyses_is_top_level_and_code_center_has_no_analysis_tab():
+    from pathlib import Path
+    from geometric_coder.ui import app as app_module
+    from geometric_coder.ui import analyses as analyses_module
+
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    start = source.index("def _code_center_layout(")
+    code_center = source[start:source.index("\\ndef ", start + 4)]
+    assert 'label="Analyses"' in source
+    assert 'value="analyses"' in source
+    assert 'label="Analysis", value="analysis"' not in code_center
+    assert 'children=analysis_tab(dcc=dcc, html=html)' in source
+    callback_source = Path(analyses_module.__file__).read_text(encoding="utf-8")
+    assert 'Output("analysis-vars", "options")' in callback_source
+    assert 'Input("explore-code-refresh-store", "data")' in callback_source
+    assert 'Input("focus-refresh-store", "data")' in callback_source
+    assert 'if workspace != "analyses":' in callback_source
+    assert 'Input("code-center-view-tabs", "value")' not in callback_source
