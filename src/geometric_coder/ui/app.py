@@ -6557,6 +6557,7 @@ def create_app(
                 project.classifier_prediction_geometry(
                     code_id=int(code_id), classifier_fit_ids=fit_ids,
                     score_type=str(score_type or "probability"),
+                    compact_for_ui=True,
                 )
             )
         except (KeyError, ValueError) as error:
