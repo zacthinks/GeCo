@@ -80,7 +80,7 @@ def test_invalid_analysis_never_mutates_registry(project):
         {"kind": "bar", "variables": [{"type": "metadata", "field": "group"}]},
         {"kind": "bar", "variables": [_code(99999)]},
         {"kind": "bar", "variables": [_code(equity, "predictions")]},
-        {"kind": "heatmap", "variables": [_code(equity), {"type": "metadata", "field": "group"}]},
+        {"kind": "heatmap", "variables": [_code(equity), {"type": "metadata", "field": "not_a_field"}]},
     ]
     for spec in bad:
         with pytest.raises(ValueError):
@@ -200,3 +200,114 @@ def test_analyses_is_top_level_and_code_center_has_no_analysis_tab():
     assert 'Input("focus-refresh-store", "data")' in callback_source
     assert 'if workspace != "analyses":' in callback_source
     assert 'Input("code-center-view-tabs", "value")' not in callback_source
+
+
+@pytest.fixture
+def turn_project(tmp_path):
+    workspace = GeometricCoder.create(
+        project_dir=tmp_path / "turns.geco",
+        data=pd.DataFrame({
+            "interview": [1, 1, 1, 1, 2, 2],
+            "turn": [1, 1, 2, 2, 1, 1],
+            "sentence": [1, 2, 1, 2, 1, 2],
+            "text": ["a", "b", "c", "d", "e", "f"],
+            "speaker": ["A", "A", "B", "B", "A", "A"],
+            "topic": ["X", "X", "Y", "Y", "X", "X"],
+        }),
+        keys=["interview", "turn", "sentence"], text="text",
+        metadata=["speaker", "topic"], geometries=None,
+    )
+    code_id = workspace.create_code("Question")
+    obs = [u["observation_id"] for u in workspace.database.list_units()]
+    for index, label in enumerate(["positive", "negative", "positive",
+                                   "positive", "negative", "unsure"]):
+        workspace.annotate(obs[index], code_id, label)
+    return workspace, code_id
+
+
+def test_aggregation_to_turns_count_threshold_and_metadata(turn_project):
+    workspace, code_id = turn_project
+    values = [_code(code_id), {"type": "metadata", "field": "topic"}]
+    options = {"kind": "bar", "measure": "count", "variables": values}
+    spec = {**options, "aggregation": {"level": "turn", "method": "any"}}
+    result = workspace.run_analysis(workspace.save_analysis("Any at turn", spec))
+    assert result["categories"] == ["X", "Y"]
+    assert result["counts"] == [[1, 1]]
+    assert result["denominators"] == [[2, 1]]
+    spec["aggregation"] = {"level": "turn", "method": "minimum", "threshold": 2}
+    result = workspace.run_analysis(workspace.save_analysis("At least two", spec))
+    assert result["counts"] == [[0, 1]]
+    assert result["denominators"] == [[2, 1]]
+
+
+def test_aggregation_rejects_metadata_varying_within_parent(turn_project):
+    workspace, code_id = turn_project
+    spec = {
+        "kind": "bar",
+        "variables": [_code(code_id), {"type": "metadata", "field": "speaker"}],
+        "aggregation": {"level": "interview", "method": "any"},
+    }
+    analysis_id = workspace.save_analysis("Invalid grouped speaker", spec)
+    with pytest.raises(ValueError, match="metadata vary"):
+        workspace.run_analysis(analysis_id)
+
+
+def test_categorical_one_hot_and_pairwise_correlation(turn_project):
+    workspace, code_id = turn_project
+    spec = {
+        "kind": "heatmap", "measure": "correlation",
+        "variables": [_code(code_id), {"type": "metadata", "field": "topic"}],
+        "aggregation": {"level": "turn", "method": "any"},
+    }
+    result = workspace.run_analysis(workspace.save_analysis("Code and topic", spec))
+    assert result["names"] == ["Question", "topic = X", "topic = Y"]
+    assert result["values"][0][1] == pytest.approx(-0.5)
+    assert result["values"][0][2] == pytest.approx(0.5)
+    assert result["samples"][0][1] == 3
+    assert result["values"][1][2] == pytest.approx(-1)
+    fig = analysis_figure(result)
+    assert fig.data[0].zmin == -1
+    assert fig.data[0].zmax == 1
+
+
+def test_parent_aggregation_mean_log_and_missing_binary_values(turn_project):
+    import math
+    workspace, code_id = turn_project
+    base = {"kind": "heatmap", "measure": "correlation",
+            "variables": [_code(code_id), {"type": "metadata", "field": "topic"}]}
+    for method in ("mean", "log_count"):
+        config = {**base, "aggregation": {"level": "turn", "method": method}}
+        result = workspace.run_analysis(workspace.save_analysis(f"Using {method}", config))
+        assert result["samples"][0][1] == 3
+        assert result["values"][0][1] is not None
+    bad = {**base, "measure": "count",
+           "aggregation": {"level": "turn", "method": "mean"}}
+    with pytest.raises(ValueError, match="Continuous aggregation"):
+        workspace.save_analysis("Bad average count", bad)
+
+
+def test_correlation_undefined_for_constant_label(turn_project):
+    workspace, code_id = turn_project
+    spec = {
+        "kind": "heatmap", "measure": "correlation",
+        "variables": [_code(code_id), {"type": "metadata", "field": "speaker"}],
+        "aggregation": {"level": "turn", "method": "minimum", "threshold": 9},
+    }
+    result = workspace.run_analysis(workspace.save_analysis("Constant column", spec))
+    assert result["values"][0][0] is None
+    assert result["values"][0][1] is None
+
+
+def test_metadata_only_heatmap_encodes_categories(turn_project):
+    workspace, _code_id = turn_project
+    spec = {
+        "kind": "heatmap", "measure": "count",
+        "variables": [{"type": "metadata", "field": "speaker"},
+                      {"type": "metadata", "field": "topic"}],
+    }
+    result = workspace.run_analysis(workspace.save_analysis("Metadata counts", spec))
+    assert "speaker = A" in result["names"]
+    assert "topic = X" in result["names"]
+    i = result["names"].index("speaker = A")
+    j = result["names"].index("topic = X")
+    assert result["values"][i][j] == 4
