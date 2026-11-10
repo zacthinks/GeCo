@@ -3550,8 +3550,10 @@ def create_app(
             saved_filter_id,
             metadata_profiles,
         )
-        mask, _errors = _evaluate_metadata_filters(units, filters, operator=operator)
-        page_count = deterministic_page_count(int(mask.sum()), page_size=size)
+        match_count = project.database.filtered_unit_count(
+            filters, operator=operator,
+        )
+        page_count = deterministic_page_count(match_count, page_size=size)
         current = min(max(1, _coerce_positive_int(current_page, default=1)), page_count)
         triggered = callback_context.triggered_id
         if triggered in {"memo-presentation-page-size", "memo-presentation-saved-filter"}:
@@ -3567,10 +3569,9 @@ def create_app(
                 if focal_unit_id is not None else None
             )
             if focal_position is not None:
-                target = _deterministic_page_number_for_position(
-                    mask,
-                    corpus_position=focal_position,
-                    page_size=size,
+                target = project.database.filtered_unit_page_for_position(
+                    filters, operator=operator,
+                    position=focal_position, page_size=size,
                 )
                 if target is not None:
                     if target == current:
@@ -3661,10 +3662,12 @@ def create_app(
             saved_filter_id,
             metadata_profiles,
         )
-        positions, page, mask, _errors = _metadata_filtered_page(
-            units,
-            filters,
+        positions, page, match_count = _sql_metadata_page(
+            project,
+            total_units=len(units),
+            filters=filters,
             operator=operator,
+            uncoded_only=False,
             page_size=size,
             page_number=number,
         )
@@ -3680,7 +3683,9 @@ def create_app(
         display = np.asarray(display_positions, dtype=int)
         coordinates = project.view_coordinate_rows(int(view_id), display.tolist())
         page_units = units.at_positions(display.tolist())
-        eligible = mask[display] if display.size else np.asarray([], dtype=bool)
+        eligible, _errors = _evaluate_metadata_filters(
+            page_units, filters, operator=operator,
+        )
         figure = build_geometry_figure(
             coordinates=coordinates,
             units=page_units,
@@ -3705,7 +3710,7 @@ def create_app(
             _apply_relayout_ranges(figure, relayout_data)
         status = (
             f"Page {page.page_index + 1} of {page.page_count} · "
-            f"{len(positions):,} filter points · {int(mask.sum()):,} total matches"
+            f"{len(positions):,} filter points · {match_count:,} total matches"
         )
         return figure, status
 
