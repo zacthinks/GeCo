@@ -167,6 +167,41 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return nodes
 
     @app.callback(
+        Output("analysis-source-defaults", "data", allow_duplicate=True),
+        Input({"type": "analysis-source", "index": ALL}, "value"),
+        Input({"type": "analysis-predictor", "index": ALL}, "value"),
+        State({"type": "analysis-source", "index": ALL}, "id"),
+        State({"type": "analysis-predictor", "index": ALL}, "id"),
+        State("analysis-source-defaults", "data"),
+        prevent_initial_call=True,
+    )
+    def preserve_sources(
+        sources: list[str], predictor_values: list[int | None],
+        source_ids: list[dict[str, Any]], predictor_ids: list[dict[str, Any]],
+        existing: list[dict[str, Any]] | None,
+    ) -> Any:
+        """Keep unsaved per-code settings when adding another variable."""
+        by_source = {int(i["index"]): val for i, val in zip(source_ids, sources)}
+        by_predictor = {
+            int(i["index"]): val for i, val in zip(predictor_ids, predictor_values)
+        }
+        result = [dict(v) for v in (existing or [])]
+        by_code = {int(v["code_id"]): v for v in result if v["type"] == "code"}
+        for code_id, source in by_source.items():
+            current = by_code.get(code_id)
+            if current is None:
+                current = {"type": "code", "code_id": code_id, "value": "binary"}
+                result.append(current)
+                by_code[code_id] = current
+            current["source"] = source
+            predictor = by_predictor.get(code_id)
+            if predictor is None:
+                current.pop("predictor_id", None)
+            else:
+                current["predictor_id"] = predictor
+        return result if result != (existing or []) else no_update
+
+    @app.callback(
         Output("analysis-refresh", "data"),
         Output("analysis-select", "value"),
         Output("analysis-status", "children"),
