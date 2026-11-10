@@ -17,7 +17,7 @@ def variable_options(project: Any) -> list[dict[str, str]]:
     ]
 
 
-def analysis_tab(*, dcc: Any, html: Any) -> Any:
+def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
     return html.Div([
         dcc.Store(id="analysis-refresh", data=0),
         dcc.Store(id="analysis-editing", data=None),
@@ -51,13 +51,35 @@ def analysis_tab(*, dcc: Any, html: Any) -> Any:
             dcc.Dropdown(id="analysis-measure", options=[
                 {"label": "Positive counts", "value": "count"},
                 {"label": "Jaccard similarity (heatmaps)", "value": "jaccard"},
+                {"label": "Pearson correlation (heatmaps)", "value": "correlation"},
             ], value="count", clearable=False),
             html.Label("Variables"),
             dcc.Dropdown(id="analysis-vars", options=[], value=[], multi=True,
                          placeholder="Add codes and, for bar plots, one metadata field"),
             html.Div(id="analysis-code-settings"),
+            html.Label("Aggregate observations (optional)"),
+            dcc.Dropdown(id="analysis-aggregate-level", clearable=False,
+                         options=[{"label": "No aggregation (atomic units)", "value": "none"}] + [
+                             {"label": f"Group by {key} (and preceding keys)", "value": key}
+                             for key in project.metadata.get("key_columns", [])[:-1]
+                         ], value="none"),
             html.Div([
-                html.Button("Save analysis", id="analysis-save", n_clicks=0,
+                html.Label("Aggregate code values"),
+                dcc.Dropdown(id="analysis-aggregate-method", clearable=False, value="any",
+                             options=[
+                                 {"label": "Any observed positive", "value": "any"},
+                                 {"label": "Positive count at least threshold", "value": "minimum"},
+                                 {"label": "Mean of observed binary labels", "value": "mean"},
+                                 {"label": "Natural log(1 + positive count)", "value": "log_count"},
+                             ]),
+                html.Label("Positive count threshold (threshold method only)"),
+                dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
+                          step=1, value=1),
+                html.P("Only codes are reduced. Selected metadata must be constant "
+                       "within each group; otherwise the analysis reports an error."),
+            ], id="analysis-aggregation-options", style={"display": "none"}),
+            html.Div([
+                html.Button("Create Analysis", id="analysis-save", n_clicks=0,
                             className="primary-action"),
                 html.Button("Cancel", id="analysis-cancel", n_clicks=0),
             ], className="memo-actions"),
@@ -119,6 +141,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-measure", "value"),
         Output("analysis-vars", "value"),
         Output("analysis-source-defaults", "data"),
+        Output("analysis-aggregate-level", "value"),
+        Output("analysis-aggregate-method", "value"),
+        Output("analysis-aggregate-threshold", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -130,11 +155,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     selected: int | None) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
         if trigger == "analysis-cancel":
-            return {"display": "none"}, None, "", "", "bar", "count", [], []
+            return {"display": "none"}, None, "", "", "bar", "count", [], [], "none", "any", 1
         if trigger == "analysis-new":
-            return {"display": "block"}, {"id": None}, "New analysis", "", "bar", "count", [], []
+            return {"display": "block"}, {"id": None}, "New analysis", "", "bar", "count", [], [], "none", "any", 1
         if selected is None:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+            return (no_update,) * 11
         record = project.analysis(int(selected))
         spec = record["spec"]
         return (
@@ -143,7 +168,24 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec["measure"], choice_values(spec), spec["variables"],
+            spec.get("aggregation", {}).get("level", "none"),
+            spec.get("aggregation", {}).get("method", "any"),
+            spec.get("aggregation", {}).get("threshold", 1),
         )
+
+    @app.callback(
+        Output("analysis-aggregation-options", "style"),
+        Input("analysis-aggregate-level", "value"),
+    )
+    def show_aggregation(level: str | None) -> dict[str, str]:
+        return {"display": "block"} if level and level != "none" else {"display": "none"}
+
+    @app.callback(
+        Output("analysis-save", "children"),
+        Input("analysis-editing", "data"),
+    )
+    def primary_button(editing: dict[str, Any] | None) -> str:
+        return "Save Changes" if editing and editing.get("id") is not None else "Create Analysis"
 
     @app.callback(
         Output("analysis-code-settings", "children"),
@@ -223,6 +265,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     @app.callback(
         Output("analysis-refresh", "data"),
         Output("analysis-select", "value"),
+        Output("analysis-select", "options", allow_duplicate=True),
         Output("analysis-status", "children"),
         Output("analysis-editor", "style", allow_duplicate=True),
         Input("analysis-save", "n_clicks"),
@@ -231,6 +274,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-kind", "value"),
         State("analysis-measure", "value"),
         State("analysis-vars", "value"),
+        State("analysis-aggregate-level", "value"),
+        State("analysis-aggregate-method", "value"),
+        State("analysis-aggregate-threshold", "value"),
         State({"type": "analysis-source", "index": ALL}, "id"),
         State({"type": "analysis-source", "index": ALL}, "value"),
         State({"type": "analysis-predictor", "index": ALL}, "id"),
@@ -241,11 +287,13 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def save(_click: int, editing: dict[str, Any] | None,
              name: str | None, kind: str, measure: str,
              values: list[str] | None,
+             aggregate_level: str | None, aggregate_method: str,
+             aggregate_threshold: int | float | None,
              source_ids: list[dict[str, Any]], sources: list[str],
              predictor_ids: list[dict[str, Any]], predictor_values: list[int | None],
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
         by_source = {int(k["index"]): v for k, v in zip(source_ids, sources)}
         by_predictor = {int(k["index"]): v for k, v in zip(predictor_ids, predictor_values)}
         variables = []
@@ -262,13 +310,25 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 variable["predictor_id"] = by_predictor.get(cid)
             variables.append(variable)
         try:
+            spec = {"kind": kind, "measure": measure, "variables": variables}
+            if aggregate_level and aggregate_level != "none":
+                spec["aggregation"] = {
+                    "level": aggregate_level,
+                    "method": aggregate_method,
+                    "threshold": aggregate_threshold if aggregate_threshold is not None else 1,
+                }
             analysis_id = project.save_analysis(
-                name or "", {"kind": kind, "measure": measure, "variables": variables},
-                analysis_id=editing.get("id"),
+                name or "", spec, analysis_id=editing.get("id"),
             )
         except (ValueError, KeyError) as exc:
-            return no_update, no_update, str(exc), no_update
-        return int(revision or 0) + 1, analysis_id, "Analysis saved.", {"display": "none"}
+            return no_update, no_update, no_update, str(exc), no_update
+        # Return options and the newly created ID in the same transaction
+        # to avoid requiring a second manual dropdown selection.
+        options = [{"label": row["name"], "value": row["analysis_id"]}
+                   for row in project.analyses()]
+        return (int(revision or 0) + 1, analysis_id, options,
+                "Analysis created." if editing.get("id") is None else "Changes saved.",
+                {"display": "none"})
 
     @app.callback(
         Output("analysis-delete-dialog", "style"),
