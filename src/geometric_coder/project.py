@@ -2182,6 +2182,34 @@ class GeometricCoder:
         """Return current annotation states."""
         return self.database.current_annotations(code_id)
 
+    def analyses(self) -> list[dict[str, Any]]:
+        """List saved analysis definitions without evaluating them."""
+        from geometric_coder.analyses import list_analyses
+        return list_analyses(self)
+
+    def analysis(self, analysis_id: int) -> dict[str, Any]:
+        """Read one persisted analysis definition."""
+        from geometric_coder.analyses import get_analysis
+        return get_analysis(self, analysis_id)
+
+    def save_analysis(
+        self, name: str, spec: Mapping[str, Any],
+        *, analysis_id: int | None = None,
+    ) -> int:
+        """Create or edit an analysis while preserving its stable ID."""
+        from geometric_coder.analyses import save_analysis
+        return save_analysis(self, name, spec, analysis_id)
+
+    def delete_analysis(self, analysis_id: int) -> None:
+        """Remove a saved definition without touching research evidence."""
+        from geometric_coder.analyses import delete_analysis
+        delete_analysis(self, analysis_id)
+
+    def run_analysis(self, analysis_id: int) -> dict[str, Any]:
+        """Recompute an analysis against current research state."""
+        from geometric_coder.analyses import compute_analysis
+        return compute_analysis(self, self.analysis(analysis_id)["spec"])
+
     def export_codes(self, code: int | str) -> pd.DataFrame:
         """Export current binary human-vetted atomic assignments with original keys."""
         if isinstance(code, int):
