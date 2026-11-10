@@ -4750,6 +4750,7 @@ class GeometricCoder:
     def classifier_prediction_geometry(
         self, *, code_id: int, classifier_fit_ids: Sequence[int],
         score_type: str = "probability",
+        compact_for_ui: bool = False,
     ) -> dict[str, Any]:
         """Project frozen probability estimates or native decision margins.
 
@@ -4761,7 +4762,10 @@ class GeometricCoder:
         fit_ids = list(dict.fromkeys(int(value) for value in classifier_fit_ids))
         if not fit_ids:
             raise ValueError("Select at least one classifier fit.")
-        observations = self.database.list_observations()
+        observations = (
+            self.database.list_plot_observations()
+            if compact_for_ui else self.database.list_observations()
+        )
         score_maps: list[dict[int, float]] = []
         names: list[str] = []
         for fit_id in fit_ids:
@@ -4843,7 +4847,7 @@ class GeometricCoder:
                     ),
                     "observation_id": observation_id,
                     "kind": str(observation["kind"]),
-                    "text": str(observation["text"]),
+                    **({} if compact_for_ui else {"text": str(observation["text"])}),
                     "display_key": (
                         " · ".join(
                             f"{name}: {value}"
@@ -4855,10 +4859,12 @@ class GeometricCoder:
                     "assignment": current_labels.get(observation_id),
                     "x": float(x[position]),
                     "y": float(y[position]),
-                    "scores": {
-                        names[index]: float(matrix[position, index])
-                        for index in range(matrix.shape[1])
-                    },
+                    **({} if compact_for_ui else {
+                        "scores": {
+                            names[index]: float(matrix[position, index])
+                            for index in range(matrix.shape[1])
+                        },
+                    }),
                 }
                 for position, (observation_id, observation) in enumerate(
                     zip(observation_ids, selected_observations, strict=True)
