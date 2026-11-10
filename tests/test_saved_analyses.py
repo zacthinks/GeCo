@@ -311,3 +311,18 @@ def test_metadata_only_heatmap_encodes_categories(turn_project):
     i = result["names"].index("speaker = A")
     j = result["names"].index("topic = X")
     assert result["values"][i][j] == 4
+
+
+def test_distribution_of_turn_level_positive_counts(turn_project):
+    workspace, code_id = turn_project
+    spec = {
+        "kind": "distribution", "measure": "count",
+        "variables": [_code(code_id)],
+        "aggregation": {"level": "turn", "method": "log_count"},
+    }
+    result = workspace.run_analysis(workspace.save_analysis("Turn distribution", spec))
+    histogram = result["histograms"][0]
+    assert histogram["values"] == pytest.approx([0, 0.69, 1.1], abs=0.01)
+    assert histogram["counts"] == [1, 1, 1]
+    fig = analysis_figure(result)
+    assert fig.layout.xaxis.title.text == "Aggregated code value"
