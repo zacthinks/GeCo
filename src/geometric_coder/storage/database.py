@@ -1949,6 +1949,33 @@ class ProjectDatabase:
                 f"SELECT COUNT(*) FROM units AS u WHERE {predicate}", params,
             ).fetchone()[0])
 
+    def filtered_unit_page_for_position(
+        self, filters: Sequence[dict[str, Any]], *,
+        operator: str | None, position: int, page_size: int,
+    ) -> int | None:
+        """Return the 1-based filtered page containing one corpus position."""
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        predicate, params = compile_filter_sql(filters, operator=operator)
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            matched = connection.execute(
+                f"SELECT 1 FROM units AS u WHERE {predicate} "
+                "AND u.row_position = ? LIMIT 1",
+                [*params, int(position)],
+            ).fetchone()
+            if matched is None:
+                return None
+            before = int(connection.execute(
+                f"SELECT COUNT(*) FROM units AS u WHERE {predicate} "
+                "AND u.row_position < ?",
+                [*params, int(position)],
+            ).fetchone()[0])
+        return before // int(page_size) + 1
+
     def filtered_unit_page(
         self,
         filters: Sequence[dict[str, Any]],
