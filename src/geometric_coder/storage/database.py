@@ -3188,6 +3188,15 @@ class ProjectDatabase:
             for row in rows
         ]
 
+    def atomic_annotation_count(self, code_id: int) -> int:
+        """Count currently reviewed atomic units without decoding annotation rows."""
+        with self.connect() as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) FROM current_annotations "
+                "WHERE code_id = ? AND unit_id IS NOT NULL",
+                (int(code_id),),
+            ).fetchone()[0])
+
     def annotation_counts(self, code_id: int) -> dict[str, int]:
         """Count current assignment states for one code across all observations."""
         counts = {"positive": 0, "negative": 0, "unsure": 0}
