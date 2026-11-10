@@ -66,6 +66,8 @@ def _dataset_sql(
         elif method == "minimum":
             result = (f"CASE WHEN COUNT({column}) = 0 THEN NULL "
                       f"WHEN {count_pos} >= {float(aggregate['threshold'])} THEN 1.0 ELSE 0.0 END")
+        elif method == "count":
+            result = f"CASE WHEN COUNT({column}) = 0 THEN NULL ELSE {count_pos} END"
         elif method == "mean":
             result = f"AVG({column})"
         elif method == "log_count":
@@ -135,6 +137,8 @@ def compute_expanded_analysis(
                 "kind": "distribution",
                 "names": [v["name"] for v in codes],
                 "histograms": histograms,
+                "aggregation": dict(aggregation) if aggregation is not None else None,
+                "atomic_level": str(project.metadata.get("key_columns", ["observation"])[-1]),
                 "warnings": warnings,
             }
 
