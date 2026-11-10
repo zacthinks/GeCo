@@ -189,7 +189,7 @@ def test_analyses_is_top_level_and_code_center_has_no_analysis_tab():
 
     source = Path(app_module.__file__).read_text(encoding="utf-8")
     start = source.index("def _code_center_layout(")
-    code_center = source[start:source.index("\\ndef ", start + 4)]
+    code_center = source[start:]
     assert 'label="Analyses"' in source
     assert 'value="analyses"' in source
     assert 'label="Analysis", value="analysis"' not in code_center
