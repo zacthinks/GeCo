@@ -46,8 +46,8 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("Aggregation threshold must be nonnegative.")
         else:
             threshold = 1
-        if kind == "heatmap" and measure != "correlation" and method in {"mean", "log_count"}:
-            raise ValueError("Continuous aggregation requires a correlation heatmap.")
+        if (kind != "heatmap" or measure != "correlation") and method in {"mean", "log_count"}:
+            raise ValueError("Continuous aggregation currently requires a correlation heatmap.")
         aggregate = {"level": level, "method": method, "threshold": threshold}
 
     raw = spec.get("variables")
