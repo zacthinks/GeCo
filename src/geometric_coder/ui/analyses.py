@@ -46,6 +46,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             dcc.Dropdown(id="analysis-kind", options=[
                 {"label": "Bar plot", "value": "bar"},
                 {"label": "Heatmap", "value": "heatmap"},
+                {"label": "Code-value distribution", "value": "distribution"},
             ], value="bar", clearable=False),
             html.Label("Measure"),
             dcc.Dropdown(id="analysis-measure", options=[
