@@ -111,3 +111,54 @@ def test_prediction_spec_requires_explicit_valid_classifier(project):
         workspace.save_analysis("Needs predictor", {
             "kind": "bar", "variables": [_code(equity, "hybrid")]
         })
+
+
+def test_predictions_and_human_first_fallback_are_distinct(tmp_path):
+    from geometric_coder import CountGeometry
+    workspace = GeometricCoder.create(
+        project_dir=tmp_path / "predictions.geco",
+        data=pd.DataFrame({
+            "id": list(range(6)),
+            "text": [
+                "excellent helpful", "great excellent", "useful clear",
+                "bad confusing", "terrible unclear", "weak bad",
+            ],
+        }),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code = workspace.create_code("sentiment")
+    workspace.ensure_default_classifier_specs(code_id=code)
+    predictor = int(workspace.classifier_specs(code_id=code)[0]["classifier_spec_id"])
+    observations = [row["observation_id"] for row in workspace.database.list_units()]
+    workspace.annotate(observations[0], code, "positive")
+    workspace.annotate(observations[3], code, "negative")
+    workspace.train_classifier(code_id=code, classifier_spec_id=predictor)
+    fit_id = workspace.database.latest_classifier_fit(
+        code_id=code, classifier_spec_id=predictor
+    )["classifier_fit_id"]
+    predictions = {
+        int(row["observation_id"]): row["predicted_label"]
+        for row in workspace.database.classifier_predictions(fit_id, atomic_only=True)
+    }
+    src = lambda mode: {
+        "kind": "bar",
+        "variables": [{
+            "type": "code", "code_id": code, "source": mode,
+            "predictor_id": predictor, "value": "binary",
+        }],
+    }
+    predicted = workspace.run_analysis(workspace.save_analysis("Model", src("predictions")))
+    assert predicted["counts"] == [[sum(v == "positive" for v in predictions.values())]]
+    hybrid_id = workspace.save_analysis("Fallback", src("hybrid"))
+    expected = 1 + sum(
+        predictions[obs] == "positive"
+        for obs in observations[1:3] + observations[4:]
+    )
+    assert workspace.run_analysis(hybrid_id)["counts"] == [[expected]]
+    # Unsure is an explicit human judgment, not a missing label to fill.
+    workspace.annotate(observations[1], code, "unsure")
+    after = workspace.run_analysis(hybrid_id)
+    expected -= int(predictions[observations[1]] == "positive")
+    assert after["counts"] == [[expected]]
+    assert after["warnings"]
