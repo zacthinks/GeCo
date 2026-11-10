@@ -303,22 +303,22 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         source_ids: list[dict[str, Any]], sources: list[str],
         predictor_ids: list[dict[str, Any]], predictor_values: list[int | None],
     ) -> dict[str, Any]:
-            by_source = {int(k["index"]): v for k, v in zip(source_ids, sources)}
-            by_predictor = {int(k["index"]): v for k, v in zip(predictor_ids, predictor_values)}
-            variables = []
-            for raw in values or []:
-                type_, value = raw.split(":", 1)
-                if type_ == "metadata":
-                    variables.append({"type": "metadata", "field": value})
-                    continue
-                cid = int(value)
-                source = by_source.get(cid, "labels")
-                variable = {"type": "code", "code_id": cid, "source": source,
-                            "value": "binary"}
-                if source != "labels":
-                    variable["predictor_id"] = by_predictor.get(cid)
-                variables.append(variable)
-            spec = {"kind": kind, "measure": measure, "variables": variables}
+        by_source = {int(k["index"]): v for k, v in zip(source_ids, sources)}
+        by_predictor = {int(k["index"]): v for k, v in zip(predictor_ids, predictor_values)}
+        variables = []
+        for raw in values or []:
+            type_, value = raw.split(":", 1)
+            if type_ == "metadata":
+                variables.append({"type": "metadata", "field": value})
+                continue
+            cid = int(value)
+            source = by_source.get(cid, "labels")
+            variable = {"type": "code", "code_id": cid, "source": source,
+                        "value": "binary"}
+            if source != "labels":
+                variable["predictor_id"] = by_predictor.get(cid)
+            variables.append(variable)
+        spec = {"kind": kind, "measure": measure, "variables": variables}
         if aggregate_level and aggregate_level != "none":
             spec["aggregation"] = {
                 "level": aggregate_level,
