@@ -180,6 +180,21 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         )
 
     @app.callback(
+        Output("analysis-measure", "options"),
+        Input("analysis-kind", "value"),
+    )
+    def measure_choices(kind: str) -> list[dict[str, str]]:
+        if kind == "heatmap":
+            return [
+                {"label": "Positive co-occurrence count", "value": "count"},
+                {"label": "Jaccard similarity", "value": "jaccard"},
+                {"label": "Pearson correlation", "value": "correlation"},
+            ]
+        if kind == "distribution":
+            return [{"label": "Number of groups at each code value", "value": "count"}]
+        return [{"label": "Number of positive units", "value": "count"}]
+
+    @app.callback(
         Output("analysis-visualization-help", "children"),
         Input("analysis-kind", "value"),
         Input("analysis-aggregate-level", "value"),
