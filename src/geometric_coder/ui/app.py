@@ -3019,7 +3019,7 @@ def create_app(
             placeholder = "Select a point or use a navigation command to begin reading."
             return "No focal unit", placeholder, ""
         focal = project.unit(int(focal_unit_id))
-        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window))
+        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window), max_units=200)
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         context_children = _render_context_units(
             html,
@@ -3746,7 +3746,7 @@ def create_app(
             f"{name}: {value}" for name, value in focal["user_key"].items()
         )
         context_level = int(hierarchy[-1]["level_index"])
-        context = project.context(int(unit_id), level=context_level, window=5)
+        context = project.context(int(unit_id), level=context_level, window=5, max_units=200)
         return (
             key_label,
             _render_readonly_context_units(
@@ -6344,7 +6344,7 @@ def create_app(
                 "",
             )
         focal = project.unit(int(focal_unit_id))
-        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window))
+        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window), max_units=200)
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         children = _render_context_units(
             html,
