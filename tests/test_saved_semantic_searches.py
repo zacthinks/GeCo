@@ -72,7 +72,7 @@ def test_schema_15_migrates_to_query_catalog(project):
         con.execute("DROP TABLE semantic_queries")
         con.execute("UPDATE project SET schema_version=15")
     reopened = GeometricCoder.open(project.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 17
+    assert reopened.database.project_metadata()["schema_version"] == 18
     assert reopened.database.get_geometry(gid)["name"] == "sample"
     assert reopened.saved_semantic_searches.queries() == []
 
