@@ -6274,11 +6274,7 @@ def create_app(
             return "No code selected.", "", ""
         code = project.database.get_code(int(code_id))
         counts = project.database.annotation_counts(int(code_id))
-        atomic_reviewed = sum(
-            1
-            for row in project.current_annotations(int(code_id))
-            if row["unit_id"] is not None
-        )
+        atomic_reviewed = project.database.atomic_annotation_count(int(code_id))
         unreviewed = max(0, len(units) - atomic_reviewed)
         description = code["description"] or "No description has been written yet."
         count_text = (
