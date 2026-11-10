@@ -1039,7 +1039,7 @@ def create_app(
                         value="analyses",
                         className="workflow-tab",
                         selected_className="workflow-tab-selected",
-                        children=analysis_tab(dcc=dcc, html=html),
+                        children=analysis_tab(dcc=dcc, html=html, project=project),
                     ),
                     dcc.Tab(
                         label="Memos",
