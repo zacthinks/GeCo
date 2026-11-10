@@ -716,6 +716,68 @@ def create_app(
             return {}
         name = str(geometry_by_id[int(geometry_id)]["name"])
         return {name: retained[3]}
+    # Metadata is immutable for a running workspace. Cache compact matching
+    # row positions across all callbacks and pages until a filter definition
+    # changes. Uncoded-only queries depend on live annotations and stay uncached.
+    metadata_position_cache: dict[tuple[str, str, int], np.ndarray] = {}
+    metadata_position_lock = Lock()
+
+    def cached_metadata_positions(
+        filters: list[dict[str, Any]], operator: str | None,
+    ) -> np.ndarray:
+        key = (
+            json.dumps(filters, sort_keys=True, default=str),
+            _normalize_boolean_operator(operator), len(units),
+        )
+        with metadata_position_lock:
+            snapshot = metadata_position_cache.get(key)
+        if snapshot is not None:
+            return snapshot
+        snapshot = np.asarray(
+            project.database.filtered_unit_positions(filters, operator=operator),
+            dtype=np.int64,
+        )
+        with metadata_position_lock:
+            metadata_position_cache[key] = snapshot
+            while len(metadata_position_cache) > 4:
+                metadata_position_cache.pop(next(iter(metadata_position_cache)))
+        return snapshot
+
+    def cached_metadata_count(
+        filters: list[dict[str, Any]], *,
+        operator: str | None, uncoded_only: bool = False,
+    ) -> int:
+        if filters and not uncoded_only:
+            return len(cached_metadata_positions(filters, operator))
+        return project.database.filtered_unit_count(
+            filters, operator=operator, uncoded_only=uncoded_only,
+        )
+
+    def cached_sql_metadata_page(
+        project_arg: GeometricCoder, *,
+        total_units: int, filters: list[dict[str, Any]],
+        operator: str | None, uncoded_only: bool,
+        page_size: int, page_number: int,
+    ) -> tuple[np.ndarray, PageSlice, int]:
+        if not filters or uncoded_only:
+            return _sql_metadata_page(
+                project_arg, total_units=total_units, filters=filters,
+                operator=operator, uncoded_only=uncoded_only,
+                page_size=page_size, page_number=page_number,
+            )
+        matching = cached_metadata_positions(filters, operator)
+        count = len(matching)
+        pages = deterministic_page_count(count, page_size=page_size)
+        index = min(max(1, int(page_number)), pages) - 1
+        page_positions = matching[
+            index * page_size : (index + 1) * page_size
+        ].copy()
+        page = PageSlice(
+            positions=page_positions, page_index=index,
+            page_count=pages, page_size=page_size,
+        )
+        return page_positions, page, count
+
     training_inbox = _ScopedTrainingInbox()
 
     sessions = project.sessions()
@@ -2299,7 +2361,7 @@ def create_app(
             )
             return [html.Span("No active filters", className="filter-empty-state")], message
         try:
-            match_count = project.database.filtered_unit_count(
+            match_count = cached_metadata_count(
                 clauses, operator=operator,
             )
             errors: list[str] = []
@@ -2599,7 +2661,7 @@ def create_app(
 
         size = _coerce_positive_int(page_size, default=5000)
         number = _coerce_positive_int(page_number, default=1)
-        positions, page, filter_match_count = _sql_metadata_page(
+        positions, page, filter_match_count = cached_sql_metadata_page(
             project,
             total_units=len(units),
             filters=metadata_filters or [],
@@ -2744,7 +2806,7 @@ def create_app(
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks, map_filter_refresh
         size = _coerce_positive_int(page_size, default=5000)
-        matching_count = project.database.filtered_unit_count(
+        matching_count = cached_metadata_count(
             metadata_filters or [],
             operator=metadata_filter_operator,
             uncoded_only="uncoded_only" in set(uncoded_only_values or []),
@@ -2871,7 +2933,7 @@ def create_app(
                     f"Fix the regular expression before navigating: {error}",
                 )
 
-            positions, _page, _match_count = _sql_metadata_page(
+            positions, _page, _match_count = cached_sql_metadata_page(
                 project,
                 total_units=len(units),
                 filters=metadata_filters or [],
