@@ -1206,13 +1206,27 @@ class GeometricCoder:
                 [int(index) for index in indices]
             )
 
-        membership: ArtifactRows = reader(model["membership_artifact_id"], requested)
-        dominant: ArtifactRows = reader(model["dominant_artifact_id"], requested)
-        description: ArtifactRows | None = (
-            reader(model["description_artifact_id"], None)
-            if include_description and model["description_artifact_id"] is not None
-            else None
-        )
+        # New TeAL versions can read related artifacts in one callback-local
+        # project session. Keep the original single-read provider contract for
+        # other integrations and older TeAL installations.
+        requests = [
+            (str(model["membership_artifact_id"]), requested),
+            (str(model["dominant_artifact_id"]), requested),
+        ]
+        if include_description and model["description_artifact_id"] is not None:
+            requests.append((str(model["description_artifact_id"]), None))
+        batch_reader = getattr(provider, "read_artifacts", None)
+        if callable(batch_reader):
+            packets = list(batch_reader(requests))
+            if len(packets) != len(requests):
+                raise ConfigurationError(
+                    "External Topic Model provider returned the wrong number of artifacts."
+                )
+        else:
+            packets = [reader(artifact_id, keys) for artifact_id, keys in requests]
+        membership: ArtifactRows = packets[0]
+        dominant: ArtifactRows = packets[1]
+        description: ArtifactRows | None = packets[2] if len(packets) > 2 else None
         return validate_topic_model_rows(
             model, membership, dominant, requested_count=len(requested),
             description=description,
