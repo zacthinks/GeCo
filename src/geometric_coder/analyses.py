@@ -60,6 +60,8 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         value = str(original.get("value", "binary"))
         if source not in _ALLOWED_SOURCES or value not in _ALLOWED_VALUES:
             raise ValueError("Unsupported source or value representation.")
+        if value != "binary":
+            raise ValueError("Initial count and similarity analyses require binary values.")
         result: dict[str, Any] = {
             "type": "code", "code_id": code_id,
             "source": source, "value": value,
