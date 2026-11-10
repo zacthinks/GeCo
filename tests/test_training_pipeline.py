@@ -1487,3 +1487,27 @@ def test_prediction_geometry_rejects_missing_native_scores(tmp_path: Path) -> No
             code_id=code_id, classifier_fit_ids=[int(fit["classifier_fit_id"])],
             score_type="decision_score",
         )
+
+
+def test_ui_prediction_geometry_does_not_load_full_observation_text(tmp_path, monkeypatch):
+    project = _project(tmp_path)
+    code_id = project.create_code("compact plot")
+    observations = project.database.list_observations()
+    for index in (0, 1):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "positive")
+    for index in (3, 4):
+        project.annotate(int(observations[index]["observation_id"]), code_id, "negative")
+    geometry_id = int(project.database.list_geometries(public_only=True)[0]["geometry_id"])
+    spec_id = project.create_classifier_spec(
+        code_id=code_id, name="compact score", geometry_id=geometry_id,
+    )
+    fit = project.train_classifier(code_id=code_id, classifier_spec_id=spec_id)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Plot attempted full observation text loading")
+    monkeypatch.setattr(project.database, "list_observations", forbidden)
+    result = project.classifier_prediction_geometry(
+        code_id=code_id, classifier_fit_ids=[int(fit["classifier_fit_id"])],
+        compact_for_ui=True,
+    )
+    assert result["points"]
+    assert all("text" not in point and "scores" not in point for point in result["points"])
