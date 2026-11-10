@@ -1,4 +1,4 @@
-"""Code Center saved analyses manager and live Plotly display."""
+"""Project-wide saved analyses manager and live Plotly display."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,14 +6,18 @@ from typing import Any
 from geometric_coder.analyses import analysis_figure
 
 
-def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
-    choices = [
+def variable_options(project: Any) -> list[dict[str, str]]:
+    """Read available codes at callback time, not at app startup."""
+    return [
         {"label": f"Code: {row['name']}", "value": f"code:{row['code_id']}"}
         for row in project.codes()
     ] + [
         {"label": f"Metadata: {field}", "value": f"metadata:{field}"}
         for field in project.metadata.get("metadata_columns", [])
     ]
+
+
+def analysis_tab(*, dcc: Any, html: Any) -> Any:
     return html.Div([
         dcc.Store(id="analysis-refresh", data=0),
         dcc.Store(id="analysis-editing", data=None),
@@ -49,7 +53,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 {"label": "Jaccard similarity (heatmaps)", "value": "jaccard"},
             ], value="count", clearable=False),
             html.Label("Variables"),
-            dcc.Dropdown(id="analysis-vars", options=choices, value=[], multi=True,
+            dcc.Dropdown(id="analysis-vars", options=[], value=[], multi=True,
                          placeholder="Add codes and, for bar plots, one metadata field"),
             html.Div(id="analysis-code-settings"),
             html.Div([
@@ -84,12 +88,27 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("workspace-tabs", "value"),
     )
     def options(_revision: int, workspace: str) -> list[dict[str, Any]]:
-        if workspace != "codes":
+        if workspace != "analyses":
             return no_update
         return [
             {"label": row["name"], "value": row["analysis_id"]}
             for row in project.analyses()
         ]
+
+    @app.callback(
+        Output("analysis-vars", "options"),
+        Input("workspace-tabs", "value"),
+        Input("explore-code-refresh-store", "data"),
+        Input("focus-refresh-store", "data"),
+        Input("analysis-editor", "style"),
+    )
+    def refresh_variables(
+        workspace: str, _code_refresh: int | None,
+        _focus_refresh: int | None, _editor_style: dict[str, Any] | None,
+    ) -> Any:
+        if workspace != "analyses":
+            return no_update
+        return variable_options(project)
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -284,14 +303,13 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-select", "value"),
         Input("analysis-refresh", "data"),
         Input("workspace-tabs", "value"),
-        Input("code-center-view-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
     )
     def render(selected: int | None, _refresh: int, workspace: str,
-               tab: str, _annotations: int, _focus: int, _teaching: int) -> Any:
-        if workspace != "codes" or tab != "analysis":
+               _annotations: int, _focus: int, _teaching: int) -> Any:
+        if workspace != "analyses":
             return no_update
         if selected is None:
             return _empty_figure("Select or create an analysis.")
