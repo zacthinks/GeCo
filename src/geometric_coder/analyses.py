@@ -6,6 +6,7 @@ No models are trained and no result matrices are persisted by this module.
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any, Mapping
 
 import plotly.graph_objects as go
@@ -141,24 +142,33 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
         raise ValueError("Analysis name must contain 1–160 characters.")
     normalized = validate_analysis(project, spec)
     payload = json.dumps(normalized, sort_keys=True)
-    with project.database.connect() as conn:
-        if analysis_id is None:
+    try:
+        with project.database.connect() as conn:
+            if analysis_id is None:
+                cur = conn.execute(
+                    "INSERT INTO saved_analyses(name, spec_json, created_at, updated_at) "
+                    "VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                    "strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    (clean, payload),
+                )
+                return int(cur.lastrowid)
             cur = conn.execute(
-                "INSERT INTO saved_analyses(name, spec_json, created_at, updated_at) "
-                "VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-                "strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                (clean, payload),
+                "UPDATE saved_analyses SET name = ?, spec_json = ?, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE analysis_id = ?", (clean, payload, int(analysis_id))
             )
-            return int(cur.lastrowid)
-        cur = conn.execute(
-            "UPDATE saved_analyses SET name = ?, spec_json = ?, "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-            "WHERE analysis_id = ?", (clean, payload, int(analysis_id))
-        )
-        if cur.rowcount != 1:
-            raise KeyError(f"Unknown analysis: {analysis_id}")
-        return int(analysis_id)
-
+            if cur.rowcount != 1:
+                raise KeyError(f"Unknown analysis: {analysis_id}")
+            return int(analysis_id)
+    except sqlite3.IntegrityError as exc:
+        # Translate only the name uniqueness constraint. Other integrity
+        # failures must not be mislabeled as a name collision.
+        message = str(exc)
+        if "UNIQUE constraint failed: saved_analyses.name" in message:
+            raise ValueError(
+                f"An analysis named '{clean}' already exists. Choose a different name."
+            ) from exc
+        raise
 
 def delete_analysis(project: Any, analysis_id: int) -> None:
     with project.database.connect() as conn:
