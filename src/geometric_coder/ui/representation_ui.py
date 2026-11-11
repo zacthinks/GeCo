@@ -15,7 +15,7 @@ from geometric_coder.ui.representation_manager import (
 )
 from geometric_coder.ui.topic_creation import teal_linked_project
 from geometric_coder.ui.text_geometry import (
-    TOKEN_FLAGS, TOKEN_FIELDS, create_text_geometry,
+    TOKEN_FLAGS, TOKEN_FIELDS, available_spacy_token_artifacts, create_text_geometry,
 )
 
 
@@ -176,17 +176,31 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                 html.Div(id="representation-wizard-parameters",
                          className="topic-create-parameters"),
                 html.Div([
-                    html.Label("spaCy model"),
-                    dcc.Input(id="representation-text-spacy-model", type="text",
-                              value="en_core_web_sm", className="text-input"),
-                    html.Label("When spaCy produces no tokens"),
+                    html.Label("Token source"),
                     dcc.Dropdown(
+                        id="representation-text-token-source",
+                        options=[{"label": "Create new tokens", "value": "new"}],
+                        value="new", clearable=False,
+                    ),
+                    html.Div([
+                        html.Label("spaCy model and language"),
+                        dcc.Input(id="representation-text-spacy-model", type="text",
+                                  value="en_core_web_sm", className="text-input"),
+                        html.P([
+                            "Choose a model for the language of your text. ",
+                            html.A("Browse spaCy language models",
+                                   href="https://spacy.io/models",
+                                   target="_blank", rel="noopener noreferrer"),
+                        ], className="modal-help"),
+                        html.Label("When spaCy produces no tokens"),
+                        dcc.Dropdown(
                         id="representation-text-empty-doc",
                         options=[
                             {"label": "Raise an error (default)", "value": "raise"},
                             {"label": "Insert a countable dummy token", "value": "dummy"},
                         ], value="raise", clearable=False,
-                    ),
+                        ),
+                    ], id="representation-new-tokens-wrap"),
                     html.Label("Token feature"),
                     dcc.Dropdown(
                         id="representation-text-token-field",
@@ -224,23 +238,34 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     ),
                     html.Details([
                         html.Summary("Token attributes"),
-                        html.P("For each attribute, keep Any, require True, or require False.",
+                        html.P("Select which token properties to keep. All attributes are ignored by default.",
                                className="modal-help"),
                         html.Div([
                             html.Div([
-                                html.Label(flag.replace("_", " ").capitalize()),
-                                dcc.Dropdown(
-                                    id={"type": "representation-token-flag", "name": flag},
-                                    options=[
-                                        {"label": "Any", "value": "any"},
-                                        {"label": "True", "value": "true"},
-                                        {"label": "False", "value": "false"},
-                                    ], value="any", clearable=False,
-                                ),
-                            ], className="topic-parameter-field")
-                            for flag in TOKEN_FLAGS
-                        ], className="topic-create-parameters"),
-                    ]),
+                                html.Span("Attribute"),
+                                html.Span("True"),
+                                html.Span("False"),
+                                html.Span("Any"),
+                            ], className="representation-flag-header"),
+                            *[
+                                html.Div([
+                                    html.Span(flag.replace("_", " "), className="representation-flag-name"),
+                                    dcc.RadioItems(
+                                        id={"type": "representation-token-flag", "name": flag},
+                                        options=[
+                                            {"label": "", "value": "true"},
+                                            {"label": "", "value": "false"},
+                                            {"label": "", "value": "any"},
+                                        ],
+                                        value="any", inline=True,
+                                        className="representation-flag-choice",
+                                        inputStyle={"margin": "0"},
+                                    ),
+                                ], className="representation-flag-row")
+                                for flag in TOKEN_FLAGS
+                            ],
+                        ], className="representation-token-grid"),
+                    ], className="representation-token-details"),
                 ], id="representation-wizard-spacy-wrap", style={"display": "none"}),
                 html.Div([
                     html.Label("Hugging Face model ID or model-page URL"),
@@ -267,7 +292,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     ),
                     html.P(
                         "Models may need to download. Runtime, memory and disk use depend "
-                        "on the selected model and corpus. Remote custom code is disabled.",
+                        "on the selected model and corpus.",
                         className="modal-help",
                     ),
                 ], id="representation-wizard-transformer-wrap",
@@ -288,7 +313,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                 ], className="modal-actions"),
                 html.Div(id="representation-wizard-status", role="status",
                          className="control-status"),
-            ], className="modal-card topic-manager-card"),
+            ], className="modal-card topic-manager-card representation-wizard-card"),
         ], id="representation-wizard-modal", className="modal-overlay",
            style={"display": "none"}),
     ])
@@ -699,6 +724,31 @@ def register_representation_callbacks(
         )
 
     @app.callback(
+        Output("representation-text-token-source", "options"),
+        Input("representation-wizard-origin", "value"),
+        Input("representation-wizard-recipe", "value"),
+        Input("representation-wizard-modal", "style"),
+    )
+    def discover_tokens(origin: str | None, recipe: str | None,
+                        modal_style: Any) -> list[dict[str, str]]:
+        options = [{"label": "Create new tokens", "value": "new"}]
+        if origin == "text" and recipe == "spacy_dtm" and modal_style != {"display": "none"}:
+            try:
+                options.extend(available_spacy_token_artifacts(project))
+            except Exception:
+                # Creation does its own validation, so discovery should not
+                # prevent the user from creating a fresh token artifact.
+                pass
+        return options
+
+    @app.callback(
+        Output("representation-new-tokens-wrap", "style"),
+        Input("representation-text-token-source", "value"),
+    )
+    def token_source_settings(selection: str | None) -> dict[str, str]:
+        return {} if selection in (None, "new") else {"display": "none"}
+
+    @app.callback(
         Output("representation-refresh-store", "data", allow_duplicate=True),
         Output("view-refresh-store", "data", allow_duplicate=True),
         Output("representation-wizard-status", "children"),
@@ -710,6 +760,7 @@ def register_representation_callbacks(
         State("representation-wizard-origin", "value"),
         State("representation-wizard-view-dimensions", "value"),
         State("representation-text-spacy-model", "value"),
+        State("representation-text-token-source", "value"),
         State("representation-text-empty-doc", "value"),
         State("representation-text-token-field", "value"),
         State("representation-text-ngram-min", "value"),
@@ -733,7 +784,8 @@ def register_representation_callbacks(
     def create(
         _clicks: int, mode: str | None, name: str | None, source: int | None,
         recipe: str | None, origin: str | None, view_dimensions: int | None,
-        spacy_model: str | None, empty_doc: str | None,
+        spacy_model: str | None, token_source: str | None,
+        empty_doc: str | None,
         token_field: str | None,
         ngram_min: int | None, ngram_max: int | None,
         min_df: int | None, max_features: int | None, binary: list[str] | None,
@@ -758,7 +810,10 @@ def register_representation_callbacks(
                     model=(transformer_model if recipe == "sentence_transformer"
                            else spacy_model),
                     revision=model_revision or None, token_field=token_field or "text",
-                    token_flags=flags, empty_doc=empty_doc or "raise",
+                    token_flags=flags,
+                    existing_tokens=(token_source if token_source not in (None, "new")
+                                     else None),
+                    empty_doc=empty_doc or "raise",
                     ngram_min=int(ngram_min or 1),
                     ngram_max=int(ngram_max or 1),
                     min_df=int(min_df or 1), max_features=(
