@@ -217,3 +217,51 @@ def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> N
             assert "spacy_tokens" in names
     finally:
         reopened.close()
+
+
+def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use a deterministic synthetic encoder, but real TeAL artifacts and link."""
+    from text_analysis_lab.translators.sentence_transformer_encoder import (
+        SentenceTransformerEncoder,
+    )
+    from geometric_coder.ui.text_geometry import create_text_geometry
+
+    def fake_runtime(self, *, device):
+        self.resolved_revision = "a" * 40
+        return object()
+
+    def fake_translation(self, texts, *, device, model_batch_size,
+                         context_examples=None):
+        batch = [texts] if isinstance(texts, str) else list(texts)
+        values = np.array(
+            [[float(len(str(item))), float(len(str(item).split()))] for item in batch],
+            dtype=np.float32,
+        )
+        return values, [2] * len(batch), 256
+
+    monkeypatch.setattr(SentenceTransformerEncoder, "_runtime_component", fake_runtime)
+    monkeypatch.setattr(SentenceTransformerEncoder, "_translate_texts", fake_translation)
+
+    path = tmp_path / "sentence_encoder_project"
+    project = teal.Project.create(path, name="source_text_embeddings")
+    try:
+        documents = _seed_documents(project)
+        baseline = project.translate(CountVectorizer(), documents)["output"]
+        linked = project.geco.create(
+            "source_text", documents=documents, text_field="text", geometry=baseline,
+        )
+        created = create_text_geometry(
+            linked.coder, name="test_embeddings", method="sentence_transformer",
+            model="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+            revision="a" * 40, normalize=True, truncation="error",
+        )
+        assert created.replayable
+        matrix = project.get_artifact(created.artifact_id)
+        assert matrix.primary_key == documents.primary_key
+        assert matrix.get_matrix().shape == (12, 2)
+        assert linked.coder.geometry_matrix(created.geometry_id).shape == (12, 2)
+        linked.close()
+    finally:
+        project.close()
