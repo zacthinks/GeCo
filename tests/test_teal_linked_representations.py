@@ -322,3 +322,89 @@ def test_spacy_missing_token_rows_are_rejected_during_geco_registration(
         linked.close()
     finally:
         project.close()
+
+
+def test_reuse_existing_spacy_tokens_without_retokenizing(tmp_path: Path) -> None:
+    """Discover only provenance-compatible spaCy token tables and reuse them."""
+    spacy = pytest.importorskip("spacy")
+    from geometric_coder.ui.text_geometry import (
+        available_spacy_token_artifacts, create_text_geometry,
+    )
+    from text_analysis_lab.translators import SpacyTranslator
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    model_dir = tmp_path / "local_spacy"
+    nlp.to_disk(model_dir)
+    project = teal.Project.create(tmp_path / "saved_tokens", name="saved_tokens")
+    try:
+        documents = _seed_documents(project)
+        baseline = project.translate(
+            CountVectorizer(text_field="text", min_df=1), documents,
+        )["output"]
+        parsed = project.translate(
+            SpacyTranslator(model=str(model_dir), save_model=True),
+            documents, workers=1,
+        )
+        tokens = parsed["tokens"]
+        tokens.add_alias("prepared_tokens")
+        linked = project.geco.create(
+            "saved_tokens", documents=documents, text_field="text",
+            geometry=baseline,
+        )
+        options = available_spacy_token_artifacts(linked.coder)
+        assert any(item["value"] == tokens.artifact_id for item in options)
+        before = len(project.list_artifacts())
+        created = create_text_geometry(
+            linked.coder, name="reuse_dtm", method="spacy_dtm",
+            existing_tokens=str(tokens.artifact_id), token_field="text",
+            token_flags={"is_alpha": "true"},
+        )
+        assert created.replayable
+        assert project.get_artifact(created.artifact_id).n_rows == documents.n_rows
+        # No new token table or sentence table was created: only the new DTM.
+        assert len(project.list_artifacts()) == before + 1
+        with pytest.raises(Exception, match="no longer available or cannot"):
+            create_text_geometry(
+                linked.coder, name="invalid_dtm", method="spacy_dtm",
+                existing_tokens=str(baseline.artifact_id),
+            )
+        linked.close()
+    finally:
+        project.close()
+
+
+def test_sentence_level_text_creation_uses_noncolliding_spacy_keys(
+    tmp_path: Path,
+) -> None:
+    spacy = pytest.importorskip("spacy")
+    from geometric_coder.ui.text_geometry import create_text_geometry
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    model_dir = tmp_path / "local_spacy"
+    nlp.to_disk(model_dir)
+    project = teal.Project.create(tmp_path / "sentences", name="sentences")
+    try:
+        sentences = _seed_documents(project, pd.DataFrame({
+            "row_id": [0, 1, 2], "sentence_id": [0, 0, 0],
+            "text": ["apple banana", "car bike", "dog cat"],
+        }))
+        baseline = project.translate(
+            CountVectorizer(text_field="text", min_df=1), sentences,
+        )["output"]
+        linked = project.geco.create(
+            "sentence_level", documents=sentences, text_field="text",
+            geometry=baseline,
+        )
+        created = create_text_geometry(
+            linked.coder, name="sentence_dtm", method="spacy_dtm",
+            model=str(model_dir), token_flags={"is_alpha": "true"},
+        )
+        matrix = project.get_artifact(created.artifact_id)
+        assert matrix.primary_key == sentences.primary_key
+        assert matrix.n_rows == sentences.n_rows
+        assert created.replayable
+        linked.close()
+    finally:
+        project.close()
