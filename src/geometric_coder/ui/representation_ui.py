@@ -179,6 +179,14 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     html.Label("spaCy model"),
                     dcc.Input(id="representation-text-spacy-model", type="text",
                               value="en_core_web_sm", className="text-input"),
+                    html.Label("When spaCy produces no tokens"),
+                    dcc.Dropdown(
+                        id="representation-text-empty-doc",
+                        options=[
+                            {"label": "Raise an error (default)", "value": "raise"},
+                            {"label": "Insert a countable dummy token", "value": "dummy"},
+                        ], value="raise", clearable=False,
+                    ),
                     html.Label("Token feature"),
                     dcc.Dropdown(
                         id="representation-text-token-field",
@@ -702,6 +710,7 @@ def register_representation_callbacks(
         State("representation-wizard-origin", "value"),
         State("representation-wizard-view-dimensions", "value"),
         State("representation-text-spacy-model", "value"),
+        State("representation-text-empty-doc", "value"),
         State("representation-text-token-field", "value"),
         State("representation-text-ngram-min", "value"),
         State("representation-text-ngram-max", "value"),
@@ -724,7 +733,8 @@ def register_representation_callbacks(
     def create(
         _clicks: int, mode: str | None, name: str | None, source: int | None,
         recipe: str | None, origin: str | None, view_dimensions: int | None,
-        spacy_model: str | None, token_field: str | None,
+        spacy_model: str | None, empty_doc: str | None,
+        token_field: str | None,
         ngram_min: int | None, ngram_max: int | None,
         min_df: int | None, max_features: int | None, binary: list[str] | None,
         flag_ids: list[dict[str, str]], flag_values: list[str],
@@ -748,7 +758,8 @@ def register_representation_callbacks(
                     model=(transformer_model if recipe == "sentence_transformer"
                            else spacy_model),
                     revision=model_revision or None, token_field=token_field or "text",
-                    token_flags=flags, ngram_min=int(ngram_min or 1),
+                    token_flags=flags, empty_doc=empty_doc or "raise",
+                    ngram_min=int(ngram_min or 1),
                     ngram_max=int(ngram_max or 1),
                     min_df=int(min_df or 1), max_features=(
                         int(max_features) if max_features is not None else None
