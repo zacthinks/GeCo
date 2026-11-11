@@ -176,6 +176,9 @@ def create_text_geometry(
                         model=model or "en_core_web_sm",
                         text_field=text_field,
                         download_model=True,
+                        # A local custom pipeline has no stable package identity:
+                        # vendor it in TeAL's frozen operator so it can reopen.
+                        save_model=Path(model or "").expanduser().is_dir(),
                     ),
                     source, workers=1, batch_size=256,
                     memo=f"GeCo spaCy tokens for geometry {clean!r}.",
