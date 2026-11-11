@@ -22,7 +22,7 @@ jobs:
           path: _teal
           # Temporary integration pin for TeAL PR #72. Revert to main
           # before merging GeCo PR #51, after the upstream change lands.
-          ref: 4fc79109da6a3f612ed68d72b2940a7d74cbe0fc
+          ref: b9ff79a0fb0d5f2ad351a3729c77e3fe0aa32c0f
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0
