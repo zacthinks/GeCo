@@ -61,7 +61,19 @@ def test_jaccard_and_metadata_grouping(project):
     spec = {"kind": "heatmap", "measure": "jaccard",
             "variables": [_code(equity), _code(access)]}
     matrix = workspace.run_analysis(workspace.save_analysis("Jaccard", spec))
-    assert matrix["values"][0][1] == pytest.approx(1 / 3)
+    assert matrix["values"][0][1] == pytest.approx(1 / 2)
+    assert matrix["samples"][0][1] == 2
+    # A code pair must not change when unrelated categorical metadata is
+    # introduced, even though the heatmap now includes one-hot indicators.
+    with_metadata = {**spec, "variables": [
+        _code(equity), _code(access), {"type": "metadata", "field": "group"}
+    ]}
+    expanded = workspace.run_analysis(
+        workspace.save_analysis("Jaccard with categories", with_metadata)
+    )
+    assert expanded["values"][0][1] == pytest.approx(matrix["values"][0][1])
+    assert expanded["samples"][0][1] == matrix["samples"][0][1]
+    assert expanded["names"][:2] == matrix["names"]
     bar = {"kind": "bar", "variables": [
         _code(access), {"type": "metadata", "field": "group"}
     ]}
@@ -391,3 +403,41 @@ def test_analysis_editor_has_quiet_feedback_and_separated_actions():
     assert 'Input("analysis-cancel", "n_clicks")' in source
     assert 'except (ValueError, KeyError) as exc:' in source
     assert 'f"Preview unavailable: {exc}"' in source
+
+
+def test_duplicate_analysis_names_are_validation_errors(project):
+    workspace, equity, access, _ = project
+    spec = {"kind": "bar", "variables": [_code(equity)]}
+    other_spec = {"kind": "bar", "variables": [_code(access)]}
+    first = workspace.save_analysis("Theme Distribution", spec)
+    with pytest.raises(ValueError, match="already exists"):
+        workspace.save_analysis("theme distribution", other_spec)
+    with pytest.raises(ValueError, match="already exists"):
+        workspace.save_analysis("  THEME DISTRIBUTION  ", other_spec)
+    second = workspace.save_analysis("Other analysis", other_spec)
+    with pytest.raises(ValueError, match="already exists"):
+        workspace.save_analysis("Theme Distribution", other_spec, analysis_id=second)
+    with pytest.raises(ValueError, match="already exists"):
+        workspace.save_analysis("tHeMe DiStRiBuTiOn", other_spec, analysis_id=second)
+    assert workspace.analysis(first)["name"] == "Theme Distribution"
+    assert workspace.analysis(second)["name"] == "Other analysis"
+    assert workspace.analysis(second)["spec"]["variables"][0]["code_id"] == access
+    # Case-only rename of the same analysis must remain legal.
+    assert workspace.save_analysis("THEME DISTRIBUTION", spec, analysis_id=first) == first
+    assert workspace.analysis(first)["name"] == "THEME DISTRIBUTION"
+
+
+def test_jaccard_without_any_complete_pairs_is_undefined(project):
+    workspace, equity, access, observations = project
+    # No Equity assignment on the fourth observation; place Access on an
+    # observation with missing Equity, then remove the complete pair by
+    # retracting the two Equity judgments in the fixture.
+    workspace.annotate(observations[0], equity, "unsure")
+    workspace.annotate(observations[1], equity, "unsure")
+    spec = {"kind": "heatmap", "measure": "jaccard",
+            "variables": [_code(equity), _code(access)]}
+    result = workspace.run_analysis(workspace.save_analysis("Undefined pair", spec))
+    assert result["samples"][0][1] == 0
+    assert result["values"][0][1] is None
+    # Self-similarity still has a complete negative/positive distinction.
+    assert result["samples"][1][1] == 3
