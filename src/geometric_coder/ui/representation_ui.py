@@ -167,7 +167,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     ),
                 ], id="representation-wizard-view-dimensions-wrap",
                    style={"display": "none"}),
-                html.Label("Transformation"),
+                html.Label("Representation method"),
                 dcc.Dropdown(id="representation-wizard-recipe",
                              options=geometry_recipe_options(),
                              value="umap", clearable=False),
@@ -181,6 +181,11 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         id="representation-text-token-source",
                         options=[{"label": "Create new tokens", "value": "new"}],
                         value="new", clearable=False,
+                    ),
+                    html.P(
+                        "Compatible saved token artifacts appear here when available. "
+                        "You can always create a new one with a different language model.",
+                        className="modal-help",
                     ),
                     html.Div([
                         html.Label("spaCy model and language"),
@@ -671,7 +676,7 @@ def register_representation_callbacks(
         if origin == "text":
             return (
                 [
-                    {"label": "spaCy document-term matrix", "value": "spacy_dtm"},
+                    {"label": "Document-term matrix", "value": "spacy_dtm"},
                     {"label": "Sentence Transformer embeddings",
                      "value": "sentence_transformer"},
                 ],
