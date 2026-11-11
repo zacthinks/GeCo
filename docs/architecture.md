@@ -2,7 +2,7 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes GeCo 0.11.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
+This describes GeCo 0.12.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
@@ -19,6 +19,8 @@ Human judgments distinguish Present, Absent, Unsure, and **unreviewed** (no judg
 ## Geometries and Views
 
 GeCo maintains a unified registry of **numerical representations of text**. A representation can serve as a **geometry**, a **view**, or both. A **geometry** is used to examine relationships among observations, including distances, neighborhoods, and patterns. A **view** is a lower-dimensional representation of a geometry, typically in one or two dimensions, used for visualization.
+
+In TeAL-linked workspaces, the **Original text** representation workflow can request spaCy token document-term matrices (with optional reuse of compatible frozen token artifacts) or Sentence Transformer embeddings. GeCo owns the user-facing recipe, while TeAL owns persistent analytical artifacts, model state, provenance rules, and frozen new-text replay. TeAL may opt into narrowly verified looser lineage reconstruction for sibling spaCy sentences and tokens; historical provenance is never rewritten. Cosine is the default metric offered by the GeCo UMAP wizard, not a change to TeAL's standalone UMAP defaults.
 
 Geometries provide numerical features for distance-based navigation, classifiers, and supported searches. A two-dimensional geometry can directly serve as its own view; a visualization-only view can be enabled as a geometry without refitting the underlying numerical artifact. These roles are independent of new-text capability: transforming new queries or derived observations still requires a compatible frozen, replayable pipeline.
 
