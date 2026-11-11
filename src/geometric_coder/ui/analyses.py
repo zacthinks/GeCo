@@ -81,17 +81,19 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.P("Only codes are reduced. Selected metadata must be constant "
                        "within each group; otherwise the analysis reports an error."),
             ], id="analysis-aggregation-options", style={"display": "none"}),
+            html.Div(id="analysis-status", className="analysis-validation", role="alert"),
             html.Div([
-                html.P("The displayed chart reflects the saved analysis. Preview changes before saving."),
-                html.Button("Preview Changes", id="analysis-preview", n_clicks=0),
-                html.Button("Create Analysis", id="analysis-save", n_clicks=0,
-                            className="primary-action"),
-                html.Button("Cancel", id="analysis-cancel", n_clicks=0),
-            ], className="memo-actions"),
+                html.Div([
+                    html.Button("Preview Changes", id="analysis-preview", n_clicks=0),
+                ], className="analysis-preview-actions"),
+                html.Div([
+                    html.Button("Cancel", id="analysis-cancel", n_clicks=0),
+                    html.Button("Create Analysis", id="analysis-save", n_clicks=0,
+                                className="primary-action"),
+                ], className="analysis-commit-actions"),
+            ], className="analysis-editor-actions"),
         ], id="analysis-editor", style={"display": "none"},
             className="analysis-editor"),
-        html.Div(id="analysis-status", className="control-status"),
-        html.Div(id="analysis-preview-status", className="control-status"),
         dcc.Graph(id="analysis-figure", figure=analysis_figure({
             "kind": "bar", "names": [], "counts": [],
             "denominators": [], "categories": [],
@@ -150,6 +152,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-aggregate-level", "value"),
         Output("analysis-aggregate-method", "value"),
         Output("analysis-aggregate-threshold", "value"),
+        Output("analysis-status", "children", allow_duplicate=True),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -161,11 +164,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     selected: int | None) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
         if trigger == "analysis-cancel":
-            return {"display": "none"}, None, "", "", "bar", "count", [], [], "none", "any", 1
+            return {"display": "none"}, None, "", "", "bar", "count", [], [], "none", "any", 1, ""
         if trigger == "analysis-new":
-            return {"display": "block"}, {"id": None}, "New analysis", "", "bar", "count", [], [], "none", "any", 1
+            return {"display": "block"}, {"id": None}, "New analysis", "", "bar", "count", [], [], "none", "any", 1, ""
         if selected is None:
-            return (no_update,) * 11
+            return (no_update,) * 12
         record = project.analysis(int(selected))
         spec = record["spec"]
         return (
@@ -177,6 +180,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec.get("aggregation", {}).get("level", "none"),
             spec.get("aggregation", {}).get("method", "any"),
             spec.get("aggregation", {}).get("threshold", 1),
+            "",
         )
 
     @app.callback(
@@ -390,12 +394,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         options = [{"label": row["name"], "value": row["analysis_id"]}
                    for row in project.analyses()]
         return (int(revision or 0) + 1, analysis_id, options,
-                "Analysis created." if editing.get("id") is None else "Changes saved.",
-                {"display": "none"})
+                "", {"display": "none"})
 
     @app.callback(
         Output("analysis-figure", "figure", allow_duplicate=True),
-        Output("analysis-preview-status", "children"),
+        Output("analysis-status", "children", allow_duplicate=True),
         Input("analysis-preview", "n_clicks"),
         State("analysis-editing", "data"),
         State("analysis-kind", "value"),
@@ -434,7 +437,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     xanchor="left", showarrow=False,
                     font={"color": "#9a6510", "size": 11},
                 )
-            return fig, "Preview of unsaved analysis settings."
+            return fig, ""
         except (ValueError, KeyError) as exc:
             return no_update, f"Preview unavailable: {exc}"
 
@@ -454,7 +457,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-refresh", "data", allow_duplicate=True),
         Output("analysis-select", "value", allow_duplicate=True),
         Output("analysis-delete-dialog", "style", allow_duplicate=True),
-        Output("analysis-status", "children", allow_duplicate=True),
         Input("analysis-delete-confirm", "n_clicks"),
         State("analysis-select", "value"),
         State("analysis-refresh", "data"),
@@ -462,20 +464,21 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     )
     def delete(_click: int, selected: int | None, revision: int | None) -> tuple[Any, ...]:
         if selected is None:
-            return no_update, no_update, {"display": "none"}, ""
+            return no_update, no_update, {"display": "none"}
         project.delete_analysis(int(selected))
-        return int(revision or 0) + 1, None, {"display": "none"}, "Analysis deleted."
+        return int(revision or 0) + 1, None, {"display": "none"}
 
     @app.callback(
         Output("analysis-figure", "figure"),
         Input("analysis-select", "value"),
         Input("analysis-refresh", "data"),
         Input("workspace-tabs", "value"),
+        Input("analysis-cancel", "n_clicks"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
     )
-    def render(selected: int | None, _refresh: int, workspace: str,
+    def render(selected: int | None, _refresh: int, workspace: str, _cancel: int,
                _annotations: int, _focus: int, _teaching: int) -> Any:
         if workspace != "analyses":
             return no_update
