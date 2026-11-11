@@ -619,17 +619,19 @@ def register_representation_callbacks(
         Output("representation-wizard-view-dimensions-wrap", "style"),
         Output("representation-wizard-origin-wrap", "style"),
         Output("representation-wizard-source-wrap", "style"),
+        Output("representation-wizard-recipe", "value", allow_duplicate=True),
         Input("representation-wizard-mode", "value"),
         Input("representation-wizard-origin", "value"),
+        prevent_initial_call=True,
     )
     def wizard_mode(
         mode: str | None, origin: str | None,
-    ) -> tuple[Any, str, dict[str, str], dict[str, str], dict[str, str]]:
+    ) -> tuple[Any, str, dict[str, str], dict[str, str], dict[str, str], str]:
         if mode == "view":
             return [
                 {"label": "UMAP", "value": "umap"},
                 {"label": "SVD", "value": "svd"},
-            ], "Views support 1D (jittered) or 2D coordinates.", {}, {"display": "none"}, {}
+            ], "Views support 1D (jittered) or 2D coordinates.", {}, {"display": "none"}, {}, "umap"
         if origin == "text":
             return (
                 [
@@ -638,12 +640,12 @@ def register_representation_callbacks(
                      "value": "sentence_transformer"},
                 ],
                 "Build a geometry from the linked original text.",
-                {"display": "none"}, {}, {"display": "none"},
+                {"display": "none"}, {}, {"display": "none"}, "spacy_dtm",
             )
         return (
             geometry_recipe_options(),
             "Replayability is detected automatically from the fitted TeAL pipeline.",
-            {"display": "none"}, {}, {},
+            {"display": "none"}, {}, {}, "umap",
         )
 
     @app.callback(
