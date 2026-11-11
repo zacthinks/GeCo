@@ -726,7 +726,7 @@ def register_representation_callbacks(
         ngram_min: int | None, ngram_max: int | None,
         min_df: int | None, max_features: int | None, binary: list[str] | None,
         flag_ids: list[dict[str, str]], flag_values: list[str],
-        transformer_model: str | None, revision: str | None,
+        transformer_model: str | None, model_revision: str | None,
         normalize: list[str] | None, truncation: str | None,
         values: list[Any], ids: list[dict[str, str]],
         revision: int | None,
@@ -745,7 +745,7 @@ def register_representation_callbacks(
                     project, name=name or "", method=recipe or "",
                     model=(transformer_model if recipe == "sentence_transformer"
                            else spacy_model),
-                    revision=revision or None, token_field=token_field or "text",
+                    revision=model_revision or None, token_field=token_field or "text",
                     token_flags=flags, ngram_min=int(ngram_min or 1),
                     ngram_max=int(ngram_max or 1),
                     min_df=int(min_df or 1), max_features=(
