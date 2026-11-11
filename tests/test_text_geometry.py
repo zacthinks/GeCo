@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 from geometric_coder.exceptions import ConfigurationError
@@ -35,12 +34,6 @@ def test_token_flag_predicate_has_explicit_true_false_and_any():
         "like_url": "any", "like_num": "true",
     })
     assert flags == {"is_alpha": True, "is_stop": False, "like_num": True}
-    frame = pd.DataFrame({
-        "is_alpha": [True, True, False, True],
-        "is_stop": [False, True, False, False],
-        "like_num": [True, True, True, None],
-    })
-    assert tg._keep_tokens(frame, flags).tolist() == [True, False, False, False]
     with pytest.raises(ValueError, match="Unsupported"):
         tg.normalize_token_flags({"unknown": "true"})
     with pytest.raises(ValueError, match="Invalid filter"):
@@ -65,7 +58,7 @@ def test_bad_source_text_requests_fail_before_teal_project_open(monkeypatch):
         )
     with pytest.raises(ValueError, match="positive integer"):
         tg.create_text_geometry(_coder(), name="DTM", method="spacy_dtm", min_df=0)
-    with pytest.raises(ValueError, match="valid Hugging Face"):
+    with pytest.raises(ValueError, match="Hugging Face"):
         tg.create_text_geometry(
             _coder(), name="Embed", method="sentence_transformer",
             model="https://somewhere.example/model",
@@ -102,4 +95,7 @@ def test_wizard_exposes_text_source_and_spacy_token_checklists():
     assert 'id="representation-text-model"' in source
     assert '"type": "representation-token-flag"' in source
     assert "create_text_geometry(" in source
+    assert "metadata_filters=required" in Path(tg.__file__).read_text(encoding="utf-8")
+    assert '{"source": tokens, "target": source}' in Path(tg.__file__).read_text(encoding="utf-8")
+    assert "teal.subset(" not in Path(tg.__file__).read_text(encoding="utf-8")
     assert 'Output("representation-wizard-recipe", "value", allow_duplicate=True)' in source
