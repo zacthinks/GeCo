@@ -4,6 +4,7 @@ TeAL science and durable registration are delegated to representation_manager.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from geometric_coder.ui.representation_manager import (
@@ -19,11 +20,53 @@ from geometric_coder.ui.text_geometry import (
 )
 
 
+
+def suggest_representation_name(
+    source_name: str, method: str, dimensions: int | None,
+    existing_names: list[str],
+) -> str:
+    """Offer a SQL-safe name without renaming or modifying existing artifacts."""
+    def slug(value: str) -> str:
+        clean = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+        clean = clean[:48].rstrip("_") or "representation"
+        return f"representation_{clean}" if clean[0].isdigit() else clean
+
+    stem = f"{slug(source_name)}_{slug(method)}"
+    if isinstance(dimensions, int) and not isinstance(dimensions, bool) and dimensions > 0:
+        stem += f"_{dimensions}d"
+    occupied = {str(name).casefold() for name in existing_names}
+    candidate, number = stem, 2
+    while candidate.casefold() in occupied:
+        candidate = f"{stem}_{number}"
+        number += 1
+    return candidate
+
+
+def autofill_representation_name(
+    current_name: str | None, previous_suggestion: str | None, suggestion: str,
+) -> str | None:
+    """Only revise a blank or previously generated name, never a manual edit."""
+    if not str(current_name or "").strip() or current_name == previous_suggestion:
+        return suggestion
+    return None
+
+
+def _positive_dimensions(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+        return number if number > 0 and float(value) == number else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) -> Any:
     linked = teal_linked_project(project) is not None
     return html.Div([
         dcc.Store(id="representation-inventory-store", data=[]),
         dcc.Store(id="representation-selected", data=None),
+        dcc.Store(id="representation-wizard-suggested-name", data=None),
         html.Div([
             html.Div([
                 html.Div([
@@ -694,6 +737,73 @@ def register_representation_callbacks(
             "Replayability is detected automatically from the fitted TeAL pipeline.",
             {"display": "none"}, {}, {}, "umap",
         )
+
+    @app.callback(
+        Output("representation-wizard-name", "value", allow_duplicate=True),
+        Output("representation-wizard-suggested-name", "data"),
+        Input("representation-wizard-modal", "style"),
+        Input("representation-wizard-mode", "value"),
+        Input("representation-wizard-origin", "value"),
+        Input("representation-wizard-source", "value"),
+        Input("representation-wizard-recipe", "value"),
+        Input("representation-wizard-view-dimensions", "value"),
+        Input({"type": "representation-param", "name": ALL}, "value"),
+        Input("representation-inventory-store", "data"),
+        State({"type": "representation-param", "name": ALL}, "id"),
+        State("representation-wizard-name", "value"),
+        State("representation-wizard-suggested-name", "data"),
+        prevent_initial_call=True,
+    )
+    def suggest_wizard_name(
+        modal_style: dict[str, str] | None, mode: str | None, origin: str | None,
+        source_id: int | None, recipe: str | None, view_dimensions: int | None,
+        param_values: list[Any], inventory: list[dict[str, Any]] | None,
+        param_ids: list[dict[str, str]], current_name: str | None,
+        previous_suggestion: str | None,
+    ) -> tuple[Any, Any]:
+        if not modal_style or modal_style.get("display") == "none" or not recipe:
+            return no_update, no_update
+        if mode == "view":
+            if recipe not in {"umap", "svd"}:
+                return no_update, no_update
+        elif mode == "geometry":
+            allowed = ({"spacy_dtm", "sentence_transformer"} if origin == "text"
+                       else {"tfidf", "normalize", "svd", "umap"})
+            if recipe not in allowed:
+                return no_update, no_update
+        else:
+            return no_update, no_update
+
+        rows = inventory or []
+        if mode == "geometry" and origin == "text":
+            source_name, dimensions = "original_text", None
+        else:
+            source = next(
+                (row for row in rows
+                 if str(row.get("representation_id")) == str(source_id)), None,
+            )
+            if source is None:
+                return no_update, no_update
+            source_name = str(source["name"])
+            if mode == "view":
+                dimensions = _positive_dimensions(view_dimensions)
+            elif recipe in {"svd", "umap"}:
+                controls = {
+                    item.get("name"): value
+                    for item, value in zip(param_ids or [], param_values or [])
+                }
+                dimensions = _positive_dimensions(controls.get("n_components"))
+            else:
+                dimensions = _positive_dimensions(source.get("dimensions"))
+
+        existing = [str(row["name"]) for row in rows]
+        # Also include registrations hidden from the public inventory.
+        existing.extend(str(row["name"]) for row in project.database.list_representations())
+        proposed = suggest_representation_name(source_name, recipe, dimensions, existing)
+        autofilled = autofill_representation_name(
+            current_name, previous_suggestion, proposed,
+        )
+        return (autofilled if autofilled is not None else no_update), proposed
 
     @app.callback(
         Output("representation-wizard-parameters", "children"),
