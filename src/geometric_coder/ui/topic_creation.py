@@ -250,6 +250,10 @@ def _choice_options(recipe: str, name: str) -> list[dict[str, str]] | None:
 
 def _with_control_metadata(recipe: str, spec: dict[str, Any]) -> dict[str, Any]:
     spec["label"] = PARAMETER_LABELS.get(spec["name"], spec["label"])
+    # Prefer cosine for flexible vector-distance methods in the UI.
+    # Preserve Euclidean for Ward linkage and methods without a metric choice.
+    if spec["name"] == "metric" and recipe in {"kmedoids", "dbscan"}:
+        spec["default"] = "cosine"
     options = _choice_options(recipe, spec["name"])
     if options is not None:
         spec["kind"] = "choice"
