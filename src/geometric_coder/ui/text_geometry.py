@@ -150,7 +150,9 @@ def _compatible_spacy_tokens(
                 continue
             teal.pipeline(start=source, end=candidate)
             aliases = row.get("aliases") or []
-            display_name = str(aliases[0]) if aliases else artifact_id[:12]
+            display_name = (
+                str(aliases[0]) if aliases else f"Tokens {artifact_id[:8]}"
+            )
             candidates.append({
                 "label": f"{display_name} — {translator.model}",
                 "value": artifact_id,
