@@ -370,3 +370,24 @@ def test_histogram_preview_is_explicit_and_uses_unsaved_editor_settings():
     assert 'id="analysis-visualization-help"' in source
     assert '{"label": "Histogram", "value": "distribution"}' in source
     assert '{"label": "Number of positive units per group", "value": "count"}' in source
+
+
+def test_analysis_editor_has_quiet_feedback_and_separated_actions():
+    from pathlib import Path
+    from geometric_coder.ui import analyses as ui_analyses
+
+    source = Path(ui_analyses.__file__).read_text(encoding="utf-8")
+    assert 'className="analysis-editor-actions"' in source
+    assert 'className="analysis-preview-actions"' in source
+    assert 'className="analysis-commit-actions"' in source
+    assert 'id="analysis-status", className="analysis-validation"' in source
+    assert 'id="analysis-preview-status"' not in source
+    assert 'The displayed chart reflects the saved analysis' not in source
+    assert 'Preview of unsaved analysis settings.' not in source
+    assert '"Changes saved."' not in source
+    assert '"Analysis created."' not in source
+    assert '"Analysis deleted."' not in source
+    assert 'return fig, ""' in source
+    assert 'Input("analysis-cancel", "n_clicks")' in source
+    assert 'except (ValueError, KeyError) as exc:' in source
+    assert 'f"Preview unavailable: {exc}"' in source
