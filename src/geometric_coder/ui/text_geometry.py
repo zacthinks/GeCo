@@ -120,7 +120,16 @@ def available_spacy_token_artifacts(coder: Any) -> list[dict[str, str]]:
     with Project.open(path) as teal:
         linked, _ = _linked_text_source(teal, coder)
         try:
-            return linked.available_spacy_tokens()
+            # TeAL may include the frozen model location in a candidate label.
+            # Keep only the human-facing alias / short artifact label: filesystem
+            # paths are unsuitable for a compact dropdown.
+            return [
+                {
+                    "label": str(item["label"]).split(" — ", 1)[0],
+                    "value": str(item["value"]),
+                }
+                for item in linked.available_spacy_tokens()
+            ]
         finally:
             linked.close()
 
