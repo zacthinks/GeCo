@@ -6,6 +6,31 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
+## [0.12.0] - release pending
+
+### Added
+
+- **Original text** as a source in Manage Representations for TeAL-linked projects: create a spaCy token-based document-term matrix or Sentence Transformer embeddings directly from the linked text source (PR #51).
+- Reuse compatible previously saved spaCy token artifacts, including token artifacts produced alongside sentence outputs by a single TeAL spaCy operation. TeAL retains ownership of artifact provenance, frozen operators, and native query-text replay.
+- Token-feature selection (text, lemma, or normalized form), Boolean token-attribute filters, n-gram lengths, minimum document frequency, optional feature limits, binary counts, and explicit handling of empty spaCy documents.
+- User-facing links to spaCy model catalogs and Hugging Face Sentence Transformer models, without exposing long local model paths in saved-token dropdown labels.
+
+### Changed
+
+- Cosine becomes the default metric in the UMAP representation wizard and in compatible K-medoids and DBSCAN topic-model controls, without changing TeAL operator defaults or metric-constrained clustering algorithms.
+- The linked GeCo integration workflow now tests against merged TeAL `main`, rather than an interim upstream commit.
+
+### Fixed
+
+- DTM creation with no countable values in the selected spaCy token field now reports the selected field and attribute filters, with a specific suggestion for missing lemmas from spaCy models lacking a lemmatizer. The requested feature is never silently replaced.
+- Saved-token dropdown labels remain compact while preserving their stable TeAL artifact IDs as selection values.
+
+### Notes
+
+- New text geometries require a compatible TeAL-linked project; source keys and full observation coverage are validated before registration.
+- The frozen spaCy operator used for new sentence text may produce context-sensitive annotations that differ from the original full-document parse. TeAL handles the narrowly verified looser-lineage reconstruction without modifying recorded corpus provenance.
+- This is version preparation only. Merge, toy-dataset acceptance, and publication of a `v0.12.0` release tag are separate steps.
+
 ## [0.11.0] - release pending
 
 ### Added
