@@ -22,7 +22,7 @@ jobs:
           path: _teal
           # Verify the sibling-spaCy replay dependency before TeAL PR #73 merges.
           # Restore main after the upstream merge and rerun this workflow.
-          ref: f9d07b7091c2c592b468347ebcefb5b8e5e0cf7a
+          ref: 5621cdb3cd653f77357c791c6da504c7b7dd7ad0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0
