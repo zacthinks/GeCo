@@ -1444,3 +1444,25 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 #analysis-delete-dialog { padding: 0.8rem; border: 1px solid #d7e2da; border-radius: 8px; }
 #analysis-delete-dialog button { margin-right: 0.6rem; }
 #analysis-figure { min-height: 360px; }
+
+/* Analysis editor actions: preview is secondary, save is the clear primary. */
+.analysis-editor-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  margin-top: 1rem;
+}
+.analysis-preview-actions, .analysis-commit-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.analysis-validation:empty { display: none; }
+.analysis-validation:not(:empty) {
+  margin-top: 0.8rem;
+  color: #9d3737;
+  font-size: 0.9rem;
+}
