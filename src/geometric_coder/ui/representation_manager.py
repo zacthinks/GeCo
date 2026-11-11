@@ -99,6 +99,10 @@ def geometry_parameter_specs(recipe: str) -> tuple[list[dict[str, Any]], list[di
                                for option in choices]
             if spec["default"] is None:
                 spec["default"] = ""
+        if recipe == "umap" and name == "metric":
+            # UI preference for text-derived representations; TeAL's own
+            # constructor default remains unchanged for non-UI callers.
+            spec["default"] = "cosine"
         if recipe == "umap" and name == "reuse":
             spec.update(kind="choice", options=[
                 {"label": label, "value": value} for value, label in (
