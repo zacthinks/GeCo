@@ -14,6 +14,9 @@ from geometric_coder.ui.representation_manager import (
     unregister_representation,
 )
 from geometric_coder.ui.topic_creation import teal_linked_project
+from geometric_coder.ui.text_geometry import (
+    TOKEN_FLAGS, TOKEN_FIELDS, create_text_geometry,
+)
 
 
 def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) -> Any:
@@ -136,10 +139,24 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                 html.Label("Name"),
                 dcc.Input(id="representation-wizard-name", type="text",
                           className="text-input", placeholder="Choose a name"),
-                html.Label("Source"),
-                dcc.Dropdown(id="representation-wizard-source",
-                             options=linked_representation_options(project),
-                             clearable=False, placeholder="Select source geometry"),
+                html.Div([
+                    html.Label("Start from"),
+                    dcc.RadioItems(
+                        id="representation-wizard-origin",
+                        options=[
+                            {"label": "Existing representation", "value": "representation"},
+                            {"label": "Original text", "value": "text"},
+                        ],
+                        value="representation", inline=True,
+                    ),
+                ], id="representation-wizard-origin-wrap"),
+                html.Div([
+                    html.Label("Source representation"),
+                    dcc.Dropdown(id="representation-wizard-source",
+                                 options=linked_representation_options(project),
+                                 clearable=False, placeholder="Select source geometry"),
+                ], id="representation-wizard-source-wrap"),
+
                 html.Div([
                     html.Label("Display dimensions"),
                     dcc.Dropdown(
@@ -158,6 +175,95 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                          className="modal-help"),
                 html.Div(id="representation-wizard-parameters",
                          className="topic-create-parameters"),
+                html.Div([
+                    html.Label("spaCy model"),
+                    dcc.Input(id="representation-text-spacy-model", type="text",
+                              value="en_core_web_sm", className="text-input"),
+                    html.Label("Token feature"),
+                    dcc.Dropdown(
+                        id="representation-text-token-field",
+                        options=[{"label": x.replace("_", " ").capitalize(), "value": x}
+                                 for x in TOKEN_FIELDS],
+                        value="text", clearable=False,
+                    ),
+                    html.Div([
+                        html.Div([
+                            html.Label("Minimum n-gram length"),
+                            dcc.Input(id="representation-text-ngram-min", type="number",
+                                      min=1, max=5, step=1, value=1),
+                        ]),
+                        html.Div([
+                            html.Label("Maximum n-gram length"),
+                            dcc.Input(id="representation-text-ngram-max", type="number",
+                                      min=1, max=5, step=1, value=1),
+                        ]),
+                        html.Div([
+                            html.Label("Minimum document frequency"),
+                            dcc.Input(id="representation-text-min-df", type="number",
+                                      min=1, step=1, value=1),
+                        ]),
+                        html.Div([
+                            html.Label("Maximum features (optional)"),
+                            dcc.Input(id="representation-text-max-features", type="number",
+                                      min=1, step=1, value=None),
+                        ]),
+                    ], className="topic-create-parameters"),
+                    dcc.Checklist(
+                        id="representation-text-binary",
+                        options=[{"label": "Binary presence instead of token counts",
+                                  "value": "binary"}],
+                        value=[],
+                    ),
+                    html.Details([
+                        html.Summary("Token attributes"),
+                        html.P("For each attribute, keep Any, require True, or require False.",
+                               className="modal-help"),
+                        html.Div([
+                            html.Div([
+                                html.Label(flag.replace("_", " ").capitalize()),
+                                dcc.Dropdown(
+                                    id={"type": "representation-token-flag", "name": flag},
+                                    options=[
+                                        {"label": "Any", "value": "any"},
+                                        {"label": "True", "value": "true"},
+                                        {"label": "False", "value": "false"},
+                                    ], value="any", clearable=False,
+                                ),
+                            ], className="topic-parameter-field")
+                            for flag in TOKEN_FLAGS
+                        ], className="topic-create-parameters"),
+                    ]),
+                ], id="representation-wizard-spacy-wrap", style={"display": "none"}),
+                html.Div([
+                    html.Label("Hugging Face model ID or model-page URL"),
+                    dcc.Input(
+                        id="representation-text-model", type="text",
+                        placeholder="sentence-transformers/all-MiniLM-L6-v2",
+                        className="text-input",
+                    ),
+                    html.Label("Revision (optional)"),
+                    dcc.Input(id="representation-text-revision", type="text",
+                              placeholder="Commit hash or tag", className="text-input"),
+                    dcc.Checklist(
+                        id="representation-text-normalize",
+                        options=[{"label": "Normalize embeddings", "value": "normalize"}],
+                        value=[],
+                    ),
+                    html.Label("Overlong texts"),
+                    dcc.RadioItems(
+                        id="representation-text-truncation",
+                        options=[
+                            {"label": "Stop with an error", "value": "error"},
+                            {"label": "Truncate to model context window", "value": "truncate"},
+                        ], value="error",
+                    ),
+                    html.P(
+                        "Models may need to download. Runtime, memory and disk use depend "
+                        "on the selected model and corpus. Remote custom code is disabled.",
+                        className="modal-help",
+                    ),
+                ], id="representation-wizard-transformer-wrap",
+                   style={"display": "none"}),
                 html.Details([
                     html.Summary("Advanced parameters"),
                     html.Div(id="representation-wizard-advanced",
@@ -511,18 +617,33 @@ def register_representation_callbacks(
         Output("representation-wizard-recipe", "options"),
         Output("representation-wizard-dimension-note", "children"),
         Output("representation-wizard-view-dimensions-wrap", "style"),
+        Output("representation-wizard-origin-wrap", "style"),
+        Output("representation-wizard-source-wrap", "style"),
         Input("representation-wizard-mode", "value"),
+        Input("representation-wizard-origin", "value"),
     )
-    def wizard_mode(mode: str | None) -> tuple[Any, str, dict[str, str]]:
+    def wizard_mode(
+        mode: str | None, origin: str | None,
+    ) -> tuple[Any, str, dict[str, str], dict[str, str], dict[str, str]]:
         if mode == "view":
             return [
                 {"label": "UMAP", "value": "umap"},
                 {"label": "SVD", "value": "svd"},
-            ], "Views support 1D (jittered) or 2D coordinates.", {}
+            ], "Views support 1D (jittered) or 2D coordinates.", {}, {"display": "none"}, {}
+        if origin == "text":
+            return (
+                [
+                    {"label": "spaCy document-term matrix", "value": "spacy_dtm"},
+                    {"label": "Sentence Transformer embeddings",
+                     "value": "sentence_transformer"},
+                ],
+                "Build a geometry from the linked original text.",
+                {"display": "none"}, {}, {"display": "none"},
+            )
         return (
             geometry_recipe_options(),
             "Replayability is detected automatically from the fitted TeAL pipeline.",
-            {"display": "none"},
+            {"display": "none"}, {}, {},
         )
 
     @app.callback(
@@ -549,6 +670,23 @@ def register_representation_callbacks(
         )
 
     @app.callback(
+        Output("representation-wizard-spacy-wrap", "style"),
+        Output("representation-wizard-transformer-wrap", "style"),
+        Input("representation-wizard-mode", "value"),
+        Input("representation-wizard-origin", "value"),
+        Input("representation-wizard-recipe", "value"),
+    )
+    def text_recipe_panels(
+        mode: str | None, origin: str | None, recipe: str | None,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        if mode != "geometry" or origin != "text":
+            return {"display": "none"}, {"display": "none"}
+        return (
+            {} if recipe == "spacy_dtm" else {"display": "none"},
+            {} if recipe == "sentence_transformer" else {"display": "none"},
+        )
+
+    @app.callback(
         Output("representation-refresh-store", "data", allow_duplicate=True),
         Output("view-refresh-store", "data", allow_duplicate=True),
         Output("representation-wizard-status", "children"),
@@ -557,7 +695,21 @@ def register_representation_callbacks(
         State("representation-wizard-name", "value"),
         State("representation-wizard-source", "value"),
         State("representation-wizard-recipe", "value"),
+        State("representation-wizard-origin", "value"),
         State("representation-wizard-view-dimensions", "value"),
+        State("representation-text-spacy-model", "value"),
+        State("representation-text-token-field", "value"),
+        State("representation-text-ngram-min", "value"),
+        State("representation-text-ngram-max", "value"),
+        State("representation-text-min-df", "value"),
+        State("representation-text-max-features", "value"),
+        State("representation-text-binary", "value"),
+        State({"type": "representation-token-flag", "name": ALL}, "id"),
+        State({"type": "representation-token-flag", "name": ALL}, "value"),
+        State("representation-text-model", "value"),
+        State("representation-text-revision", "value"),
+        State("representation-text-normalize", "value"),
+        State("representation-text-truncation", "value"),
         State({"type": "representation-param", "name": ALL}, "value"),
         State({"type": "representation-param", "name": ALL}, "id"),
         State("representation-refresh-store", "data"),
@@ -567,16 +719,43 @@ def register_representation_callbacks(
     )
     def create(
         _clicks: int, mode: str | None, name: str | None, source: int | None,
-        recipe: str | None, view_dimensions: int | None,
+        recipe: str | None, origin: str | None, view_dimensions: int | None,
+        spacy_model: str | None, token_field: str | None,
+        ngram_min: int | None, ngram_max: int | None,
+        min_df: int | None, max_features: int | None, binary: list[str] | None,
+        flag_ids: list[dict[str, str]], flag_values: list[str],
+        transformer_model: str | None, revision: str | None,
+        normalize: list[str] | None, truncation: str | None,
         values: list[Any], ids: list[dict[str, str]],
         revision: int | None,
         view_revision: int | None,
     ) -> tuple[Any, Any, str]:
-        if source is None:
-            return no_update, no_update, "Choose a source geometry."
+        if (mode == "view" or origin != "text") and source is None:
+            return no_update, no_update, "Choose a source representation."
         params = {item["name"]: value for item, value in zip(ids, values, strict=True)}
         try:
-            if mode == "view":
+            if mode == "geometry" and origin == "text":
+                flags = {
+                    item["name"]: value
+                    for item, value in zip(flag_ids, flag_values, strict=True)
+                }
+                created = create_text_geometry(
+                    project, name=name or "", method=recipe or "",
+                    model=(transformer_model if recipe == "sentence_transformer"
+                           else spacy_model),
+                    revision=revision or None, token_field=token_field or "text",
+                    token_flags=flags, ngram_min=int(ngram_min or 1),
+                    ngram_max=int(ngram_max or 1),
+                    min_df=int(min_df or 1), max_features=(
+                        int(max_features) if max_features is not None else None
+                    ),
+                    binary="binary" in (binary or []),
+                    normalize="normalize" in (normalize or []),
+                    truncation=truncation or "error",
+                )
+                result_id = created.geometry_id
+                label = "geometry"
+            elif mode == "view":
                 result_id = create_view(
                     project, name=name or "", source_representation_id=int(source),
                     method=recipe or "umap", dimensions=int(view_dimensions or 2),
