@@ -6,6 +6,26 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
+## [0.11.0] - release pending
+
+### Added
+
+- Project-wide **Analyses** tab for creating, editing, duplicating, deleting, and revisiting saved exploratory analyses (PR #44).
+- Bar plots, histograms, and categorical/code heatmaps with positive co-occurrence counts, Jaccard similarity, and exploratory Pearson correlations.
+- Per-code selection of human judgments, fitted classifier predictions, or human-first prediction fallback.
+- Optional parent-key aggregation of codes, including any-positive, positive count, thresholds, observed-positive proportion, and log-transformed counts; metadata conflicts within aggregate groups are reported.
+- Preview Changes for unsaved analysis configurations, with meaningful histogram axes and code-source coverage.
+
+### Changed
+
+- Project schema advances to version 18 to persist analysis configurations; existing version 17 projects migrate forward on open.
+- Available code variables refresh without restarting the interface, newly created analyses become selected automatically, and analysis-editor actions avoid persistent success messages.
+
+### Notes
+
+- Analyses are descriptive and exploratory, not inferential population estimates. Grouped metadata must be constant within each parent grouping.
+- Back up workspaces before upgrading: previous GeCo versions may not reopen schema 18 projects.
+
 ## [0.10.0] - release pending
 
 ### Added

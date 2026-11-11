@@ -2,13 +2,13 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes GeCo 0.10.0 and project schema 17. Internal implementation modules are not a stable plugin SDK.
+This describes GeCo 0.11.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
 `GeometricCoder` is the main Python project object. GeCo's local Dash interface uses the same persistent project state. SQLite stores structured research records; numerical arrays and fitted models are stored in registered project-local sidecar artifacts. Projects can have local fitted representations or use external numerical providers, particularly [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab).
 
-Opening a project verifies its schema version. Supported forward migrations run on open, including schema 13 to 14, 14 to 15, 15 to 16, and 16 to 17; unsupported versions fail explicitly rather than being silently interpreted.
+Opening a project verifies its schema version. Supported forward migrations run on open, including schema 13 to 14, 14 to 15, 15 to 16, 16 to 17, and 17 to 18; unsupported versions fail explicitly rather than being silently interpreted.
 
 ## Observations, keys, and coding
 
@@ -43,6 +43,12 @@ GeCo's optional training-time CV tunes classifier hyperparameters using shared s
 Apply & Review now reads sorted, filtered proposal pages directly from SQLite (25, 50 or 100 rows per browser payload), with counts computed from the same predicate. Its page snapshot binds draft, filters, probability range, order, page size, refresh generation and displayed unit IDs; mutations verify those against the current database before proceeding. **Current page** operates only on the verified page, **selected** requires a selection on that page, and **all** still means the full active draft, not merely loaded rows. Individual edits, pending and deliberately unreviewed proposals, commit/undo, conflict provenance and optional post-commit training retain their previous semantics. Sort columns are constrained by an SQL whitelist and have a stable unit-ID tie-breaker.
 
 Apply classifier/committee source status is not computed while Apply is hidden; switching to Apply refreshes the current source list. After a committed Apply batch changes training evidence, the Develop classifier/committee badges reconcile on returning to Develop: unaffected fits remain Current and affected retained fits become Stale until retrained. Provisional Apply decisions do not change training freshness. Memo Presentation likewise defers map and page work until its presentation URL is active, resolves the current public view catalog, and accesses local display coordinates by page rows where possible. The rendered memo map is not an Explore visit and does not record navigation.
+
+## Codes, Analyses, and Memos
+
+**Codes** and **Memos** are project-wide research objects rather than exclusive workflow stages. **Analyses** are also project-wide: each named analysis saves a versioned configuration, not computed results. Opening an analysis recalculates results from current observations, human judgments, and selected fitted classifier predictions. Analyses may combine codes and categorical metadata in bar plots, heatmaps, and histograms.
+
+The optional aggregation layer reduces code values from atomic observations to a selected parent key level. Metadata must be constant within each resulting parent group; conflicts fail explicitly. Pairwise correlations use complete cases and are exploratory descriptions, not inferential estimates. Saved-analysis definitions are persisted in schema 18.
 
 ## Integration boundaries
 

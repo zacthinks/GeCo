@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -556,6 +556,14 @@ CREATE INDEX apply_proposals_active_probability_rank_idx
 ON apply_proposals(apply_run_id, probability DESC, unit_id ASC)
 WHERE removed_at IS NULL AND committed_annotation_event_id IS NULL;
 
+CREATE TABLE saved_analyses (
+    analysis_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(trim(name)) > 0),
+    spec_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE VIEW current_annotations AS
 SELECT latest.annotation_event_id,
        latest.observation_id,
@@ -748,6 +756,19 @@ def _migrate_16_to_17(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE semantic_search_results_legacy")
 
 
+def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
+    """Add persisted configuration-only exploratory analyses."""
+    connection.execute("""
+        CREATE TABLE saved_analyses (
+            analysis_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(trim(name)) > 0),
+            spec_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -755,6 +776,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     14: _migrate_14_to_15,
     15: _migrate_15_to_16,
     16: _migrate_16_to_17,
+    17: _migrate_17_to_18,
 }
 
 

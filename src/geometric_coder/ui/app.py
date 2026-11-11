@@ -770,6 +770,8 @@ def create_app(
         prevent_initial_call=True,
     )
 
+    from geometric_coder.ui.analyses import analysis_tab
+
     app.layout = html.Div(
         [
             dcc.Loading(
@@ -1031,6 +1033,13 @@ def create_app(
                             initial_geometry_id=initial_geometry_id, initial_view_id=initial_view_id,
                             total_units=len(units),
                         ),
+                    ),
+                    dcc.Tab(
+                        label="Analyses",
+                        value="analyses",
+                        className="workflow-tab",
+                        selected_className="workflow-tab-selected",
+                        children=analysis_tab(dcc=dcc, html=html, project=project),
                     ),
                     dcc.Tab(
                         label="Memos",
@@ -4276,6 +4285,7 @@ def create_app(
         Output("code-center-units-table", "data"),
         Input("code-center-selected-store", "data"),
         Input("workspace-tabs", "value"),
+        Input("code-center-view-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
@@ -4283,12 +4293,13 @@ def create_app(
     def load_code_center_units(
         code_id: int | None,
         workspace: str | None,
+        content_tab: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
     ) -> Any:
         del explore_refresh, focus_refresh, teaching_refresh
-        if workspace != "codes":
+        if workspace != "codes" or content_tab != "list":
             return no_update
         if code_id is None:
             return []
@@ -4335,6 +4346,7 @@ def create_app(
         Input("code-center-page-number", "value"),
         Input("code-center-include-positives", "value"),
         Input("workspace-tabs", "value"),
+        Input("code-center-view-tabs", "value"),
         Input("explore-annotation-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("teaching-example-refresh-store", "data"),
@@ -4349,6 +4361,7 @@ def create_app(
         page_number: Any,
         include_positive_values: list[str] | None,
         workspace: str | None,
+        content_tab: str | None,
         explore_refresh: int | None,
         focus_refresh: int | None,
         teaching_refresh: int | None,
@@ -4356,7 +4369,7 @@ def create_app(
         relayout_data: dict[str, Any] | None,
     ) -> tuple[Any, str]:
         del explore_refresh, focus_refresh, teaching_refresh
-        if workspace != "codes":
+        if workspace != "codes" or content_tab != "geometry":
             return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
@@ -7507,6 +7520,8 @@ def create_app(
         )
         return "saved"
 
+    from geometric_coder.ui.analyses import register_analysis_callbacks
+    register_analysis_callbacks(app, project)
     return app
 
 

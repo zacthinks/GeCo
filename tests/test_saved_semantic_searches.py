@@ -68,11 +68,12 @@ def test_schema_15_migrates_to_query_catalog(project):
     path = project.project_dir / "project.sqlite3"
     gid = _geometry(project)
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE saved_analyses")
         con.execute("DROP TABLE semantic_search_results")
         con.execute("DROP TABLE semantic_queries")
         con.execute("UPDATE project SET schema_version=15")
     reopened = GeometricCoder.open(project.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 17
+    assert reopened.database.project_metadata()["schema_version"] == 18
     assert reopened.database.get_geometry(gid)["name"] == "sample"
     assert reopened.saved_semantic_searches.queries() == []
 
@@ -82,6 +83,7 @@ def test_legacy_v16_saved_results_migrate_without_loss(project):
     gid = _geometry(project)
     path = project.project_dir / "project.sqlite3"
     with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE saved_analyses")
         con.execute("DROP TABLE semantic_search_results")
         con.execute("DROP TABLE semantic_queries")
         for statement in storage._SAVED_SEARCH_SQL:
