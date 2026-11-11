@@ -582,6 +582,7 @@ def register_representation_callbacks(
         Output("representation-wizard-source", "value"),
         Output("representation-wizard-recipe", "value"),
         Output("representation-wizard-name", "value"),
+        Output("representation-wizard-origin", "value"),
         Input("representation-add-button", "n_clicks"),
         Input("representation-detail-add-view", "n_clicks"),
         Input("representation-wizard-close", "n_clicks"),
@@ -597,21 +598,22 @@ def register_representation_callbacks(
     ) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
         if trigger == "representation-wizard-status":
-            return ({"display": "none"}, no_update, no_update, no_update, no_update) if (
+            return ({"display": "none"}, no_update, no_update, no_update, no_update,
+                    no_update) if (
                 status == "Created."
-            ) else (no_update,) * 5
+            ) else (no_update,) * 6
         if trigger in {"representation-wizard-close", "representation-wizard-cancel"}:
-            return {"display": "none"}, no_update, no_update, no_update, no_update
+            return {"display": "none"}, no_update, no_update, no_update, no_update, no_update
         if trigger == "representation-detail-add-view":
             matches = [r for r in inventory or []
                        if r["key"] == selected and r.get("artifact_id")]
             if not matches:
-                return (no_update,) * 5
+                return (no_update,) * 6
             return (
                 {"display": "flex"}, "view",
-                int(matches[0]["representation_id"]), "umap", "",
+                int(matches[0]["representation_id"]), "umap", "", "representation",
             )
-        return {"display": "flex"}, "geometry", None, "umap", ""
+        return {"display": "flex"}, "geometry", None, "umap", "", "representation"
 
     @app.callback(
         Output("representation-wizard-recipe", "options"),
