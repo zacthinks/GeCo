@@ -101,3 +101,43 @@ def test_wizard_exposes_text_source_and_spacy_token_checklists():
     assert '{"source": tokens, "target": source}' not in Path(tg.__file__).read_text(encoding="utf-8")
     assert "teal.subset(" not in Path(tg.__file__).read_text(encoding="utf-8")
     assert 'Output("representation-wizard-recipe", "value", allow_duplicate=True)' in source
+
+
+def test_distinct_spacy_keys_avoid_sentence_level_collisions():
+    assert tg._distinct_spacy_keys(["document_id", "sentence_id"]) == (
+        "spacy_sentence_id", "token_id",
+    )
+    assert tg._distinct_spacy_keys([
+        "document_id", "sentence_id", "token_id",
+        "spacy_sentence_id", "spacy_token_id",
+    ]) == ("spacy_sentence_id_2", "spacy_token_id_2")
+
+
+def test_hf_revision_is_pinned_from_hub_or_existing_commit(monkeypatch):
+    import sys
+    from types import ModuleType
+    fake = ModuleType("huggingface_hub")
+    calls = []
+    class HfApi:
+        def model_info(self, *, repo_id, revision):
+            calls.append((repo_id, revision))
+            return SimpleNamespace(sha="a" * 40)
+    fake.HfApi = HfApi
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    assert tg._resolve_hf_model_commit("owner/model", "v2") == "a" * 40
+    assert calls == [("owner/model", "v2")]
+    assert tg._resolve_hf_model_commit("owner/model", "b" * 40) == "b" * 40
+    assert calls == [("owner/model", "v2")]
+
+
+def test_ui_exposes_saved_token_choice_and_compact_radio_attribute_grid():
+    from geometric_coder.ui import representation_ui as ui
+    source = Path(ui.__file__).read_text(encoding="utf-8")
+    assert 'id="representation-text-token-source"' in source
+    assert "available_spacy_token_artifacts(project)" in source
+    assert 'id="representation-new-tokens-wrap"' in source
+    assert 'className="representation-token-grid"' in source
+    assert 'className="representation-flag-choice"' in source
+    assert "dcc.RadioItems(" in source
+    assert "https://spacy.io/models" in source
+    assert "Remote custom code is disabled." not in source
