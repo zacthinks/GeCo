@@ -365,6 +365,14 @@ def test_reuse_existing_spacy_tokens_without_retokenizing(tmp_path: Path) -> Non
         assert project.get_artifact(created.artifact_id).n_rows == documents.n_rows
         # No new token table or sentence table was created: only the new DTM.
         assert len(project.list_artifacts()) == before + 1
+        # The saved blank spaCy test model has no lemmatizer. Its lemma
+        # fields are empty even though the original token texts are usable.
+        with pytest.raises(Exception, match="No countable values found for token feature 'lemma'"):
+            create_text_geometry(
+                linked.coder, name="empty_lemma_dtm", method="spacy_dtm",
+                existing_tokens=str(tokens.artifact_id), token_field="lemma",
+                token_flags={"is_alpha": "true"},
+            )
         with pytest.raises(Exception, match="no longer available or cannot"):
             create_text_geometry(
                 linked.coder, name="invalid_dtm", method="spacy_dtm",
