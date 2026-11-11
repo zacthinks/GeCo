@@ -1520,6 +1520,7 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .representation-flag-choice label {
   display: flex !important; align-items: center; justify-content: center;
   margin: 0 !important; padding: 0.1rem; min-height: 22px;
+  font-size: 0; /* Keep accessible radio names without repeated cell text. */
 }
 .representation-flag-choice input { cursor: pointer; }
 @media (max-width: 540px) {
