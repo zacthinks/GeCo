@@ -48,6 +48,41 @@ def parse_sentence_transformer_model(value: str) -> str:
     return model
 
 
+def _distinct_spacy_keys(names: list[str]) -> tuple[str, str]:
+    """Choose sentence/token extension keys that do not collide with input data."""
+    used = set(names)
+    result = []
+    for preferred in ("sentence_id", "token_id"):
+        name = preferred
+        if name in used:
+            name = "spacy_" + preferred
+        suffix = 2
+        while name in used:
+            name = f"spacy_{preferred}_{suffix}"
+            suffix += 1
+        used.add(name)
+        result.append(name)
+    return result[0], result[1]
+
+
+def _resolve_hf_model_commit(model: str, revision: str | None) -> str:
+    """Resolve a precise Hub commit for a reproducible frozen model."""
+    if revision and re.fullmatch(r"[a-fA-F0-9]{40}", revision):
+        return revision.lower()
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().model_info(repo_id=model, revision=revision or "main")
+        commit = str(getattr(info, "sha", "") or "")
+        if not re.fullmatch(r"[a-fA-F0-9]{40}", commit):
+            raise ValueError("Hugging Face did not return a valid commit SHA.")
+        return commit.lower()
+    except Exception as exc:
+        raise ConfigurationError(
+            f"Could not resolve a reproducible revision for {model!r}. "
+            "Check the model ID, revision, and network connection."
+        ) from exc
+
+
 def normalize_token_flags(flags: Mapping[str, str] | None) -> dict[str, bool]:
     """User selections are ignore / true / false, never free-form predicates."""
     result: dict[str, bool] = {}
@@ -213,8 +248,6 @@ def create_text_geometry(
             raise ValueError("Truncation must be error or truncate.")
 
     from text_analysis_lab.core.project import Project
-    from text_analysis_lab.core.errors import PipelineError
-
     with Project.open(path) as teal:
         teal.catalog.validate_artifact_alias(clean)
         linked, source = _linked_text_source(teal, coder)
@@ -226,9 +259,11 @@ def create_text_geometry(
                 raise ConfigurationError("The linked source text field is missing.")
             if method == "sentence_transformer":
                 from text_analysis_lab.translators import SentenceTransformerEncoder
+                resolved_commit = _resolve_hf_model_commit(str(model), revision)
                 output = teal.translate(
                     SentenceTransformerEncoder(
-                        model=str(model), revision=revision or None,
+                        model=str(model), revision=resolved_commit,
+                        resolved_revision=resolved_commit,
                         text_field=text_field, normalize=normalize,
                         truncation=truncation, trust_remote_code=False,
                     ),
