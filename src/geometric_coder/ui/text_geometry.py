@@ -94,10 +94,11 @@ def create_text_geometry(
     normalize: bool = False,
     truncation: str = "error",
 ) -> TextGeometryResult:
-    """Build one complete numerical TeAL artifact and link it as a GeCo geometry.
+    """Build a TeAL numerical artifact and link it as a GeCo geometry.
 
-    TeAL handles text tokenization, model caching, translation and persistence.
-    The linking bridge checks key coverage before registration.
+    TeAL handles tokenization, model caching, translation and persistence.
+    spaCy can emit no token rows for empty inputs; GeCo checks full
+    observation coverage before registering a representation.
     """
     clean = _validate_name(coder, name)
     if method not in {"spacy_dtm", "sentence_transformer"}:
@@ -183,18 +184,27 @@ def create_text_geometry(
                         ngram_range=(ngram_min, ngram_max),
                         min_df=min_df, max_features=max_features, binary=binary,
                     ),
-                    {"source": tokens, "target": source}, workers=1,
+                    tokens, workers=1,
+                    batch_by=linked.documents.primary_key[-1], batch_size=256,
                     memo=f"GeCo spaCy document-term matrix {clean!r}.",
                 )["output"]
             if getattr(output.artifact_type, "value", None) not in {
                 "dense_matrix", "sparse_matrix"
             }:
                 raise ConfigurationError("The text recipe did not produce a numerical matrix.")
-            # Key coverage is an absolute prerequisite. A token filter can remove
-            # all tokens in a document, and TeAL's vectorizer may omit that group.
+            # TeAL's tokens-only count vectorizer intentionally omits any
+            # observation with no original token rows. GeCo presently requires
+            # complete matrix coverage for its existing observation universe.
             if list(output.primary_key) != list(linked.documents.primary_key):
                 raise ConfigurationError(
                     "The output key hierarchy does not match the linked observations."
+                )
+            if output.n_rows != linked.documents.n_rows:
+                raise ConfigurationError(
+                    "The spaCy document-term matrix does not cover every GeCo "
+                    "observation. spaCy may emit no tokens for empty documents. "
+                    "Filter such observations before creating the linked GeCo "
+                    "workspace, then retry."
                 )
             alias_added = False
             try:
@@ -206,7 +216,7 @@ def create_text_geometry(
                     pipeline = teal.pipeline(start=source, end=output)
                     # A recovered graph is not enough: execute a sample input
                     # through the frozen operators before exposing query search.
-                    replay = pipeline.translate([""], project=teal)["output"]
+                    replay = pipeline.translate(["geco replay probe"], project=teal)["output"]
                     shape = replay["values"].shape
                     if shape != (1, len(output.get_data_columns())):
                         raise ValueError(
