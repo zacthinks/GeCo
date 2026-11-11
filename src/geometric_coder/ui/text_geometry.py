@@ -114,26 +114,51 @@ def _linked_text_source(teal: Any, coder: Any) -> tuple[Any, Any]:
 def _compatible_spacy_tokens(
     teal: Any, source: Any, *, text_field: str,
 ) -> list[dict[str, str]]:
-    """Discover directly sourced, frozen, replayable spaCy token artifacts.
+    """Find spaCy tokens created from the text or from its sibling sentences.
 
-    We deliberately don't accept lookalike tables or sibling outputs from a
-    document-to-sentences operation: those cannot be replayed from the linked
-    sentence text artifact without changing the original tokenization context.
+    TeAL's spaCy operation produces both sentences and tokens from the parent
+    full-document source. Its token artifact has extended-key lineage *from*
+    sentences, even though its operation source is the original documents.
+    Provenance must match the exact operation, not just column names or keys.
     """
     from text_analysis_lab.translators import SpacyTranslator
 
-    candidates: list[dict[str, str]] = []
+    source_id = str(source.artifact_id)
     source_key = tuple(source.primary_key)
-    for row in teal.list_artifacts(
-        artifact_type="table", source_artifact_id=str(source.artifact_id),
-    ):
-        artifact_id = str(row["artifact_id"])
+    producing_source_operation = teal.operation_for_artifact(source)
+    source_is_spacy_sentences = False
+    if producing_source_operation is not None:
+        outputs = teal.operation_outputs(
+            str(producing_source_operation["operation_id"])
+        )
+        source_is_spacy_sentences = any(
+            str(item.get("artifact_id")) == source_id
+            and str(item.get("output_label")) == "sentences"
+            for item in outputs
+        )
+
+    # Direct-source tokens are operation descendants. Sibling tokens are
+    # *lineage* descendants of sentences; enumerate both routes.
+    records: dict[str, dict[str, Any]] = {}
+    for row in [
+        *teal.list_artifacts(
+            artifact_type="table", source_artifact_id=source_id,
+        ),
+        *teal.list_artifacts(
+            artifact_type="table", basis_artifact_id=source_id,
+        ),
+    ]:
+        records[str(row["artifact_id"])] = row
+
+    candidates: list[dict[str, str]] = []
+    for artifact_id, row in records.items():
         try:
             candidate = teal.get_artifact(artifact_id)
             operation = teal.operation_for_artifact(candidate)
             if operation is None or str(operation.get("status")) != "complete":
                 continue
-            outputs = teal.operation_outputs(str(operation["operation_id"]))
+            operation_id = str(operation["operation_id"])
+            outputs = teal.operation_outputs(operation_id)
             if not any(
                 str(item.get("artifact_id")) == artifact_id
                 and str(item.get("output_label")) == "tokens"
@@ -143,11 +168,32 @@ def _compatible_spacy_tokens(
             translator = teal.get_operator(str(operation["operator_id"]))
             if not isinstance(translator, SpacyTranslator):
                 continue
-            if translator.text_field != text_field:
-                continue
+
             key = tuple(candidate.primary_key)
-            if len(key) != len(source_key) + 2 or key[:len(source_key)] != source_key:
+            direct = (
+                len(key) == len(source_key) + 2
+                and key[:len(source_key)] == source_key
+                and translator.text_field == text_field
+                and any(
+                    str(item.get("source_artifact_id")) == source_id
+                    for item in teal.operation_sources(operation_id)
+                )
+            )
+            sibling = (
+                source_is_spacy_sentences
+                and producing_source_operation is not None
+                and str(producing_source_operation["operation_id"]) == operation_id
+                and len(key) == len(source_key) + 1
+                and key[:len(source_key)] == source_key
+                and any(
+                    str(edge.get("basis_artifact_id")) == source_id
+                    for edge in teal.catalog.artifact_basis(artifact_id)
+                )
+            )
+            if not (direct or sibling):
                 continue
+
+            # Strict replayability is still required for GeCo semantic queries.
             teal.pipeline(start=source, end=candidate)
             aliases = row.get("aliases") or []
             display_name = (
@@ -158,7 +204,7 @@ def _compatible_spacy_tokens(
                 "value": artifact_id,
             })
         except Exception:
-            # An incomplete/deleted or nonreplayable artifact is not offered.
+            # Incomplete/non-replayable artifacts are not offered.
             continue
     return sorted(candidates, key=lambda item: item["label"].casefold())
 
