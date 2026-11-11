@@ -185,7 +185,8 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     html.Div([
                         html.Label("spaCy model and language"),
                         dcc.Input(id="representation-text-spacy-model", type="text",
-                                  value="en_core_web_sm", className="text-input"),
+                                  value="", placeholder="e.g. en_core_web_sm",
+                                  className="text-input"),
                         html.P([
                             "Choose a model for the language of your text. ",
                             html.A("Browse spaCy language models",
