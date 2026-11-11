@@ -42,18 +42,19 @@ def _component_by_id(component, component_id):
     raise LookupError(component_id)
 
 
-def _seed_documents(project):
-    docs = pd.DataFrame({
-        "row_id": list(range(12)),
-        "text": [
-            "apple banana orange pear", "pear apple banana kiwi",
-            "car train highway bus", "bus train car railroad",
-            "biology cells protein gene", "protein cells gene enzyme",
-            "finance revenue profit shares", "shares revenue earnings profit",
-            "climate warming carbon emissions", "carbon climate weather warming",
-            "music rhythm piano melody", "melody piano music rhythm",
-        ],
-    })
+def _seed_documents(project, docs=None):
+    if docs is None:
+        docs = pd.DataFrame({
+            "row_id": list(range(12)),
+            "text": [
+                "apple banana orange pear", "pear apple banana kiwi",
+                "car train highway bus", "bus train car railroad",
+                "biology cells protein gene", "protein cells gene enzyme",
+                "finance revenue profit shares", "shares revenue earnings profit",
+                "climate warming carbon emissions", "carbon climate weather warming",
+                "music rhythm piano melody", "melody piano music rhythm",
+            ],
+        })
     writer = create_artifact_writer(
         artifact_type="table",
         artifact_dir=project.storage.artifact_dir("integration_documents"),
@@ -172,7 +173,7 @@ def test_live_teal_representations_survive_reopen_and_ui_callbacks(tmp_path: Pat
 
 
 def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> None:
-    """Real TeAL spaCy-token/subset/count pipeline, no model download."""
+    """Real TeAL spaCy/token/metadata-filter/count pipeline, no model download."""
     spacy = pytest.importorskip("spacy")
     from geometric_coder.ui.text_geometry import create_text_geometry
 
@@ -195,7 +196,9 @@ def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> N
         result = create_text_geometry(
             coder, name="spacy_tokens", method="spacy_dtm",
             model=str(model_dir),
-            token_field="text", token_flags={"is_alpha": "true"},
+            token_field="text", token_flags={
+                "is_alpha": "true", "is_stop": "false",
+            },
             ngram_min=1, ngram_max=1, min_df=1,
         )
         assert result.geometry_id > 0
@@ -206,6 +209,13 @@ def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> N
         assert sparse.issparse(vector.get_matrix())
         assert "apple" in vector.get_data_columns()
         assert coder.geometry_matrix(result.geometry_id).shape[0] == documents.n_rows
+        assert result.replayable
+        query = coder.transform_query(result.geometry_id, "apple")
+        assert query.shape == (1, len(vector.get_data_columns()))
+        assert query.toarray()[0, vector.get_data_columns().index("apple")] == 1
+        assert len(coder.semantic_search(
+            "apple", geometry_names=["spacy_tokens"],
+        )["spacy_tokens"]) == documents.n_rows
         linked.close()
     finally:
         project.close()
@@ -262,6 +272,42 @@ def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
         assert matrix.primary_key == documents.primary_key
         assert matrix.get_matrix().shape == (12, 2)
         assert linked.coder.geometry_matrix(created.geometry_id).shape == (12, 2)
+        linked.close()
+    finally:
+        project.close()
+
+def test_spacy_source_geometry_keeps_tokenless_original_rows(tmp_path: Path) -> None:
+    spacy = pytest.importorskip("spacy")
+    from geometric_coder.ui.text_geometry import create_text_geometry
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    model_dir = tmp_path / "local_spacy"
+    nlp.to_disk(model_dir)
+    project = teal.Project.create(tmp_path / "keyed_zeros", name="keyed_zeros")
+    try:
+        source = _seed_documents(project, pd.DataFrame({
+            "row_id": [0, 1, 2, 3],
+            "text": ["apple banana", "and the", "!!!", ""],
+        }))
+        baseline = project.translate(
+            CountVectorizer(text_field="text", min_df=1), source,
+        )["output"]
+        linked = project.geco.create(
+            "zero_rows", documents=source, text_field="text", geometry=baseline,
+        )
+        created = create_text_geometry(
+            linked.coder, name="filtered_dtm", method="spacy_dtm",
+            model=str(model_dir),
+            token_flags={"is_alpha": "true", "is_stop": "false"},
+        )
+        matrix = project.get_artifact(created.artifact_id).get_matrix()
+        assert matrix.shape[0] == 4
+        assert matrix[0].nnz == 2
+        assert all(matrix[index].nnz == 0 for index in (1, 2, 3))
+        query = linked.coder.transform_query(created.geometry_id, "!!!")
+        assert query.shape == (1, matrix.shape[1])
+        assert query.nnz == 0
         linked.close()
     finally:
         project.close()
