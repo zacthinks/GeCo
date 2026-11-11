@@ -28,6 +28,8 @@ New-text capability is **geometry-specific**, not a project-wide all-or-nothing 
 
 In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns immutable numerical artifacts and their transformation lineage; GeCo manages local names, registrations, and use as geometries and views. Removing a GeCo registration does not delete the underlying TeAL artifact.
 
+The Add Representation wizard suggests a lowercase SQL-safe name based on the source representation and method, appending the target dimensionality when known and a numeric suffix for collisions. Suggested names update with wizard settings until the researcher edits the name manually; this is a UI convenience, not a new identity or provenance contract. GeCo's current sibling spaCy token discovery and frozen text replay use TeAL's v0.11.3+ linked-workspace APIs.
+
 The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` remain compatibility boundaries. One-dimensional jitter changes displayed coordinates only, not analytic distances.
 
 ## Explore, Develop, and Apply & Review
