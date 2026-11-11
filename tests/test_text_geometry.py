@@ -186,6 +186,10 @@ def test_saved_token_dropdown_does_not_expose_model_paths(monkeypatch):
         def __init__(self, path):
             self.geco = object()
 
+        @classmethod
+        def open(cls, path):
+            return cls(path)
+
         def __enter__(self):
             return self
 
