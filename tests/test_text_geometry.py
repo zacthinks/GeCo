@@ -146,4 +146,59 @@ def test_ui_exposes_saved_token_choice_and_compact_radio_attribute_grid():
     assert 'className="representation-flag-choice"' in source
     assert "dcc.RadioItems(" in source
     assert "https://spacy.io/models" in source
+    assert "https://huggingface.co/models?library=sentence-transformers" in source
     assert "Remote custom code is disabled." not in source
+
+
+def test_umap_wizard_prefers_cosine_without_changing_translator_default():
+    pytest.importorskip("text_analysis_lab")
+    from geometric_coder.ui.representation_manager import (
+        _operator_for_recipe, geometry_parameter_specs,
+    )
+    primary, advanced = geometry_parameter_specs("umap")
+    metric = next(spec for spec in primary + advanced if spec["name"] == "metric")
+    assert metric["default"] == "cosine"
+    assert {"cosine", "euclidean"}.issubset(
+        {option["value"] for option in metric["options"]}
+    )
+    assert _operator_for_recipe("umap", {"metric": metric["default"]}).metric == "cosine"
+
+
+def test_saved_token_dropdown_does_not_expose_model_paths(monkeypatch):
+    from geometric_coder.ui import text_geometry as tg
+    import sys
+    from types import ModuleType
+
+    class Linked:
+        def available_spacy_tokens(self):
+            return [
+                {
+                    "label": "prepared_tokens — /very/long/private/path/to/spacy",
+                    "value": "art_prepared",
+                },
+                {"label": "Tokens abcdef12 — en_core_web_sm", "value": "art_other"},
+            ]
+
+        def close(self):
+            pass
+
+    class Project:
+        def __init__(self, path):
+            self.geco = object()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    module = ModuleType("text_analysis_lab.core.project")
+    module.Project = Project
+    monkeypatch.setitem(sys.modules, "text_analysis_lab.core.project", module)
+    monkeypatch.setattr(tg, "teal_linked_project", lambda _: Path("/tmp/teal"))
+    monkeypatch.setattr(tg, "_linked_text_source", lambda *_: (Linked(), object()))
+    options = tg.available_spacy_token_artifacts(object())
+    assert options == [
+        {"label": "prepared_tokens", "value": "art_prepared"},
+        {"label": "Tokens abcdef12", "value": "art_other"},
+    ]
