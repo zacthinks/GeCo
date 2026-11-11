@@ -62,14 +62,6 @@ def normalize_token_flags(flags: Mapping[str, str] | None) -> dict[str, bool]:
     return result
 
 
-def _keep_tokens(frame: Any, required: Mapping[str, bool]) -> Any:
-    """Pure deterministic mask saved as an ordinary TeAL subset callable asset."""
-    mask = frame.index == frame.index
-    for column, expected in required.items():
-        mask = mask & frame[column].eq(expected).fillna(False)
-    return mask
-
-
 def _validate_name(coder: Any, name: str) -> str:
     clean = str(name).strip()
     if not clean:
