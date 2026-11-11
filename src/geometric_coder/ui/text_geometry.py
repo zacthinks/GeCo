@@ -263,18 +263,34 @@ def create_text_geometry(
                         memo=f"GeCo spaCy tokens for geometry {clean!r}.",
                     )
                     tokens = parsed["tokens"]
-                output = teal.translate(
-                    ArtifactCountVectorizer(
-                        field=token_field,
-                        group_by=tuple(linked.documents.primary_key),
-                        metadata_filters=required,
-                        ngram_range=(ngram_min, ngram_max),
-                        min_df=min_df, max_features=max_features, binary=binary,
-                    ),
-                    tokens, workers=1,
-                    batch_by=linked.documents.primary_key[-1], batch_size=256,
-                    memo=f"GeCo spaCy document-term matrix {clean!r}.",
-                )["output"]
+                from text_analysis_lab.core.errors import ArtifactError
+                try:
+                    output = teal.translate(
+                        ArtifactCountVectorizer(
+                            field=token_field,
+                            group_by=tuple(linked.documents.primary_key),
+                            metadata_filters=required,
+                            ngram_range=(ngram_min, ngram_max),
+                            min_df=min_df, max_features=max_features, binary=binary,
+                        ),
+                        tokens, workers=1,
+                        batch_by=linked.documents.primary_key[-1], batch_size=256,
+                        memo=f"GeCo spaCy document-term matrix {clean!r}.",
+                    )["output"]
+                except ArtifactError as exc:
+                    if "found no countable field values" not in str(exc):
+                        raise
+                    tip = (
+                        " Saved spaCy tokens may have empty lemmas if their model "
+                        "has no lemmatizer; try Token text or a lemmatizing model."
+                        if token_field == "lemma" else ""
+                    )
+                    raise ConfigurationError(
+                        f"No countable values found for token feature {token_field!r}. "
+                        "The selected token field may be empty, or the token attribute "
+                        f"filters ({required or 'none'}) may exclude all tokens."
+                        + tip
+                    ) from exc
             if getattr(output.artifact_type, "value", None) not in {
                 "dense_matrix", "sparse_matrix"
             }:
