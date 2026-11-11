@@ -143,7 +143,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 
 GeCo is an **exploratory** environment. Its maps, classifiers, and proposals support reading, code development, interpretation, and hypothesis generation. They are **not**, on their own, population estimates or a substitute for an inferential research design. Projects that require confirmatory inference should use an appropriate downstream analysis workflow.
 
-**Current status:** GeCo is under active pre-1.0 development (package version 0.10.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
+**Current status:** GeCo is under active pre-1.0 development (package version 0.11.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
 
 ## Development
 
