@@ -169,3 +169,51 @@ def test_live_teal_representations_survive_reopen_and_ui_callbacks(tmp_path: Pat
             assert coder.view_coordinates(-one_id).shape == (12, 1)
     finally:
         reopened.close()
+
+
+def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> None:
+    """Real TeAL spaCy-token/subset/count pipeline, no model download."""
+    spacy = pytest.importorskip("spacy")
+    from geometric_coder.ui.text_geometry import create_text_geometry
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    model_dir = tmp_path / "local_spacy"
+    nlp.to_disk(model_dir)
+
+    project_path = tmp_path / "text_source_project"
+    project = teal.Project.create(project_path, name="text_source_representation")
+    try:
+        documents = _seed_documents(project)
+        baseline = project.translate(
+            CountVectorizer(text_field="text", min_df=1), documents,
+        )["output"]
+        linked = project.geco.create(
+            "linked_text", documents=documents, text_field="text", geometry=baseline,
+        )
+        coder = linked.coder
+        result = create_text_geometry(
+            coder, name="spacy_tokens", method="spacy_dtm",
+            model=str(model_dir),
+            token_field="text", token_flags={"is_alpha": "true"},
+            ngram_min=1, ngram_max=1, min_df=1,
+        )
+        assert result.geometry_id > 0
+        assert result.artifact_id
+        vector = project.get_artifact(result.artifact_id)
+        assert vector.primary_key == documents.primary_key
+        assert vector.n_rows == documents.n_rows
+        assert sparse.issparse(vector.get_matrix())
+        assert "apple" in vector.get_data_columns()
+        assert coder.geometry_matrix(result.geometry_id).shape[0] == documents.n_rows
+        linked.close()
+    finally:
+        project.close()
+
+    reopened = teal.Project.open(project_path)
+    try:
+        with reopened.geco.open("linked_text") as linked:
+            names = {record["name"] for record in linked.coder.geometries()}
+            assert "spacy_tokens" in names
+    finally:
+        reopened.close()
