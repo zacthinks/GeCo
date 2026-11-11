@@ -20,7 +20,9 @@ jobs:
         with:
           repository: zacthinks/text-analysis-lab
           path: _teal
-          ref: main
+          # Verify the sibling-spaCy replay dependency before TeAL PR #73 merges.
+          # Restore main after the upstream merge and rerun this workflow.
+          ref: f9d07b7091c2c592b468347ebcefb5b8e5e0cf7a
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0
