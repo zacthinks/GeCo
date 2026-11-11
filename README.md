@@ -20,6 +20,8 @@ In TeAL-linked projects, **Manage Representations** lets you create and compare 
 
 From **Original text**, GeCo can also request a new numerical geometry from TeAL: a spaCy-token document-term matrix (including reuse of compatible stored tokens) or Sentence Transformer embeddings. Model selection, token filters, and frozen replay remain TeAL-backed; geometries created this way can support semantic search with the same frozen text transformation.
 
+When adding a representation or view, GeCo proposes an editable, lowercase, underscore-separated name from the source and method, such as `tfidf_umap_2d` or `original_text_spacy_dtm`. The name includes output dimensions when known and a numeric suffix if a name is already taken. You can replace the suggestion with your own name. Reusing saved spaCy tokens produced alongside sentence artifacts requires TeAL v0.11.3 or newer.
+
 GeCo also supports **topic-model exploration**. Inspect topic memberships, color observations by their dominant topic or their association with a particular topic, and give topics meaningful labels as you interpret them. In projects integrated with **Text Analysis Lab (TeAL)**, you can also fit topic models from existing representations—including latent Dirichlet allocation (LDA) and a broad range of clustering-based approaches—and explore their results in GeCo.
 
 As you discover patterns and exceptions, develop candidate codes, assign judgments to individual observations or contiguous spans, and write memos linked to the original evidence. Explore is a place to make interpretive discoveries, not just to browse a visualization.
