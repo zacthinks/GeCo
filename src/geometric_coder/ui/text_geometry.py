@@ -6,7 +6,6 @@ tokenizer, vocabulary, embedding cache, or artifact format.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -184,21 +183,15 @@ def create_text_geometry(
                     memo=f"GeCo spaCy tokens for geometry {clean!r}.",
                 )
                 tokens = parsed["tokens"]
-                if required:
-                    tokens = teal.subset(
-                        tokens, partial(_keep_tokens, required=required),
-                        data_columns=list(required),
-                        form="table", iter_batches=True, workers=1,
-                        memo=f"GeCo token attributes for geometry {clean!r}.",
-                    )["output"]
                 output = teal.translate(
                     ArtifactCountVectorizer(
                         field=token_field,
                         group_by=tuple(linked.documents.primary_key),
+                        metadata_filters=required,
                         ngram_range=(ngram_min, ngram_max),
                         min_df=min_df, max_features=max_features, binary=binary,
                     ),
-                    tokens, workers=1,
+                    {"source": tokens, "target": source}, workers=1,
                     memo=f"GeCo spaCy document-term matrix {clean!r}.",
                 )["output"]
             if getattr(output.artifact_type, "value", None) not in {
@@ -216,24 +209,24 @@ def create_text_geometry(
                 if clean not in output.aliases:
                     output.add_alias(clean)
                     alias_added = True
+                from text_analysis_lab.core.errors import PipelineError
                 try:
-                    teal.pipeline(start=source, end=output)
-                except PipelineError:
-                    replayable = False
-                else:
-                    replayable = True
-                if replayable:
-                    geometry_id = linked.add_geometry(clean, output)
-                else:
-                    # TeAL's provider validates complete ordered coverage
-                    # before we create a navigation-only registration.
-                    from text_analysis_lab.integrations.geco import _external_ref
-                    keys = linked._manager._document_keys(linked.documents)
-                    linked.external_provider.geometry_matrix(_external_ref(output), keys)
-                    geometry_id = coder.register_external_geometry(
-                        name=clean, external_ref={"artifact_id": str(output.artifact_id)},
-                        supports_query=False, supports_text_transform=False,
-                    )
+                    pipeline = teal.pipeline(start=source, end=output)
+                    # A recovered graph is not enough: execute a sample input
+                    # through the frozen operators before exposing query search.
+                    replay = pipeline.translate([""], project=teal)["output"]
+                    shape = replay["values"].shape
+                    if shape != (1, len(output.get_data_columns())):
+                        raise ValueError(
+                            f"Frozen geometry replay returned {shape}, expected "
+                            f"(1, {len(output.get_data_columns())})."
+                        )
+                except (PipelineError, ValueError) as exc:
+                    raise ConfigurationError(
+                        f"Geometry {clean!r} cannot replay original text through "
+                        "its frozen TeAL pipeline."
+                    ) from exc
+                geometry_id = linked.add_geometry(clean, output)
             except Exception:
                 if alias_added:
                     output.remove_alias(clean)
@@ -241,5 +234,5 @@ def create_text_geometry(
             return TextGeometryResult(
                 geometry_id=int(geometry_id),
                 artifact_id=str(output.artifact_id),
-                replayable=bool(replayable),
+                replayable=True,
             )
