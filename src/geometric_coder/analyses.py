@@ -231,7 +231,14 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
     variables, warnings = _resolve_variables(project, normalized)
-    if normalized.get("aggregation") is not None or normalized["kind"] == "distribution" or normalized["measure"] == "correlation" or (normalized["kind"] == "heatmap" and any(v["type"] == "metadata" for v in variables)):
+    # All Jaccard heatmaps use the same pairwise-complete calculations,
+    # regardless of whether categorical metadata are also selected.
+    if (
+        normalized.get("aggregation") is not None
+        or normalized["kind"] == "distribution"
+        or normalized["measure"] in {"correlation", "jaccard"}
+        or (normalized["kind"] == "heatmap" and any(v["type"] == "metadata" for v in variables))
+    ):
         from geometric_coder.analysis_matrix import compute_expanded_analysis
         return compute_expanded_analysis(project, normalized, variables, warnings)
     codes = [v for v in variables if v["type"] == "code"]
@@ -260,12 +267,10 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         values = [[0.0] * n for _ in range(n)]
         for i in range(n):
             count = int(row[f"c{i}"] or 0)
-            values[i][i] = float(count) if normalized["measure"] == "count" else (1.0 if count else 0.0)
+            values[i][i] = float(count)
             for j in range(i + 1, n):
                 both = int(row[f"p{i}_{j}"] or 0)
-                union = int(row[f"c{i}"] or 0) + int(row[f"c{j}"] or 0) - both
-                value = float(both) if normalized["measure"] == "count" else (both / union if union else 0.0)
-                values[i][j] = values[j][i] = value
+                values[i][j] = values[j][i] = float(both)
         return {"kind": "heatmap", "names": [v["name"] for v in codes],
                 "values": values, "measure": normalized["measure"], "warnings": warnings}
     # Bar charts: counts of positive values, optionally grouped by one
