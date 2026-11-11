@@ -259,9 +259,9 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                                     dcc.RadioItems(
                                         id={"type": "representation-token-flag", "name": flag},
                                         options=[
-                                            {"label": "", "value": "true"},
-                                            {"label": "", "value": "false"},
-                                            {"label": "", "value": "any"},
+                                            {"label": "True", "value": "true"},
+                                            {"label": "False", "value": "false"},
+                                            {"label": "Any", "value": "any"},
                                         ],
                                         value="any", inline=True,
                                         className="representation-flag-choice",
