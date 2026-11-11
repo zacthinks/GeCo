@@ -111,104 +111,6 @@ def _linked_text_source(teal: Any, coder: Any) -> tuple[Any, Any]:
     return linked, source
 
 
-def _compatible_spacy_tokens(
-    teal: Any, source: Any, *, text_field: str,
-) -> list[dict[str, str]]:
-    """Find spaCy tokens created from the text or from its sibling sentences.
-
-    TeAL's spaCy operation produces both sentences and tokens from the parent
-    full-document source. Its token artifact has extended-key lineage *from*
-    sentences, even though its operation source is the original documents.
-    Provenance must match the exact operation, not just column names or keys.
-    """
-    from text_analysis_lab.translators import SpacyTranslator
-
-    source_id = str(source.artifact_id)
-    source_key = tuple(source.primary_key)
-    producing_source_operation = teal.operation_for_artifact(source)
-    source_is_spacy_sentences = False
-    if producing_source_operation is not None:
-        outputs = teal.operation_outputs(
-            str(producing_source_operation["operation_id"])
-        )
-        source_is_spacy_sentences = any(
-            str(item.get("artifact_id")) == source_id
-            and str(item.get("output_label")) == "sentences"
-            for item in outputs
-        )
-
-    # Direct-source tokens are operation descendants. Sibling tokens are
-    # *lineage* descendants of sentences; enumerate both routes.
-    records: dict[str, dict[str, Any]] = {}
-    for row in [
-        *teal.list_artifacts(
-            artifact_type="table", source_artifact_id=source_id,
-        ),
-        *teal.list_artifacts(
-            artifact_type="table", basis_artifact_id=source_id,
-        ),
-    ]:
-        records[str(row["artifact_id"])] = row
-
-    candidates: list[dict[str, str]] = []
-    for artifact_id, row in records.items():
-        try:
-            candidate = teal.get_artifact(artifact_id)
-            operation = teal.operation_for_artifact(candidate)
-            if operation is None or str(operation.get("status")) != "complete":
-                continue
-            operation_id = str(operation["operation_id"])
-            outputs = teal.operation_outputs(operation_id)
-            if not any(
-                str(item.get("artifact_id")) == artifact_id
-                and str(item.get("output_label")) == "tokens"
-                for item in outputs
-            ):
-                continue
-            translator = teal.get_operator(str(operation["operator_id"]))
-            if not isinstance(translator, SpacyTranslator):
-                continue
-
-            key = tuple(candidate.primary_key)
-            direct = (
-                len(key) == len(source_key) + 2
-                and key[:len(source_key)] == source_key
-                and translator.text_field == text_field
-                and any(
-                    str(item.get("source_artifact_id")) == source_id
-                    for item in teal.operation_sources(operation_id)
-                )
-            )
-            sibling = (
-                source_is_spacy_sentences
-                and producing_source_operation is not None
-                and str(producing_source_operation["operation_id"]) == operation_id
-                and len(key) == len(source_key) + 1
-                and key[:len(source_key)] == source_key
-                and any(
-                    str(edge.get("basis_artifact_id")) == source_id
-                    for edge in teal.catalog.artifact_basis(artifact_id)
-                )
-            )
-            if not (direct or sibling):
-                continue
-
-            # Strict replayability is still required for GeCo semantic queries.
-            teal.pipeline(start=source, end=candidate)
-            aliases = row.get("aliases") or []
-            display_name = (
-                str(aliases[0]) if aliases else f"Tokens {artifact_id[:8]}"
-            )
-            candidates.append({
-                "label": f"{display_name} — {translator.model}",
-                "value": artifact_id,
-            })
-        except Exception:
-            # Incomplete/non-replayable artifacts are not offered.
-            continue
-    return sorted(candidates, key=lambda item: item["label"].casefold())
-
-
 def available_spacy_token_artifacts(coder: Any) -> list[dict[str, str]]:
     """Options for the wizard, populated on opening from TeAL provenance."""
     path = teal_linked_project(coder)
@@ -216,11 +118,9 @@ def available_spacy_token_artifacts(coder: Any) -> list[dict[str, str]]:
         return []
     from text_analysis_lab.core.project import Project
     with Project.open(path) as teal:
-        linked, source = _linked_text_source(teal, coder)
+        linked, _ = _linked_text_source(teal, coder)
         try:
-            return _compatible_spacy_tokens(
-                teal, source, text_field=str(linked.manifest.get("text_field", "text")),
-            )
+            return linked.available_spacy_tokens()
         finally:
             linked.close()
 
@@ -330,10 +230,7 @@ def create_text_geometry(
                 )
                 if existing_tokens:
                     valid = {
-                        item["value"]
-                        for item in _compatible_spacy_tokens(
-                            teal, source, text_field=text_field,
-                        )
+                        item["value"] for item in linked.available_spacy_tokens()
                     }
                     if existing_tokens not in valid:
                         raise ConfigurationError(
@@ -392,23 +289,8 @@ def create_text_geometry(
                 if clean not in output.aliases:
                     output.add_alias(clean)
                     alias_added = True
-                from text_analysis_lab.core.errors import PipelineError
-                try:
-                    pipeline = teal.pipeline(start=source, end=output)
-                    # A recovered graph is not enough: execute a sample input
-                    # through the frozen operators before exposing query search.
-                    replay = pipeline.translate(["geco replay probe"], project=teal)["output"]
-                    shape = replay["values"].shape
-                    if shape != (1, len(output.get_data_columns())):
-                        raise ValueError(
-                            f"Frozen geometry replay returned {shape}, expected "
-                            f"(1, {len(output.get_data_columns())})."
-                        )
-                except (PipelineError, ValueError) as exc:
-                    raise ConfigurationError(
-                        f"Geometry {clean!r} cannot replay original text through "
-                        "its frozen TeAL pipeline."
-                    ) from exc
+                # TeAL owns frozen pipeline and lineage policy.
+                linked.validate_text_replay(output)
                 geometry_id = linked.add_geometry(clean, output)
             except Exception:
                 if alias_added:
