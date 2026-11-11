@@ -17,7 +17,7 @@ from geometric_coder.ui.topic_creation import teal_linked_project
 # Boolean attributes emitted by TeAL's SpacyTranslator, not arbitrary Python
 # expressions. Each can be ignored, required true, or required false.
 TOKEN_FLAGS = (
-    "is_alpha", "is_ascii", "is_digit", "is_lower", "is_upper", "is_title",
+    "is_placeholder", "is_alpha", "is_ascii", "is_digit", "is_lower", "is_upper", "is_title",
     "is_punct", "is_left_punct", "is_right_punct", "is_space", "is_bracket",
     "is_quote", "is_currency", "is_stop", "is_oov", "like_url", "like_num",
     "like_email", "is_sent_start", "is_sent_end",
@@ -86,6 +86,7 @@ def create_text_geometry(
     revision: str | None = None,
     token_field: str = "text",
     token_flags: Mapping[str, str] | None = None,
+    empty_doc: str = "raise",
     ngram_min: int = 1,
     ngram_max: int = 1,
     min_df: int = 1,
@@ -109,6 +110,8 @@ def create_text_geometry(
         if token_field not in TOKEN_FIELDS:
             raise ValueError("Choose token text, lemma or normalized form.")
         required = normalize_token_flags(token_flags)
+        if empty_doc not in {"raise", "dummy"}:
+            raise ValueError("Choose to raise on empty documents or insert a dummy token.")
         if (isinstance(ngram_min, bool) or isinstance(ngram_max, bool)
                 or not isinstance(ngram_min, int) or not isinstance(ngram_max, int)
                 or not 1 <= ngram_min <= ngram_max <= 5):
@@ -167,6 +170,7 @@ def create_text_geometry(
                     SpacyTranslator(
                         model=model or "en_core_web_sm",
                         text_field=text_field,
+                        empty_doc=empty_doc,
                         download_model=True,
                         # A local custom pipeline has no stable package identity:
                         # vendor it in TeAL's frozen operator so it can reopen.
