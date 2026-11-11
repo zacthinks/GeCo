@@ -18,6 +18,8 @@ Search in different ways depending on the question. **Literal search** finds wor
 
 In TeAL-linked projects, **Manage Representations** lets you create and compare numerical representations of your corpus. A representation can be a **geometry** for exploring relationships among texts, a **view** for visualizing a geometry in one or two dimensions, or both.
 
+From **Original text**, GeCo can also request a new numerical geometry from TeAL: a spaCy-token document-term matrix (including reuse of compatible stored tokens) or Sentence Transformer embeddings. Model selection, token filters, and frozen replay remain TeAL-backed; geometries created this way can support semantic search with the same frozen text transformation.
+
 GeCo also supports **topic-model exploration**. Inspect topic memberships, color observations by their dominant topic or their association with a particular topic, and give topics meaningful labels as you interpret them. In projects integrated with **Text Analysis Lab (TeAL)**, you can also fit topic models from existing representations—including latent Dirichlet allocation (LDA) and a broad range of clustering-based approaches—and explore their results in GeCo.
 
 As you discover patterns and exceptions, develop candidate codes, assign judgments to individual observations or contiguous spans, and write memos linked to the original evidence. Explore is a place to make interpretive discoveries, not just to browse a visualization.
@@ -143,7 +145,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 
 GeCo is an **exploratory** environment. Its maps, classifiers, and proposals support reading, code development, interpretation, and hypothesis generation. They are **not**, on their own, population estimates or a substitute for an inferential research design. Projects that require confirmatory inference should use an appropriate downstream analysis workflow.
 
-**Current status:** GeCo is under active pre-1.0 development (package version 0.11.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
+**Current status:** GeCo is under active pre-1.0 development (package version 0.12.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
 
 ## Development
 
