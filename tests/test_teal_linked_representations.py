@@ -276,15 +276,19 @@ def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
     finally:
         project.close()
 
-def test_spacy_source_geometry_keeps_tokenless_original_rows(tmp_path: Path) -> None:
+def test_spacy_missing_token_rows_are_rejected_during_geco_registration(
+    tmp_path: Path,
+) -> None:
+    """No token rows means no DTM row, not an invented all-zero observation."""
     spacy = pytest.importorskip("spacy")
+    from geometric_coder.exceptions import ConfigurationError
     from geometric_coder.ui.text_geometry import create_text_geometry
 
     nlp = spacy.blank("en")
     nlp.add_pipe("sentencizer")
     model_dir = tmp_path / "local_spacy"
     nlp.to_disk(model_dir)
-    project = teal.Project.create(tmp_path / "keyed_zeros", name="keyed_zeros")
+    project = teal.Project.create(tmp_path / "missing_rows", name="missing_rows")
     try:
         source = _seed_documents(project, pd.DataFrame({
             "row_id": [0, 1, 2, 3],
@@ -294,20 +298,15 @@ def test_spacy_source_geometry_keeps_tokenless_original_rows(tmp_path: Path) -> 
             CountVectorizer(text_field="text", min_df=1), source,
         )["output"]
         linked = project.geco.create(
-            "zero_rows", documents=source, text_field="text", geometry=baseline,
+            "missing_rows", documents=source, text_field="text", geometry=baseline,
         )
-        created = create_text_geometry(
-            linked.coder, name="filtered_dtm", method="spacy_dtm",
-            model=str(model_dir),
-            token_flags={"is_alpha": "true", "is_stop": "false"},
-        )
-        matrix = project.get_artifact(created.artifact_id).get_matrix()
-        assert matrix.shape[0] == 4
-        assert matrix[0].nnz == 2
-        assert all(matrix[index].nnz == 0 for index in (1, 2, 3))
-        query = linked.coder.transform_query(created.geometry_id, "!!!")
-        assert query.shape == (1, matrix.shape[1])
-        assert query.nnz == 0
+        with pytest.raises(ConfigurationError, match="does not cover every GeCo"):
+            create_text_geometry(
+                linked.coder, name="filtered_dtm", method="spacy_dtm",
+                model=str(model_dir),
+                token_flags={"is_alpha": "true", "is_stop": "false"},
+            )
+        assert not linked.coder.has_geometry("filtered_dtm")
         linked.close()
     finally:
         project.close()
