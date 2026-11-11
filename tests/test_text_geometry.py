@@ -206,3 +206,49 @@ def test_saved_token_dropdown_does_not_expose_model_paths(monkeypatch):
         {"label": "prepared_tokens", "value": "art_prepared"},
         {"label": "Tokens abcdef12", "value": "art_other"},
     ]
+
+
+def test_representation_name_suggestions_are_sql_safe_and_collision_free():
+    from geometric_coder.ui.representation_ui import (
+        _positive_dimensions, suggest_representation_name,
+    )
+
+    suggest = suggest_representation_name
+    assert suggest("TF-IDF Base", "UMAP", 2, []) == "tf_idf_base_umap_2d"
+    assert suggest("TF-IDF Base", "SVD", 50, []) == "tf_idf_base_svd_50d"
+    assert suggest("Original text", "spaCy DTM", None, []) == "original_text_spacy_dtm"
+    assert suggest("Original text", "Sentence Transformer", None, []) == (
+        "original_text_sentence_transformer"
+    )
+    assert suggest("TF-IDF Base", "UMAP", 2, [
+        "tf_idf_base_umap_2d", "TF_IDF_BASE_UMAP_2D_2",
+    ]) == "tf_idf_base_umap_2d_3"
+    assert suggest("9-gram", "UMAP", 2, []) == "representation_9_gram_umap_2d"
+    assert suggest("漢字", "SVD", None, []) == "representation_svd"
+    assert _positive_dimensions("50") == 50
+    assert _positive_dimensions(2.5) is None
+    assert _positive_dimensions(None) is None
+
+
+def test_representation_name_autofill_keeps_manual_edits():
+    from geometric_coder.ui.representation_ui import autofill_representation_name
+
+    assert autofill_representation_name("", None, "base_umap_2d") == "base_umap_2d"
+    assert autofill_representation_name(
+        "base_umap_2d", "base_umap_2d", "base_svd_20d",
+    ) == "base_svd_20d"
+    assert autofill_representation_name(
+        "my_descriptive_geometry", "base_umap_2d", "base_svd_20d",
+    ) is None
+
+
+def test_representation_wizard_wires_live_suggested_names():
+    from geometric_coder.ui import representation_ui as ui
+
+    source = Path(ui.__file__).read_text(encoding="utf-8")
+    assert 'id="representation-wizard-suggested-name"' in source
+    assert 'def suggest_wizard_name(' in source
+    assert 'Output("representation-wizard-name", "value", allow_duplicate=True)' in source
+    assert 'Input("representation-wizard-view-dimensions", "value")' in source
+    assert 'Input("representation-wizard-recipe", "value")' in source
+    assert 'existing.extend(' in source
