@@ -279,7 +279,7 @@ def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
 def test_spacy_missing_token_rows_are_rejected_during_geco_registration(
     tmp_path: Path,
 ) -> None:
-    """No token rows means no DTM row, not an invented all-zero observation."""
+    """Default error and optional dummy both preserve explicit scientific semantics."""
     spacy = pytest.importorskip("spacy")
     from geometric_coder.exceptions import ConfigurationError
     from geometric_coder.ui.text_geometry import create_text_geometry
@@ -300,13 +300,25 @@ def test_spacy_missing_token_rows_are_rejected_during_geco_registration(
         linked = project.geco.create(
             "missing_rows", documents=source, text_field="text", geometry=baseline,
         )
-        with pytest.raises(ConfigurationError, match="does not cover every GeCo"):
+        with pytest.raises(Exception, match="spaCy produced no tokens"):
             create_text_geometry(
                 linked.coder, name="filtered_dtm", method="spacy_dtm",
                 model=str(model_dir),
                 token_flags={"is_alpha": "true", "is_stop": "false"},
             )
         assert not linked.coder.has_geometry("filtered_dtm")
+        created = create_text_geometry(
+            linked.coder, name="dummy_dtm", method="spacy_dtm",
+            model=str(model_dir), empty_doc="dummy",
+            token_flags={"is_alpha": "true", "is_stop": "false"},
+        )
+        assert created.replayable
+        matrix = project.get_artifact(created.artifact_id).get_matrix()
+        assert matrix.shape[0] == 4
+        assert matrix[0].nnz == 2
+        assert all(matrix[row].nnz == 0 for row in (1, 2, 3))
+        token_query = linked.coder.transform_query(created.geometry_id, "apple")
+        assert token_query.shape == (1, matrix.shape[1])
         linked.close()
     finally:
         project.close()
