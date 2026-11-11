@@ -61,7 +61,8 @@ def _seed_documents(project, docs=None):
         artifact_id="integration_documents",
         label="documents", lineage_mode="new_key", basis_artifact_ids=(),
     )
-    writer.write({"keys": docs[["row_id"]], "data": docs[["text"]]})
+    keys = [field for field in docs.columns if field != "text"]
+    writer.write({"keys": docs[keys], "data": docs[["text"]]})
     writer.finalize()
     project.catalog.register_artifact(
         artifact_id="integration_documents", artifact_type="table",
