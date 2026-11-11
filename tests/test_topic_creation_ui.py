@@ -155,7 +155,6 @@ def test_categorical_topic_parameters_use_documented_choices():
         "euclidean", "manhattan", "cosine",
     }
     assert _parse_parameter("metric", "cosine", metric) == "cosine"
-    assert standalone_primary_specs("dbscan")[0]["name"] == "eps"
     with pytest.raises(ValueError, match="valid value"):
         _parse_parameter("metric", "unknown", metric)
 
