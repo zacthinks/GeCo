@@ -409,3 +409,56 @@ def test_sentence_level_text_creation_uses_noncolliding_spacy_keys(
         linked.close()
     finally:
         project.close()
+
+
+def test_reuse_sibling_spacy_tokens_from_document_sentences(
+    tmp_path: Path,
+) -> None:
+    """GeCo sentence units reuse original document spaCy tokens through provenance."""
+    spacy = pytest.importorskip("spacy")
+    from text_analysis_lab.translators import SpacyTranslator
+    from geometric_coder.ui.text_geometry import (
+        available_spacy_token_artifacts, create_text_geometry,
+    )
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    model_dir = tmp_path / "local_spacy"
+    nlp.to_disk(model_dir)
+    project = teal.Project.create(tmp_path / "sibling_tokens", name="sibling_tokens")
+    try:
+        documents = _seed_documents(project, pd.DataFrame({
+            "row_id": [1, 2],
+            "text": ["alpha beta. gamma delta.", "beta gamma. delta alpha."],
+        }))
+        parsed = project.translate(
+            SpacyTranslator(model=str(model_dir), save_model=True),
+            documents, workers=1,
+        )
+        sentences, tokens = parsed["sentences"], parsed["tokens"]
+        baseline = project.translate(
+            CountVectorizer(text_field="text", min_df=1), sentences,
+        )["output"]
+        linked = project.geco.create(
+            "sibling_sentences", documents=sentences, text_field="text",
+            geometry=baseline,
+        )
+        options = available_spacy_token_artifacts(linked.coder)
+        assert str(tokens.artifact_id) in {item["value"] for item in options}
+        before = len(project.list_artifacts())
+        created = create_text_geometry(
+            linked.coder, name="sibling_dtm", method="spacy_dtm",
+            existing_tokens=str(tokens.artifact_id),
+            token_field="text", token_flags={"is_alpha": "true"},
+        )
+        assert created.replayable
+        assert len(project.list_artifacts()) == before + 1
+        matrix = project.get_artifact(created.artifact_id)
+        assert matrix.primary_key == sentences.primary_key
+        assert matrix.n_rows == sentences.n_rows
+        assert linked.coder.transform_query(created.geometry_id, "alpha beta.").shape == (
+            1, len(matrix.get_data_columns()),
+        )
+        linked.close()
+    finally:
+        project.close()
