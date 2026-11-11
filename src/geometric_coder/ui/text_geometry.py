@@ -62,6 +62,80 @@ def normalize_token_flags(flags: Mapping[str, str] | None) -> dict[str, bool]:
     return result
 
 
+def _linked_text_source(teal: Any, coder: Any) -> tuple[Any, Any]:
+    """Locate the TeAL link and its declared text source, never a shape-based guess."""
+    matches = [
+        row for row in teal.geco.list()
+        if row.get("mode", "explore") == "explore"
+        and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()
+    ]
+    if len(matches) != 1:
+        raise ConfigurationError("Could not uniquely identify the linked TeAL workspace.")
+    linked = teal.geco.open(str(matches[0]["name"]))
+    source = teal.get_artifact(str(linked.manifest["text_artifact_id"]))
+    return linked, source
+
+
+def _compatible_spacy_tokens(teal: Any, source: Any) -> list[dict[str, str]]:
+    """Discover directly sourced, frozen, replayable spaCy token artifacts.
+
+    We deliberately don't accept lookalike tables or sibling outputs from a
+    document-to-sentences operation: those cannot be replayed from the linked
+    sentence text artifact without changing the original tokenization context.
+    """
+    from text_analysis_lab.translators import SpacyTranslator
+
+    candidates: list[dict[str, str]] = []
+    source_key = tuple(source.primary_key)
+    for row in teal.list_artifacts(
+        artifact_type="table", source_artifact_id=str(source.artifact_id),
+    ):
+        artifact_id = str(row["artifact_id"])
+        try:
+            candidate = teal.get_artifact(artifact_id)
+            operation = teal.operation_for_artifact(candidate)
+            if operation is None or str(operation.get("status")) != "complete":
+                continue
+            outputs = teal.operation_outputs(str(operation["operation_id"]))
+            if not any(
+                str(item.get("artifact_id")) == artifact_id
+                and str(item.get("output_label")) == "tokens"
+                for item in outputs
+            ):
+                continue
+            translator = teal.get_operator(str(operation["operator_id"]))
+            if not isinstance(translator, SpacyTranslator):
+                continue
+            key = tuple(candidate.primary_key)
+            if len(key) != len(source_key) + 2 or key[:len(source_key)] != source_key:
+                continue
+            teal.pipeline(start=source, end=candidate)
+            aliases = row.get("aliases") or []
+            display_name = str(aliases[0]) if aliases else artifact_id[:12]
+            candidates.append({
+                "label": f"{display_name} — {translator.model}",
+                "value": artifact_id,
+            })
+        except Exception:
+            # An incomplete/deleted or nonreplayable artifact is not offered.
+            continue
+    return sorted(candidates, key=lambda item: item["label"].casefold())
+
+
+def available_spacy_token_artifacts(coder: Any) -> list[dict[str, str]]:
+    """Options for the wizard, populated on opening from TeAL provenance."""
+    path = teal_linked_project(coder)
+    if path is None:
+        return []
+    from text_analysis_lab.core.project import Project
+    with Project.open(path) as teal:
+        linked, source = _linked_text_source(teal, coder)
+        try:
+            return _compatible_spacy_tokens(teal, source)
+        finally:
+            linked.close()
+
+
 def _validate_name(coder: Any, name: str) -> str:
     clean = str(name).strip()
     if not clean:
@@ -86,6 +160,7 @@ def create_text_geometry(
     revision: str | None = None,
     token_field: str = "text",
     token_flags: Mapping[str, str] | None = None,
+    existing_tokens: str | None = None,
     empty_doc: str = "raise",
     ngram_min: int = 1,
     ngram_max: int = 1,
@@ -110,8 +185,13 @@ def create_text_geometry(
         if token_field not in TOKEN_FIELDS:
             raise ValueError("Choose token text, lemma or normalized form.")
         required = normalize_token_flags(token_flags)
-        if empty_doc not in {"raise", "dummy"}:
-            raise ValueError("Choose to raise on empty documents or insert a dummy token.")
+        if not existing_tokens:
+            if not model or not str(model).strip():
+                raise ValueError(
+                    "Select a spaCy model to create new tokens, or choose an existing token artifact."
+                )
+            if empty_doc not in {"raise", "dummy"}:
+                raise ValueError("Choose to raise on empty documents or insert a dummy token.")
         if (isinstance(ngram_min, bool) or isinstance(ngram_max, bool)
                 or not isinstance(ngram_min, int) or not isinstance(ngram_max, int)
                 or not 1 <= ngram_min <= ngram_max <= 5):
@@ -137,15 +217,8 @@ def create_text_geometry(
 
     with Project.open(path) as teal:
         teal.catalog.validate_artifact_alias(clean)
-        matches = [
-            row for row in teal.geco.list()
-            if row.get("mode", "explore") == "explore"
-            and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()
-        ]
-        if len(matches) != 1:
-            raise ConfigurationError("Could not uniquely identify the linked TeAL workspace.")
-        with teal.geco.open(str(matches[0]["name"])) as linked:
-            source = teal.get_artifact(str(linked.manifest["text_artifact_id"]))
+        linked, source = _linked_text_source(teal, coder)
+        with linked:
             if getattr(source.artifact_type, "value", None) != "table":
                 raise ConfigurationError("The linked text source must be a TeAL table.")
             text_field = str(linked.manifest.get("text_field", "text"))
@@ -166,20 +239,33 @@ def create_text_geometry(
                 from text_analysis_lab.translators import (
                     ArtifactCountVectorizer, SpacyTranslator,
                 )
-                parsed = teal.translate(
-                    SpacyTranslator(
-                        model=model or "en_core_web_sm",
-                        text_field=text_field,
-                        empty_doc=empty_doc,
-                        download_model=True,
-                        # A local custom pipeline has no stable package identity:
-                        # vendor it in TeAL's frozen operator so it can reopen.
-                        save_model=Path(model or "").expanduser().is_dir(),
-                    ),
-                    source, workers=1, batch_size=256,
-                    memo=f"GeCo spaCy tokens for geometry {clean!r}.",
-                )
-                tokens = parsed["tokens"]
+                if existing_tokens:
+                    valid = {
+                        item["value"]
+                        for item in _compatible_spacy_tokens(teal, source)
+                    }
+                    if existing_tokens not in valid:
+                        raise ConfigurationError(
+                            "That token artifact is no longer available or cannot "
+                            "be replayed from this GeCo's linked text source. "
+                            "Select a compatible artifact or create new tokens."
+                        )
+                    tokens = teal.get_artifact(existing_tokens)
+                else:
+                    sentence_key, token_key = _distinct_spacy_keys(
+                        list(source.primary_key) + list(source.get_data_columns())
+                    )
+                    parsed = teal.translate(
+                        SpacyTranslator(
+                            model=str(model), text_field=text_field,
+                            sentence_key=sentence_key, token_key=token_key,
+                            empty_doc=empty_doc, download_model=True,
+                            save_model=Path(str(model)).expanduser().is_dir(),
+                        ),
+                        source, workers=1, batch_size=256,
+                        memo=f"GeCo spaCy tokens for geometry {clean!r}.",
+                    )
+                    tokens = parsed["tokens"]
                 output = teal.translate(
                     ArtifactCountVectorizer(
                         field=token_field,
