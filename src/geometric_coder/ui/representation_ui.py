@@ -280,6 +280,12 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                         placeholder="sentence-transformers/all-MiniLM-L6-v2",
                         className="text-input",
                     ),
+                    html.P([
+                        "Choose a model that supports sentence embeddings. ",
+                        html.A("Browse Hugging Face Sentence Transformer models",
+                               href="https://huggingface.co/models?library=sentence-transformers",
+                               target="_blank", rel="noopener noreferrer"),
+                    ], className="modal-help"),
                     html.Label("Revision (optional)"),
                     dcc.Input(id="representation-text-revision", type="text",
                               placeholder="Commit hash or tag", className="text-input"),
