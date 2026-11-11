@@ -6,7 +6,7 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
-## [0.12.0] - release pending
+## [0.12.0] - 2026-11-11
 
 ### Added
 
@@ -14,6 +14,7 @@ _No changes recorded yet._
 - Reuse compatible previously saved spaCy token artifacts, including token artifacts produced alongside sentence outputs by a single TeAL spaCy operation. TeAL retains ownership of artifact provenance, frozen operators, and native query-text replay.
 - Token-feature selection (text, lemma, or normalized form), Boolean token-attribute filters, n-gram lengths, minimum document frequency, optional feature limits, binary counts, and explicit handling of empty spaCy documents.
 - User-facing links to spaCy model catalogs and Hugging Face Sentence Transformer models, without exposing long local model paths in saved-token dropdown labels.
+- Automatic, editable representation-name suggestions based on source, transformation and output dimensions (when known), using lowercase underscores and numeric suffixes to avoid collisions.
 
 ### Changed
 
@@ -27,11 +28,9 @@ _No changes recorded yet._
 
 ### Notes
 
-- New text geometries require a compatible TeAL-linked project; source keys and full observation coverage are validated before registration.
+- New text geometries require a compatible TeAL-linked project; source keys and full observation coverage are validated before registration. The new sibling spaCy sentence/token discovery and replay contract requires TeAL v0.11.3 or newer.
 - The frozen spaCy operator used for new sentence text may produce context-sensitive annotations that differ from the original full-document parse. TeAL handles the narrowly verified looser-lineage reconstruction without modifying recorded corpus provenance.
-- This is version preparation only. Merge, toy-dataset acceptance, and publication of a `v0.12.0` release tag are separate steps.
-
-## [0.11.0] - release pending
+## [0.11.0] - 2026-11-11
 
 ### Added
 
@@ -51,7 +50,7 @@ _No changes recorded yet._
 - Analyses are descriptive and exploratory, not inferential population estimates. Grouped metadata must be constant within each parent grouping.
 - Back up workspaces before upgrading: previous GeCo versions may not reopen schema 18 projects.
 
-## [0.10.0] - release pending
+## [0.10.0] - 2026-11-03
 
 ### Added
 
