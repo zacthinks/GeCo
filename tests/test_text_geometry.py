@@ -52,12 +52,18 @@ def test_bad_source_text_requests_fail_before_teal_project_open(monkeypatch):
     monkeypatch.setattr(tg, "teal_linked_project", lambda _: Path("/tmp/teal"))
     with pytest.raises(ValueError, match="geometry name"):
         tg.create_text_geometry(_coder(), name=" ", method="spacy_dtm")
+    with pytest.raises(ValueError, match="Select a spaCy model"):
+        tg.create_text_geometry(_coder(), name="DTM", method="spacy_dtm")
     with pytest.raises(ValueError, match="N-grams"):
         tg.create_text_geometry(
-            _coder(), name="DTM", method="spacy_dtm", ngram_min=3, ngram_max=2,
+            _coder(), name="DTM", method="spacy_dtm",
+            model="en_core_web_sm", ngram_min=3, ngram_max=2,
         )
     with pytest.raises(ValueError, match="positive integer"):
-        tg.create_text_geometry(_coder(), name="DTM", method="spacy_dtm", min_df=0)
+        tg.create_text_geometry(
+            _coder(), name="DTM", method="spacy_dtm",
+            model="en_core_web_sm", min_df=0,
+        )
     with pytest.raises(ValueError, match="Hugging Face"):
         tg.create_text_geometry(
             _coder(), name="Embed", method="sentence_transformer",
