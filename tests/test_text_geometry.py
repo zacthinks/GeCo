@@ -96,6 +96,8 @@ def test_wizard_exposes_text_source_and_spacy_token_checklists():
     assert '"type": "representation-token-flag"' in source
     assert "create_text_geometry(" in source
     assert "metadata_filters=required" in Path(tg.__file__).read_text(encoding="utf-8")
-    assert '{"source": tokens, "target": source}' in Path(tg.__file__).read_text(encoding="utf-8")
+    assert 'batch_by=linked.documents.primary_key[-1]' in Path(tg.__file__).read_text(encoding="utf-8")
+    assert 'tokens, workers=1,' in Path(tg.__file__).read_text(encoding="utf-8")
+    assert '{"source": tokens, "target": source}' not in Path(tg.__file__).read_text(encoding="utf-8")
     assert "teal.subset(" not in Path(tg.__file__).read_text(encoding="utf-8")
     assert 'Output("representation-wizard-recipe", "value", allow_duplicate=True)' in source
