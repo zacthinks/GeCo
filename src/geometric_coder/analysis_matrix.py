@@ -235,8 +235,11 @@ def compute_expanded_analysis(
             if spec["measure"] == "count":
                 value = xy
             elif spec["measure"] == "jaccard":
+                # Jaccard is based only on units observed for *both*
+                # variables. No joint coverage is different from observing
+                # both codes as absent throughout a nonempty complete set.
                 union = sx + sy - xy
-                value = xy / union if union else 0.0
+                value = (xy / union if union else 0.0) if n else None
             else:
                 xx = float(row[key + "_xx"] or 0)
                 yy = float(row[key + "_yy"] or 0)
