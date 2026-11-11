@@ -111,7 +111,9 @@ def _linked_text_source(teal: Any, coder: Any) -> tuple[Any, Any]:
     return linked, source
 
 
-def _compatible_spacy_tokens(teal: Any, source: Any) -> list[dict[str, str]]:
+def _compatible_spacy_tokens(
+    teal: Any, source: Any, *, text_field: str,
+) -> list[dict[str, str]]:
     """Discover directly sourced, frozen, replayable spaCy token artifacts.
 
     We deliberately don't accept lookalike tables or sibling outputs from a
@@ -141,6 +143,8 @@ def _compatible_spacy_tokens(teal: Any, source: Any) -> list[dict[str, str]]:
             translator = teal.get_operator(str(operation["operator_id"]))
             if not isinstance(translator, SpacyTranslator):
                 continue
+            if translator.text_field != text_field:
+                continue
             key = tuple(candidate.primary_key)
             if len(key) != len(source_key) + 2 or key[:len(source_key)] != source_key:
                 continue
@@ -166,7 +170,9 @@ def available_spacy_token_artifacts(coder: Any) -> list[dict[str, str]]:
     with Project.open(path) as teal:
         linked, source = _linked_text_source(teal, coder)
         try:
-            return _compatible_spacy_tokens(teal, source)
+            return _compatible_spacy_tokens(
+                teal, source, text_field=str(linked.manifest.get("text_field", "text")),
+            )
         finally:
             linked.close()
 
@@ -277,7 +283,9 @@ def create_text_geometry(
                 if existing_tokens:
                     valid = {
                         item["value"]
-                        for item in _compatible_spacy_tokens(teal, source)
+                        for item in _compatible_spacy_tokens(
+                            teal, source, text_field=text_field,
+                        )
                     }
                     if existing_tokens not in valid:
                         raise ConfigurationError(
