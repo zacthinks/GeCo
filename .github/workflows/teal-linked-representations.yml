@@ -20,6 +20,8 @@ jobs:
         with:
           repository: zacthinks/text-analysis-lab
           path: _teal
+          # TeAL PR #73 is merged; verify against the supported main branch.
+          ref: main
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0

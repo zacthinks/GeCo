@@ -2,7 +2,7 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes GeCo 0.11.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
+This describes GeCo 0.12.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
@@ -20,11 +20,15 @@ Human judgments distinguish Present, Absent, Unsure, and **unreviewed** (no judg
 
 GeCo maintains a unified registry of **numerical representations of text**. A representation can serve as a **geometry**, a **view**, or both. A **geometry** is used to examine relationships among observations, including distances, neighborhoods, and patterns. A **view** is a lower-dimensional representation of a geometry, typically in one or two dimensions, used for visualization.
 
+In TeAL-linked workspaces, the **Original text** representation workflow can request spaCy token document-term matrices (with optional reuse of compatible frozen token artifacts) or Sentence Transformer embeddings. GeCo owns the user-facing recipe, while TeAL owns persistent analytical artifacts, model state, provenance rules, and frozen new-text replay. TeAL may opt into narrowly verified looser lineage reconstruction for sibling spaCy sentences and tokens; historical provenance is never rewritten. Cosine is the default metric offered by the GeCo UMAP wizard, not a change to TeAL's standalone UMAP defaults.
+
 Geometries provide numerical features for distance-based navigation, classifiers, and supported searches. A two-dimensional geometry can directly serve as its own view; a visualization-only view can be enabled as a geometry without refitting the underlying numerical artifact. These roles are independent of new-text capability: transforming new queries or derived observations still requires a compatible frozen, replayable pipeline.
 
 New-text capability is **geometry-specific**, not a project-wide all-or-nothing flag. A workspace may create a span or teaching example when at least one registered geometry supports transforming new text. Its vector artifacts are stored only for compatible geometries; unsupported geometries retain their existing atomic representations. Each classifier uses its own geometry's atomic observations plus only those derived observations for which that geometry has a vector. Evidence snapshots, prediction coverage, training, and freshness must obey the same eligibility set. A learned committee can use only the observations jointly represented by all member classifiers; an unavailable derived score is not synthesized. Derived observations remain visible as coding objects even if they cannot be plotted in a particular view.
 
 In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns immutable numerical artifacts and their transformation lineage; GeCo manages local names, registrations, and use as geometries and views. Removing a GeCo registration does not delete the underlying TeAL artifact.
+
+The Add Representation wizard suggests a lowercase SQL-safe name based on the source representation and method, appending the target dimensionality when known and a numeric suffix for collisions. Suggested names update with wizard settings until the researcher edits the name manually; this is a UI convenience, not a new identity or provenance contract. GeCo's current sibling spaCy token discovery and frozen text replay use TeAL's v0.11.3+ linked-workspace APIs.
 
 The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` remain compatibility boundaries. One-dimensional jitter changes displayed coordinates only, not analytic distances.
 

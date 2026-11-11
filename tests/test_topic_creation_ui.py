@@ -150,7 +150,7 @@ def test_categorical_topic_parameters_use_documented_choices():
     metric = fields["metric"]
     assert metric["kind"] == "choice"
     assert metric["label"] == "Distance metric"
-    assert metric["default"] == "euclidean"
+    assert metric["default"] == "cosine"
     assert {item["value"] for item in metric["options"]} == {
         "euclidean", "manhattan", "cosine",
     }
@@ -171,6 +171,14 @@ def test_categorical_defaults_and_complete_signatures_with_installed_teal():
             field = specs[name]
             assert field["kind"] == "choice"
             assert field["default"] in {opt["value"] for opt in field["options"]}
+
+    for recipe in ("kmedoids", "dbscan"):
+        metric = next(p for p in parameter_specs(recipe) if p["name"] == "metric")
+        assert metric["default"] == "cosine"
+    # Ward linkage requires Euclidean, so do not change its default to cosine.
+    assert next(
+        p for p in parameter_specs("agglomerative") if p["name"] == "metric"
+    )["default"] == "euclidean"
 
     # sklearn's n_init can be 'auto' OR a positive integer; do not turn it
     # into an incorrectly finite categorical list.
