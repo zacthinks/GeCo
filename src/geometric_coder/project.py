@@ -22,6 +22,7 @@ from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import StratifiedKFold
 
+from geometric_coder.committee_stacking import MemberTrainingData, out_of_fold_probabilities
 from geometric_coder.classifiers import (
     effective_hyperparameters,
     fit_classifier,
@@ -2517,6 +2518,12 @@ class GeometricCoder:
                 if len(current_member_fit_ids) == len(committee["members"])
                 else None
             )
+            legacy_stacker = (
+                committee_fit["training_snapshot"].get("stacking_scheme", {}).get("method")
+                != "stratified_oof"
+            )
+            if legacy_stacker:
+                stale_reasons.append("legacy in-sample stacker requires OOF retraining")
             if expected_snapshot is None or committee_fit["training_snapshot"] != expected_snapshot:
                 stale_reasons.append("learned committee fit no longer matches the current committee/training state")
             for spec, fit in zip(member_specs, member_fits, strict=True):
@@ -2588,6 +2595,11 @@ class GeometricCoder:
                 "committee_updated_at": str(committee["updated_at"]),
                 "member_fit_ids": [int(fit["classifier_fit_id"]) for fit in member_fits],
                 "committee_fit_id": stacker_fit_id,
+                "stacking_scheme": (
+                    committee_fit["training_snapshot"].get("stacking_scheme")
+                    if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS
+                    else None
+                ),
                 "stale_reasons": list(dict.fromkeys(stale_reasons)),
             },
         )
@@ -3674,12 +3686,45 @@ class GeometricCoder:
             "committee_updated_at": str(committee["updated_at"]),
             "aggregation": str(committee["aggregation"]),
             "member_fit_ids": [int(value) for value in member_fit_ids],
+            "stacking_scheme": {
+                "method": "stratified_oof",
+                "max_folds": 5,
+                "seed": 0,
+                "folds": min(
+                    5,
+                    min(
+                        (
+                            sum(row["value"] == label for row in
+                                self._eligible_training_annotations(int(code_id), applicable)
+                                if int(row["observation_id"]) not in unsupported_derived)
+                            for label in ("positive", "negative")
+                        ),
+                        default=0,
+                    ),
+                ),
+                "training_observation_ids": [
+                    int(row["observation_id"])
+                    for row in self._eligible_training_annotations(int(code_id), applicable)
+                ],
+                "member_configurations": [
+                    {
+                        "classifier_fit_id": int(member["classifier_fit_id"]),
+                        "geometry_id": int(member["geometry_id"]),
+                        "algorithm": str(member["algorithm"]),
+                        "hyperparameters": dict(member["hyperparameters"]),
+                    }
+                    for member in (
+                        self.database.get_classifier_fit(int(fit_id))
+                        for fit_id in member_fit_ids
+                    )
+                ],
+            },
         }
 
     def train_classifier_committee(
         self, *, code_id: int, committee_id: int
     ) -> dict[str, Any]:
-        """Fit a trainable committee on the latest member-classifier scores.
+        """Fit a trainable committee using held-out member probabilities.
 
         Freshness is checked before loading any member prediction vectors.  A current
         learned committee therefore returns through a metadata-only path; member score
@@ -3715,31 +3760,76 @@ class GeometricCoder:
             self._extend_classifier_committee_fit_predictions(latest)
             return latest
 
-        # Only a stale/missing committee fit needs the full member prediction maps.
+        # Each member retains its own geometry and selected fit-time parameters.
+        # Do not concatenate feature columns or train on cached in-sample scores.
+        annotations = self.database.current_annotations(int(code_id))
+        member_data: list[MemberTrainingData] = []
+        joint_ids: set[int] | None = None
+        label_by_id: dict[int, int] = {}
+        for fit in member_fits:
+            if str(fit["score_kind"]) != "probability":
+                raise ValueError(
+                    "Learned committees require probability-output member classifiers."
+                )
+            geometry_id = int(fit["geometry_id"])
+            labeled = self._geometry_training_labels(
+                int(code_id), annotations, geometry_id
+            )
+            self.materialize_derived_vectors(
+                geometry_id, [int(row["observation_id"]) for row in labeled],
+            )
+            member_matrix, _ = self._classifier_training_rows(
+                labeled=labeled, geometry_id=geometry_id
+            )
+            ids = tuple(int(row["observation_id"]) for row in labeled)
+            y = np.asarray(
+                [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
+            )
+            for observation_id, value in zip(ids, y, strict=True):
+                previous = label_by_id.setdefault(observation_id, int(value))
+                if previous != int(value):
+                    raise ValueError("Inconsistent committee training labels.")
+            joint_ids = set(ids) if joint_ids is None else joint_ids.intersection(ids)
+            member_data.append(
+                MemberTrainingData(
+                    algorithm=str(fit["algorithm"]),
+                    hyperparameters=dict(fit["hyperparameters"]),
+                    observation_ids=ids,
+                    labels=y,
+                    matrix=member_matrix,
+                )
+            )
+        # Order is fixed by the canonical eligible annotation order, never by
+        # set iteration or geometry-specific matrix row positions.
+        shared_ids = joint_ids or set()
+        training_ids = [
+            int(row["observation_id"])
+            for row in self._eligible_training_annotations(int(code_id), annotations)
+            if int(row["observation_id"]) in shared_ids
+        ]
+        labels = np.asarray([label_by_id[value] for value in training_ids], dtype=int)
+        minority_count = int(np.bincount(labels, minlength=2).min())
+        if minority_count < 2:
+            raise ValueError(
+                "OOF committee training requires at least two jointly represented "
+                "Present and two Absent examples; cannot form two stratified folds."
+            )
+        folds = min(5, minority_count)
+        training_matrix = out_of_fold_probabilities(
+            observation_ids=training_ids,
+            labels=labels,
+            members=member_data,
+            n_splits=folds,
+            random_state=0,
+        )
+        # Only normal full-data member predictions are used at inference time.
+        # Never reuse them as stacker training features.
         member_score_lookup = self.database.classifier_score_maps(member_fit_ids)
         member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
-
-        annotations = self.database.current_annotations(int(code_id))
-        labeled = [
-            row for row in self._eligible_training_annotations(int(code_id), annotations)
-            if all(
-                int(row["observation_id"]) in scores for scores in member_score_maps
-            )
-        ]
-        if not any(row["value"] == "positive" for row in labeled) or not any(
-            row["value"] == "negative" for row in labeled
-        ):
-            raise ValueError(
-                "Committee training requires Present and Absent examples "
-                "represented by every member classifier."
-            )
-        training_ids = [int(row["observation_id"]) for row in labeled]
-        training_matrix = np.column_stack(
-            [[scores[obs_id] for obs_id in training_ids] for scores in member_score_maps]
-        )
-        labels = np.asarray(
-            [1 if row["value"] == "positive" else 0 for row in labeled], dtype=int
-        )
+        if snapshot["stacking_scheme"]["training_observation_ids"] != training_ids:
+            raise RuntimeError("Committee eligibility changed during OOF training.")
+        if snapshot["stacking_scheme"]["folds"] != folds:
+            raise RuntimeError("Committee fold selection changed during OOF training.")
 
         observations = self.database.list_observations()
         scoring_ids = [
@@ -3792,6 +3882,18 @@ class GeometricCoder:
             artifact_path=artifact_path,
             predictions=predictions,
         )
+        # Keep previous lightweight snapshots/predictions (including historical
+        # Apply drafts) but only one retained heavy stacker estimator.
+        superseded_paths = self.database.retire_classifier_committee_fit_states(
+            committee_id=int(committee_id), keep_committee_fit_id=committee_fit_id
+        )
+        for relative_path in superseded_paths:
+            if relative_path == artifact_path:
+                continue
+            try:
+                (self.project_dir / relative_path).unlink(missing_ok=True)
+            except OSError:
+                pass
         return self.database.get_classifier_committee_fit(committee_fit_id)
 
     def _extend_classifier_committee_fit_predictions(

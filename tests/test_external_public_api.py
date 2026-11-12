@@ -315,18 +315,16 @@ def test_mixed_geometry_derived_evidence_is_geometry_specific(tmp_path: Path) ->
         classifier_spec_ids=[available_spec, unavailable_spec],
         aggregation="logistic_stack",
     )
-    committee_fit = project.train_classifier_committee(
-        code_id=code_id, committee_id=committee_id,
-    )
-    committee_predictions = project.database.classifier_committee_predictions(
-        int(committee_fit["committee_fit_id"])
-    )
-    assert {teacher, span}.isdisjoint({
-        int(row["observation_id"]) for row in committee_predictions
-    })
+    # Only one Present and one Absent atomic observation is shared by both
+    # geometries. The old in-sample stacker accepted these two labels; genuine
+    # stratified OOF fitting must reject them rather than leak training labels.
+    with pytest.raises(ValueError, match="at least two jointly represented"):
+        project.train_classifier_committee(
+            code_id=code_id, committee_id=committee_id,
+        )
     assert project.classifier_committee_status(
         code_id=code_id, committee_id=committee_id
-    )["status"] == "current"
+    )["status"] == "not_trained"
 
 
 def test_untransformable_external_project_stores_derived_text_without_vectors(

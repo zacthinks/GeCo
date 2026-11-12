@@ -2,9 +2,9 @@
 
 GeCo is in pre-1.0 development. GitHub releases are deliberately tagged and initiated by a maintainer; package releases are **not** automatically published to PyPI.
 
-1. Merge the release changes and any intended product changes into the protected default branch. Verify CI on that commit.
-2. Decide the next version using the pre-1.0 versioning policy and update `[project].version` in `pyproject.toml`, plus `CHANGELOG.md`. Open/merge a version-bump PR if necessary.
-3. Check that the intended tag does not already exist. Create an annotated tag `vX.Y.Z` at the tested default-branch commit and push it.
-4. The `Release` workflow checks the tag against `pyproject.toml`, installs dependencies, runs unit and acceptance tests, builds wheel and sdist, verifies a clean wheel installation, and attaches distributions to a GitHub Release.
-5. Verify the tag, associated commit, uploaded assets and release page. Check the CLI through a clean install before announcing.
-6. If CI fails, fix the problem through a new PR; do not silently move or replace an already published version tag.
+1. Select the new pre-1.0 version and prepare a PR from the current default branch. Keep the version in pyproject.toml and src/geometric_coder/_version.py synchronized; add the corresponding dated CHANGELOG.md entry and update the user-facing README and architecture documentation. The version bump may be part of the final feature PR.
+2. Verify all required CI checks at the **final PR head** after the documentation/version commit; then merge into the protected default branch.
+3. Verify CI on the **merged default-branch commit** and confirm the intended tag does not already exist. Create an annotated tag vX.Y.Z at that merged, tested commit and push it. Do not tag the pre-merge PR head.
+4. The tag-triggered Release workflow validates the tag against pyproject.toml, installs dependencies, runs unit and acceptance tests, builds wheel and sdist, verifies a clean wheel installation, and publishes a GitHub Release with those distributions.
+5. Verify the tag target, matching package/runtime versions, GitHub Actions result, uploaded wheel/sdist assets, and release page. Check the CLI through a clean wheel install before announcing.
+6. If release CI fails, fix the problem in a new PR; never silently move or replace a published tag. Update the changelog and project documentation as appropriate.
