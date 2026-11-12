@@ -2518,6 +2518,12 @@ class GeometricCoder:
                 if len(current_member_fit_ids) == len(committee["members"])
                 else None
             )
+            legacy_stacker = (
+                committee_fit["training_snapshot"].get("stacking_scheme", {}).get("method")
+                != "stratified_oof"
+            )
+            if legacy_stacker:
+                stale_reasons.append("legacy in-sample stacker requires OOF retraining")
             if expected_snapshot is None or committee_fit["training_snapshot"] != expected_snapshot:
                 stale_reasons.append("learned committee fit no longer matches the current committee/training state")
             for spec, fit in zip(member_specs, member_fits, strict=True):
@@ -2589,6 +2595,11 @@ class GeometricCoder:
                 "committee_updated_at": str(committee["updated_at"]),
                 "member_fit_ids": [int(fit["classifier_fit_id"]) for fit in member_fits],
                 "committee_fit_id": stacker_fit_id,
+                "stacking_scheme": (
+                    committee_fit["training_snapshot"].get("stacking_scheme")
+                    if aggregation in TRAINABLE_COMMITTEE_AGGREGATIONS
+                    else None
+                ),
                 "stale_reasons": list(dict.fromkeys(stale_reasons)),
             },
         )
