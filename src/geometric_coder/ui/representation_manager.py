@@ -995,3 +995,227 @@ def create_view(
                 output.remove_alias(clean)
             raise
         return int(result["representation_id"])
+
+
+# FeatureMatrix is the only encoder: this module builds explicit user-selected
+# recipes and registers their existing TeAL artifacts as ordinary GeCo geometries.
+METADATA_TRANSFORMS = frozenset({
+    "raw", "zscore", "minmax", "onehot", "fixed_width",
+    "quantile", "equal_width", "boundaries",
+})
+
+
+def metadata_feature_options(
+    coder: GeometricCoder, *, source_representation_id: int | None,
+) -> list[dict[str, Any]]:
+    """Discover metadata in the selected TeAL matrix's own full query scope.
+
+    No GeCo-local SQLite metadata is substituted. A bounded sample provides a
+    helpful UI default only; TeAL still validates/fits the complete source.
+    """
+    if source_representation_id is None:
+        return []
+    path = teal_linked_project(coder)
+    if path is None:
+        return []
+    _, ref = _source_representation(
+        coder, source_representation_id=source_representation_id,
+    )
+    from text_analysis_lab.core.project import Project
+    from text_analysis_lab.core.query_scope import QueryScope
+    import pandas as pd
+
+    with Project.open(path) as teal:
+        source = teal.get_artifact(ref["artifact_id"])
+        if getattr(source.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
+            raise ValueError("Add metadata features requires a TeAL numerical source.")
+        scope = QueryScope(source, metadata_mode="full")
+        fields = scope.columns()["metadata"]
+        names = [
+            str(field["output_name"]) if isinstance(field, Mapping) else str(field)
+            for field in fields
+        ]
+        if not names:
+            return []
+        n = min(int(source.n_rows or 0), 32)
+        sample = (
+            scope.query(
+                positions=list(range(n)), data_columns=False,
+                key_columns=False, metadata_columns=names, form="table",
+            )
+            if n else None
+        )
+        results = []
+        for name in names:
+            numeric = (
+                sample is not None and name in sample
+                and pd.api.types.is_numeric_dtype(sample[name].dtype)
+                and not pd.api.types.is_bool_dtype(sample[name].dtype)
+            )
+            results.append({
+                "label": name, "value": name,
+                "default_transform": "zscore" if numeric else "onehot",
+                "numeric": bool(numeric),
+            })
+        return results
+
+
+def _metadata_encoding(spec: Mapping[str, Any]) -> Any:
+    """Translate a minimal UI choice to the exact TeAL 0.12 FeatureMatrix API."""
+    method = str(spec.get("transform", "")).strip()
+    if method not in METADATA_TRANSFORMS:
+        raise ValueError(f"Unsupported metadata transformation: {method!r}.")
+    if method == "onehot":
+        return "onehot"
+    if method in {"raw", "zscore", "minmax"}:
+        return {"kind": method}
+    if method in {"quantile", "equal_width"}:
+        count = spec.get("n_bins", 10)
+        if isinstance(count, bool) or not str(count).strip().isdigit() or int(count) < 1:
+            raise ValueError(f"{method} requires a positive integer bin count.")
+        return {"kind": "bin", "strategy": method, "n_bins": int(count)}
+    if method == "fixed_width":
+        from math import isfinite
+        try:
+            width = float(spec.get("width", 10))
+            anchor_raw = spec.get("anchor")
+            anchor = 0.0 if anchor_raw in ("", None) else float(anchor_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Fixed-width bin width and anchor must be numeric.") from exc
+        if not isfinite(width) or width <= 0 or not isfinite(anchor):
+            raise ValueError("Fixed-width bins require a finite positive width and finite anchor.")
+        return {"kind": "bin", "strategy": "fixed_width", "width": width, "anchor": anchor}
+    import json
+    raw = spec.get("boundaries")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Explicit boundaries must be a JSON list of numbers.") from exc
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Explicit boundaries must be a nonempty JSON list of numbers.")
+    from math import isfinite
+    try:
+        edges = [float(value) for value in raw]
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Explicit boundaries must contain only numbers.") from exc
+    if not all(isfinite(value) for value in edges) or any(
+        right <= left for left, right in zip(edges, edges[1:])
+    ):
+        raise ValueError("Explicit boundaries must be finite and strictly increasing.")
+    return {"kind": "bin", "strategy": "boundaries", "boundaries": edges}
+
+
+def create_metadata_geometry(
+    coder: GeometricCoder, *, name: str, source_representation_id: int,
+    metadata_specs: Mapping[str, Mapping[str, Any]],
+) -> GeometryCreationResult:
+    """Fit a lazy TeAL FeatureMatrix and register its analytic navigation-only geometry.
+
+    The exact source must expose every requested metadata field in its full
+    TeAL QueryScope. No new text replay or automatic metadata joins are implied.
+    """
+    clean = str(name).strip()
+    if not clean:
+        raise ValueError("Enter a geometry name.")
+    if coder.has_geometry(clean) or coder.has_view(clean):
+        raise ConfigurationError(f"Representation {clean!r} is already registered.")
+    if not isinstance(metadata_specs, Mapping) or not metadata_specs:
+        raise ValueError("Select at least one metadata field.")
+    path = teal_linked_project(coder)
+    if path is None:
+        raise ConfigurationError("Adding metadata requires a TeAL-linked GeCo workspace.")
+    source_id, ref = _source_representation(
+        coder, source_representation_id=source_representation_id,
+    )
+    if coder.database.list_observations(kinds=["span", "teaching_example"]):
+        raise ConfigurationError(
+            "Add metadata features requires a workspace without existing spans or "
+            "teaching examples until safe geometry backfill is available."
+        )
+
+    from text_analysis_lab.core.project import Project
+    from text_analysis_lab.core.query_scope import QueryScope
+    from text_analysis_lab.translators import FeatureMatrix
+
+    with Project.open(path) as teal:
+        teal.catalog.validate_artifact_alias(clean)
+        links = [
+            row for row in teal.geco.list()
+            if row.get("mode", "explore") == "explore"
+            and Path(str(row["workspace_path"])).resolve() == coder.project_dir.resolve()
+        ]
+        if len(links) != 1:
+            raise ConfigurationError("Could not uniquely match this GeCo workspace to its TeAL link.")
+        source = teal.get_artifact(ref["artifact_id"])
+        if getattr(source.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
+            raise ValueError("Source geometry must be a TeAL numerical matrix.")
+        available = QueryScope(source, metadata_mode="full").columns()["metadata"]
+        names = {
+            str(row["output_name"]) if isinstance(row, Mapping) else str(row)
+            for row in available
+        }
+        requested = list(metadata_specs)
+        if len(set(requested)) != len(requested) or any(name not in names for name in requested):
+            raise ValueError(
+                "Selected TeAL geometry does not expose metadata field(s): "
+                + ", ".join(repr(name) for name in requested if name not in names)
+            )
+        encodings = {field: _metadata_encoding(metadata_specs[field]) for field in requested}
+        # The existing FeatureMatrix preserves source-matrix columns first and
+        # appends frozen selected metadata fields in the supplied UI order.
+        output = teal.translate(
+            FeatureMatrix(
+                data_columns=True, metadata_columns=requested,
+                encodings=encodings, matrix_type="auto",
+            ),
+            source,
+            memo=(f"GeCo Add metadata features {clean!r} from "
+                  f"{source.artifact_id!r}: {encodings!r}."),
+        )["output"]
+        if getattr(output.artifact_type, "value", None) not in {"dense_matrix", "sparse_matrix"}:
+            raise ValueError("FeatureMatrix did not produce a numerical geometry.")
+        if output.primary_key != source.primary_key:
+            raise ConfigurationError("FeatureMatrix changed source primary-key alignment.")
+        with teal.geco.open(str(links[0]["name"])) as linked:
+            if output.primary_key != linked.documents.primary_key:
+                raise ConfigurationError(
+                    "Navigation-only metadata geometry must have the linked document primary keys."
+                )
+            # Strict key-coverage verification uses TeAL's public query facade,
+            # not a potentially enormous matrix render.
+            positions = teal.query.positions_by_keys(
+                output, coder._ordered_user_keys(),
+            )
+            if len(positions) != len(coder.database.list_units()):
+                raise ConfigurationError("Metadata geometry is missing linked document keys.")
+            dimensions = len(output.get_data_columns())
+            if dimensions < 1:
+                raise ConfigurationError("Metadata geometry has no numerical features.")
+            alias_added = False
+            try:
+                if clean not in output.aliases:
+                    output.add_alias(clean)
+                    alias_added = True
+                geometry_id = coder.register_external_geometry(
+                    name=clean, external_ref={"artifact_id": str(output.artifact_id)},
+                    supports_query=False, supports_text_transform=False,
+                    _validated_shape=(
+                        len(positions), dimensions,
+                        output.artifact_type.value == "sparse_matrix",
+                    ),
+                )
+                child = coder.database.representation_for_legacy(
+                    "geometry", int(geometry_id),
+                )
+                coder.database.assign_representation_parent(
+                    int(child["representation_id"]), source_id,
+                )
+            except Exception:
+                if alias_added:
+                    output.remove_alias(clean)
+                raise
+        return GeometryCreationResult(
+            geometry_id=int(geometry_id),
+            artifact_id=str(output.artifact_id), replayable=False,
+        )
