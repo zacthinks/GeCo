@@ -74,11 +74,17 @@ class FeatureScaleNormalizer(TransformerMixin, BaseEstimator):
 
     @staticmethod
     def _check_input(X, *, copy: bool):
-        return check_array(
-            X, accept_sparse=("csr", "csc"), dtype=np.float64,
-            ensure_all_finite=True, ensure_min_samples=1,
-            ensure_min_features=1, copy=copy,
+        kwargs = dict(
+            accept_sparse=("csr", "csc"), dtype=np.float64,
+            ensure_min_samples=1, ensure_min_features=1, copy=copy,
         )
+        try:
+            return check_array(X, ensure_all_finite=True, **kwargs)
+        except TypeError as error:
+            if "ensure_all_finite" not in str(error):
+                raise
+            # GeCo still supports sklearn 1.5; TeAL 0.12 requires a newer version.
+            return check_array(X, force_all_finite=True, **kwargs)
 
     def fit(self, X, y=None):
         """Freeze training-column RMS or strict L2 scales (no label use)."""
@@ -211,10 +217,10 @@ def portable_feature_scale_estimator(estimator):
                     steps.append((name, portable))
                 else:
                     steps.append((name, converted(step)))
-            return Pipeline(
-                steps, memory=model.memory,
-                verbose=model.verbose, transform_input=model.transform_input,
-            )
+            params = dict(memory=model.memory, verbose=model.verbose)
+            if hasattr(model, "transform_input"):
+                params["transform_input"] = model.transform_input
+            return Pipeline(steps, **params)
         if isinstance(model, CalibratedMarginEstimator):
             result = deepcopy(model)
             result.margin_model = converted(result.margin_model)
