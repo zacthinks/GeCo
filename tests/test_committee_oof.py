@@ -194,6 +194,48 @@ def test_committee_oof_meta_inputs_not_in_sample_and_reopen_export(tmp_path, mon
     )
 
 
+def test_logistic_stacker_is_fitted_on_oof_not_cached_in_sample_scores(
+    tmp_path, monkeypatch,
+):
+    import geometric_coder.project as project_module
+
+    project, code_id, committee_id = _project(tmp_path)
+    members = project.database.get_classifier_committee(committee_id)["members"]
+    member_ids = [
+        int(project.database.latest_classifier_fit(
+            code_id=code_id, classifier_spec_id=int(member["classifier_spec_id"])
+        )["classifier_fit_id"])
+        for member in members
+    ]
+    score_maps = project.database.classifier_score_maps(member_ids)
+    labeled = project._eligible_training_annotations(
+        code_id, project.database.current_annotations(code_id)
+    )
+    ids = [int(row["observation_id"]) for row in labeled]
+    cached = np.column_stack([
+        [score_maps[fit_id][observation_id] for observation_id in ids]
+        for fit_id in member_ids
+    ])
+    captured = []
+    original = project_module.fit_classifier
+
+    def watch_stacker(*, algorithm, hyperparameters, training_matrix, labels,
+                      scoring_matrix):
+        if algorithm == "logistic_l2" and training_matrix.shape[1] == 2:
+            captured.append(np.asarray(training_matrix).copy())
+        return original(
+            algorithm=algorithm, hyperparameters=hyperparameters,
+            training_matrix=training_matrix, labels=labels,
+            scoring_matrix=scoring_matrix,
+        )
+
+    monkeypatch.setattr(project_module, "fit_classifier", watch_stacker)
+    project.train_classifier_committee(code_id=code_id, committee_id=committee_id)
+    assert len(captured) == 1
+    assert captured[0].shape == cached.shape
+    assert np.max(np.abs(captured[0] - cached)) > 1e-6
+
+
 def test_legacy_in_sample_stacker_becomes_stale(tmp_path):
     project, code_id, committee_id = _project(tmp_path)
     fit = project.train_classifier_committee(code_id=code_id, committee_id=committee_id)
