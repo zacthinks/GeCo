@@ -43,11 +43,16 @@ def test_noncanonical_duplicates_and_sparse_width(kind):
     matrix = getattr(sparse, kind + "_matrix")(x)
     # Explicit duplicate coordinates, including cancellation, are mathematically
     # equivalent to a canonical sparse matrix.
-    triplets = sparse.coo_matrix(
-        ([100., -99., 2., 3.], ([0, 0, 0, 1], [0, 0, 2, 1])),
-        shape=(2, 3),
-    )
-    matrix = getattr(triplets, "to" + kind)()
+    if kind == "csr":
+        matrix = sparse.csr_matrix(
+            ([100., -99., 2., 3.], [0, 0, 2, 1], [0, 3, 4]),
+            shape=(2, 3),
+        )
+    else:
+        matrix = sparse.csc_matrix(
+            ([100., -99., 3., 2.], [0, 0, 1, 0], [0, 2, 3, 4]),
+            shape=(2, 3),
+        )
     assert not matrix.has_canonical_format
     before = matrix.data.copy()
     normalizer = FeatureScaleNormalizer().fit(matrix)
