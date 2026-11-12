@@ -34,4 +34,4 @@ jobs:
           uv pip install --python .venv/bin/python -e ./_teal
 
       - name: Run persisted TeAL-GeCo integration
-        run: uv run --no-sync pytest tests/test_teal_linked_representations.py tests/test_feature_scale_teal_export.py tests/test_feature_column_scaling.py -q -rs
+        run: uv run --no-sync pytest tests/test_teal_linked_representations.py tests/test_feature_scale_teal_export.py tests/test_feature_column_scaling.py tests/test_metadata_teal_integration.py -q -rs
