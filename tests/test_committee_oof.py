@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -196,7 +197,6 @@ def test_committee_oof_meta_inputs_not_in_sample_and_reopen_export(tmp_path, mon
 def test_legacy_in_sample_stacker_becomes_stale(tmp_path):
     project, code_id, committee_id = _project(tmp_path)
     fit = project.train_classifier_committee(code_id=code_id, committee_id=committee_id)
-    import json
     legacy = dict(fit["training_snapshot"])
     legacy.pop("stacking_scheme")
     with project.database.connect() as connection:
