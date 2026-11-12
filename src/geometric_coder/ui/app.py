@@ -5425,6 +5425,25 @@ def create_app(
             return ""
 
     @app.callback(
+        Output("classifier-manager-scaling", "value"),
+        Input("classifier-manager-table", "selected_rows"),
+        Input("classifier-manager-table", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_classifier_scaling(
+        selected_rows: list[int] | None,
+        table_data: list[dict[str, Any]] | None,
+    ) -> str:
+        rows = table_data or []
+        selection = selected_rows or []
+        if not selection:
+            return "off"
+        try:
+            return str(rows[int(selection[0])].get("feature_scaling", "off"))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return "off"
+
+    @app.callback(
         Output("committee-modal", "style"),
         Output("committee-create-modal", "style"),
         Output("committee-members", "options"),
