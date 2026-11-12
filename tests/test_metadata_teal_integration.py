@@ -27,7 +27,7 @@ def _frame(artifact):
     )
 
 
-def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path):
+def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path, monkeypatch):
     path = tmp_path / "teal"
     csv = tmp_path / "input.csv"
     pd.DataFrame({
@@ -71,11 +71,17 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path):
             "publication_source": {"transform": "onehot"},
             "document_length": {"transform": "zscore"},
         }
-        created = create_metadata_geometry(
-            coder, name="tfidf_plus_metadata",
-            source_representation_id=source_representation_id,
-            metadata_specs=specs,
-        )
+        # Creating the lazy geometry must never ask the provider for the
+        # entire expanded matrix merely to register its shape.
+        with monkeypatch.context() as patch:
+            def refuse_full_render(*args, **kwargs):
+                pytest.fail("Metadata registration materialized a corpus-wide matrix.")
+            patch.setattr(coder.external_provider, "geometry_matrix", refuse_full_render)
+            created = create_metadata_geometry(
+                coder, name="tfidf_plus_metadata",
+                source_representation_id=source_representation_id,
+                metadata_specs=specs,
+            )
         assert created.replayable is False
         registered = coder.database.get_geometry(created.geometry_id)
         assert not registered["supports_query"] and not registered["supports_text_transform"]
