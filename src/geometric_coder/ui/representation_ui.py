@@ -224,6 +224,11 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     dcc.Dropdown(id="representation-metadata-fields", options=[],
                                  value=[], multi=True, placeholder="Select fields"),
                     dcc.Store(id="representation-metadata-discovered", data=[]),
+                    html.Div(id="representation-metadata-discovery-status",
+                             role="status", className="control-status"),
+                    html.P("One-hot categories with many distinct values can produce "
+                           "large feature matrices; TeAL enforces a maximum vocabulary.",
+                           className="modal-help"),
                     html.P("Selected metadata is appended to the original numerical columns. "
                            "This new geometry cannot transform arbitrary text.",
                            className="modal-help"),
@@ -859,18 +864,20 @@ def register_representation_callbacks(
         Output("representation-metadata-fields", "options"),
         Output("representation-metadata-fields", "value"),
         Output("representation-metadata-discovered", "data"),
+        Output("representation-metadata-discovery-status", "children"),
         Input("representation-wizard-source", "value"),
     )
-    def discover_metadata(source_id: int | None) -> tuple[Any, Any, Any]:
+    def discover_metadata(source_id: int | None) -> tuple[Any, Any, Any, str]:
         if source_id is None:
-            return [], [], []
+            return [], [], [], "Select a TeAL-backed geometry to inspect its metadata."
         try:
             found = metadata_feature_options(
                 project, source_representation_id=int(source_id),
             )
-        except Exception:
-            return [], [], []
-        return [{"label": x["label"], "value": x["value"]} for x in found], [], found
+        except Exception as exc:
+            return [], [], [], f"Cannot discover TeAL metadata: {exc}"
+        message = "" if found else "This source exposes no queryable TeAL metadata."
+        return [{"label": x["label"], "value": x["value"]} for x in found], [], found, message
 
     @app.callback(
         Output("representation-metadata-settings", "children"),
