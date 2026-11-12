@@ -110,7 +110,7 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path):
             coder.transform_query(created.geometry_id, "arbitrary query text")
 
         view_rep = create_view(
-            coder, name="Augmented two dimensions",
+            coder, name="augmented_two_dimensions",
             source_representation_id=int(child["representation_id"]),
             method="svd", dimensions=2,
         )
