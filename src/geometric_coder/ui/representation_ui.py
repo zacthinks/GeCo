@@ -8,8 +8,9 @@ import re
 from typing import Any
 
 from geometric_coder.ui.representation_manager import (
-    create_geometry, create_view, filter_representations,
+    create_geometry, create_metadata_geometry, create_view, filter_representations,
     geometry_parameter_specs, geometry_recipe_options, linked_representation_options,
+    metadata_feature_options,
     set_representation_analytic_enabled, rename_representation,
     representation_inventory, source_filter_options,
     unregister_representation,
@@ -218,6 +219,17 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                          className="modal-help"),
                 html.Div(id="representation-wizard-parameters",
                          className="topic-create-parameters"),
+                html.Div([
+                    html.Label("Metadata fields on this TeAL geometry"),
+                    dcc.Dropdown(id="representation-metadata-fields", options=[],
+                                 value=[], multi=True, placeholder="Select fields"),
+                    dcc.Store(id="representation-metadata-discovered", data=[]),
+                    html.P("Selected metadata is appended to the original numerical columns. "
+                           "This new geometry cannot transform arbitrary text.",
+                           className="modal-help"),
+                    html.Div(id="representation-metadata-settings",
+                             className="topic-create-parameters"),
+                ], id="representation-metadata-wrap", style={"display": "none"}),
                 html.Div([
                     html.Label("Token source"),
                     dcc.Dropdown(
@@ -733,8 +745,10 @@ def register_representation_callbacks(
                 {"display": "none"}, {}, {"display": "none"}, "spacy_dtm",
             )
         return (
-            geometry_recipe_options(),
-            "Replayability is detected automatically from the fitted TeAL pipeline.",
+            [*geometry_recipe_options(),
+             {"label": "Add metadata features", "value": "metadata"}],
+            "Metadata geometries are analytic but cannot transform new text. "
+            "Other recipes detect replayability automatically.",
             {"display": "none"}, {}, {}, "umap",
         )
 
@@ -768,7 +782,7 @@ def register_representation_callbacks(
                 return no_update, no_update
         elif mode == "geometry":
             allowed = ({"spacy_dtm", "sentence_transformer"} if origin == "text"
-                       else {"tfidf", "normalize", "svd", "umap"})
+                       else {"tfidf", "normalize", "svd", "umap", "metadata"})
             if recipe not in allowed:
                 return no_update, no_update
         else:
@@ -813,7 +827,7 @@ def register_representation_callbacks(
         Input("representation-wizard-recipe", "value"),
     )
     def wizard_parameters(mode: str | None, recipe: str | None) -> tuple[Any, Any, Any]:
-        if not recipe:
+        if not recipe or recipe == "metadata":
             return [], [], {"display": "none"}
         try:
             common, advanced = geometry_parameter_specs(recipe)
@@ -826,6 +840,103 @@ def register_representation_callbacks(
             _parameter_controls(html, dcc, common),
             _parameter_controls(html, dcc, advanced),
             {"display": "block"} if advanced else {"display": "none"},
+        )
+
+
+    @app.callback(
+        Output("representation-metadata-wrap", "style"),
+        Input("representation-wizard-mode", "value"),
+        Input("representation-wizard-origin", "value"),
+        Input("representation-wizard-recipe", "value"),
+    )
+    def show_metadata_controls(mode: str | None, origin: str | None,
+                               recipe: str | None) -> dict[str, str]:
+        return {} if (mode, origin, recipe) == (
+            "geometry", "representation", "metadata",
+        ) else {"display": "none"}
+
+    @app.callback(
+        Output("representation-metadata-fields", "options"),
+        Output("representation-metadata-fields", "value"),
+        Output("representation-metadata-discovered", "data"),
+        Input("representation-wizard-source", "value"),
+    )
+    def discover_metadata(source_id: int | None) -> tuple[Any, Any, Any]:
+        if source_id is None:
+            return [], [], []
+        try:
+            found = metadata_feature_options(
+                project, source_representation_id=int(source_id),
+            )
+        except Exception:
+            return [], [], []
+        return [{"label": x["label"], "value": x["value"]} for x in found], [], found
+
+    @app.callback(
+        Output("representation-metadata-settings", "children"),
+        Input("representation-metadata-fields", "value"),
+        State("representation-metadata-discovered", "data"),
+    )
+    def metadata_settings(
+        selected: list[str] | None, discovered: list[dict[str, Any]] | None,
+    ) -> list[Any]:
+        known = {row["value"]: row for row in discovered or []}
+        methods = [
+            ("zscore", "Z-score"), ("raw", "Raw numeric"), ("minmax", "Min-max"),
+            ("onehot", "One-hot"), ("fixed_width", "Fixed-width bins"),
+            ("quantile", "Quantile bins"), ("equal_width", "Equal-width bins"),
+            ("boundaries", "Explicit boundaries"),
+        ]
+        rows = []
+        for field in selected or []:
+            if field not in known:
+                continue
+            default = known[field]["default_transform"]
+            choices = methods if known[field]["numeric"] else (
+                [methods[3], *methods[:3], *methods[4:]]
+            )
+            rows.append(html.Div([
+                html.Label(field),
+                dcc.Dropdown(
+                    id={"type": "representation-metadata-transform", "name": field},
+                    options=[{"label": label, "value": value} for value, label in choices],
+                    value=default, clearable=False,
+                ),
+                html.Div([
+                    html.Label("Bin width"),
+                    dcc.Input(id={"type": "representation-metadata-width", "name": field},
+                              type="number", min=0, step="any", value=10),
+                    html.Label("Anchor (reference point)"),
+                    dcc.Input(id={"type": "representation-metadata-anchor", "name": field},
+                              type="number", step="any", value=0),
+                ], id={"type": "representation-metadata-fixed", "name": field},
+                   style={"display": "none"}, className="topic-parameter-field"),
+                html.Div([
+                    html.Label("Number of bins"),
+                    dcc.Input(id={"type": "representation-metadata-count", "name": field},
+                              type="number", min=1, step=1, value=10),
+                ], id={"type": "representation-metadata-bincount", "name": field},
+                   style={"display": "none"}, className="topic-parameter-field"),
+                html.Div([
+                    html.Label("Numeric boundaries (JSON array)"),
+                    dcc.Input(id={"type": "representation-metadata-boundaries", "name": field},
+                              type="text", value="[0, 10]"),
+                ], id={"type": "representation-metadata-edges", "name": field},
+                   style={"display": "none"}, className="topic-parameter-field"),
+            ], className="topic-parameter-field"))
+        return rows
+
+    @app.callback(
+        Output({"type": "representation-metadata-fixed", "name": ALL}, "style"),
+        Output({"type": "representation-metadata-bincount", "name": ALL}, "style"),
+        Output({"type": "representation-metadata-edges", "name": ALL}, "style"),
+        Input({"type": "representation-metadata-transform", "name": ALL}, "value"),
+    )
+    def show_bin_options(methods: list[str]) -> tuple[Any, Any, Any]:
+        return (
+            [{} if x == "fixed_width" else {"display": "none"} for x in methods],
+            [{} if x in {"quantile", "equal_width"} else {"display": "none"} for x in methods],
+            [{} if x == "boundaries" else {"display": "none"} for x in methods],
         )
 
     @app.callback(
@@ -898,6 +1009,13 @@ def register_representation_callbacks(
         State("representation-text-truncation", "value"),
         State({"type": "representation-param", "name": ALL}, "value"),
         State({"type": "representation-param", "name": ALL}, "id"),
+        State("representation-metadata-fields", "value"),
+        State({"type": "representation-metadata-transform", "name": ALL}, "id"),
+        State({"type": "representation-metadata-transform", "name": ALL}, "value"),
+        State({"type": "representation-metadata-width", "name": ALL}, "value"),
+        State({"type": "representation-metadata-anchor", "name": ALL}, "value"),
+        State({"type": "representation-metadata-count", "name": ALL}, "value"),
+        State({"type": "representation-metadata-boundaries", "name": ALL}, "value"),
         State("representation-refresh-store", "data"),
         State("view-refresh-store", "data"),
         prevent_initial_call=True,
@@ -915,6 +1033,10 @@ def register_representation_callbacks(
         transformer_model: str | None, model_revision: str | None,
         normalize: list[str] | None, truncation: str | None,
         values: list[Any], ids: list[dict[str, str]],
+        selected_metadata: list[str] | None,
+        metadata_ids: list[dict[str, str]], metadata_methods: list[str],
+        metadata_widths: list[Any], metadata_anchors: list[Any],
+        metadata_counts: list[Any], metadata_boundaries: list[str],
         revision: int | None,
         view_revision: int | None,
     ) -> tuple[Any, Any, str]:
@@ -944,6 +1066,27 @@ def register_representation_callbacks(
                     binary="binary" in (binary or []),
                     normalize="normalize" in (normalize or []),
                     truncation=truncation or "error",
+                )
+                result_id = created.geometry_id
+                label = "geometry"
+            elif mode == "geometry" and origin == "representation" and recipe == "metadata":
+                settings = {
+                    item["name"]: {
+                        "transform": method, "width": width, "anchor": anchor,
+                        "n_bins": count, "boundaries": boundaries,
+                    }
+                    for item, method, width, anchor, count, boundaries in zip(
+                        metadata_ids, metadata_methods, metadata_widths,
+                        metadata_anchors, metadata_counts, metadata_boundaries,
+                        strict=True,
+                    )
+                }
+                selected = selected_metadata or []
+                if len(selected) != len(set(selected)) or any(field not in settings for field in selected):
+                    raise ValueError("Choose valid metadata fields.")
+                created = create_metadata_geometry(
+                    project, name=name or "", source_representation_id=int(source),
+                    metadata_specs={field: settings[field] for field in selected},
                 )
                 result_id = created.geometry_id
                 label = "geometry"
