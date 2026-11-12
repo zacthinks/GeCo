@@ -131,7 +131,8 @@ def test_metadata_wizard_preserves_edited_controls_when_fields_change(tmp_path):
         for child in getattr(root, "children", []) or []:
             if isinstance(child, (str, int, float, bool)):
                 continue
-            if found := component(child, identifier):
+            found = component(child, identifier)
+            if found is not None:
                 return found
         return None
 
