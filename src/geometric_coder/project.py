@@ -921,6 +921,7 @@ class GeometricCoder:
         public: bool = True,
         analytic_enabled: bool = True,
         if_exists: str = "error",
+        _validated_shape: tuple[int, int, bool] | None = None,
     ) -> int:
         """Register a provider-backed geometry over the complete document universe.
 
@@ -970,9 +971,30 @@ class GeometricCoder:
                 f"External geometry {clean_name!r} was declared capable of transforming "
                 "new text, but the provider does not implement transform_texts()."
             )
-        matrix = self._validate_external_geometry_matrix(
-            provider.geometry_matrix(ref, self._ordered_user_keys()), name=clean_name
-        )
+        # TeAL FeatureMatrix outputs are lazy computed numerical artifacts.
+        # Their integrating caller validates *all* GeCo keys with TeAL's
+        # positions_by_keys and the frozen feature width before registration.
+        # Avoid eagerly rendering the entire wide matrix a second time.
+        if _validated_shape is None:
+            matrix = self._validate_external_geometry_matrix(
+                provider.geometry_matrix(ref, self._ordered_user_keys()), name=clean_name
+            )
+            n_columns = int(matrix.shape[1])
+            matrix_sparse = bool(sparse.issparse(matrix))
+        else:
+            if (
+                not isinstance(_validated_shape, tuple)
+                or len(_validated_shape) != 3
+                or not isinstance(_validated_shape[2], bool)
+                or any(
+                    isinstance(x, bool) or not isinstance(x, int)
+                    for x in _validated_shape[:2]
+                )
+            ):
+                raise ValueError("_validated_shape must be (rows, columns, sparse).")
+            count, n_columns, matrix_sparse = _validated_shape
+            if count != len(self.database.list_units()) or n_columns < 1:
+                raise ValueError("Validated external geometry shape is incompatible with the GeCo universe.")
         geometry_id = self.database.register_geometry(
             name=clean_name,
             class_name="external",
@@ -981,7 +1003,7 @@ class GeometricCoder:
             config={"type": "external"},
             dependency_names=[],
             matrix_path="",
-            matrix_sparse=bool(sparse.issparse(matrix)),
+            matrix_sparse=matrix_sparse,
             state_path=None,
             supports_query=bool(supports_query),
             supports_text_transform=bool(supports_text_transform),
@@ -993,7 +1015,7 @@ class GeometricCoder:
             "geometry", geometry_id
         )["representation_id"]
         self.database.record_representation_dimensions(
-            representation_id, int(matrix.shape[1])
+            representation_id, n_columns
         )
         return geometry_id
 
