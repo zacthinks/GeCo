@@ -88,3 +88,109 @@ def test_metadata_ui_is_part_of_existing_representation_wizard():
     assert '"representation-metadata-fields"' in source
     assert "create_metadata_geometry(" in source
     assert '"representation-wizard-submit"' in source
+
+
+
+def test_metadata_wizard_preserves_edited_controls_when_fields_change(tmp_path):
+    """Exercise the registered Dash callback with its real component tree.
+
+    The old callback reconstructed all controls with default values when a
+    second metadata field was selected, changing the fitted representation.
+    """
+    import pandas as pd
+
+    from geometric_coder import CountGeometry, GeometricCoder
+    from geometric_coder.ui import create_app
+
+    coder = GeometricCoder.create(
+        project_dir=tmp_path / "callback.geco",
+        data=pd.DataFrame({
+            "row_id": [1, 2, 3],
+            "text": ["alpha beta", "gamma delta", "alpha gamma"],
+        }),
+        keys=["row_id"], text="text", metadata=[],
+        geometries={"tokens": CountGeometry(lemmatize=False)},
+    )
+    app = create_app(coder)
+    callbacks = [
+        entry["callback"].__wrapped__
+        for key, entry in app.callback_map.items()
+        if "representation-metadata-settings.children" in key
+        and "representation-metadata-config.data" in key
+    ]
+    assert len(callbacks) == 1
+    render = callbacks[0]
+    discovered = [
+        {"value": "publication_year", "numeric": True, "default_transform": "zscore"},
+        {"value": "publication_source", "numeric": False, "default_transform": "onehot"},
+    ]
+
+    def component(root, identifier):
+        if getattr(root, "id", None) == identifier:
+            return root
+        for child in getattr(root, "children", []) or []:
+            if isinstance(child, (str, int, float, bool)):
+                continue
+            if found := component(child, identifier):
+                return found
+        return None
+
+    def render_fields(selected, state, mounted=None, source=10):
+        mounted = mounted or {}
+        def ids(kind):
+            return [{"type": f"representation-metadata-{kind}", "name": field}
+                    for field in mounted]
+        return render(
+            selected, discovered, source, state,
+            ids("transform"), [c["transform"] for c in mounted.values()],
+            ids("width"), [c["width"] for c in mounted.values()],
+            ids("anchor"), [c["anchor"] for c in mounted.values()],
+            ids("count"), [c["n_bins"] for c in mounted.values()],
+            ids("boundaries"), [c["boundaries"] for c in mounted.values()],
+        )
+
+    fields, state = render_fields(["publication_year"], None)
+    assert component(fields[0], {
+        "type": "representation-metadata-transform", "name": "publication_year",
+    }).value == "zscore"
+
+    edited = {
+        "publication_year": {
+            "transform": "fixed_width", "width": 10,
+            "anchor": 2000, "n_bins": 8, "boundaries": "[1990, 2000, 2010]",
+        },
+    }
+    fields, state = render_fields(
+        ["publication_year", "publication_source"], state, edited,
+    )
+    assert component(fields[0], {
+        "type": "representation-metadata-transform", "name": "publication_year",
+    }).value == "fixed_width"
+    assert component(fields[0], {
+        "type": "representation-metadata-width", "name": "publication_year",
+    }).value == 10
+    assert component(fields[0], {
+        "type": "representation-metadata-anchor", "name": "publication_year",
+    }).value == 2000
+    assert component(fields[1], {
+        "type": "representation-metadata-transform", "name": "publication_source",
+    }).value == "onehot"
+
+    # Removing and re-adding year also restores its full configuration.
+    fields, state = render_fields(["publication_source"], state, edited)
+    fields, state = render_fields(["publication_source", "publication_year"], state)
+    assert component(fields[1], {
+        "type": "representation-metadata-transform", "name": "publication_year",
+    }).value == "fixed_width"
+    assert component(fields[1], {
+        "type": "representation-metadata-anchor", "name": "publication_year",
+    }).value == 2000
+
+    # A different geometry must not inherit a coincidentally named field.
+    fields, state = render_fields(["publication_year"], state, source=11)
+    assert component(fields[0], {
+        "type": "representation-metadata-transform", "name": "publication_year",
+    }).value == "zscore"
+    assert component(fields[0], {
+        "type": "representation-metadata-anchor", "name": "publication_year",
+    }).value == 0
