@@ -226,7 +226,10 @@ def portable_feature_scale_estimator(estimator):
             result.margin_model = converted(result.margin_model)
             if result.calibrator is not None:
                 calibrator = result.calibrator
-                calibrator.estimator = converted(calibrator.estimator)
+                # CalibratedClassifierCV.estimator is an unfitted clone
+                # template. Replace it with a portable fitted representative,
+                # rather than asking the template for nonexistent scales.
+                calibrator.estimator = converted(model.margin_model)
                 for calibrated in calibrator.calibrated_classifiers_:
                     calibrated.estimator = converted(calibrated.estimator)
             return result
