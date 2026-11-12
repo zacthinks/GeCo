@@ -224,6 +224,7 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     dcc.Dropdown(id="representation-metadata-fields", options=[],
                                  value=[], multi=True, placeholder="Select fields"),
                     dcc.Store(id="representation-metadata-discovered", data=[]),
+                    dcc.Store(id="representation-metadata-config", data={}),
                     html.Div(id="representation-metadata-discovery-status",
                              role="status", className="control-status"),
                     html.P("One-hot categories with many distinct values can produce "
@@ -885,12 +886,57 @@ def register_representation_callbacks(
 
     @app.callback(
         Output("representation-metadata-settings", "children"),
+        Output("representation-metadata-config", "data"),
         Input("representation-metadata-fields", "value"),
         State("representation-metadata-discovered", "data"),
+        State("representation-wizard-source", "value"),
+        State("representation-metadata-config", "data"),
+        State({"type": "representation-metadata-transform", "name": ALL}, "id"),
+        State({"type": "representation-metadata-transform", "name": ALL}, "value"),
+        State({"type": "representation-metadata-width", "name": ALL}, "id"),
+        State({"type": "representation-metadata-width", "name": ALL}, "value"),
+        State({"type": "representation-metadata-anchor", "name": ALL}, "id"),
+        State({"type": "representation-metadata-anchor", "name": ALL}, "value"),
+        State({"type": "representation-metadata-count", "name": ALL}, "id"),
+        State({"type": "representation-metadata-count", "name": ALL}, "value"),
+        State({"type": "representation-metadata-boundaries", "name": ALL}, "id"),
+        State({"type": "representation-metadata-boundaries", "name": ALL}, "value"),
     )
     def metadata_settings(
         selected: list[str] | None, discovered: list[dict[str, Any]] | None,
-    ) -> list[Any]:
+        source_id: int | None, previous: dict[str, Any] | None,
+        method_ids: list[dict[str, str]], method_values: list[str],
+        width_ids: list[dict[str, str]], widths: list[Any],
+        anchor_ids: list[dict[str, str]], anchors: list[Any],
+        count_ids: list[dict[str, str]], counts: list[Any],
+        boundary_ids: list[dict[str, str]], boundaries: list[str | None],
+    ) -> tuple[list[Any], dict[str, Any]]:
+        # A selection change otherwise remounts every field's Dash controls,
+        # silently restoring default values. Snapshot the *mounted* controls
+        # before rebuilding and retain even deselected fields for re-addition.
+        # The source ID scopes the cache: another TeAL geometry must not inherit
+        # coincidentally named fields' transformations.
+        configs: dict[str, dict[str, Any]] = {}
+        if isinstance(previous, dict) and previous.get("source_id") == source_id:
+            configs = {
+                field: dict(config)
+                for field, config in previous.get("fields", {}).items()
+                if isinstance(field, str) and isinstance(config, dict)
+            }
+            for key, ids, values in (
+                ("transform", method_ids, method_values),
+                ("width", width_ids, widths),
+                ("anchor", anchor_ids, anchors),
+                ("n_bins", count_ids, counts),
+                ("boundaries", boundary_ids, boundaries),
+            ):
+                for item, value in zip(ids or [], values or [], strict=True):
+                    name = item.get("name")
+                    if name is not None:
+                        # Keep cleared/invalid inputs too. Never substitute a
+                        # default for an explicitly cleared parameter on save.
+                        configs.setdefault(str(name), {})[key] = value
+
         known = {row["value"]: row for row in discovered or []}
         methods = [
             ("zscore", "Z-score"), ("raw", "Raw numeric"), ("minmax", "Min-max"),
@@ -902,6 +948,7 @@ def register_representation_callbacks(
         for field in selected or []:
             if field not in known:
                 continue
+            current = configs.get(field, {})
             default = known[field]["default_transform"]
             choices = methods if known[field]["numeric"] else (
                 [methods[3], *methods[:3], *methods[4:]]
@@ -911,31 +958,34 @@ def register_representation_callbacks(
                 dcc.Dropdown(
                     id={"type": "representation-metadata-transform", "name": field},
                     options=[{"label": label, "value": value} for value, label in choices],
-                    value=default, clearable=False,
+                    value=current.get("transform", default), clearable=False,
                 ),
                 html.Div([
                     html.Label("Bin width"),
                     dcc.Input(id={"type": "representation-metadata-width", "name": field},
-                              type="number", min=0, step="any", value=10),
+                              type="number", min=0, step="any",
+                              value=current.get("width", 10)),
                     html.Label("Anchor (reference point)"),
                     dcc.Input(id={"type": "representation-metadata-anchor", "name": field},
-                              type="number", step="any", value=0),
+                              type="number", step="any",
+                              value=current.get("anchor", 0)),
                 ], id={"type": "representation-metadata-fixed", "name": field},
                    style={"display": "none"}, className="topic-parameter-field"),
                 html.Div([
                     html.Label("Number of bins"),
                     dcc.Input(id={"type": "representation-metadata-count", "name": field},
-                              type="number", min=1, step=1, value=10),
+                              type="number", min=1, step=1,
+                              value=current.get("n_bins", 10)),
                 ], id={"type": "representation-metadata-bincount", "name": field},
                    style={"display": "none"}, className="topic-parameter-field"),
                 html.Div([
                     html.Label("Numeric boundaries (JSON array)"),
                     dcc.Input(id={"type": "representation-metadata-boundaries", "name": field},
-                              type="text", value="[0, 10]"),
+                              type="text", value=current.get("boundaries", "[0, 10]")),
                 ], id={"type": "representation-metadata-edges", "name": field},
                    style={"display": "none"}, className="topic-parameter-field"),
             ], className="topic-parameter-field"))
-        return rows
+        return rows, {"source_id": source_id, "fields": configs}
 
     @app.callback(
         Output({"type": "representation-metadata-fixed", "name": ALL}, "style"),
