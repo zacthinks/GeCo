@@ -165,7 +165,38 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path, m
         np.testing.assert_allclose(_frame(result)["probability"], expected, atol=1e-12)
         op_id = predictor.operator_id
         ids = [artifact.artifact_id for artifact in ordered]
+        # The existing in-sample logistic stacker remains unchanged; only
+        # validate that a metadata member routes through its own geometry.
+        learned_id = coder.create_classifier_committee(
+            code_id=code_id, name="different_geometries_learned",
+            classifier_spec_ids=[baseline_id, metadata_id],
+            aggregation="logistic_stack",
+        )
+        coder.train_classifier_committee(code_id=code_id, committee_id=learned_id)
+        learned = coder.export_predictor(next(
+            ref for ref in coder.predictors()
+            if ref.kind == "committee" and ref.id == learned_id
+        ))
+        assert learned.aggregation == "logistic_stack"
+        learned_expected = learned.predict_proba([
+            coder.geometry_matrix(source.geometry_id) for source in learned.sources
+        ])
+        learned_translator = _geco_predictor_from_export(learned)
+        learned_artifacts = [
+            artifact_by_id[source.external_ref["artifact_id"]]
+            for source in learned.sources
+        ]
+        learned_result = project.translate(
+            learned_translator, learned_artifacts, batch_size=3,
+        )["output"]
+        np.testing.assert_allclose(
+            _frame(learned_result)["probability"], learned_expected,
+            atol=1e-12,
+        )
+        learned_op_id = learned_translator.operator_id
+        learned_ids = [artifact.artifact_id for artifact in learned_artifacts]
         augmented_id = created.artifact_id
+        output_columns = augmented.get_data_columns()
         linked.close()
     finally:
         project.close()
@@ -184,7 +215,16 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path, m
             batch_size=2,
         )["output"]
         np.testing.assert_allclose(_frame(result)["probability"], expected, atol=1e-12)
-        assert reopened.get_artifact(augmented_id).get_data_columns() == augmented.get_data_columns()
+        learned_loaded = reopened.get_operator(learned_op_id)
+        learned_replay = reopened.translate(
+            learned_loaded, [reopened.get_artifact(i) for i in learned_ids],
+            batch_size=2,
+        )["output"]
+        np.testing.assert_allclose(
+            _frame(learned_replay)["probability"], learned_expected,
+            atol=1e-12,
+        )
+        assert reopened.get_artifact(augmented_id).get_data_columns() == output_columns
     finally:
         reopened.close()
 
