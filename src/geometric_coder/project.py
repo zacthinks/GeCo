@@ -3197,7 +3197,13 @@ class GeometricCoder:
             labeled=labeled, geometry_id=int(spec["geometry_id"])
         )
 
-        if tune:
+        # The per-classifier Tune mode requests joint CV automatically on
+        # genuine refits, even when the global "tune hyperparameters" checkbox
+        # is off. Current-fit reuse above remains unchanged.
+        should_tune = bool(
+            tune or dict(spec["hyperparameters"]).get("feature_scaling") == "tune"
+        )
+        if should_tune:
             selection = self._select_classifier_hyperparameters(
                 code_id=int(code_id),
                 spec=spec,
