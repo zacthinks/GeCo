@@ -3882,6 +3882,18 @@ class GeometricCoder:
             artifact_path=artifact_path,
             predictions=predictions,
         )
+        # Keep previous lightweight snapshots/predictions (including historical
+        # Apply drafts) but only one retained heavy stacker estimator.
+        superseded_paths = self.database.retire_classifier_committee_fit_states(
+            committee_id=int(committee_id), keep_committee_fit_id=committee_fit_id
+        )
+        for relative_path in superseded_paths:
+            if relative_path == artifact_path:
+                continue
+            try:
+                (self.project_dir / relative_path).unlink(missing_ok=True)
+            except OSError:
+                pass
         return self.database.get_classifier_committee_fit(committee_fit_id)
 
     def _extend_classifier_committee_fit_predictions(
