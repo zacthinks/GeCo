@@ -20,6 +20,8 @@ In TeAL-linked projects, **Manage Representations** lets you create and compare 
 
 From **Original text**, GeCo can also request a new numerical geometry from TeAL: a spaCy-token document-term matrix (including reuse of compatible stored tokens) or Sentence Transformer embeddings. Model selection, token filters, and frozen replay remain TeAL-backed; geometries created this way can support semantic search with the same frozen text transformation.
 
+For TeAL-linked numerical geometries, **Add metadata features** in Manage Representations builds an additional representation from explicitly selected source metadata. Choose, for example, publication-year bins (including decades anchored at a chosen year), one-hot source categories, or z-scored numerical fields. TeAL 0.12.0 or newer fits and freezes the FeatureMatrix encodings; GeCo registers the lazy result for numerical exploration, views, and classification. The selected TeAL source must actually expose the fields. Because an arbitrary new text lacks matching metadata, these augmented geometries do **not** support semantic queries or new-text transformation.
+
 When adding a representation or view, GeCo proposes an editable, lowercase, underscore-separated name from the source and method, such as `tfidf_umap_2d` or `original_text_spacy_dtm`. The name includes output dimensions when known and a numeric suffix if a name is already taken. You can replace the suggestion with your own name. Reusing saved spaCy tokens produced alongside sentence artifacts requires TeAL v0.11.3 or newer.
 
 GeCo also supports **topic-model exploration**. Inspect topic memberships, color observations by their dominant topic or their association with a particular topic, and give topics meaningful labels as you interpret them. In projects integrated with **Text Analysis Lab (TeAL)**, you can also fit topic models from existing representations—including latent Dirichlet allocation (LDA) and a broad range of clustering-based approaches—and explore their results in GeCo.
@@ -35,6 +37,10 @@ Instead of labeling cases at random, you can ask GeCo to find informative observ
 The goal is not for the computer to define your code. **You define and refine the code; GeCo helps you develop computational representations that can recognize it across the corpus.**
 
 Classifiers include logistic regression, linear and **RBF-kernel support vector machines**, and several other families. The nonlinear RBF model can represent curved decision boundaries; optional cross-validation searches regularization and kernel width jointly. GeCo keeps each model's native decision scores distinct from its **estimated probabilities**. In Develop's prediction geometry, you can switch between estimated probabilities (the default) and native decision scores for models that expose them. Probabilities make recommendation, committee and Apply scoring easier to compare on a 0–1 scale, but they are estimates: calibration quality is not guaranteed, especially with few or selectively labeled examples.
+
+For supported regularized logistic and linear-SVM classifiers, **Feature scaling** is optional: **Off** preserves the original geometry features; **Fixed** scales each feature by its fitted training-column RMS; **Tune** uses cross-validation to select the scaling exponent alongside the classifier's existing parameters. The scaler belongs to the fitted classifier, not to the stored geometry, and fits only on the training portion of each validation fold.
+
+**Committees** combine classifiers built on different geometries without concatenating their feature matrices. Fixed aggregations combine member probabilities directly. The learned logistic committee fits its stacking weights from **out-of-fold (OOF)** member probabilities: temporary member models predict held-out examples, and the final committee uses retained full-data member models for corpus-wide scoring. OOF training requires at least two jointly represented Present and two Absent examples; older learned committees need retraining after upgrading. This reduces in-sample stacking overfit but does not replace independent evaluation.
 
 ### 3. Apply & Review — code broadly, review efficiently
 
@@ -52,7 +58,7 @@ Dedicated **Codes** and **Memos** workspaces help you manage code definitions, c
 
 ## GeCo, TeAL, and GeCo Desktop
 
-GeCo can be used independently or integrated with [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab). TeAL supports corpus preparation, computational representations, and downstream analysis; GeCo adds interactive exploration, qualitative coding, and classifier development within that broader research workflow.
+GeCo can be used independently or integrated with [Text Analysis Lab (TeAL)](https://github.com/zacthinks/text-analysis-lab). TeAL supports corpus preparation, computational representations, and downstream analysis; GeCo adds interactive exploration, qualitative coding, and classifier development within that broader research workflow. A fitted classifier or committee—including members trained on different geometries—can be exported as a frozen predictor for reproducible execution in TeAL. Confirmation, probability-sampled human audits, and statistical error correction remain downstream responsibilities, not GeCo inference features.
 
 We are also developing [🦎 GeCo Desktop](https://github.com/zacthinks/geco-desktop), a desktop application designed to let researchers create and use GeCo projects **without writing Python or managing Python environments**. GeCo Desktop is still under active development and is not yet a finished, distributable application.
 
@@ -147,7 +153,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 
 GeCo is an **exploratory** environment. Its maps, classifiers, and proposals support reading, code development, interpretation, and hypothesis generation. They are **not**, on their own, population estimates or a substitute for an inferential research design. Projects that require confirmatory inference should use an appropriate downstream analysis workflow.
 
-**Current status:** GeCo is under active pre-1.0 development (package version 0.12.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
+**Current status:** GeCo is under active pre-1.0 development (package version 0.13.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
 
 ## Development
 

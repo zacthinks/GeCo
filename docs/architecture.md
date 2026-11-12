@@ -2,7 +2,7 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes GeCo 0.12.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
+This describes GeCo 0.13.0 and project schema 18. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
@@ -28,6 +28,8 @@ New-text capability is **geometry-specific**, not a project-wide all-or-nothing 
 
 In TeAL-linked workspaces, Manage Representations supports transformations such as TF-IDF, normalization, SVD, and UMAP. TeAL owns immutable numerical artifacts and their transformation lineage; GeCo manages local names, registrations, and use as geometries and views. Removing a GeCo registration does not delete the underlying TeAL artifact.
 
+The **Add metadata features** operation (GeCo 0.13.0; requires TeAL 0.12.0+) selects one registered TeAL numerical source and explicit metadata fields from that source's full query scope. GeCo maps raw, z-score, min-max, one-hot, fixed-width/anchored, quantile, equal-width, or explicit-boundary choices to TeAL's frozen FeatureMatrix recipe. TeAL owns scalar fitting, categorical vocabularies, feature ordering, sparse/lazy numerical assembly, and artifact persistence. GeCo registers the result with its original representation as parent, without materializing the full expanded matrix merely to validate registration. The source's metadata must be available through TeAL; GeCo-local copies are not sufficient. Metadata-augmented geometries are analytic and can feed views or classifiers but are not query/new-text replayable, since new text has no matching metadata. Existing restrictions on generating geometries when derived spans/teaching examples cannot be safely backfilled remain in force.
+
 The Add Representation wizard suggests a lowercase SQL-safe name based on the source representation and method, appending the target dimensionality when known and a numeric suffix for collisions. Suggested names update with wizard settings until the researcher edits the name manually; this is a UI convenience, not a new identity or provenance contract. GeCo's current sibling spaCy token discovery and frozen text replay use TeAL's v0.11.3+ linked-workspace APIs.
 
 The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` remain compatibility boundaries. One-dimensional jitter changes displayed coordinates only, not analytic distances.
@@ -39,6 +41,8 @@ The project-level accessors `geometry_matrix(...)` and `view_coordinates(...)` r
 **Develop** connects researcher-defined codes to their own classifiers and committees. Training maintains current fitted model state and prediction caches while preserving the separation between human judgments and machine suggestions.
 
 Classifiers include linear and RBF-kernel SVMs. A fitted classifier stores its predicted labels, estimated positive-class probabilities when available, and its **native decision scores** independently. SVM probability estimation uses cross-validated sigmoid calibration when feasible; very small class counts use a monotone sigmoid fallback that is explicitly not a validated calibration estimate. An SVM with explicitly disabled probability estimation retains native margin scores only. Other families may expose native probabilities without separate calibration. The Develop prediction-geometry API and UI can select either probability estimates or native scores, rejecting unavailable score types rather than mixing incompatible scales.
+
+Classifier-level **feature-column scaling** (GeCo 0.13.0) is an opt-in sklearn-compatible transformer applied during estimator fitting, independently of TeAL representation construction. For regularized logistic and linear-SVM families, Off retains existing behavior, Fixed uses γ=1, and Tune jointly searches the feature-scale exponent γ in {0, 0.5, 1} and existing model parameters. Each feature is divided by its training-derived column RMS raised to γ (zero and near-zero columns are left unchanged). Statistics fit on each CV training fold, including within temporary OOF committee-member fits; no source geometry is mutated. Fitted export converts the GeCo scaler into TeAL-compatible neutral state so the frozen operator does not depend on GeCo's scaler implementation.
 
 Learned logistic committees use stratified **out-of-fold (OOF) stacking** rather than fitting a meta-model to members' in-sample predictions. Up to five deterministic shared folds are used, with at least two jointly represented examples in each class required. A temporary copy of each member fits its selected configuration on that member's eligible labeled observations excluding every held-out ID; preprocessing and SVM calibration are fitted inside that temporary training portion. The logistic meta-model is trained on aligned held-out positive-class probabilities. Full-data retained member estimators still provide ordinary predictions and cross-geometry frozen TeAL exports. Previously fitted in-sample committees are stale until retrained. Member hyperparameters chosen using all development labels can still introduce model-selection dependence; OOF stacking is not nested validation or confirmatory evaluation.
 
@@ -61,6 +65,8 @@ The optional aggregation layer reduces code values from atomic observations to a
 GeCo can operate on its own or use externally backed numerical data. External providers align their results with the project's original source keys; GeCo owns codes, observations, assignments, sessions, and other mutable exploratory state. The UI does not need to interpret an external provider's private storage layout.
 
 Existing integration entry points include project creation/opening, representation access, and selected exports such as `export_codes(...)`. For current signatures, consult the [source package](../src/geometric_coder/) and tests rather than accessing GeCo's SQLite tables or private sidecar files.
+
+A current fitted classifier or committee can be exported through the predictors() / export_predictor(ref) interface as a frozen multi-source predictor, with ordered member estimators and source routing preserved. The bridge to TeAL's GeCoPredictor executes the models over independently supplied, key-aligned TeAL geometry artifacts and supports persistence/reopening. A metadata-augmented member may therefore be combined with members trained on lexical or embedding geometries without concatenating those geometries in GeCo. Older in-sample stackers are marked stale for OOF retraining; historic Apply predictions remain recorded. Frozen predictions can support separate confirmatory workflows in TeAL, but GeCo does not carry out audit sampling or generalized-difference estimation.
 
 ## Future extensions
 

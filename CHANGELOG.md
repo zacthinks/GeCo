@@ -6,6 +6,28 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 _No changes recorded yet._
 
+## [0.13.0] - 2026-11-12
+
+### Added
+
+- **Classifier feature-column scaling** in Develop (PR #52). For regularized logistic regression and linear SVM classifiers, select Off (existing behavior), Fixed (full scaling), or Tune to cross-validate the feature-scale exponent γ in {0, 0.5, 1} alongside existing classifier hyperparameters. The scaler uses training-column RMS by default, supports sparse matrices, and is fitted separately in each validation fold.
+- **Add metadata features** in Manage Representations for TeAL-linked numerical geometries (PR #53). Append selected source metadata using raw numeric values, z-score, min-max, categorical one-hot, fixed-width bins with an anchor, quantile bins, equal-width bins, or explicit bin edges. TeAL 0.12.0 owns and freezes the FeatureMatrix recipe; GeCo registers the result as an ordinary analytic geometry, available for views, exploration, classifiers, and cross-geometry committees.
+- **Out-of-fold logistic stacking** for learned classifier committees (PR #54). The logistic meta-model trains on held-out member probabilities from up to five shared stratified folds rather than predictions made on each member's own training examples. Each member retains its own geometry, fitted model configuration, scaling, and probability calibration.
+
+### Changed
+
+- Metadata-augmented geometries preserve TeAL source keys, lazy numerical storage, and the original representation as the parent. They are navigation/analysis-only: arbitrary new-text transformation and semantic query are not offered when corresponding metadata is unavailable.
+- Learned committees require at least **two jointly represented Present and two Absent examples** to construct valid out-of-fold training predictions. Infeasible training now reports an error rather than quietly falling back to in-sample stacking.
+- Previously fitted **in-sample learned committees become Stale** and must be retrained to use the new OOF procedure. Existing historical prediction records and Apply review provenance are retained. Superseded heavy stacker estimator files are retired after successful replacement.
+- The frozen classifier/committee predictor export continues to route distinct member geometries independently. Scaled member estimators use portable fitted normalization state for TeAL integration.
+
+### Notes
+
+- This release does **not** change the GeCo project schema (version 18). Feature-column scaling is opt-in; existing classifiers remain unchanged by default.
+- Metadata augmentation requires a **TeAL-linked workspace with TeAL 0.12.0 or newer** and metadata queryable from the selected source artifact. Fields copied only into GeCo's local SQLite database are not silently included.
+- Out-of-fold stacking removes direct in-sample meta-feature leakage, but previously chosen member hyperparameters may still reflect full-development-data tuning. Neither cross-validation nor estimated probabilities establish confirmatory accuracy. Use an independent audit or appropriate downstream inferential procedure for population claims.
+- Trainable committees may need retraining after upgrading. Back up research workspaces before upgrading during pre-1.0 development.
+
 ## [0.12.0] - 2026-11-11
 
 ### Added
