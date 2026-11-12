@@ -133,3 +133,64 @@ def test_fold_isolated_scaler_fit(monkeypatch):
             scoring_matrix=x,
         )
     assert seen == [4, 4]
+
+
+def test_geco_joint_cv_persistence_staleness_and_retrain(tmp_path):
+    import pandas as pd
+
+    from geometric_coder import CountGeometry, GeometricCoder
+
+    data = pd.DataFrame({
+        "row_id": list(range(8)),
+        "text": [
+            "excellent clear helpful", "excellent useful strong", "helpful clear useful",
+            "bad confusing weak", "terrible unclear weak", "bad difficult confusing",
+            "excellent clear", "bad weak",
+        ],
+    })
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "scaling.geco",
+        data=data, keys=["row_id"], text="text", metadata=[],
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code = project.create_code("quality")
+    geometry_id = int(project.geometries()[0]["geometry_id"])
+    spec_id = project.create_classifier_spec(
+        code_id=code, name="scaled", geometry_id=geometry_id,
+        algorithm="logistic_l2", hyperparameters={"feature_scaling": "tune"},
+    )
+    rows = project.database.list_observations()
+    for position in (0, 1, 2):
+        project.annotate(int(rows[position]["observation_id"]), code, "positive")
+    for position in (3, 4, 5):
+        project.annotate(int(rows[position]["observation_id"]), code, "negative")
+
+    # Per-classifier Tune must request CV on a genuine fit without the global
+    # tuning checkbox. All old regularization candidates are retained.
+    fit = project.train_classifier(
+        code_id=code, classifier_spec_id=spec_id, tune=False, folds=2,
+    )
+    plan = fit["training_selection"]
+    assert plan["tuned"]
+    assert len(plan["results"]) == 39
+    assert {r["hyperparameters"]["feature_scale_gamma"] for r in plan["results"]} == {
+        0.0, 0.5, 1.0,
+    }
+    saved = project.artifacts.load_model(project.project_dir, fit["artifact_path"])
+    assert isinstance(saved, Pipeline)
+    assert saved.named_steps["scale"].n_samples_seen_ == 6
+    assert saved.named_steps["scale"].gamma in (0.0, 0.5, 1.0)
+    assert project.classifier_status(code_id=code)["classifiers"][0]["status"] == "current"
+
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.classifier_status(code_id=code)["classifiers"][0]["status"] == "current"
+    reopened.update_classifier_spec(
+        spec_id, name="scaled",
+        hyperparameters={"regularization": 1.0, "feature_scaling": "fixed"},
+    )
+    assert reopened.classifier_status(code_id=code)["classifiers"][0]["status"] == "stale"
+    fixed = reopened.train_classifier(code_id=code, classifier_spec_id=spec_id)
+    assert fixed["classifier_fit_id"] != fit["classifier_fit_id"]
+    model = reopened.artifacts.load_model(reopened.project_dir, fixed["artifact_path"])
+    assert model.named_steps["scale"].gamma == 1.0
+    assert reopened.classifier_status(code_id=code)["classifiers"][0]["status"] == "current"
