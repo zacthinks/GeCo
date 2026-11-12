@@ -3675,7 +3675,39 @@ class GeometricCoder:
             "committee_updated_at": str(committee["updated_at"]),
             "aggregation": str(committee["aggregation"]),
             "member_fit_ids": [int(value) for value in member_fit_ids],
-            "stacking_scheme": {"method": "stratified_oof", "max_folds": 5, "seed": 0},
+            "stacking_scheme": {
+                "method": "stratified_oof",
+                "max_folds": 5,
+                "seed": 0,
+                "folds": min(
+                    5,
+                    min(
+                        (
+                            sum(row["value"] == label for row in
+                                self._eligible_training_annotations(int(code_id), applicable)
+                                if int(row["observation_id"]) not in unsupported_derived)
+                            for label in ("positive", "negative")
+                        ),
+                        default=0,
+                    ),
+                ),
+                "training_observation_ids": [
+                    int(row["observation_id"])
+                    for row in self._eligible_training_annotations(int(code_id), applicable)
+                ],
+                "member_configurations": [
+                    {
+                        "classifier_fit_id": int(member["classifier_fit_id"]),
+                        "geometry_id": int(member["geometry_id"]),
+                        "algorithm": str(member["algorithm"]),
+                        "hyperparameters": dict(member["hyperparameters"]),
+                    }
+                    for member in (
+                        self.database.get_classifier_fit(int(fit_id))
+                        for fit_id in member_fit_ids
+                    )
+                ],
+            },
         }
 
     def train_classifier_committee(
@@ -3783,17 +3815,10 @@ class GeometricCoder:
         # Never reuse them as stacker training features.
         member_score_lookup = self.database.classifier_score_maps(member_fit_ids)
         member_score_maps = [member_score_lookup[fit_id] for fit_id in member_fit_ids]
-        snapshot["stacking_scheme"]["folds"] = folds
-        snapshot["stacking_scheme"]["training_observation_ids"] = training_ids
-        snapshot["stacking_scheme"]["member_configurations"] = [
-            {
-                "classifier_fit_id": int(fit["classifier_fit_id"]),
-                "geometry_id": int(fit["geometry_id"]),
-                "algorithm": str(fit["algorithm"]),
-                "hyperparameters": dict(fit["hyperparameters"]),
-            }
-            for fit in member_fits
-        ]
+        if snapshot["stacking_scheme"]["training_observation_ids"] != training_ids:
+            raise RuntimeError("Committee eligibility changed during OOF training.")
+        if snapshot["stacking_scheme"]["folds"] != folds:
+            raise RuntimeError("Committee fold selection changed during OOF training.")
 
         observations = self.database.list_observations()
         scoring_ids = [
