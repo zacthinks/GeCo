@@ -2310,6 +2310,11 @@ class GeometricCoder:
                     "available, so this exact frozen predictor cannot be exported."
                 )
             estimator = self.artifacts.load_model(self.project_dir, artifact_path)
+            # Export a portable fitted model, not a pickle referencing GeCo's
+            # independently implemented scale transform. The original retained
+            # estimator and its in-project scores are never modified.
+            from geometric_coder.preprocessing import portable_feature_scale_estimator
+            estimator = portable_feature_scale_estimator(estimator)
             geometry_id = int(fit["geometry_id"])
             source_index = source_index_by_geometry.get(geometry_id)
             width = estimator_feature_width(estimator)
@@ -3027,6 +3032,15 @@ class GeometricCoder:
             max_neighbors=int(min_train_rows),
             training_matrix=training_matrix,
         )
+        # Joint search keeps the existing family-specific regularization and
+        # elastic-net candidate plan intact. Only opt-in scaling adds the
+        # three bounded feature-scale exponents, never a full-dataset fit.
+        if base.get("feature_scaling") == "tune":
+            candidates = [
+                {**candidate, "feature_scale_gamma": gamma}
+                for candidate in candidates
+                for gamma in (0.0, 0.5, 1.0)
+            ]
         results: list[dict[str, Any]] = []
         for candidate in candidates:
             fold_scores: list[float] = []
@@ -3099,6 +3113,10 @@ class GeometricCoder:
                     {
                         "regularization": float(
                             row["hyperparameters"]["regularization"]
+                        ),
+                        **(
+                            {"feature_scale_gamma": float(row["hyperparameters"]["feature_scale_gamma"])}
+                            if "feature_scale_gamma" in row["hyperparameters"] else {}
                         ),
                         "score": float(row["score"]),
                         "fold_scores": list(row["fold_scores"]),
@@ -3179,7 +3197,13 @@ class GeometricCoder:
             labeled=labeled, geometry_id=int(spec["geometry_id"])
         )
 
-        if tune:
+        # The per-classifier Tune mode requests joint CV automatically on
+        # genuine refits, even when the global "tune hyperparameters" checkbox
+        # is off. Current-fit reuse above remains unchanged.
+        should_tune = bool(
+            tune or dict(spec["hyperparameters"]).get("feature_scaling") == "tune"
+        )
+        if should_tune:
             selection = self._select_classifier_hyperparameters(
                 code_id=int(code_id),
                 spec=spec,

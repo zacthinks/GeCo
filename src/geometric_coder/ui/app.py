@@ -5233,6 +5233,7 @@ def create_app(
         State("classifier-spec-name", "value"),
         State("classifier-spec-geometry", "value"),
         State("classifier-spec-algorithm", "value"),
+        State("classifier-spec-scaling", "value"),
         State("focus-code-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -5243,6 +5244,7 @@ def create_app(
         name: str | None,
         geometry_id: int | None,
         algorithm: str | None,
+        feature_scaling: str | None,
         code_id: int | None,
     ) -> tuple[dict[str, str], str]:
         del open_clicks, close_clicks, save_clicks
@@ -5270,7 +5272,7 @@ def create_app(
                 name=clean_name,
                 geometry_id=int(geometry_id),
                 algorithm=selected_algorithm,
-                hyperparameters=None,
+                hyperparameters={"feature_scaling": str(feature_scaling or "off")},
             )
         except (KeyError, ValueError) as error:
             return {"display": "flex"}, str(error)
@@ -5297,10 +5299,12 @@ def create_app(
         Input("focus-manage-classifiers", "n_clicks"),
         Input("classifier-manager-close", "n_clicks"),
         Input("classifier-manager-rename", "n_clicks"),
+        Input("classifier-manager-scaling-save", "n_clicks"),
         Input("classifier-manager-delete", "n_clicks"),
         State("classifier-manager-table", "selected_rows"),
         State("classifier-manager-table", "data"),
         State("classifier-manager-rename-name", "value"),
+        State("classifier-manager-scaling", "value"),
         State("focus-code-dropdown", "value"),
         State("classifier-spec-refresh-store", "data"),
         State("committee-refresh-store", "data"),
@@ -5310,15 +5314,17 @@ def create_app(
         open_clicks: int,
         close_clicks: int,
         rename_clicks: int,
+        scaling_clicks: int,
         delete_clicks: int,
         selected_rows: list[int] | None,
         table_data: list[dict[str, Any]] | None,
         rename_name: str | None,
+        scaling_mode: str | None,
         code_id: int | None,
         spec_refresh: int | None,
         committee_refresh: int | None,
     ) -> tuple[dict[str, str], list[dict[str, Any]], str, int, int]:
-        del open_clicks, close_clicks, rename_clicks, delete_clicks
+        del open_clicks, close_clicks, rename_clicks, scaling_clicks, delete_clicks
         triggered = str(callback_context.triggered_id)
         next_spec_refresh = int(spec_refresh or 0)
         next_committee_refresh = int(committee_refresh or 0)
@@ -5342,6 +5348,29 @@ def create_app(
                     next_spec_refresh += 1
                     next_committee_refresh += 1
                     message = f"Classifier renamed to {str(rename_name).strip()!r}."
+        if triggered == "classifier-manager-scaling-save":
+            rows = table_data or []
+            selection = selected_rows or []
+            if not selection:
+                message = "Select a classifier to change its scaling."
+            else:
+                try:
+                    selected = rows[int(selection[0])]
+                    spec = project.database.get_classifier_spec(int(selected["classifier_spec_id"]))
+                    parameters = dict(spec["hyperparameters"])
+                    parameters["feature_scaling"] = str(scaling_mode or "off")
+                    parameters.pop("feature_scale_gamma", None)
+                    project.update_classifier_spec(
+                        int(spec["classifier_spec_id"]),
+                        name=str(spec["name"]),
+                        hyperparameters=parameters,
+                    )
+                except (IndexError, KeyError, ValueError) as error:
+                    message = str(error)
+                else:
+                    next_spec_refresh += 1
+                    next_committee_refresh += 1
+                    message = "Classifier scaling updated. Retrain to refresh its fitted model."
         if triggered == "classifier-manager-delete":
             rows = table_data or []
             selection = selected_rows or []
@@ -5367,6 +5396,7 @@ def create_app(
                 "settings": hyperparameter_summary(
                     str(row["algorithm"]), dict(row["hyperparameters"])
                 ),
+                "feature_scaling": dict(row["hyperparameters"]).get("feature_scaling", "off"),
             }
             for row in (
                 project.classifier_specs(code_id=int(code_id))
@@ -5393,6 +5423,25 @@ def create_app(
             return str(rows[int(selection[0])]["name"])
         except (IndexError, KeyError, TypeError, ValueError):
             return ""
+
+    @app.callback(
+        Output("classifier-manager-scaling", "value"),
+        Input("classifier-manager-table", "selected_rows"),
+        Input("classifier-manager-table", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_classifier_scaling(
+        selected_rows: list[int] | None,
+        table_data: list[dict[str, Any]] | None,
+    ) -> str:
+        rows = table_data or []
+        selection = selected_rows or []
+        if not selection:
+            return "off"
+        try:
+            return str(rows[int(selection[0])].get("feature_scaling", "off"))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return "off"
 
     @app.callback(
         Output("committee-modal", "style"),
@@ -8841,6 +8890,22 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         value="logistic_l2",
                         clearable=False,
                     ),
+                    html.Label("Feature-column normalization"),
+                    dcc.Dropdown(
+                        id="classifier-spec-scaling",
+                        options=[
+                            {"label": "Off (original features)", "value": "off"},
+                            {"label": "Fixed (full RMS, γ=1)", "value": "fixed"},
+                            {"label": "Tune γ with cross-validation", "value": "tune"},
+                        ],
+                        value="off",
+                        clearable=False,
+                    ),
+                    html.Small(
+                        "Scaling is supported for regularized logistic and linear SVM models. "
+                        "Tune compares γ=0, 0.5, 1 alongside the existing regularization search.",
+                        className="focus-help",
+                    ),
                     html.Small(
                         "New classifiers start with family defaults. In Develop, optionally "
                         "enable Tune hyperparameters with cross-validation before Train when "
@@ -8918,6 +8983,27 @@ def _classifier_manager_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                             html.Button(
                                 "Rename selected classifier",
                                 id="classifier-manager-rename",
+                                n_clicks=0,
+                            ),
+                        ],
+                        className="classifier-manager-rename-row",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Selected classifier feature-column normalization"),
+                            dcc.Dropdown(
+                                id="classifier-manager-scaling",
+                                options=[
+                                    {"label": "Off", "value": "off"},
+                                    {"label": "Fixed (full RMS, γ=1)", "value": "fixed"},
+                                    {"label": "Tune γ (0, 0.5, 1)", "value": "tune"},
+                                ],
+                                value="off",
+                                clearable=False,
+                            ),
+                            html.Button(
+                                "Update selected classifier scaling",
+                                id="classifier-manager-scaling-save",
                                 n_clicks=0,
                             ),
                         ],

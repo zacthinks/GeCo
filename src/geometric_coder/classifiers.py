@@ -16,10 +16,12 @@ from sklearn import __version__ as sklearn_version
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import ComplementNB
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
 from geometric_coder.geometry.base import Matrix
+from geometric_coder.preprocessing import FeatureScaleNormalizer
 
 ClassifierAlgorithm = Literal[
     "logistic_l2",
@@ -31,6 +33,10 @@ ClassifierAlgorithm = Literal[
     "decision_tree",
     "knn",
 ]
+
+FEATURE_SCALING_ALGORITHMS = frozenset({
+    "logistic_l1", "logistic_l2", "logistic_elasticnet", "linear_svm",
+})
 
 SUPPORTED_CLASSIFIER_ALGORITHMS: tuple[ClassifierAlgorithm, ...] = (
     "logistic_l2",
@@ -222,6 +228,25 @@ def normalize_hyperparameters(
     """Merge and validate user hyperparameters for a supported algorithm."""
     values = default_hyperparameters(algorithm)
     values.update(dict(hyperparameters or {}))
+
+    # Keep legacy configurations byte-for-byte compatible when no scaling key
+    # was supplied. RBF kernel gamma is deliberately a separate parameter.
+    scale_mode = values.get("feature_scaling", "off")
+    if scale_mode not in {"off", "fixed", "tune"}:
+        raise ValueError("feature_scaling must be 'off', 'fixed', or 'tune'.")
+    if scale_mode != "off" and algorithm not in FEATURE_SCALING_ALGORITHMS:
+        raise ValueError(
+            f"Feature-column scaling is not supported for {classifier_algorithm_label(algorithm)}."
+        )
+    if scale_mode == "tune":
+        exponent = float(values.get("feature_scale_gamma", 1.0))
+        if not np.isfinite(exponent) or not 0.0 <= exponent <= 1.0:
+            raise ValueError("feature_scale_gamma must be finite and in [0, 1].")
+        values["feature_scale_gamma"] = exponent
+    elif scale_mode == "fixed":
+        values.pop("feature_scale_gamma", None)
+    else:
+        values.pop("feature_scale_gamma", None)
 
     threshold = float(values.get("threshold", 0.5))
     if not 0.0 <= threshold <= 1.0:
@@ -442,8 +467,14 @@ def tuning_candidates(
 def hyperparameter_summary(algorithm: str, hyperparameters: dict[str, Any] | None) -> str:
     """Return compact user-facing detail for the selected family parameters."""
     values = normalize_hyperparameters(algorithm, hyperparameters)
+    scale_mode = values.get("feature_scaling", "off")
+    suffix = (
+        "" if scale_mode == "off"
+        else " · column scale γ=1" if scale_mode == "fixed"
+        else f" · column scale tuned γ={float(values['feature_scale_gamma']):g}"
+    )
     if algorithm in {"logistic_l2", "logistic_l1", "linear_svm"}:
-        return f"λ={float(values['regularization']):g}"
+        return f"λ={float(values['regularization']):g}{suffix}"
     if algorithm == "rbf_svm":
         gamma = values["gamma"]
         gamma_label = gamma if isinstance(gamma, str) else f"{gamma:.3g}"
@@ -451,7 +482,7 @@ def hyperparameter_summary(algorithm: str, hyperparameters: dict[str, Any] | Non
     if algorithm == "logistic_elasticnet":
         return (
             f"λ={float(values['regularization']):g} · "
-            f"L1 ratio={float(values['l1_ratio']):g}"
+            f"L1 ratio={float(values['l1_ratio']):g}{suffix}"
         )
     if algorithm == "complement_nb":
         return f"α={float(values['alpha']):g}"
@@ -635,6 +666,13 @@ def fit_classifier(
     estimator = _build_estimator(
         algorithm=algorithm, parameters=parameters, training_rows=int(y.size)
     )
+    mode = parameters.get("feature_scaling", "off")
+    if mode in {"fixed", "tune"}:
+        gamma = 1.0 if mode == "fixed" else float(parameters["feature_scale_gamma"])
+        estimator = Pipeline([
+            ("scale", FeatureScaleNormalizer(gamma=gamma)),
+            ("classifier", estimator),
+        ])
     if algorithm in {"linear_svm", "rbf_svm"} and parameters["probability"]:
         estimator = _fit_calibrated_svm(
             estimator, training_matrix, y, seed=int(parameters["random_state"])
