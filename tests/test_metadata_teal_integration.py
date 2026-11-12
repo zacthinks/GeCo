@@ -72,7 +72,7 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path):
             "document_length": {"transform": "zscore"},
         }
         created = create_metadata_geometry(
-            coder, name="TF-IDF + Metadata",
+            coder, name="tfidf_plus_metadata",
             source_representation_id=source_representation_id,
             metadata_specs=specs,
         )
@@ -205,10 +205,10 @@ def test_metadata_source_only_no_geco_sqlite_fallback(tmp_path):
         )["representation_id"])
         with pytest.raises(ValueError, match="does not expose metadata"):
             create_metadata_geometry(
-                coder, name="Invalid metadata", source_representation_id=source_id,
+                coder, name="invalid_metadata", source_representation_id=source_id,
                 metadata_specs={"nonexistent": {"transform": "onehot"}},
             )
-        assert not coder.has_geometry("Invalid metadata")
+        assert not coder.has_geometry("invalid_metadata")
         linked.close()
     finally:
         project.close()
