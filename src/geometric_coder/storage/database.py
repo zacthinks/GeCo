@@ -4237,6 +4237,32 @@ class ProjectDatabase:
             )
             return committee_fit_id
 
+    def retire_classifier_committee_fit_states(
+        self, *, committee_id: int, keep_committee_fit_id: int
+    ) -> list[str]:
+        """Retire superseded heavy stackers while retaining historical predictions.
+
+        Apply drafts and earlier training snapshots remain interpretable. Prior
+        artifacts are no longer available for freezing as active model states.
+        """
+        with self.connect() as connection:
+            old_rows = connection.execute(
+                """
+                SELECT artifact_path FROM classifier_committee_fits
+                WHERE committee_id = ? AND committee_fit_id != ?
+                  AND artifact_path != ''
+                """,
+                (int(committee_id), int(keep_committee_fit_id)),
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE classifier_committee_fits SET artifact_path = ''
+                WHERE committee_id = ? AND committee_fit_id != ?
+                """,
+                (int(committee_id), int(keep_committee_fit_id)),
+            )
+        return [str(row["artifact_path"]) for row in old_rows]
+
     def latest_classifier_committee_fit(
         self, *, committee_id: int, code_id: int
     ) -> dict[str, Any] | None:
