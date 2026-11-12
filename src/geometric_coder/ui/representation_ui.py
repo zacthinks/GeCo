@@ -806,6 +806,10 @@ def register_representation_callbacks(
             source_name = str(source["name"])
             if mode == "view":
                 dimensions = _positive_dimensions(view_dimensions)
+            elif recipe == "metadata":
+                # The selected metadata schema may expand to an unknown width.
+                # Do not advertise the original geometry's dimensions in a new name.
+                dimensions = None
             elif recipe in {"svd", "umap"}:
                 controls = {
                     item.get("name"): value
