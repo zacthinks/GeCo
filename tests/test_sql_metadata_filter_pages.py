@@ -105,3 +105,26 @@ def test_sql_query_rejects_invalid_columns_or_values_safely(project):
     for clause in cases:
         with pytest.raises((ValueError, TypeError)):
             project.database.filtered_unit_count([clause])
+
+
+def test_compact_matching_positions_reproduce_sql_page_sequence(project):
+    filters = [{"field": "category", "type": "categorical", "operator": "in", "value": ["Green"]}]
+    positions = project.database.filtered_unit_positions(filters)
+    assert len(positions) == 40
+    assert positions == list(range(0, 120, 3))
+    for page in range(1, 7):
+        rows, total, selected = project.database.filtered_unit_page(
+            filters, page_size=7, page_number=page,
+        )
+        assert total == 40
+        assert rows == positions[(page - 1) * 7 : page * 7]
+        assert selected == page
+
+
+def test_explore_callbacks_share_cached_filter_position_index():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] /
+              "src/geometric_coder/ui/app.py").read_text(encoding="utf-8")
+    assert "def cached_metadata_positions(" in source
+    assert "positions, page, filter_match_count = cached_sql_metadata_page(" in source
+    assert "positions, _page, _match_count = cached_sql_metadata_page(" in source
