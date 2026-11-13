@@ -3137,7 +3137,7 @@ class ProjectDatabase:
                 SELECT 1 FROM current_annotations AS ca
                 WHERE ca.observation_id = u.observation_id
                   AND ca.code_id = ? AND ca.value = 'positive'
-                  AND ca.origin LIKE 'human_%'
+                  AND substr(ca.origin, 1, 6) = 'human_'
             )"""
             extra_params.append(int(item["code_id"]))
         selected: set[int] = set()
