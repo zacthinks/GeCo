@@ -63,7 +63,8 @@ def test_orientation_parity_skip_and_reopening(tmp_path: Path, external: bool) -
     assert events[0]["selection_provenance"] == {"strategy": "manual", "seed": 42}
     assert events[0]["session_id"] == session
     assert events[0]["reviewer_key"] == "r1"
-    assert events[3]["training_usable"] is False
+    assert events[3]["outcome_usable"] is False
+    assert events[2]["outcome_usable"] is True
     assert [item["comparison_event_id"] for item in project.scale_training_comparisons(scale)] == [
         first, second, parity
     ]
@@ -96,6 +97,8 @@ def test_corrections_are_append_only_with_one_terminal_event_per_chain(
         scale, a, b, "first_higher", reviewer_key="other",
     )
     assert len(project.scale_comparisons(scale)) == 4
+    # A superseded, non-skip judgment is outcome-usable but not active evidence.
+    assert project.scale_comparisons(scale)[0]["outcome_usable"] is True
     effective = project.scale_comparisons(scale, effective_only=True)
     assert [event["comparison_event_id"] for event in effective] == [again, independent]
     assert effective[0]["canonical_outcome"] == "high_higher"
@@ -163,6 +166,42 @@ def test_idempotent_retries_are_payload_checked_even_after_version_change(
     with pytest.raises(ValueError, match="submission_key"):
         project.record_scale_comparison(
             scale, b, a, "second_higher", submission_key="request-1", **kwargs,
+        )
+    assert len(project.scale_comparisons(scale)) == 1
+
+
+def test_idempotency_normalizes_origin_and_json_provenance(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    scale = project.create_scale("Persistence")
+    a, b, _, _ = _ids(project)
+    # Identical submissions may include tuples; JSON persists those as lists.
+    original = {"pair": (a, b), "source": {"reasons": ("manual", "review")}}
+    event_id = project.record_scale_comparison(
+        scale, a, b, "first_higher", origin=" human_direct ",
+        selection_provenance=original, submission_key="same-normalized-event",
+    )
+    assert project.record_scale_comparison(
+        scale, a, b, "first_higher", origin=" human_direct ",
+        selection_provenance=original, submission_key="same-normalized-event",
+    ) == event_id
+    # Semantically identical JSON forms and already trimmed origin also match.
+    assert project.record_scale_comparison(
+        scale, a, b, "first_higher", origin="human_direct",
+        selection_provenance={
+            "pair": [a, b], "source": {"reasons": ["manual", "review"]}
+        }, submission_key="same-normalized-event",
+    ) == event_id
+    stored = project.scale_comparisons(scale)
+    assert len(stored) == 1
+    assert stored[0]["origin"] == "human_direct"
+    assert stored[0]["selection_provenance"] == {
+        "pair": [a, b], "source": {"reasons": ["manual", "review"]}
+    }
+    with pytest.raises(ValueError, match="submission_key"):
+        project.record_scale_comparison(
+            scale, a, b, "first_higher", origin="human_direct",
+            selection_provenance={"pair": [b, a]},
+            submission_key="same-normalized-event",
         )
     assert len(project.scale_comparisons(scale)) == 1
 
@@ -239,6 +278,40 @@ def test_eligibility_metadata_and_human_positive_code_filter(tmp_path: Path) -> 
         )
     assert project.scale_eligibility(scale)["eligibility_revision"] == 2
 
+
+
+def test_referenced_code_definition_revision_changes_eligibility_fingerprint(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    code = project.create_code("Include", "Student speaks independently.")
+    scale = project.create_scale("Independence", eligibility={
+        "kind": "filtered",
+        "code_filters": [{"code_id": code, "value": "positive", "source": "human"}],
+    })
+    a, b, _, _ = _ids(project)
+    project.annotate(a, code, "positive", origin="human_direct")
+    comparison_id = project.record_scale_comparison(scale, a, b, "parity")
+    first = project.scale_eligibility(scale)
+    version_before = project.scale(scale)["version_number"]
+    eligible_before = project.eligible_scale_observation_ids(scale, [a, b])
+    assert eligible_before == [a]
+    previous_code_version = project.code(code)["code_version_id"]
+    assert first["code_revisions"][code]["code_version_id"] == previous_code_version
+
+    revised_code_version = project.update_code(
+        code, name="Include",
+        description="Student speaks without teacher prompting.",
+    )
+    second = project.scale_eligibility(scale)
+    assert second["code_revisions"][code]["code_version_id"] == revised_code_version
+    assert second["code_revisions"][code]["code_version_id"] != previous_code_version
+    for field in ("annotation_revision", "teaching_revision", "retraction_revision"):
+        assert second["code_revisions"][code][field] == first["code_revisions"][code][field]
+    assert second["eligibility_revision"] == first["eligibility_revision"]
+    assert project.scale(scale)["version_number"] == version_before
+    assert project.eligible_scale_observation_ids(scale, [a, b]) == eligible_before
+    assert project.scale_comparisons(scale)[0]["comparison_event_id"] == comparison_id
 
 @pytest.mark.parametrize("external", [False, True])
 def test_training_selection_respects_current_eligibility_without_dropping_history(
