@@ -2412,6 +2412,39 @@ class ProjectDatabase:
                 ]
             return result
 
+    def list_plot_observations(self) -> list[dict[str, Any]]:
+        """Return only identifiers and display keys for prediction plots.
+
+        Full observation text and metadata are never rendered by the plot and
+        need not be decoded for 300k points. Retain the exact ordering and
+        deleted-teaching exclusions of list_observations().
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id, o.kind, u.unit_id, u.user_key_json
+                FROM observations AS o
+                LEFT JOIN units AS u ON u.observation_id = o.observation_id
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                WHERE o.kind != 'teaching_example' OR te.status != 'deleted'
+                ORDER BY CASE o.kind
+                    WHEN 'atomic' THEN 0 WHEN 'span' THEN 1 ELSE 2 END,
+                    COALESCE(u.row_position, o.observation_id), o.observation_id
+                """
+            ).fetchall()
+        return [
+            {
+                "observation_id": int(row["observation_id"]),
+                "kind": str(row["kind"]),
+                "unit_id": int(row["unit_id"]) if row["unit_id"] is not None else None,
+                "user_key": (
+                    json.loads(row["user_key_json"])
+                    if row["user_key_json"] is not None else {}
+                ),
+            }
+            for row in rows
+        ]
+
     def list_observations(
         self,
         *,
