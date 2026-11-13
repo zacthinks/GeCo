@@ -2160,6 +2160,52 @@ class GeometricCoder:
         """Read the complete definition history for a Scale."""
         return self.database.scale_versions(int(scale_id))
 
+    def record_scale_comparison(
+        self, scale_id: int, first_observation_id: int,
+        second_observation_id: int, outcome: str, *,
+        origin: str = "human_direct", reviewer_key: str | None = None,
+        session_id: int | None = None,
+        selection_provenance: Mapping[str, Any] | None = None,
+        supersedes_event_id: int | None = None,
+        submission_key: str | None = None,
+    ) -> int:
+        """Record an oriented human comparison between two stable atomic observations."""
+        return self.database.record_scale_comparison(
+            scale_id, first_observation_id, second_observation_id, outcome,
+            origin=origin, reviewer_key=reviewer_key, session_id=session_id,
+            selection_provenance=selection_provenance,
+            supersedes_event_id=supersedes_event_id, submission_key=submission_key,
+        )
+
+    def scale_comparisons(
+        self, scale_id: int, *, version_number: int | None = None,
+        effective_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Retrieve append-only comparison history or effective terminal judgments."""
+        return self.database.scale_comparisons(
+            scale_id, version_number=version_number, effective_only=effective_only,
+        )
+
+    def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
+        """Effective, non-skip, eligibility-allowed pairs for the current Scale version."""
+        return self.database.scale_training_comparisons(scale_id)
+
+    def scale_eligibility(self, scale_id: int) -> dict[str, Any]:
+        """Read a Scale's eligibility policy, revision and referenced Code revisions."""
+        return self.database.scale_eligibility(scale_id)
+
+    def update_scale_eligibility(
+        self, scale_id: int, eligibility: Mapping[str, Any] | None,
+    ) -> int:
+        """Persist a new eligibility revision without changing the Scale definition."""
+        return self.database.update_scale_eligibility(scale_id, eligibility)
+
+    def eligible_scale_observation_ids(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> list[int]:
+        """Filter stable atomic observation IDs using current Scale eligibility."""
+        return self.database.eligible_scale_observation_ids(scale_id, observation_ids)
+
     def create_code(self, name: str, definition: str = "") -> int:
         """Create a code without implicitly creating classifiers."""
         return self.database.create_code(name, definition)
