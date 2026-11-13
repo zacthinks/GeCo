@@ -174,6 +174,67 @@ def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Pa
     ]
 
 
+def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path: Path) -> None:
+    """A saved revision updates a selected Scale but not Code classifier selections."""
+    pytest.importorskip("dash")
+    from dash import no_update
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    code = project.create_code("Binary", "code definition")
+    scale = project.create_scale("Argument quality", "definition v1")
+    app = create_app(project)
+    route = _callback(app, "focus-scale-heading.children")
+    save = next(
+        inspect.unwrap(entry["callback"])
+        for entry in app.callback_map.values()
+        if "callback" in entry
+        and inspect.unwrap(entry["callback"]).__name__ == "save_code_center_version"
+    )
+
+    selected = route(scale)
+    assert selected[3] == "Scale: Argument quality"
+    assert selected[4] == "definition v1"
+    assert "Definition version 1" in selected[5]
+
+    # The real save path increments focus-refresh-store. The Construct selection
+    # remains unchanged while Dash fires the refresh input.
+    saved = save(1, scale, "Argument quality revised", "definition v2", 0, 0)
+    assert saved[1] == 1
+
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "focus-refresh-store.data", "value": 1}]
+    ))
+    try:
+        revised = route(scale, 1)
+        unchanged_code = route(code, 1)
+    finally:
+        context_value.reset(token)
+
+    assert revised[0] is no_update
+    assert revised[1] is no_update
+    assert revised[2] is no_update
+    assert revised[3] == "Scale: Argument quality revised"
+    assert revised[4] == "definition v2"
+    assert "Definition version 2" in revised[5]
+    assert all(value is no_update for value in revised[6:])
+    assert all(value is no_update for value in unchanged_code)
+
+    # Explicit selection changes still switch the Code-only controls normally.
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "focus-construct-dropdown.value", "value": code}]
+    ))
+    try:
+        code_selected = route(code, 1)
+    finally:
+        context_value.reset(token)
+    assert code_selected[0] == code
+    assert code_selected[1] == {}
+    assert code_selected[2] == {"display": "none"}
+
+
 def test_ui_source_keeps_legacy_code_callbacks_and_new_shared_state() -> None:
     source = (
         Path(__file__).resolve().parents[1]
