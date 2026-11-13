@@ -3851,6 +3851,44 @@ def create_app(
         return no_update, no_update, no_update, no_update, no_update
 
     @app.callback(
+        Output("focus-construct-dropdown", "options"),
+        Input("construct-refresh-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+        Input("focus-refresh-store", "data"),
+    )
+    def refresh_construct_options(*_refresh: Any) -> list[dict[str, Any]]:
+        return _construct_options(project.constructs())
+
+    @app.callback(
+        Output("focus-code-dropdown", "value", allow_duplicate=True),
+        Output("focus-teaching-select", "style"),
+        Output("focus-scale-state", "style"),
+        Output("focus-scale-heading", "children"),
+        Output("focus-scale-description", "children"),
+        Output("focus-scale-eligibility", "children"),
+        Output("focus-active-area", "style"),
+        Input("focus-construct-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def route_focus_construct(construct_id: int | None) -> tuple[Any, ...]:
+        try:
+            construct = project.construct(int(construct_id)) if construct_id is not None else None
+        except (KeyError, ValueError, TypeError):
+            construct = None
+        if construct is not None and construct["type"] == "code":
+            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}
+        if construct is None:
+            return None, {"display": "none"}, {"display": "none"}, "", "", "", {}
+        scale = project.scale(int(construct["construct_id"]))
+        eligibility = scale.get("eligibility", {"kind": "all"})
+        return (
+            None, {"display": "none"}, {}, f"Scale: {scale['name']}",
+            scale["description"] or "No description has been written yet.",
+            f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
+            {"display": "none"},
+        )
+
+    @app.callback(
         Output("code-center-tags", "options"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
@@ -3870,24 +3908,78 @@ def create_app(
         Input("code-center-tags", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
-        State("code-center-selected-store", "data"),
+        Input("construct-refresh-store", "data"),
+        State("construct-center-selected-store", "data"),
     )
     def filter_code_center(
         query: str | None, scope: str | None, hashtags: list[str] | None,
         explore_refresh: int | None, focus_refresh: int | None,
-        selected_code_id: int | None,
+        construct_refresh: int | None, selected_construct_id: int | None,
     ) -> tuple[list[dict[str, Any]], list[int], str]:
-        del explore_refresh, focus_refresh
+        del explore_refresh, focus_refresh, construct_refresh
         matches = project.search_codes(query=query or "", scope=str(scope or "full"), hashtags=hashtags or [])
-        rows = [{
-            "code_id": int(code["code_id"]), "name": str(code["name"]),
-            "hashtags": " ".join(f"#{tag}" for tag in code.get("hashtags", [])),
-        } for code in matches]
+        code_tags = {int(row["code_id"]): row.get("hashtags", []) for row in matches}
+        code_ids = set(code_tags)
+        term = (query or "").casefold().strip()
+        rows = []
+        for construct in project.constructs():
+            kind = str(construct["type"])
+            if kind == "code" and int(construct["construct_id"]) not in code_ids:
+                continue
+            if kind == "scale":
+                if hashtags:
+                    continue  # Hashtag filter retains its existing Code-specific semantics.
+                searchable = str(construct["name"])
+                if str(scope or "full") != "label":
+                    searchable += " " + str(construct.get("description", ""))
+                if term and term not in searchable.casefold():
+                    continue
+            rows.append({
+                "construct_id": int(construct["construct_id"]),
+                "code_id": (int(construct["construct_id"]) if kind == "code" else None),
+                "type": "Scale" if kind == "scale" else "Code",
+                "name": str(construct["name"]),
+                "hashtags": " ".join(
+                    f"#{tag}" for tag in code_tags.get(int(construct["construct_id"]), [])
+                ),
+            })
         selected_rows = [
             index for index, row in enumerate(rows)
-            if selected_code_id is not None and int(row["code_id"]) == int(selected_code_id)
+            if selected_construct_id is not None
+            and row["construct_id"] == int(selected_construct_id)
         ]
-        return rows, selected_rows[:1], f"{len(rows):,} code{'s' if len(rows) != 1 else ''} found"
+        return rows, selected_rows[:1], f"{len(rows):,} construct{'s' if len(rows) != 1 else ''} found"
+
+    @app.callback(
+        Output("construct-center-selected-store", "data"),
+        Input("code-center-table", "selected_rows"),
+        State("code-center-table", "data"),
+    )
+    def selected_center_construct(
+        selected_rows: list[int] | None, rows: list[dict[str, Any]] | None
+    ) -> int | None:
+        if not selected_rows or not rows or int(selected_rows[0]) >= len(rows):
+            return None
+        return int(rows[int(selected_rows[0])]["construct_id"])
+
+    @app.callback(
+        Output("code-center-type-label", "children"),
+        Output("code-center-eligibility", "children"),
+        Output("code-center-binary-content", "style"),
+        Input("construct-center-selected-store", "data"),
+    )
+    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, dict[str, str]]:
+        if construct_id is None:
+            return "", "", {"display": "none"}
+        construct = project.construct(int(construct_id))
+        if construct["type"] == "code":
+            return "Binary Code", "", {}
+        scale = project.scale(int(construct_id))
+        return (
+            "Continuous Scale",
+            "Eligibility: " + json.dumps(scale.get("eligibility", {"kind": "all"}), sort_keys=True),
+            {"display": "none"},
+        )
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -3911,21 +4003,24 @@ def create_app(
     ) -> tuple[Any, ...]:
         del explore_refresh, focus_refresh
         if not selected_rows or not rows:
-            empty = html.P("Choose a code to inspect its description and positive units.", className="memo-preview-empty")
-            return None, None, "Select a code", empty, "No version selected", True, True, True, "", ""
+            empty = html.P("Choose a Construct to inspect its definition.", className="memo-preview-empty")
+            return None, None, "Select a Construct", empty, "No version selected", True, True, True, "", ""
         index = int(selected_rows[0])
         if index < 0 or index >= len(rows):
-            return None, None, "Select a code", "", "No version selected", True, True, True, "", ""
-        code_id = int(rows[index]["code_id"])
-        versions = project.code_versions(code_id)
-        code = project.code(code_id)
-        number = int(code["version_number"])
-        description = str(code["description"])
+            return None, None, "Select a Construct", "", "No version selected", True, True, True, "", ""
+        construct_id = int(rows[index]["construct_id"])
+        construct = project.construct(construct_id)
+        is_code = construct["type"] == "code"
+        versions = (
+            project.code_versions(construct_id) if is_code else project.scale_versions(construct_id)
+        )
+        number = int(construct["version_number"])
+        description = str(construct["description"])
         return (
-            code_id, number, str(code["name"]),
+            (construct_id if is_code else None), number, str(construct["name"]),
             (_render_memo_preview(dcc, html, project, description) if description.strip() else None),
             f"Version {number} of {len(versions)}", number <= 1, number >= len(versions), False,
-            str(code["name"]), description,
+            str(construct["name"]), description,
         )
 
     @app.callback(
@@ -3938,7 +4033,7 @@ def create_app(
         Output("code-center-edit-name", "value", allow_duplicate=True),
         Output("code-center-edit-description", "value", allow_duplicate=True),
         Input("code-version-previous", "n_clicks"), Input("code-version-next", "n_clicks"),
-        State("code-center-selected-store", "data"), State("code-center-version-store", "data"),
+        State("construct-center-selected-store", "data"), State("code-center-version-store", "data"),
         prevent_initial_call=True,
     )
     def navigate_code_versions(
@@ -3947,16 +4042,20 @@ def create_app(
         del previous, next_clicks
         if code_id is None:
             return (no_update,) * 8
-        versions = project.code_versions(int(code_id))
+        construct = project.construct(int(code_id))
+        versions = (
+            project.code_versions(int(code_id))
+            if construct["type"] == "code" else project.scale_versions(int(code_id))
+        )
         current = int(version_number or len(versions))
         target = max(1, current - 1) if callback_context.triggered_id == "code-version-previous" else min(len(versions), current + 1)
-        code = project.code(int(code_id), target)
-        description = str(code["description"])
+        revision = project.construct(int(code_id), target)
+        description = str(revision["description"])
         return (
-            target, str(code["name"]),
+            target, str(revision["name"]),
             (_render_memo_preview(dcc, html, project, description) if description.strip() else None),
             f"Version {target} of {len(versions)}", target <= 1, target >= len(versions),
-            str(code["name"]), description,
+            str(revision["name"]), description,
         )
 
     @app.callback(
@@ -3964,7 +4063,7 @@ def create_app(
         Output("code-center-editor-wrap", "style"),
         Output("code-center-description", "style", allow_duplicate=True),
         Input("code-center-edit-button", "n_clicks"), Input("code-center-cancel-button", "n_clicks"),
-        State("code-center-selected-store", "data"), prevent_initial_call=True,
+        State("construct-center-selected-store", "data"), prevent_initial_call=True,
     )
     def toggle_code_center_edit(
         edit_clicks: int, cancel_clicks: int, code_id: int | None
@@ -3995,7 +4094,7 @@ def create_app(
         Output("code-center-description", "style", allow_duplicate=True),
         Output("code-center-edit-status", "children"),
         Input("code-center-save-button", "n_clicks"),
-        State("code-center-selected-store", "data"), State("code-center-edit-name", "value"),
+        State("construct-center-selected-store", "data"), State("code-center-edit-name", "value"),
         State("code-center-edit-description", "value"), State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"), prevent_initial_call=True,
     )
@@ -4010,8 +4109,13 @@ def create_app(
         if not clean_name:
             return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "block"}, {"display": "none"}, "Enter a code label."
         clean_description = description or ""
-        project.update_code(int(code_id), name=clean_name, description=clean_description)
-        versions = project.code_versions(int(code_id))
+        kind = project.construct(int(code_id))["type"]
+        if kind == "code":
+            project.update_code(int(code_id), name=clean_name, description=clean_description)
+            versions = project.code_versions(int(code_id))
+        else:
+            project.update_scale(int(code_id), clean_name, clean_description)
+            versions = project.scale_versions(int(code_id))
         number = len(versions)
         return (
             int(explore_refresh or 0) + 1, int(focus_refresh or 0) + 1, number, clean_name,
@@ -4019,6 +4123,30 @@ def create_app(
             f"Version {number} of {number}",
             number <= 1, True, False, {"display": "none"}, {}, f"Saved version {number}.",
         )
+
+    @app.callback(
+        Output("construct-refresh-store", "data", allow_duplicate=True),
+        Output("code-center-create-scale-status", "children"),
+        Output("code-center-new-scale-name", "value"),
+        Output("code-center-new-scale-description", "value"),
+        Input("code-center-create-scale", "n_clicks"),
+        State("code-center-new-scale-name", "value"),
+        State("code-center-new-scale-description", "value"),
+        State("construct-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def create_center_scale(
+        clicks: int | None, name: str | None, description: str | None, refresh: int | None
+    ) -> tuple[Any, str, str, str]:
+        if not clicks:
+            return no_update, "", no_update, no_update
+        if not (name or "").strip():
+            return no_update, "Enter a Scale name.", no_update, no_update
+        try:
+            scale_id = project.create_scale((name or "").strip(), description or "")
+        except ValueError as error:
+            return no_update, str(error), no_update, no_update
+        return int(refresh or 0) + 1, f"Created Scale {scale_id}.", "", ""
 
     @app.callback(
         Output("code-center-teaching-button", "disabled"),
@@ -8536,8 +8664,18 @@ def _code_center_layout(
         [
             html.Aside(
                 [
-                    html.H2("Code Center"),
-                    html.Label("Search codes"),
+                    html.H2("Constructs"),
+                    html.Button("New Code", id="code-center-new-code-button", n_clicks=0),
+                    html.Details([
+                        html.Summary("New Scale"),
+                        html.Label("Scale name"),
+                        dcc.Input(id="code-center-new-scale-name", type="text", className="text-input"),
+                        html.Label("Description"),
+                        dcc.Textarea(id="code-center-new-scale-description", className="memo-editor code-center-editor"),
+                        html.Button("Create Scale", id="code-center-create-scale", n_clicks=0, className="primary-action"),
+                        html.Div(id="code-center-create-scale-status", className="control-status"),
+                    ]),
+                    html.Label("Search Constructs"),
                     dcc.Input(id="code-center-query", type="text", debounce=True, className="text-input", placeholder="Search labels or descriptions"),
                     dcc.RadioItems(
                         id="code-center-scope",
@@ -8549,7 +8687,7 @@ def _code_center_layout(
                     html.Div(id="code-center-status", className="control-status"),
                     dash_table.DataTable(
                         id="code-center-table",
-                        columns=[{"name": "Code", "id": "name"}, {"name": "Hashtags", "id": "hashtags"}],
+                        columns=[{"name": "Construct", "id": "name"}, {"name": "Type", "id": "type"}, {"name": "Hashtags", "id": "hashtags"}],
                         data=[], row_selectable="single", selected_rows=[], page_size=20,
                         style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
                         style_table={"overflowX": "auto"},
@@ -8561,7 +8699,10 @@ def _code_center_layout(
                 [
                     html.Div(
                         [
-                            html.H2(id="code-center-title", children="Select a code"),
+                            html.Div([
+                                html.H2(id="code-center-title", children="Select a Construct"),
+                                html.Div(id="code-center-type-label", className="focus-counts"),
+                            ]),
                             html.Div(
                                 [
                                     html.Button(
@@ -8591,6 +8732,7 @@ def _code_center_layout(
                         className="version-navigation",
                     ),
                     html.Div(id="code-center-description", className="memo-preview code-description-preview"),
+                    html.Div(id="code-center-eligibility", className="focus-counts"),
                     html.Div(
                         [
                             html.Label("Code label"),
@@ -8608,6 +8750,7 @@ def _code_center_layout(
                         ],
                         id="code-center-editor-wrap", style={"display": "none"},
                     ),
+                    html.Div(
                     dcc.Tabs(
                         id="code-center-view-tabs", value="list", className="code-center-content-tabs",
                         children=[
@@ -8732,6 +8875,8 @@ def _code_center_layout(
                             ),
                         ],
                         className="code-center-assignment-panel",
+                    ),
+                    id="code-center-binary-content",
                     ),
                 ],
                 className="code-center-main",
