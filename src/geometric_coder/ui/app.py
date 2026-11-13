@@ -3870,23 +3870,40 @@ def create_app(
         Output("focus-new-code-button", "style"),
         Output("focus-active-area", "style"),
         Input("focus-construct-dropdown", "value"),
+        Input("focus-refresh-store", "data"),
         prevent_initial_call=True,
     )
-    def route_focus_construct(construct_id: int | None) -> tuple[Any, ...]:
+    def route_focus_construct(
+        construct_id: int | None, refresh: int | None = None,
+    ) -> tuple[Any, ...]:
+        # A saved definition revision refreshes Scale text only. Do not
+        # reselect the Code or reset its classifier state on evidence refresh.
+        refresh_only = (
+            refresh is not None
+            and "focus-refresh-store.data" in callback_context.triggered_prop_ids
+            and "focus-construct-dropdown.value" not in callback_context.triggered_prop_ids
+        )
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
         except (KeyError, ValueError, TypeError):
             construct = None
+        if refresh_only and (construct is None or construct["type"] == "code"):
+            return (no_update,) * 9
         if construct is not None and construct["type"] == "code":
             return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}
         if construct is None:
             return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}
         scale = project.scale(int(construct["construct_id"]))
         eligibility = scale.get("eligibility", {"kind": "all"})
-        return (
-            None, {"display": "none"}, {}, f"Scale: {scale['name']}",
+        definition = (
+            f"Scale: {scale['name']}",
             scale["description"] or "No description has been written yet.",
             f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
+        )
+        if refresh_only:
+            return (no_update,) * 3 + definition + (no_update,) * 3
+        return (
+            None, {"display": "none"}, {}, *definition,
             {"display": "none"}, {"display": "none"}, {"display": "none"},
         )
 
