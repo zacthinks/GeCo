@@ -5010,7 +5010,7 @@ def create_app(
         if not clean_name:
             return (
                 {"display": "flex"}, target, no_update, no_update,
-                no_update, no_update, no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update,
                 name or "", definition or "", "Enter a code label.",
             )
         existing = {
@@ -5039,6 +5039,7 @@ def create_app(
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
             options,
+            focus_value,
             focus_value,
             palette_value,
             row_count_value,
