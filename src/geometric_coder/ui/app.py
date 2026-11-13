@@ -212,6 +212,36 @@ def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
             if key not in _TRANSIENT_EXPLORE_KEYS}
 
 
+def _selected_focus_construct_id(
+    constructs: list[dict[str, Any]], state: dict[str, Any]
+) -> int | None:
+    """Restore shared selection, falling back to the legacy Code-only key."""
+    by_id = {int(row["construct_id"]): str(row["type"]) for row in constructs}
+    shared = state.get("focus_construct_id")
+    if shared is None:
+        legacy = state.get("focus_code_id")
+        try:
+            value = int(legacy)
+        except (TypeError, ValueError):
+            return None
+        return value if by_id.get(value) == "code" else None
+    try:
+        value = int(shared)
+    except (TypeError, ValueError):
+        return None
+    return value if value in by_id else None
+
+
+def _construct_options(constructs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": f"{row['name']} · {'Scale' if row['type'] == 'scale' else 'Code'}",
+            "value": int(row["construct_id"]),
+        }
+        for row in constructs
+    ]
+
+
 def _topic_restore_snapshot(session_id: int, state: dict[str, Any]) -> dict[str, Any]:
     return {
         "session_id": int(session_id),
@@ -649,6 +679,7 @@ def create_app(
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
+    constructs = project.constructs()
     classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
     # Only visible point indices are retained for Develop judgment patches.
@@ -912,6 +943,8 @@ def create_app(
                 dcc.Store(id="memo-center-selected-store", data=None),
                 dcc.Store(id="memo-center-version-store", data=None),
                 dcc.Store(id="memo-center-edit-store", data=False),
+                dcc.Store(id="construct-refresh-store", data=0),
+                dcc.Store(id="construct-center-selected-store", data=None),
                 dcc.Store(id="code-center-selected-store", data=None),
                 dcc.Store(id="code-center-version-store", data=None),
                 dcc.Store(id="code-center-edit-store", data=False),
@@ -1003,6 +1036,7 @@ def create_app(
                             dcc=dcc,
                             html=html,
                             codes=codes,
+                            constructs=constructs,
                             geometries=geometries,
                             classifier_specs=classifier_specs,
                             hierarchy=hierarchy,
@@ -1023,7 +1057,7 @@ def create_app(
                         ),
                     ),
                     dcc.Tab(
-                        label="Codes",
+                        label="Constructs",
                         value="codes",
                         className="workflow-tab",
                         selected_className="workflow-tab-selected",
@@ -1593,6 +1627,7 @@ def create_app(
         Output("workspace-tabs", "value"),
         Output("explore-code-palette-store", "data"),
         Output("explore-code-row-count-store", "data"),
+        Output("focus-construct-dropdown", "value", allow_duplicate=True),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-active-classifier-dropdown", "value", allow_duplicate=True),
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
@@ -1628,11 +1663,9 @@ def create_app(
         context_level = int(state.get("context_level", hierarchy[-1]["level_index"]))
         context_window = max(1, int(state.get("context_window", 1)))
         current_code_ids = {int(code["code_id"]) for code in project.codes()}
-        requested_code = state.get("focus_code_id")
+        focus_construct_id = _selected_focus_construct_id(project.constructs(), state)
         focus_code_id = (
-            int(requested_code)
-            if requested_code is not None and int(requested_code) in current_code_ids
-            else None
+            focus_construct_id if focus_construct_id in current_code_ids else None
         )
         spec_ids = {
             int(record["classifier_spec_id"])
@@ -1690,6 +1723,7 @@ def create_app(
             str(state.get("workspace", "explore")),
             explore_palette,
             len(explore_palette),
+            focus_construct_id,
             focus_code_id,
             focus_classifier,
             focus_committee,
@@ -3817,6 +3851,65 @@ def create_app(
         return no_update, no_update, no_update, no_update, no_update
 
     @app.callback(
+        Output("focus-construct-dropdown", "options"),
+        Input("construct-refresh-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+        Input("focus-refresh-store", "data"),
+    )
+    def refresh_construct_options(*_refresh: Any) -> list[dict[str, Any]]:
+        return _construct_options(project.constructs())
+
+    @app.callback(
+        Output("focus-code-dropdown", "value", allow_duplicate=True),
+        Output("focus-teaching-select", "style"),
+        Output("focus-scale-state", "style"),
+        Output("focus-scale-heading", "children"),
+        Output("focus-scale-description", "children"),
+        Output("focus-scale-eligibility", "children"),
+        Output("focus-code-summary", "style"),
+        Output("focus-new-code-button", "style"),
+        Output("focus-active-area", "style"),
+        Input("focus-construct-dropdown", "value"),
+        Input("focus-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def route_focus_construct(
+        construct_id: int | None, refresh: int | None = None,
+    ) -> tuple[Any, ...]:
+        # A saved definition revision refreshes Scale text only. Do not
+        # reselect the Code or reset its classifier state on evidence refresh.
+        refresh_only = False
+        if refresh is not None:
+            changed = callback_context.triggered_prop_ids
+            refresh_only = (
+                "focus-refresh-store.data" in changed
+                and "focus-construct-dropdown.value" not in changed
+            )
+        try:
+            construct = project.construct(int(construct_id)) if construct_id is not None else None
+        except (KeyError, ValueError, TypeError):
+            construct = None
+        if refresh_only and (construct is None or construct["type"] == "code"):
+            return (no_update,) * 9
+        if construct is not None and construct["type"] == "code":
+            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}
+        if construct is None:
+            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}
+        scale = project.scale(int(construct["construct_id"]))
+        eligibility = scale.get("eligibility", {"kind": "all"})
+        definition = (
+            f"Scale: {scale['name']}",
+            scale["description"] or "No description has been written yet.",
+            f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
+        )
+        if refresh_only:
+            return (no_update,) * 3 + definition + (no_update,) * 3
+        return (
+            None, {"display": "none"}, {}, *definition,
+            {"display": "none"}, {"display": "none"}, {"display": "none"},
+        )
+
+    @app.callback(
         Output("code-center-tags", "options"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
@@ -3836,24 +3929,80 @@ def create_app(
         Input("code-center-tags", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
-        State("code-center-selected-store", "data"),
+        Input("construct-refresh-store", "data"),
+        State("construct-center-selected-store", "data"),
     )
     def filter_code_center(
         query: str | None, scope: str | None, hashtags: list[str] | None,
         explore_refresh: int | None, focus_refresh: int | None,
-        selected_code_id: int | None,
+        construct_refresh: int | None, selected_construct_id: int | None,
     ) -> tuple[list[dict[str, Any]], list[int], str]:
-        del explore_refresh, focus_refresh
+        del explore_refresh, focus_refresh, construct_refresh
         matches = project.search_codes(query=query or "", scope=str(scope or "full"), hashtags=hashtags or [])
-        rows = [{
-            "code_id": int(code["code_id"]), "name": str(code["name"]),
-            "hashtags": " ".join(f"#{tag}" for tag in code.get("hashtags", [])),
-        } for code in matches]
+        code_tags = {int(row["code_id"]): row.get("hashtags", []) for row in matches}
+        code_ids = set(code_tags)
+        term = (query or "").casefold().strip()
+        rows = []
+        for construct in project.constructs():
+            kind = str(construct["type"])
+            if kind == "code" and int(construct["construct_id"]) not in code_ids:
+                continue
+            if kind == "scale":
+                if hashtags:
+                    continue  # Hashtag filter retains its existing Code-specific semantics.
+                searchable = str(construct["name"])
+                if str(scope or "full") != "label":
+                    searchable += " " + str(construct.get("description", ""))
+                if term and term not in searchable.casefold():
+                    continue
+            rows.append({
+                "construct_id": int(construct["construct_id"]),
+                "code_id": (int(construct["construct_id"]) if kind == "code" else None),
+                "type": "Scale" if kind == "scale" else "Code",
+                "name": str(construct["name"]),
+                "hashtags": " ".join(
+                    f"#{tag}" for tag in code_tags.get(int(construct["construct_id"]), [])
+                ),
+            })
         selected_rows = [
             index for index, row in enumerate(rows)
-            if selected_code_id is not None and int(row["code_id"]) == int(selected_code_id)
+            if selected_construct_id is not None
+            and row["construct_id"] == int(selected_construct_id)
         ]
-        return rows, selected_rows[:1], f"{len(rows):,} code{'s' if len(rows) != 1 else ''} found"
+        return rows, selected_rows[:1], f"{len(rows):,} construct{'s' if len(rows) != 1 else ''} found"
+
+    @app.callback(
+        Output("construct-center-selected-store", "data"),
+        Input("code-center-table", "selected_rows"),
+        State("code-center-table", "data"),
+    )
+    def selected_center_construct(
+        selected_rows: list[int] | None, rows: list[dict[str, Any]] | None
+    ) -> int | None:
+        if not selected_rows or not rows or int(selected_rows[0]) >= len(rows):
+            return None
+        return int(rows[int(selected_rows[0])]["construct_id"])
+
+    @app.callback(
+        Output("code-center-type-label", "children"),
+        Output("code-center-eligibility", "children"),
+        Output("code-center-edit-name-label", "children"),
+        Output("code-center-binary-content", "style"),
+        Input("construct-center-selected-store", "data"),
+    )
+    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, str, dict[str, str]]:
+        if construct_id is None:
+            return "", "", "Construct name", {"display": "none"}
+        construct = project.construct(int(construct_id))
+        if construct["type"] == "code":
+            return "Binary Code", "", "Code label", {}
+        scale = project.scale(int(construct_id))
+        return (
+            "Continuous Scale",
+            "Eligibility: " + json.dumps(scale.get("eligibility", {"kind": "all"}), sort_keys=True),
+            "Scale name",
+            {"display": "none"},
+        )
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -3877,21 +4026,24 @@ def create_app(
     ) -> tuple[Any, ...]:
         del explore_refresh, focus_refresh
         if not selected_rows or not rows:
-            empty = html.P("Choose a code to inspect its description and positive units.", className="memo-preview-empty")
-            return None, None, "Select a code", empty, "No version selected", True, True, True, "", ""
+            empty = html.P("Choose a Construct to inspect its definition.", className="memo-preview-empty")
+            return None, None, "Select a Construct", empty, "No version selected", True, True, True, "", ""
         index = int(selected_rows[0])
         if index < 0 or index >= len(rows):
-            return None, None, "Select a code", "", "No version selected", True, True, True, "", ""
-        code_id = int(rows[index]["code_id"])
-        versions = project.code_versions(code_id)
-        code = project.code(code_id)
-        number = int(code["version_number"])
-        description = str(code["description"])
+            return None, None, "Select a Construct", "", "No version selected", True, True, True, "", ""
+        construct_id = int(rows[index]["construct_id"])
+        construct = project.construct(construct_id)
+        is_code = construct["type"] == "code"
+        versions = (
+            project.code_versions(construct_id) if is_code else project.scale_versions(construct_id)
+        )
+        number = int(construct["version_number"])
+        description = str(construct["description"])
         return (
-            code_id, number, str(code["name"]),
+            (construct_id if is_code else None), number, str(construct["name"]),
             (_render_memo_preview(dcc, html, project, description) if description.strip() else None),
             f"Version {number} of {len(versions)}", number <= 1, number >= len(versions), False,
-            str(code["name"]), description,
+            str(construct["name"]), description,
         )
 
     @app.callback(
@@ -3904,7 +4056,7 @@ def create_app(
         Output("code-center-edit-name", "value", allow_duplicate=True),
         Output("code-center-edit-description", "value", allow_duplicate=True),
         Input("code-version-previous", "n_clicks"), Input("code-version-next", "n_clicks"),
-        State("code-center-selected-store", "data"), State("code-center-version-store", "data"),
+        State("construct-center-selected-store", "data"), State("code-center-version-store", "data"),
         prevent_initial_call=True,
     )
     def navigate_code_versions(
@@ -3913,16 +4065,20 @@ def create_app(
         del previous, next_clicks
         if code_id is None:
             return (no_update,) * 8
-        versions = project.code_versions(int(code_id))
+        construct = project.construct(int(code_id))
+        versions = (
+            project.code_versions(int(code_id))
+            if construct["type"] == "code" else project.scale_versions(int(code_id))
+        )
         current = int(version_number or len(versions))
         target = max(1, current - 1) if callback_context.triggered_id == "code-version-previous" else min(len(versions), current + 1)
-        code = project.code(int(code_id), target)
-        description = str(code["description"])
+        revision = project.construct(int(code_id), target)
+        description = str(revision["description"])
         return (
-            target, str(code["name"]),
+            target, str(revision["name"]),
             (_render_memo_preview(dcc, html, project, description) if description.strip() else None),
             f"Version {target} of {len(versions)}", target <= 1, target >= len(versions),
-            str(code["name"]), description,
+            str(revision["name"]), description,
         )
 
     @app.callback(
@@ -3930,7 +4086,7 @@ def create_app(
         Output("code-center-editor-wrap", "style"),
         Output("code-center-description", "style", allow_duplicate=True),
         Input("code-center-edit-button", "n_clicks"), Input("code-center-cancel-button", "n_clicks"),
-        State("code-center-selected-store", "data"), prevent_initial_call=True,
+        State("construct-center-selected-store", "data"), prevent_initial_call=True,
     )
     def toggle_code_center_edit(
         edit_clicks: int, cancel_clicks: int, code_id: int | None
@@ -3961,7 +4117,7 @@ def create_app(
         Output("code-center-description", "style", allow_duplicate=True),
         Output("code-center-edit-status", "children"),
         Input("code-center-save-button", "n_clicks"),
-        State("code-center-selected-store", "data"), State("code-center-edit-name", "value"),
+        State("construct-center-selected-store", "data"), State("code-center-edit-name", "value"),
         State("code-center-edit-description", "value"), State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"), prevent_initial_call=True,
     )
@@ -3971,13 +4127,18 @@ def create_app(
     ) -> tuple[Any, ...]:
         del clicks
         if code_id is None:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "none"}, {}, "Select a code first."
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "none"}, {}, "Select a Construct first."
         clean_name = (name or "").strip()
         if not clean_name:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "block"}, {"display": "none"}, "Enter a code label."
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "block"}, {"display": "none"}, "Enter a Construct name."
         clean_description = description or ""
-        project.update_code(int(code_id), name=clean_name, description=clean_description)
-        versions = project.code_versions(int(code_id))
+        kind = project.construct(int(code_id))["type"]
+        if kind == "code":
+            project.update_code(int(code_id), name=clean_name, description=clean_description)
+            versions = project.code_versions(int(code_id))
+        else:
+            project.update_scale(int(code_id), clean_name, clean_description)
+            versions = project.scale_versions(int(code_id))
         number = len(versions)
         return (
             int(explore_refresh or 0) + 1, int(focus_refresh or 0) + 1, number, clean_name,
@@ -3985,6 +4146,30 @@ def create_app(
             f"Version {number} of {number}",
             number <= 1, True, False, {"display": "none"}, {}, f"Saved version {number}.",
         )
+
+    @app.callback(
+        Output("construct-refresh-store", "data", allow_duplicate=True),
+        Output("code-center-create-scale-status", "children"),
+        Output("code-center-new-scale-name", "value"),
+        Output("code-center-new-scale-description", "value"),
+        Input("code-center-create-scale", "n_clicks"),
+        State("code-center-new-scale-name", "value"),
+        State("code-center-new-scale-description", "value"),
+        State("construct-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def create_center_scale(
+        clicks: int | None, name: str | None, description: str | None, refresh: int | None
+    ) -> tuple[Any, str, str, str]:
+        if not clicks:
+            return no_update, "", no_update, no_update
+        if not (name or "").strip():
+            return no_update, "Enter a Scale name.", no_update, no_update
+        try:
+            scale_id = project.create_scale((name or "").strip(), description or "")
+        except ValueError as error:
+            return no_update, str(error), no_update, no_update
+        return int(refresh or 0) + 1, f"Created Scale {scale_id}.", "", ""
 
     @app.callback(
         Output("code-center-teaching-button", "disabled"),
@@ -4787,6 +4972,7 @@ def create_app(
         Output("focus-refresh-store", "data", allow_duplicate=True),
         Output("focus-code-dropdown", "options", allow_duplicate=True),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
+        Output("focus-construct-dropdown", "value", allow_duplicate=True),
         Output("explore-code-palette-store", "data", allow_duplicate=True),
         Output("explore-code-row-count-store", "data", allow_duplicate=True),
         Output("code-modal-name", "value"),
@@ -4794,6 +4980,7 @@ def create_app(
         Output("code-modal-status", "children"),
         Input("explore-new-code-button", "n_clicks"),
         Input("focus-new-code-button", "n_clicks"),
+        Input("code-center-new-code-button", "n_clicks"),
         Input("code-modal-cancel-button", "n_clicks"),
         Input("code-modal-cancel-footer", "n_clicks"),
         Input("code-modal-create-button", "n_clicks"),
@@ -4808,6 +4995,7 @@ def create_app(
     def manage_code_modal(
         explore_open: int,
         focus_open: int,
+        center_open: int,
         cancel_header: int,
         cancel_footer: int,
         create_clicks: int,
@@ -4818,29 +5006,34 @@ def create_app(
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
     ) -> tuple[Any, ...]:
-        del explore_open, focus_open, cancel_header, cancel_footer, create_clicks
+        del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
         if triggered == "explore-new-code-button":
             return (
                 {"display": "flex"}, "explore", no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
         if triggered == "focus-new-code-button":
             return (
                 {"display": "flex"}, "focus", no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
+            )
+        if triggered == "code-center-new-code-button":
+            return (
+                {"display": "flex"}, "center", no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
         if triggered in {"code-modal-cancel-button", "code-modal-cancel-footer"}:
             return (
                 {"display": "none"}, None, no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
 
         clean_name = (name or "").strip()
         if not clean_name:
             return (
                 {"display": "flex"}, target, no_update, no_update,
-                no_update, no_update, no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update,
                 name or "", definition or "", "Enter a code label.",
             )
         existing = {
@@ -4869,6 +5062,7 @@ def create_app(
             int(explore_refresh or 0) + 1,
             int(focus_refresh or 0) + 1,
             options,
+            focus_value,
             focus_value,
             palette_value,
             row_count_value,
@@ -7479,6 +7673,7 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
+        Input("focus-construct-dropdown", "value"),
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
@@ -7507,6 +7702,7 @@ def create_app(
         page_number: Any,
         navigation_new_only: list[str] | None,
         workspace: str,
+        focus_construct_id: int | None,
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
@@ -7522,6 +7718,18 @@ def create_app(
         if presentation_values.get("presentation", [None])[0] == "memo":
             return "Presentation mode leaves Explore session state unchanged."
         options = set(literal_options or [])
+        # Persist a Code ID only when it is the selected Construct's actual Code ID.
+        valid_construct = _selected_focus_construct_id(
+            project.constructs(), {"focus_construct_id": focus_construct_id}
+        )
+        selected_code = (
+            int(focus_code_id)
+            if valid_construct is not None
+            and focus_code_id is not None
+            and int(focus_code_id) == valid_construct
+            and project.construct(valid_construct)["type"] == "code"
+            else None
+        )
         # Preserve session keys independently owned by Focus Coding and other APIs.
         project.patch_session_state(
             int(session_id),
@@ -7555,9 +7763,14 @@ def create_app(
                 "page_number": _coerce_positive_int(page_number, default=1),
                 "navigation_new_only": "new_only" in (navigation_new_only or []),
                 "workspace": workspace,
-                "focus_code_id": focus_code_id,
-                "focus_classifier_spec_id": focus_classifier_spec_id,
-                "focus_committee_id": focus_committee_id,
+                "focus_construct_id": valid_construct,
+                "focus_code_id": selected_code,
+                "focus_classifier_spec_id": (
+                    focus_classifier_spec_id if selected_code is not None else None
+                ),
+                "focus_committee_id": (
+                    focus_committee_id if selected_code is not None else None
+                ),
                 "focus_train_all": "all" in set(focus_train_scope_values or []),
                 "focus_auto_retrain": "auto" in set(focus_auto_retrain_values or []),
                 "focus_tune_hyperparameters": (
@@ -8483,8 +8696,18 @@ def _code_center_layout(
         [
             html.Aside(
                 [
-                    html.H2("Code Center"),
-                    html.Label("Search codes"),
+                    html.H2("Constructs"),
+                    html.Button("New Code", id="code-center-new-code-button", n_clicks=0),
+                    html.Details([
+                        html.Summary("New Scale"),
+                        html.Label("Scale name"),
+                        dcc.Input(id="code-center-new-scale-name", type="text", className="text-input"),
+                        html.Label("Description"),
+                        dcc.Textarea(id="code-center-new-scale-description", className="memo-editor code-center-editor"),
+                        html.Button("Create Scale", id="code-center-create-scale", n_clicks=0, className="primary-action"),
+                        html.Div(id="code-center-create-scale-status", className="control-status"),
+                    ]),
+                    html.Label("Search Constructs"),
                     dcc.Input(id="code-center-query", type="text", debounce=True, className="text-input", placeholder="Search labels or descriptions"),
                     dcc.RadioItems(
                         id="code-center-scope",
@@ -8496,7 +8719,7 @@ def _code_center_layout(
                     html.Div(id="code-center-status", className="control-status"),
                     dash_table.DataTable(
                         id="code-center-table",
-                        columns=[{"name": "Code", "id": "name"}, {"name": "Hashtags", "id": "hashtags"}],
+                        columns=[{"name": "Construct", "id": "name"}, {"name": "Type", "id": "type"}, {"name": "Hashtags", "id": "hashtags"}],
                         data=[], row_selectable="single", selected_rows=[], page_size=20,
                         style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
                         style_table={"overflowX": "auto"},
@@ -8508,7 +8731,10 @@ def _code_center_layout(
                 [
                     html.Div(
                         [
-                            html.H2(id="code-center-title", children="Select a code"),
+                            html.Div([
+                                html.H2(id="code-center-title", children="Select a Construct"),
+                                html.Div(id="code-center-type-label", className="focus-counts"),
+                            ]),
                             html.Div(
                                 [
                                     html.Button(
@@ -8538,9 +8764,10 @@ def _code_center_layout(
                         className="version-navigation",
                     ),
                     html.Div(id="code-center-description", className="memo-preview code-description-preview"),
+                    html.Div(id="code-center-eligibility", className="focus-counts"),
                     html.Div(
                         [
-                            html.Label("Code label"),
+                            html.Label("Construct name", id="code-center-edit-name-label"),
                             dcc.Input(id="code-center-edit-name", type="text", className="text-input code-name-input"),
                             html.Label("Description", className="memo-center-editor-label"),
                             dcc.Textarea(id="code-center-edit-description", className="memo-editor code-center-editor"),
@@ -8555,7 +8782,9 @@ def _code_center_layout(
                         ],
                         id="code-center-editor-wrap", style={"display": "none"},
                     ),
-                    dcc.Tabs(
+                    html.Div(
+                        [
+                        dcc.Tabs(
                         id="code-center-view-tabs", value="list", className="code-center-content-tabs",
                         children=[
                             dcc.Tab(
@@ -8679,6 +8908,9 @@ def _code_center_layout(
                             ),
                         ],
                         className="code-center-assignment-panel",
+                    ),
+                        ],
+                        id="code-center-binary-content",
                     ),
                 ],
                 className="code-center-main",
@@ -9534,19 +9766,19 @@ def _focus_layout(
     dcc: Any,
     html: Any,
     codes: list[dict[str, Any]],
+    constructs: list[dict[str, Any]],
     geometries: list[dict[str, Any]],
     classifier_specs: list[dict[str, Any]],
     hierarchy: list[dict[str, Any]],
     initial_state: dict[str, Any],
 ) -> Any:
-    """Return the code-development workspace built around explicit classifiers."""
+    """Return a shared Construct selector with the existing binary Develop workspace."""
     del geometries
     code_ids = {int(code["code_id"]) for code in codes}
-    try:
-        requested_code_id = int(initial_state.get("focus_code_id"))
-    except (TypeError, ValueError):
-        requested_code_id = -1
-    initial_code_id = requested_code_id if requested_code_id in code_ids else None
+    initial_construct_id = _selected_focus_construct_id(constructs, initial_state)
+    initial_code_id = (
+        initial_construct_id if initial_construct_id in code_ids else None
+    )
 
     classifier_specs = [
         row
@@ -9572,28 +9804,40 @@ def _focus_layout(
                 [
                     html.Div(
                         [
-                            html.Label("Active code"),
+                            html.Label("Construct"),
                             html.Div(
                                 [
+                                    dcc.Dropdown(
+                                        id="focus-construct-dropdown",
+                                        options=_construct_options(constructs),
+                                        value=initial_construct_id,
+                                        clearable=True,
+                                        placeholder="Select a Code or Scale",
+                                    ),
+                                    # Existing binary callbacks remain bound to this
+                                    # Code-only value; Scale IDs never enter it.
                                     dcc.Dropdown(
                                         id="focus-code-dropdown",
                                         options=_code_options(codes),
                                         value=initial_code_id,
                                         clearable=True,
-                                        placeholder="Select a code",
+                                        style={"display": "none"},
                                     ),
                                     html.Button(
-                                        "New Code", id="focus-new-code-button", n_clicks=0
+                                        "New Code", id="focus-new-code-button", n_clicks=0,
+                                        style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
                                     ),
                                 ],
                                 className="code-selector-row",
                             ),
                             html.Div(
-                                id="focus-code-definition", className="code-definition"
-                            ),
-                            html.Div(id="focus-label-counts", className="focus-counts"),
-                            html.Div(
-                                id="focus-code-create-status", className="control-status"
+                                [
+                                    html.Div(id="focus-code-definition", className="code-definition"),
+                                    html.Div(id="focus-label-counts", className="focus-counts"),
+                                    html.Div(id="focus-code-create-status", className="control-status"),
+                                ],
+                                id="focus-code-summary",
+                                style=({"display": "none"} if initial_code_id is None else {}),
                             ),
                         ],
                         className="focus-code-select",
@@ -9613,10 +9857,43 @@ def _focus_layout(
                                 disabled=initial_code_id is None,
                             ),
                         ],
+                        id="focus-teaching-select",
+                        style=({"display": "none"} if initial_code_id is None else {}),
                         className="focus-teaching-select",
                     ),
                 ],
                 className="focus-topbar",
+            ),
+            html.Section(
+                [
+                    html.H3(
+                        id="focus-scale-heading",
+                        children=(f"Scale: {next(row['name'] for row in constructs if row['construct_id'] == initial_construct_id)}"
+                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                    ),
+                    html.Div(
+                        id="focus-scale-description",
+                        children=(next(row.get("description", "") for row in constructs if row['construct_id'] == initial_construct_id)
+                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                        className="code-definition",
+                    ),
+                    html.Div(
+                        id="focus-scale-eligibility",
+                        children=(
+                            f"Definition version {next(row['version_number'] for row in constructs if row['construct_id'] == initial_construct_id)} · "
+                            f"Eligibility: {json.dumps(next(row['eligibility'] for row in constructs if row['construct_id'] == initial_construct_id), sort_keys=True)}"
+                            if initial_construct_id is not None and initial_code_id is None else ""
+                        ),
+                        className="focus-counts",
+                    ),
+                    html.P(
+                        "Comparative development for this Scale will be available in a subsequent phase.",
+                        className="focus-help",
+                    ),
+                ],
+                id="focus-scale-state",
+                style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
+                className="focus-disabled-message",
             ),
             html.Div(
                 [
@@ -10177,6 +10454,7 @@ def _focus_layout(
                 ],
                 id="focus-active-area",
                 className=active_class,
+                style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
             ),
         ],
         className="focus-workspace",
