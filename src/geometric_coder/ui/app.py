@@ -212,6 +212,36 @@ def _resumable_session_state(state: dict[str, Any]) -> dict[str, Any]:
             if key not in _TRANSIENT_EXPLORE_KEYS}
 
 
+def _selected_focus_construct_id(
+    constructs: list[dict[str, Any]], state: dict[str, Any]
+) -> int | None:
+    """Restore shared selection, falling back to the legacy Code-only key."""
+    by_id = {int(row["construct_id"]): str(row["type"]) for row in constructs}
+    shared = state.get("focus_construct_id")
+    if shared is None:
+        legacy = state.get("focus_code_id")
+        try:
+            value = int(legacy)
+        except (TypeError, ValueError):
+            return None
+        return value if by_id.get(value) == "code" else None
+    try:
+        value = int(shared)
+    except (TypeError, ValueError):
+        return None
+    return value if value in by_id else None
+
+
+def _construct_options(constructs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": f"{row['name']} · {'Scale' if row['type'] == 'scale' else 'Code'}",
+            "value": int(row["construct_id"]),
+        }
+        for row in constructs
+    ]
+
+
 def _topic_restore_snapshot(session_id: int, state: dict[str, Any]) -> dict[str, Any]:
     return {
         "session_id": int(session_id),
@@ -649,6 +679,7 @@ def create_app(
     hierarchy = project.database.hierarchy_levels()
     hierarchy_summary = project.hierarchy_summary()
     codes = project.codes()
+    constructs = project.constructs()
     classifier_specs = project.classifier_specs()
     prediction_geometry_cache: dict[str, dict[str, Any]] = {}
     # Only visible point indices are retained for Develop judgment patches.
@@ -912,6 +943,8 @@ def create_app(
                 dcc.Store(id="memo-center-selected-store", data=None),
                 dcc.Store(id="memo-center-version-store", data=None),
                 dcc.Store(id="memo-center-edit-store", data=False),
+                dcc.Store(id="construct-refresh-store", data=0),
+                dcc.Store(id="construct-center-selected-store", data=None),
                 dcc.Store(id="code-center-selected-store", data=None),
                 dcc.Store(id="code-center-version-store", data=None),
                 dcc.Store(id="code-center-edit-store", data=False),
@@ -1003,6 +1036,7 @@ def create_app(
                             dcc=dcc,
                             html=html,
                             codes=codes,
+                            constructs=constructs,
                             geometries=geometries,
                             classifier_specs=classifier_specs,
                             hierarchy=hierarchy,
@@ -1023,7 +1057,7 @@ def create_app(
                         ),
                     ),
                     dcc.Tab(
-                        label="Codes",
+                        label="Constructs",
                         value="codes",
                         className="workflow-tab",
                         selected_className="workflow-tab-selected",
@@ -1593,6 +1627,7 @@ def create_app(
         Output("workspace-tabs", "value"),
         Output("explore-code-palette-store", "data"),
         Output("explore-code-row-count-store", "data"),
+        Output("focus-construct-dropdown", "value", allow_duplicate=True),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-active-classifier-dropdown", "value", allow_duplicate=True),
         Output("focus-committee-dropdown", "value", allow_duplicate=True),
@@ -1628,11 +1663,9 @@ def create_app(
         context_level = int(state.get("context_level", hierarchy[-1]["level_index"]))
         context_window = max(1, int(state.get("context_window", 1)))
         current_code_ids = {int(code["code_id"]) for code in project.codes()}
-        requested_code = state.get("focus_code_id")
+        focus_construct_id = _selected_focus_construct_id(project.constructs(), state)
         focus_code_id = (
-            int(requested_code)
-            if requested_code is not None and int(requested_code) in current_code_ids
-            else None
+            focus_construct_id if focus_construct_id in current_code_ids else None
         )
         spec_ids = {
             int(record["classifier_spec_id"])
@@ -1690,6 +1723,7 @@ def create_app(
             str(state.get("workspace", "explore")),
             explore_palette,
             len(explore_palette),
+            focus_construct_id,
             focus_code_id,
             focus_classifier,
             focus_committee,
@@ -7479,6 +7513,7 @@ def create_app(
         Input("page-number", "value"),
         Input("navigation-new-only", "value"),
         Input("workspace-tabs", "value"),
+        Input("focus-construct-dropdown", "value"),
         Input("focus-code-dropdown", "value"),
         Input("focus-active-classifier-dropdown", "value"),
         Input("focus-committee-dropdown", "value"),
@@ -7507,6 +7542,7 @@ def create_app(
         page_number: Any,
         navigation_new_only: list[str] | None,
         workspace: str,
+        focus_construct_id: int | None,
         focus_code_id: int | None,
         focus_classifier_spec_id: int | None,
         focus_committee_id: int | None,
@@ -7522,6 +7558,18 @@ def create_app(
         if presentation_values.get("presentation", [None])[0] == "memo":
             return "Presentation mode leaves Explore session state unchanged."
         options = set(literal_options or [])
+        # Persist a Code ID only when it is the selected Construct's actual Code ID.
+        valid_construct = _selected_focus_construct_id(
+            project.constructs(), {"focus_construct_id": focus_construct_id}
+        )
+        selected_code = (
+            int(focus_code_id)
+            if valid_construct is not None
+            and focus_code_id is not None
+            and int(focus_code_id) == valid_construct
+            and project.construct(valid_construct)["type"] == "code"
+            else None
+        )
         # Preserve session keys independently owned by Focus Coding and other APIs.
         project.patch_session_state(
             int(session_id),
@@ -7555,9 +7603,14 @@ def create_app(
                 "page_number": _coerce_positive_int(page_number, default=1),
                 "navigation_new_only": "new_only" in (navigation_new_only or []),
                 "workspace": workspace,
-                "focus_code_id": focus_code_id,
-                "focus_classifier_spec_id": focus_classifier_spec_id,
-                "focus_committee_id": focus_committee_id,
+                "focus_construct_id": valid_construct,
+                "focus_code_id": selected_code,
+                "focus_classifier_spec_id": (
+                    focus_classifier_spec_id if selected_code is not None else None
+                ),
+                "focus_committee_id": (
+                    focus_committee_id if selected_code is not None else None
+                ),
                 "focus_train_all": "all" in set(focus_train_scope_values or []),
                 "focus_auto_retrain": "auto" in set(focus_auto_retrain_values or []),
                 "focus_tune_hyperparameters": (
@@ -9534,19 +9587,19 @@ def _focus_layout(
     dcc: Any,
     html: Any,
     codes: list[dict[str, Any]],
+    constructs: list[dict[str, Any]],
     geometries: list[dict[str, Any]],
     classifier_specs: list[dict[str, Any]],
     hierarchy: list[dict[str, Any]],
     initial_state: dict[str, Any],
 ) -> Any:
-    """Return the code-development workspace built around explicit classifiers."""
+    """Return a shared Construct selector with the existing binary Develop workspace."""
     del geometries
     code_ids = {int(code["code_id"]) for code in codes}
-    try:
-        requested_code_id = int(initial_state.get("focus_code_id"))
-    except (TypeError, ValueError):
-        requested_code_id = -1
-    initial_code_id = requested_code_id if requested_code_id in code_ids else None
+    initial_construct_id = _selected_focus_construct_id(constructs, initial_state)
+    initial_code_id = (
+        initial_construct_id if initial_construct_id in code_ids else None
+    )
 
     classifier_specs = [
         row
@@ -9572,15 +9625,24 @@ def _focus_layout(
                 [
                     html.Div(
                         [
-                            html.Label("Active code"),
+                            html.Label("Construct"),
                             html.Div(
                                 [
+                                    dcc.Dropdown(
+                                        id="focus-construct-dropdown",
+                                        options=_construct_options(constructs),
+                                        value=initial_construct_id,
+                                        clearable=True,
+                                        placeholder="Select a Code or Scale",
+                                    ),
+                                    # Existing binary callbacks remain bound to this
+                                    # Code-only value; Scale IDs never enter it.
                                     dcc.Dropdown(
                                         id="focus-code-dropdown",
                                         options=_code_options(codes),
                                         value=initial_code_id,
                                         clearable=True,
-                                        placeholder="Select a code",
+                                        style={"display": "none"},
                                     ),
                                     html.Button(
                                         "New Code", id="focus-new-code-button", n_clicks=0
@@ -9613,10 +9675,25 @@ def _focus_layout(
                                 disabled=initial_code_id is None,
                             ),
                         ],
+                        id="focus-teaching-select",
                         className="focus-teaching-select",
                     ),
                 ],
                 className="focus-topbar",
+            ),
+            html.Section(
+                [
+                    html.H3(id="focus-scale-heading"),
+                    html.Div(id="focus-scale-description", className="code-definition"),
+                    html.Div(id="focus-scale-eligibility", className="focus-counts"),
+                    html.P(
+                        "Comparative development for this Scale will be available in a subsequent phase.",
+                        className="focus-help",
+                    ),
+                ],
+                id="focus-scale-state",
+                style={"display": "none"},
+                className="focus-disabled-message",
             ),
             html.Div(
                 [
