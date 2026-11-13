@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -65,6 +65,64 @@ _QUERY_SEARCH_SQL = (
         UNIQUE(query_id, geometry_id)
     )""",
     "CREATE INDEX semantic_search_results_geometry_idx ON semantic_search_results(geometry_id)",
+)
+
+
+# Kept as one DDL definition for both fresh projects and the 18 -> 19 migration.
+# This is an additive identity layer: legacy Code tables and foreign keys stay put.
+_CONSTRUCT_SCHEMA_SQL = (
+    """CREATE TABLE IF NOT EXISTS constructs (
+        construct_id INTEGER PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('code', 'scale')),
+        created_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS scales (
+        scale_id INTEGER PRIMARY KEY REFERENCES constructs(construct_id),
+        eligibility_spec_json TEXT NOT NULL DEFAULT '{"kind":"all"}',
+        eligibility_revision INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS scale_versions (
+        scale_version_id INTEGER PRIMARY KEY,
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        version_number INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description_markdown TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        UNIQUE(scale_id, version_number)
+    )""",
+    """CREATE TABLE IF NOT EXISTS scale_comparison_events (
+        comparison_event_id INTEGER PRIMARY KEY,
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        observation_low_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        observation_high_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        presented_first_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        presented_second_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        outcome TEXT NOT NULL CHECK (outcome IN (
+            'first_higher', 'second_higher', 'parity', 'unsure'
+        )),
+        origin TEXT NOT NULL,
+        reviewer_key TEXT,
+        session_id INTEGER REFERENCES sessions(session_id),
+        selection_provenance_json TEXT NOT NULL DEFAULT '{}',
+        supersedes_event_id INTEGER REFERENCES scale_comparison_events(comparison_event_id),
+        submission_key TEXT UNIQUE,
+        created_at TEXT NOT NULL,
+        CHECK (observation_low_id < observation_high_id),
+        CHECK (
+            (presented_first_id = observation_low_id AND presented_second_id = observation_high_id)
+            OR
+            (presented_first_id = observation_high_id AND presented_second_id = observation_low_id)
+        )
+    )""",
+    """CREATE INDEX IF NOT EXISTS scale_comparison_events_pair_idx
+        ON scale_comparison_events(
+            scale_version_id, observation_low_id, observation_high_id, comparison_event_id
+        )""",
+    """CREATE INDEX IF NOT EXISTS scale_comparison_events_version_idx
+        ON scale_comparison_events(scale_version_id, comparison_event_id)""",
+    """CREATE INDEX IF NOT EXISTS scale_comparison_events_supersedes_idx
+        ON scale_comparison_events(supersedes_event_id)""",
 )
 
 _SCHEMA = """
@@ -769,6 +827,32 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
     """)
 
 
+
+def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
+    """Add typed Construct identities without rewriting any existing Code rows.
+
+    Executed inside ensure_current_schema's write transaction. In particular,
+    never use executescript() here: it can commit an in-progress transaction.
+    """
+    for statement in _CONSTRUCT_SCHEMA_SQL:
+        connection.execute(statement)
+    connection.execute(
+        """INSERT INTO constructs(construct_id, type, created_at)
+           SELECT code_id, 'code', created_at FROM codes
+           WHERE NOT EXISTS (
+               SELECT 1 FROM constructs WHERE constructs.construct_id = codes.code_id
+           )"""
+    )
+    mismatch = connection.execute(
+        """SELECT code_id FROM codes
+           LEFT JOIN constructs ON constructs.construct_id = codes.code_id
+           WHERE constructs.type IS NOT 'code'
+           LIMIT 1"""
+    ).fetchone()
+    if mismatch is not None:
+        raise RuntimeError("Existing Code identity conflicts with a Construct.")
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -777,6 +861,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     15: _migrate_15_to_16,
     16: _migrate_16_to_17,
     17: _migrate_17_to_18,
+    18: _migrate_18_to_19,
 }
 
 
@@ -821,6 +906,8 @@ class ProjectDatabase:
         with self.connect() as connection:
             connection.executescript(_SCHEMA)
             for statement in _QUERY_SEARCH_SQL:
+                connection.execute(statement)
+            for statement in _CONSTRUCT_SCHEMA_SQL:
                 connection.execute(statement)
             connection.execute(
                 """
@@ -2881,6 +2968,165 @@ class ProjectDatabase:
             ).fetchall()
         return {int(row["unit_id"]) for row in rows}
 
+
+    def create_scale(
+        self, name: str, description: str = "",
+        eligibility: Mapping[str, Any] | None = None,
+    ) -> int:
+        """Create an independent Scale with its first immutable definition version."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Scale name may not be empty.")
+        if eligibility is not None and not isinstance(eligibility, Mapping):
+            raise TypeError("Scale eligibility must be a JSON object or None.")
+        eligibility_spec = {"kind": "all"} if eligibility is None else dict(eligibility)
+        if not isinstance(eligibility_spec.get("kind"), str):
+            raise ValueError("Scale eligibility requires a string 'kind'.")
+        eligibility_json = json.dumps(
+            eligibility_spec, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        now = utc_now()
+        with self.connect() as connection:
+            identity = connection.execute(
+                "INSERT INTO constructs(type, created_at) VALUES ('scale', ?)",
+                (now,),
+            )
+            if identity.lastrowid is None:
+                raise RuntimeError("SQLite did not return a construct ID.")
+            scale_id = int(identity.lastrowid)
+            connection.execute(
+                """INSERT INTO scales(
+                    scale_id, eligibility_spec_json, eligibility_revision, updated_at
+                ) VALUES (?, ?, 1, ?)""",
+                (scale_id, eligibility_json, now),
+            )
+            connection.execute(
+                """INSERT INTO scale_versions(
+                    scale_id, version_number, name, description_markdown, created_at
+                ) VALUES (?, 1, ?, ?, ?)""",
+                (scale_id, clean_name, description, now),
+            )
+            return scale_id
+
+    def update_scale(self, scale_id: int, name: str, description: str) -> int:
+        """Append a Scale definition revision; retain every previous version."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Scale name may not be empty.")
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            version_number = int(connection.execute(
+                """SELECT COALESCE(MAX(version_number), 0) + 1
+                   FROM scale_versions WHERE scale_id = ?""", (int(scale_id),)
+            ).fetchone()[0])
+            now = utc_now()
+            cursor = connection.execute(
+                """INSERT INTO scale_versions(
+                    scale_id, version_number, name, description_markdown, created_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                (int(scale_id), version_number, clean_name, description, now),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("SQLite did not return a Scale version ID.")
+            connection.execute(
+                "UPDATE scales SET updated_at = ? WHERE scale_id = ?",
+                (now, int(scale_id)),
+            )
+            return int(cursor.lastrowid)
+
+    def list_scales(self) -> list[dict[str, Any]]:
+        """Return the latest definition of each Scale, in identity order."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT s.scale_id, c.created_at, s.eligibility_spec_json,
+                          s.eligibility_revision, s.updated_at,
+                          sv.scale_version_id, sv.version_number, sv.name,
+                          sv.description_markdown, sv.created_at AS version_created_at
+                   FROM scales AS s
+                   JOIN constructs AS c ON c.construct_id = s.scale_id
+                   JOIN scale_versions AS sv ON sv.scale_version_id = (
+                       SELECT sv2.scale_version_id FROM scale_versions AS sv2
+                       WHERE sv2.scale_id = s.scale_id
+                       ORDER BY sv2.version_number DESC LIMIT 1
+                   )
+                   ORDER BY s.scale_id"""
+            ).fetchall()
+        return [_scale_version_row(row) for row in rows]
+
+    def get_scale(
+        self, scale_id: int, version_number: int | None = None
+    ) -> dict[str, Any]:
+        """Read a Scale definition version and its current eligibility settings."""
+        query = """SELECT s.scale_id, c.created_at, s.eligibility_spec_json,
+                          s.eligibility_revision, s.updated_at,
+                          sv.scale_version_id, sv.version_number, sv.name,
+                          sv.description_markdown, sv.created_at AS version_created_at
+                   FROM scales AS s
+                   JOIN constructs AS c ON c.construct_id = s.scale_id
+                   JOIN scale_versions AS sv ON sv.scale_id = s.scale_id
+                   WHERE s.scale_id = ?"""
+        parameters: tuple[Any, ...] = (int(scale_id),)
+        if version_number is not None:
+            query += " AND sv.version_number = ?"
+            parameters = (int(scale_id), int(version_number))
+        query += " ORDER BY sv.version_number DESC LIMIT 1"
+        with self.connect() as connection:
+            row = connection.execute(query, parameters).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown scale/version: {scale_id}/{version_number}")
+        return _scale_version_row(row)
+
+    def scale_versions(self, scale_id: int) -> list[dict[str, Any]]:
+        """Return every immutable definition revision of a Scale."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT s.scale_id, c.created_at, s.eligibility_spec_json,
+                          s.eligibility_revision, s.updated_at,
+                          sv.scale_version_id, sv.version_number, sv.name,
+                          sv.description_markdown, sv.created_at AS version_created_at
+                   FROM scales AS s
+                   JOIN constructs AS c ON c.construct_id = s.scale_id
+                   JOIN scale_versions AS sv ON sv.scale_id = s.scale_id
+                   WHERE s.scale_id = ? ORDER BY sv.version_number""",
+                (int(scale_id),),
+            ).fetchall()
+        if not rows:
+            raise KeyError(f"Unknown scale_id: {scale_id}")
+        return [_scale_version_row(row) for row in rows]
+
+    def list_constructs(self) -> list[dict[str, Any]]:
+        """Union the two authoritative definition histories without copying them."""
+        records = [
+            _construct_record(row, "code") for row in self.list_codes()
+        ] + [
+            _construct_record(row, "scale") for row in self.list_scales()
+        ]
+        return sorted(records, key=lambda row: int(row["construct_id"]))
+
+    def get_construct(
+        self, construct_id: int, version_number: int | None = None
+    ) -> dict[str, Any]:
+        """Resolve a shared ID through the appropriate type-specific version table."""
+        with self.connect() as connection:
+            identity = connection.execute(
+                "SELECT type FROM constructs WHERE construct_id = ?",
+                (int(construct_id),),
+            ).fetchone()
+        if identity is None:
+            raise KeyError(f"Unknown construct_id: {construct_id}")
+        kind = str(identity["type"])
+        record = (
+            self.get_code(int(construct_id), version_number)
+            if kind == "code"
+            else self.get_scale(int(construct_id), version_number)
+        )
+        return _construct_record(record, kind)
+
     def create_code(self, name: str, definition: str = "") -> int:
         """Create a code and its first append-only description version."""
         clean_name = name.strip()
@@ -2888,13 +3134,17 @@ class ProjectDatabase:
             raise ValueError("Code name may not be empty.")
         now = utc_now()
         with self.connect() as connection:
-            cursor = connection.execute(
-                "INSERT INTO codes(name, definition, created_at) VALUES (?, ?, ?)",
-                (clean_name, definition, now),
+            identity = connection.execute(
+                "INSERT INTO constructs(type, created_at) VALUES ('code', ?)",
+                (now,),
             )
-            if cursor.lastrowid is None:
-                raise RuntimeError("SQLite did not return a code ID.")
-            code_id = int(cursor.lastrowid)
+            if identity.lastrowid is None:
+                raise RuntimeError("SQLite did not return a construct ID.")
+            code_id = int(identity.lastrowid)
+            connection.execute(
+                "INSERT INTO codes(code_id, name, definition, created_at) VALUES (?, ?, ?, ?)",
+                (code_id, clean_name, definition, now),
+            )
             version_cursor = connection.execute(
                 """
                 INSERT INTO code_versions(
@@ -6052,6 +6302,44 @@ def _free_classifier_name(
 def _extract_hashtags(markdown: str) -> list[str]:
     import re
     return list(dict.fromkeys(re.findall(r"(?<!\w)#([A-Za-z0-9_-]+)", markdown)))
+
+
+def _scale_version_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scale_id": int(row["scale_id"]),
+        "scale_version_id": int(row["scale_version_id"]),
+        "version_number": int(row["version_number"]),
+        "name": str(row["name"]),
+        "description": str(row["description_markdown"]),
+        "created_at": str(row["created_at"]),
+        "version_created_at": str(row["version_created_at"]),
+        "eligibility": json.loads(row["eligibility_spec_json"]),
+        "eligibility_revision": int(row["eligibility_revision"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _construct_record(record: Mapping[str, Any], kind: str) -> dict[str, Any]:
+    identity = "code_id" if kind == "code" else "scale_id"
+    version = "code_version_id" if kind == "code" else "scale_version_id"
+    result = {
+        "construct_id": int(record[identity]),
+        "type": kind,
+        "version_id": int(record[version]),
+        "version_number": int(record["version_number"]),
+        "name": str(record["name"]),
+        "description": str(record["description"]),
+        "created_at": str(record["created_at"]),
+        "version_created_at": str(record["version_created_at"]),
+        identity: int(record[identity]),
+        version: int(record[version]),
+    }
+    if kind == "scale":
+        result["eligibility"] = record["eligibility"]
+        result["eligibility_revision"] = int(record["eligibility_revision"])
+        result["updated_at"] = str(record["updated_at"])
+    return result
+
 
 def _code_version_row(row: sqlite3.Row) -> dict[str, Any]:
     description = str(row["description_markdown"])
