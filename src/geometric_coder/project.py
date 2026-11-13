@@ -2131,6 +2131,35 @@ class GeometricCoder:
             classifier_fit_id=classifier_fit_id,
         )
 
+    def constructs(self) -> list[dict[str, Any]]:
+        """List versioned Code and Scale definitions under shared identities."""
+        return self.database.list_constructs()
+
+    def construct(
+        self, construct_id: int, version_number: int | None = None
+    ) -> dict[str, Any]:
+        """Read the latest or a historical Construct definition."""
+        return self.database.get_construct(int(construct_id), version_number)
+
+    def create_scale(
+        self, name: str, description: str = "",
+        eligibility: Mapping[str, Any] | None = None,
+    ) -> int:
+        """Create a Scale independently of any binary Code."""
+        return self.database.create_scale(name, description, eligibility)
+
+    def update_scale(self, scale_id: int, name: str, description: str) -> int:
+        """Append an immutable Scale definition revision."""
+        return self.database.update_scale(int(scale_id), name, description)
+
+    def scale(self, scale_id: int, version_number: int | None = None) -> dict[str, Any]:
+        """Return the latest or a historical Scale definition."""
+        return self.database.get_scale(int(scale_id), version_number)
+
+    def scale_versions(self, scale_id: int) -> list[dict[str, Any]]:
+        """Read the complete definition history for a Scale."""
+        return self.database.scale_versions(int(scale_id))
+
     def create_code(self, name: str, definition: str = "") -> int:
         """Create a code without implicitly creating classifiers."""
         return self.database.create_code(name, definition)
