@@ -2294,6 +2294,7 @@ class ProjectDatabase:
         unit_id: int,
         level_index: int,
         window: int = 1,
+        max_units: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return a total window of groups around the focal group.
 
@@ -2303,6 +2304,8 @@ class ProjectDatabase:
         """
         if window < 1:
             raise ValueError("window must be at least 1")
+        if max_units is not None and max_units < 1:
+            raise ValueError("max_units must be at least 1")
         with self.connect() as connection:
             focal = connection.execute(
                 """
@@ -2369,17 +2372,59 @@ class ProjectDatabase:
             if not group_ids:
                 return []
             placeholders = ",".join("?" for _ in group_ids)
-            rows = connection.execute(
-                f"""
-                SELECT DISTINCT u.*
-                FROM units AS u
-                JOIN unit_groups AS ug ON ug.unit_id = u.unit_id
-                WHERE ug.level_index = ?
-                  AND ug.group_id IN ({placeholders})
-                ORDER BY u.row_position
-                """,
-                (level_index, *group_ids),
-            ).fetchall()
+            if max_units is None:
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT u.*
+                    FROM units AS u
+                    JOIN unit_groups AS ug ON ug.unit_id = u.unit_id
+                    WHERE ug.level_index = ?
+                      AND ug.group_id IN ({placeholders})
+                    ORDER BY u.row_position
+                    """,
+                    (level_index, *group_ids),
+                ).fetchall()
+            else:
+                # UI readers should not materialize an arbitrarily large parent
+                # group. Find nearby eligible *positions* before decoding text.
+                # Both probes are bounded, and the focal row is always retained.
+                focal_position = int(connection.execute(
+                    "SELECT row_position FROM units WHERE unit_id = ?",
+                    (int(unit_id),),
+                ).fetchone()[0])
+                near_positions: list[int] = []
+                for comparison, ordering in (("<=", "DESC"), (">", "ASC")):
+                    found = connection.execute(
+                        f"""
+                        SELECT DISTINCT u.row_position
+                        FROM units AS u
+                        JOIN unit_groups AS ug ON ug.unit_id = u.unit_id
+                        WHERE ug.level_index = ?
+                          AND ug.group_id IN ({placeholders})
+                          AND u.row_position {comparison} ?
+                        ORDER BY u.row_position {ordering}
+                        LIMIT ?
+                        """,
+                        (level_index, *group_ids, focal_position, int(max_units)),
+                    ).fetchall()
+                    near_positions.extend(int(row[0]) for row in found)
+                selected = sorted(
+                    sorted(set(near_positions), key=lambda pos: (
+                        abs(pos - focal_position), pos,
+                    ))[:int(max_units)]
+                )
+                if not selected:
+                    return []
+                bounded: list[sqlite3.Row] = []
+                for start in range(0, len(selected), 900):
+                    chunk = selected[start:start + 900]
+                    placeholders_rows = ",".join("?" for _ in chunk)
+                    bounded.extend(connection.execute(
+                        f"SELECT * FROM units WHERE row_position IN ({placeholders_rows}) "
+                        "ORDER BY row_position",
+                        chunk,
+                    ).fetchall())
+                rows = bounded
         return [_unit_row(row) for row in rows]
 
     def get_observation(self, observation_id: int) -> dict[str, Any]:
