@@ -2969,6 +2969,364 @@ class ProjectDatabase:
         return {int(row["unit_id"]) for row in rows}
 
 
+    def _validated_scale_eligibility(
+        self, eligibility: Mapping[str, Any] | None, connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        """Validate a small self-contained subset of GeCo's metadata predicates."""
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        if eligibility is None:
+            return {"kind": "all"}
+        if not isinstance(eligibility, Mapping):
+            raise TypeError("Scale eligibility must be a mapping or None.")
+        raw = dict(eligibility)
+        kind = raw.get("kind")
+        if kind == "all":
+            if set(raw) != {"kind"}:
+                raise ValueError("Unrestricted Scale eligibility accepts only 'kind'.")
+            return {"kind": "all"}
+        if kind != "filtered":
+            raise ValueError("Scale eligibility kind must be 'all' or 'filtered'.")
+        if set(raw) - {"kind", "metadata_clauses", "metadata_operator", "code_filters"}:
+            raise ValueError("Unsupported Scale eligibility settings.")
+        metadata_clauses = raw.get("metadata_clauses", [])
+        code_filters = raw.get("code_filters", [])
+        operator = raw.get("metadata_operator", "and")
+        if operator not in {"and", "or", "xor"}:
+            raise ValueError("metadata_operator must be and, or, or xor.")
+        if (not isinstance(metadata_clauses, list)
+                or not isinstance(code_filters, list)
+                or not (metadata_clauses or code_filters)):
+            raise ValueError("A filtered Scale requires nonempty predicate lists.")
+        columns = set(json.loads(connection.execute(
+            "SELECT metadata_columns_json FROM project WHERE project_id = 1"
+        ).fetchone()[0]))
+        permitted = {
+            "numeric": {"lt", "lte", "gt", "gte", "eq", "neq", "between", "missing", "not_missing"},
+            "datetime": {"lt", "lte", "gt", "gte", "eq", "between", "missing", "not_missing"},
+            "text": {"contains", "excludes", "eq", "neq", "starts", "ends", "regex", "missing", "not_missing"},
+            "categorical": {"in", "not_in", "missing", "not_missing"},
+            "boolean": {"true", "false", "missing", "not_missing"},
+        }
+        clauses: list[dict[str, Any]] = []
+        for raw_clause in metadata_clauses:
+            if not isinstance(raw_clause, Mapping):
+                raise ValueError("Metadata filters must be mappings.")
+            clause = dict(raw_clause)
+            if set(clause) - {"field", "type", "operator", "value", "value2", "id"}:
+                raise ValueError("Unsupported metadata filter field.")
+            field = clause.get("field")
+            dtype = clause.get("type")
+            condition = clause.get("operator")
+            if field not in columns or not isinstance(field, str):
+                raise ValueError(f"Unknown metadata field: {field!r}")
+            if not isinstance(dtype, str) or condition not in permitted.get(dtype, set()):
+                raise ValueError("Unsupported metadata filter type or operator.")
+            clean = {"field": field, "type": dtype, "operator": condition}
+            if condition not in {"missing", "not_missing", "true", "false"}:
+                if "value" not in clause:
+                    raise ValueError("Metadata filter value is required.")
+                clean["value"] = clause["value"]
+                if condition == "between":
+                    if "value2" not in clause:
+                        raise ValueError("Between filters require value2.")
+                    clean["value2"] = clause["value2"]
+            clauses.append(clean)
+        # Compile with the same metadata semantics as Explore; run once to catch
+        # malformed numeric/date/regex values without ever scanning the corpus.
+        predicate, params = compile_filter_sql(clauses, operator=operator)
+        register_filter_functions(connection)
+        connection.execute(
+            f"SELECT 1 FROM units AS u WHERE {predicate} LIMIT 0", params,
+        ).fetchall()
+        codes: list[dict[str, Any]] = []
+        for raw_filter in code_filters:
+            if not isinstance(raw_filter, Mapping) or set(raw_filter) != {
+                "code_id", "value", "source"
+            }:
+                raise ValueError("Code filters require code_id, value, and source.")
+            if raw_filter["value"] != "positive" or raw_filter["source"] != "human":
+                raise ValueError("Only current human-positive Code filters are supported.")
+            code_id = raw_filter["code_id"]
+            if isinstance(code_id, bool) or not isinstance(code_id, int):
+                raise ValueError("Code filter IDs must be integers.")
+            if connection.execute(
+                "SELECT 1 FROM codes WHERE code_id = ?", (code_id,),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown code_id: {code_id}")
+            codes.append({"code_id": code_id, "value": "positive", "source": "human"})
+        result = {
+            "kind": "filtered",
+            "metadata_clauses": clauses,
+            "metadata_operator": operator,
+            "code_filters": codes,
+        }
+        # Reject unserializable, nonfinite and non-JSON primitives before mutation.
+        try:
+            json.dumps(result, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Scale eligibility must contain JSON-compatible values.") from error
+        return result
+
+    def scale_eligibility(self, scale_id: int) -> dict[str, Any]:
+        """Read the current Scale eligibility and human-Code dependencies."""
+        scale = self.get_scale(scale_id)
+        specification = scale["eligibility"]
+        dependencies = {
+            int(item["code_id"]): self.recommendation_revision(int(item["code_id"]))
+            for item in specification.get("code_filters", [])
+        }
+        return {
+            "scale_id": int(scale_id),
+            "eligibility": specification,
+            "eligibility_revision": scale["eligibility_revision"],
+            "code_revisions": dependencies,
+        }
+
+    def update_scale_eligibility(
+        self, scale_id: int, eligibility: Mapping[str, Any] | None,
+    ) -> int:
+        """Advance the eligibility revision without revising the Scale definition."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT eligibility_spec_json, eligibility_revision FROM scales "
+                "WHERE scale_id = ?", (int(scale_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            normalized = self._validated_scale_eligibility(eligibility, connection)
+            old = json.loads(row["eligibility_spec_json"])
+            if old == normalized:
+                return int(row["eligibility_revision"])
+            next_revision = int(row["eligibility_revision"]) + 1
+            connection.execute(
+                """UPDATE scales
+                   SET eligibility_spec_json = ?, eligibility_revision = ?,
+                       updated_at = ?
+                   WHERE scale_id = ?""",
+                (json.dumps(normalized, sort_keys=True, allow_nan=False),
+                 next_revision, utc_now(), int(scale_id)),
+            )
+            return next_revision
+
+    def eligible_scale_observation_ids(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> list[int]:
+        """Select eligible atomic observation IDs using bounded SQLite queries."""
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        scale = self.get_scale(scale_id)
+        spec = scale["eligibility"]
+        wanted = list(dict.fromkeys(int(i) for i in observation_ids))
+        if not wanted:
+            return []
+        clauses = spec.get("metadata_clauses", [])
+        predicate, params = compile_filter_sql(
+            clauses, operator=spec.get("metadata_operator", "and"),
+        )
+        code_filters = spec.get("code_filters", [])
+        extra = ""
+        extra_params: list[Any] = []
+        for item in code_filters:
+            extra += """ AND EXISTS (
+                SELECT 1 FROM current_annotations AS ca
+                WHERE ca.observation_id = u.observation_id
+                  AND ca.code_id = ? AND ca.value = 'positive'
+                  AND ca.origin LIKE 'human_%'
+            )"""
+            extra_params.append(int(item["code_id"]))
+        selected: set[int] = set()
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            for start in range(0, len(wanted), 900):
+                batch = wanted[start:start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""SELECT u.observation_id FROM units AS u
+                        JOIN observations AS o ON o.observation_id = u.observation_id
+                        WHERE o.kind = 'atomic'
+                          AND u.observation_id IN ({placeholders})
+                          AND ({predicate}) {extra}""",
+                    [*batch, *params, *extra_params],
+                ).fetchall()
+                selected.update(int(row[0]) for row in rows)
+        return [value for value in wanted if value in selected]
+
+    def record_scale_comparison(
+        self, scale_id: int, first_observation_id: int,
+        second_observation_id: int, outcome: str, *,
+        origin: str = "human_direct", reviewer_key: str | None = None,
+        session_id: int | None = None,
+        selection_provenance: Mapping[str, Any] | None = None,
+        supersedes_event_id: int | None = None,
+        submission_key: str | None = None,
+    ) -> int:
+        """Atomically append a human pair judgment; never collapse independent repeats."""
+        first, second = int(first_observation_id), int(second_observation_id)
+        if first == second:
+            raise ValueError("Cannot compare an observation with itself.")
+        if outcome not in {"first_higher", "second_higher", "parity", "unsure"}:
+            raise ValueError("Unknown Scale comparison outcome.")
+        if not isinstance(origin, str) or not origin.strip():
+            raise ValueError("A comparison origin is required.")
+        if reviewer_key is not None and (
+            not isinstance(reviewer_key, str) or not reviewer_key.strip()
+        ):
+            raise ValueError("reviewer_key must be a nonempty string or None.")
+        if submission_key is not None and (
+            not isinstance(submission_key, str) or not submission_key.strip()
+        ):
+            raise ValueError("submission_key must be a nonempty string or None.")
+        if selection_provenance is not None and not isinstance(selection_provenance, Mapping):
+            raise TypeError("selection_provenance must be a mapping.")
+        provenance = dict(selection_provenance or {})
+        if not all(isinstance(key, str) for key in provenance):
+            raise ValueError("Selection provenance keys must be strings.")
+        try:
+            provenance_json = json.dumps(provenance, sort_keys=True, allow_nan=False)
+        except (ValueError, TypeError) as error:
+            raise ValueError("Selection provenance must be JSON-compatible.") from error
+        if len(provenance_json) > 16384:
+            raise ValueError("Selection provenance is too large.")
+        low, high = sorted((first, second))
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # Check idempotency first: a network retry after the Scale has been
+            # revised still returns the original saved event.
+            if submission_key is not None:
+                previous = connection.execute(
+                    "SELECT e.*, v.scale_id FROM scale_comparison_events AS e "
+                    "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                    "WHERE e.submission_key = ?", (submission_key,),
+                ).fetchone()
+                if previous is not None:
+                    payload_matches = (
+                        int(previous["scale_id"]) == int(scale_id)
+                        and int(previous["presented_first_id"]) == first
+                        and int(previous["presented_second_id"]) == second
+                        and str(previous["outcome"]) == outcome
+                        and str(previous["origin"]) == origin
+                        and previous["reviewer_key"] == reviewer_key
+                        and previous["session_id"] == session_id
+                        and json.loads(previous["selection_provenance_json"]) == provenance
+                        and previous["supersedes_event_id"] == supersedes_event_id
+                    )
+                    if not payload_matches:
+                        raise ValueError("submission_key was reused with a different judgment.")
+                    return int(previous["comparison_event_id"])
+            version = connection.execute(
+                """SELECT scale_version_id FROM scale_versions
+                   WHERE scale_id = ? ORDER BY version_number DESC LIMIT 1""",
+                (int(scale_id),),
+            ).fetchone()
+            if version is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            version_id = int(version[0])
+            for observation_id in (low, high):
+                item = connection.execute(
+                    "SELECT kind FROM observations WHERE observation_id = ?",
+                    (observation_id,),
+                ).fetchone()
+                if item is None:
+                    raise KeyError(f"Unknown observation_id: {observation_id}")
+                # Span comparisons require explicit representation eligibility,
+                # which is not yet part of this evidence-only API.
+                if item["kind"] != "atomic":
+                    raise ValueError("Only stable atomic observations are currently comparable.")
+            if session_id is not None and connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (int(session_id),),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown session_id: {session_id}")
+            if supersedes_event_id is not None:
+                prior = connection.execute(
+                    "SELECT * FROM scale_comparison_events WHERE comparison_event_id = ?",
+                    (int(supersedes_event_id),),
+                ).fetchone()
+                if prior is None:
+                    raise KeyError(f"Unknown supersedes_event_id: {supersedes_event_id}")
+                if (int(prior["scale_version_id"]) != version_id
+                        or int(prior["observation_low_id"]) != low
+                        or int(prior["observation_high_id"]) != high):
+                    raise ValueError("Corrections must retain the Scale version and canonical pair.")
+                if prior["reviewer_key"] != reviewer_key:
+                    raise ValueError("A correction must retain the original reviewer identity.")
+                branched = connection.execute(
+                    "SELECT 1 FROM scale_comparison_events WHERE supersedes_event_id = ?",
+                    (int(supersedes_event_id),),
+                ).fetchone()
+                if branched is not None:
+                    raise ValueError("An already corrected judgment cannot be corrected again; correct its terminal event.")
+            cursor = connection.execute(
+                """INSERT INTO scale_comparison_events (
+                    scale_version_id, observation_low_id, observation_high_id,
+                    presented_first_id, presented_second_id, outcome, origin,
+                    reviewer_key, session_id, selection_provenance_json,
+                    supersedes_event_id, submission_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (version_id, low, high, first, second, outcome, origin.strip(),
+                 reviewer_key, session_id, provenance_json,
+                 supersedes_event_id, submission_key, utc_now()),
+            )
+            return int(cursor.lastrowid)
+
+    def scale_comparisons(
+        self, scale_id: int, *, version_number: int | None = None,
+        effective_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Read full append-only history or just unsuperseded terminal judgments."""
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            where = ["v.scale_id = ?"]
+            params: list[Any] = [int(scale_id)]
+            if version_number is not None:
+                if connection.execute(
+                    "SELECT 1 FROM scale_versions WHERE scale_id = ? AND version_number = ?",
+                    (int(scale_id), int(version_number)),
+                ).fetchone() is None:
+                    raise KeyError(f"Unknown scale version: {scale_id}/{version_number}")
+                where.append("v.version_number = ?")
+                params.append(int(version_number))
+            if effective_only:
+                where.append(
+                    "NOT EXISTS (SELECT 1 FROM scale_comparison_events AS correction "
+                    "WHERE correction.supersedes_event_id = e.comparison_event_id)"
+                )
+            rows = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE """ + " AND ".join(where) +
+                " ORDER BY e.comparison_event_id", params,
+            ).fetchall()
+        return [_scale_comparison_row(row) for row in rows]
+
+    def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
+        """Return usable effective pairs for the current Scale version and eligibility."""
+        current = self.get_scale(scale_id)
+        events = [
+            item for item in self.scale_comparisons(
+                scale_id, version_number=current["version_number"], effective_only=True,
+            ) if item["outcome"] != "unsure"
+        ]
+        ids = list(dict.fromkeys(
+            obs for item in events
+            for obs in (item["observation_low_id"], item["observation_high_id"])
+        ))
+        eligible = set(self.eligible_scale_observation_ids(scale_id, ids))
+        return [
+            item for item in events
+            if item["observation_low_id"] in eligible
+            and item["observation_high_id"] in eligible
+        ]
+
     def create_scale(
         self, name: str, description: str = "",
         eligibility: Mapping[str, Any] | None = None,
@@ -2979,14 +3337,12 @@ class ProjectDatabase:
             raise ValueError("Scale name may not be empty.")
         if eligibility is not None and not isinstance(eligibility, Mapping):
             raise TypeError("Scale eligibility must be a JSON object or None.")
-        eligibility_spec = {"kind": "all"} if eligibility is None else dict(eligibility)
-        if not isinstance(eligibility_spec.get("kind"), str):
-            raise ValueError("Scale eligibility requires a string 'kind'.")
-        eligibility_json = json.dumps(
-            eligibility_spec, sort_keys=True, separators=(",", ":"), allow_nan=False
-        )
         now = utc_now()
         with self.connect() as connection:
+            eligibility_spec = self._validated_scale_eligibility(eligibility, connection)
+            eligibility_json = json.dumps(
+                eligibility_spec, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
             identity = connection.execute(
                 "INSERT INTO constructs(type, created_at) VALUES ('scale', ?)",
                 (now,),
@@ -6302,6 +6658,37 @@ def _free_classifier_name(
 def _extract_hashtags(markdown: str) -> list[str]:
     import re
     return list(dict.fromkeys(re.findall(r"(?<!\w)#([A-Za-z0-9_-]+)", markdown)))
+
+
+def _scale_comparison_row(row: sqlite3.Row) -> dict[str, Any]:
+    outcome = str(row["outcome"])
+    low_first = int(row["presented_first_id"]) == int(row["observation_low_id"])
+    canonical = (
+        "low_higher" if (outcome == "first_higher") == low_first else "high_higher"
+    ) if outcome in {"first_higher", "second_higher"} else outcome
+    return {
+        "comparison_event_id": int(row["comparison_event_id"]),
+        "scale_id": int(row["scale_id"]),
+        "scale_version_id": int(row["scale_version_id"]),
+        "version_number": int(row["version_number"]),
+        "observation_low_id": int(row["observation_low_id"]),
+        "observation_high_id": int(row["observation_high_id"]),
+        "presented_first_id": int(row["presented_first_id"]),
+        "presented_second_id": int(row["presented_second_id"]),
+        "outcome": outcome,
+        "canonical_outcome": canonical,
+        "training_usable": outcome != "unsure",
+        "origin": str(row["origin"]),
+        "reviewer_key": row["reviewer_key"],
+        "session_id": int(row["session_id"]) if row["session_id"] is not None else None,
+        "selection_provenance": json.loads(row["selection_provenance_json"]),
+        "supersedes_event_id": (
+            int(row["supersedes_event_id"])
+            if row["supersedes_event_id"] is not None else None
+        ),
+        "submission_key": row["submission_key"],
+        "created_at": str(row["created_at"]),
+    }
 
 
 def _scale_version_row(row: sqlite3.Row) -> dict[str, Any]:
