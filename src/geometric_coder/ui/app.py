@@ -3878,11 +3878,13 @@ def create_app(
     ) -> tuple[Any, ...]:
         # A saved definition revision refreshes Scale text only. Do not
         # reselect the Code or reset its classifier state on evidence refresh.
-        refresh_only = (
-            refresh is not None
-            and "focus-refresh-store.data" in callback_context.triggered_prop_ids
-            and "focus-construct-dropdown.value" not in callback_context.triggered_prop_ids
-        )
+        refresh_only = False
+        if refresh is not None:
+            changed = callback_context.triggered_prop_ids
+            refresh_only = (
+                "focus-refresh-store.data" in changed
+                and "focus-construct-dropdown.value" not in changed
+            )
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
         except (KeyError, ValueError, TypeError):
