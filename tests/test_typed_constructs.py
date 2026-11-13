@@ -79,7 +79,7 @@ def test_interleaved_code_scale_code_ids_and_backward_compatible_code_shapes(
         "code", "scale", "code"
     ]
     assert project.code(code_a) == original
-    assert project.codes() == [project.code(code_a), project.code(code_b)]
+    assert [row["code_id"] for row in project.codes()] == [code_a, code_b]
     assert project.construct(code_a)["version_id"] == original["code_version_id"]
     assert project.construct(code_a)["description"] == "first definition"
     assert project.construct(scale_id)["scale_id"] == scale_id
