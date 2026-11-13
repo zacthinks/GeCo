@@ -152,6 +152,26 @@ def test_real_schema_18_upgrade_preserves_dependent_rows_and_identity(
     second = project.create_code("Other", "other")
     observation = project.observation_id_for_unit(1)
     project.annotate(observation, first, "positive")
+    geometry_id = project.database.register_geometry(
+        name="migration_geometry", class_name="CountGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path="migration.npz",
+        matrix_sparse=True, state_path=None, supports_query=True,
+        supports_text_transform=True,
+    )
+    spec_id = project.create_classifier_spec(
+        code_id=first, name="Preserved classifier", geometry_id=geometry_id,
+    )
+    fit_id = project.database.register_classifier_fit(
+        code_id=first, classifier_spec_id=spec_id,
+        classifier_name="Preserved classifier", geometry_id=geometry_id,
+        algorithm="logistic_l2", hyperparameters={"regularization": 1.0},
+        training_snapshot={"annotations": []}, artifact_path="models/preserved.joblib",
+        score_kind="probability",
+        predictions=[{
+            "observation_id": observation, "predicted_label": "positive",
+            "probability": 0.8, "decision_score": None, "uncertainty": 0.4,
+        }],
+    )
     session_id = project.sessions()[0]["session_id"]
     project.patch_session_state(int(session_id), {"saved_key": "untouched"})
     with project.database.connect() as connection:
@@ -176,6 +196,9 @@ def test_real_schema_18_upgrade_preserves_dependent_rows_and_identity(
     ] == [(first, "code"), (second, "code")]
     assert reopened.code_versions(first)[0]["name"] == "Analysis"
     assert reopened.current_annotation(observation_id=observation, code_id=first)["value"] == "positive"
+    assert reopened.database.get_classifier_spec(spec_id)["code_id"] == first
+    assert reopened.database.get_classifier_fit(fit_id)["artifact_path"] == "models/preserved.joblib"
+    assert reopened.database.classifier_predictions(fit_id)[0]["probability"] == pytest.approx(0.8)
     assert reopened.sessions()[0]["state"]["saved_key"] == "untouched"
     with reopened.database.connect() as connection:
         for table, values in base.items():
