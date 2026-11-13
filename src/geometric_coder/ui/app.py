@@ -4949,6 +4949,7 @@ def create_app(
         Output("focus-refresh-store", "data", allow_duplicate=True),
         Output("focus-code-dropdown", "options", allow_duplicate=True),
         Output("focus-code-dropdown", "value", allow_duplicate=True),
+        Output("focus-construct-dropdown", "value", allow_duplicate=True),
         Output("explore-code-palette-store", "data", allow_duplicate=True),
         Output("explore-code-row-count-store", "data", allow_duplicate=True),
         Output("code-modal-name", "value"),
@@ -4956,6 +4957,7 @@ def create_app(
         Output("code-modal-status", "children"),
         Input("explore-new-code-button", "n_clicks"),
         Input("focus-new-code-button", "n_clicks"),
+        Input("code-center-new-code-button", "n_clicks"),
         Input("code-modal-cancel-button", "n_clicks"),
         Input("code-modal-cancel-footer", "n_clicks"),
         Input("code-modal-create-button", "n_clicks"),
@@ -4970,6 +4972,7 @@ def create_app(
     def manage_code_modal(
         explore_open: int,
         focus_open: int,
+        center_open: int,
         cancel_header: int,
         cancel_footer: int,
         create_clicks: int,
@@ -4980,22 +4983,27 @@ def create_app(
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
     ) -> tuple[Any, ...]:
-        del explore_open, focus_open, cancel_header, cancel_footer, create_clicks
+        del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
         if triggered == "explore-new-code-button":
             return (
                 {"display": "flex"}, "explore", no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
         if triggered == "focus-new-code-button":
             return (
                 {"display": "flex"}, "focus", no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
+            )
+        if triggered == "code-center-new-code-button":
+            return (
+                {"display": "flex"}, "center", no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
         if triggered in {"code-modal-cancel-button", "code-modal-cancel-footer"}:
             return (
                 {"display": "none"}, None, no_update, no_update,
-                no_update, no_update, no_update, no_update, "", "", "",
+                no_update, no_update, no_update, no_update, no_update, "", "", "",
             )
 
         clean_name = (name or "").strip()
@@ -8751,7 +8759,8 @@ def _code_center_layout(
                         id="code-center-editor-wrap", style={"display": "none"},
                     ),
                     html.Div(
-                    dcc.Tabs(
+                        [
+                        dcc.Tabs(
                         id="code-center-view-tabs", value="list", className="code-center-content-tabs",
                         children=[
                             dcc.Tab(
@@ -8876,7 +8885,8 @@ def _code_center_layout(
                         ],
                         className="code-center-assignment-panel",
                     ),
-                    id="code-center-binary-content",
+                        ],
+                        id="code-center-binary-content",
                     ),
                 ],
                 className="code-center-main",
@@ -9821,6 +9831,7 @@ def _focus_layout(
                             ),
                         ],
                         id="focus-teaching-select",
+                        style=({"display": "none"} if initial_code_id is None else {}),
                         className="focus-teaching-select",
                     ),
                 ],
@@ -9828,8 +9839,17 @@ def _focus_layout(
             ),
             html.Section(
                 [
-                    html.H3(id="focus-scale-heading"),
-                    html.Div(id="focus-scale-description", className="code-definition"),
+                    html.H3(
+                        id="focus-scale-heading",
+                        children=(f"Scale: {next(row['name'] for row in constructs if row['construct_id'] == initial_construct_id)}"
+                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                    ),
+                    html.Div(
+                        id="focus-scale-description",
+                        children=(next(row.get("description", "") for row in constructs if row['construct_id'] == initial_construct_id)
+                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                        className="code-definition",
+                    ),
                     html.Div(id="focus-scale-eligibility", className="focus-counts"),
                     html.P(
                         "Comparative development for this Scale will be available in a subsequent phase.",
@@ -9837,7 +9857,7 @@ def _focus_layout(
                     ),
                 ],
                 id="focus-scale-state",
-                style={"display": "none"},
+                style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
                 className="focus-disabled-message",
             ),
             html.Div(
@@ -10399,6 +10419,7 @@ def _focus_layout(
                 ],
                 id="focus-active-area",
                 className=active_class,
+                style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
             ),
         ],
         className="focus-workspace",
