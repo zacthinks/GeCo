@@ -173,3 +173,31 @@ def test_empty_topic_page_avoids_full_universe(tmp_path, monkeypatch):
     rows = project.topic_model_rows("T", positions=[])
     assert rows.matched_positions == ()
     assert rows.memberships.shape == (0, 2)
+
+
+def test_topic_rows_prefers_batched_provider_when_available(tmp_path):
+    class BatchedProvider(Provider):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def read_artifacts(self, requests):
+            self.batches.append(list(requests))
+            return [
+                Provider.read_artifact(self, artifact_id, keys)
+                for artifact_id, keys in requests
+            ]
+
+        def read_artifact(self, artifact_id, keys):
+            raise AssertionError("Did not use provider batch capability")
+
+    provider = BatchedProvider()
+    project = make_project(tmp_path, provider)
+    result = project.topic_model_rows("T", positions=[3, 1], include_description=True)
+    assert result.topic_ids == ("topic_0", "topic_1")
+    assert len(provider.batches) == 1
+    assert provider.batches[0] == [
+        ("membership", [{"interview": "A", "turn": 3}, {"interview": "A", "turn": 1}]),
+        ("argmax", [{"interview": "A", "turn": 3}, {"interview": "A", "turn": 1}]),
+        ("description", None),
+    ]
