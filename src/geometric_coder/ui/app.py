@@ -3967,19 +3967,21 @@ def create_app(
     @app.callback(
         Output("code-center-type-label", "children"),
         Output("code-center-eligibility", "children"),
+        Output("code-center-edit-name-label", "children"),
         Output("code-center-binary-content", "style"),
         Input("construct-center-selected-store", "data"),
     )
-    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, dict[str, str]]:
+    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, str, dict[str, str]]:
         if construct_id is None:
-            return "", "", {"display": "none"}
+            return "", "", "Construct name", {"display": "none"}
         construct = project.construct(int(construct_id))
         if construct["type"] == "code":
-            return "Binary Code", "", {}
+            return "Binary Code", "", "Code label", {}
         scale = project.scale(int(construct_id))
         return (
             "Continuous Scale",
             "Eligibility: " + json.dumps(scale.get("eligibility", {"kind": "all"}), sort_keys=True),
+            "Scale name",
             {"display": "none"},
         )
 
@@ -4106,10 +4108,10 @@ def create_app(
     ) -> tuple[Any, ...]:
         del clicks
         if code_id is None:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "none"}, {}, "Select a code first."
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "none"}, {}, "Select a Construct first."
         clean_name = (name or "").strip()
         if not clean_name:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "block"}, {"display": "none"}, "Enter a code label."
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, True, {"display": "block"}, {"display": "none"}, "Enter a Construct name."
         clean_description = description or ""
         kind = project.construct(int(code_id))["type"]
         if kind == "code":
@@ -8746,7 +8748,7 @@ def _code_center_layout(
                     html.Div(id="code-center-eligibility", className="focus-counts"),
                     html.Div(
                         [
-                            html.Label("Code label"),
+                            html.Label("Construct name", id="code-center-edit-name-label"),
                             dcc.Input(id="code-center-edit-name", type="text", className="text-input code-name-input"),
                             html.Label("Description", className="memo-center-editor-label"),
                             dcc.Textarea(id="code-center-edit-description", className="memo-editor code-center-editor"),
