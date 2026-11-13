@@ -3082,10 +3082,18 @@ class ProjectDatabase:
         """Read the current Scale eligibility and human-Code dependencies."""
         scale = self.get_scale(scale_id)
         specification = scale["eligibility"]
-        dependencies = {
-            int(item["code_id"]): self.recommendation_revision(int(item["code_id"]))
-            for item in specification.get("code_filters", [])
-        }
+        dependencies: dict[int, dict[str, Any]] = {}
+        for item in specification.get("code_filters", []):
+            code_id = int(item["code_id"])
+            annotation_revision, teaching_revision, retraction_revision = (
+                self.recommendation_revision(code_id)
+            )
+            dependencies[code_id] = {
+                "code_version_id": int(self.get_code(code_id)["code_version_id"]),
+                "annotation_revision": annotation_revision,
+                "teaching_revision": teaching_revision,
+                "retraction_revision": retraction_revision,
+            }
         return {
             "scale_id": int(scale_id),
             "eligibility": specification,
@@ -3201,6 +3209,10 @@ class ProjectDatabase:
             raise ValueError("Selection provenance must be JSON-compatible.") from error
         if len(provenance_json) > 16384:
             raise ValueError("Selection provenance is too large.")
+        # Compare the same canonical values that are written to SQLite.
+        # JSON roundtripping converts accepted tuples to lists, for example.
+        normalized_provenance = json.loads(provenance_json)
+        normalized_origin = origin.strip()
         low, high = sorted((first, second))
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -3218,10 +3230,10 @@ class ProjectDatabase:
                         and int(previous["presented_first_id"]) == first
                         and int(previous["presented_second_id"]) == second
                         and str(previous["outcome"]) == outcome
-                        and str(previous["origin"]) == origin
+                        and str(previous["origin"]) == normalized_origin
                         and previous["reviewer_key"] == reviewer_key
                         and previous["session_id"] == session_id
-                        and json.loads(previous["selection_provenance_json"]) == provenance
+                        and json.loads(previous["selection_provenance_json"]) == normalized_provenance
                         and previous["supersedes_event_id"] == supersedes_event_id
                     )
                     if not payload_matches:
@@ -3276,7 +3288,7 @@ class ProjectDatabase:
                     reviewer_key, session_id, selection_provenance_json,
                     supersedes_event_id, submission_key, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (version_id, low, high, first, second, outcome, origin.strip(),
+                (version_id, low, high, first, second, outcome, normalized_origin,
                  reviewer_key, session_id, provenance_json,
                  supersedes_event_id, submission_key, utc_now()),
             )
@@ -3286,7 +3298,12 @@ class ProjectDatabase:
         self, scale_id: int, *, version_number: int | None = None,
         effective_only: bool = False,
     ) -> list[dict[str, Any]]:
-        """Read full append-only history or just unsuperseded terminal judgments."""
+        """Read full history or unsuperseded judgments.
+
+        The event-level outcome_usable flag means only that a judgment is
+        not a skip. Use scale_training_comparisons to apply supersession,
+        definition-version, and current-eligibility restrictions.
+        """
         with self.connect() as connection:
             if connection.execute(
                 "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),),
@@ -6685,7 +6702,7 @@ def _scale_comparison_row(row: sqlite3.Row) -> dict[str, Any]:
         "presented_second_id": int(row["presented_second_id"]),
         "outcome": outcome,
         "canonical_outcome": canonical,
-        "training_usable": outcome != "unsure",
+        "outcome_usable": outcome != "unsure",
         "origin": str(row["origin"]),
         "reviewer_key": row["reviewer_key"],
         "session_id": int(row["session_id"]) if row["session_id"] is not None else None,
