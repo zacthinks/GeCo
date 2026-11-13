@@ -4574,6 +4574,26 @@ class GeometricCoder:
                         "fallback": False,
                     }
 
+        # Bootstrap recommendations have no model ranking. Do not build a
+        # 300k-unit Python corpus merely to pick a random eligible unit.
+        if strategy != "review_unsure":
+            revision = self.database.recommendation_revision(int(code_id))
+            if not self._has_two_class_recommendation_evidence(int(code_id), revision):
+                unit_id = self.database.random_available_unit(
+                    code_id=int(code_id), session_id=int(session_id),
+                    random_seed=random_seed,
+                )
+                if unit_id is None:
+                    return None
+                return {
+                    "unit_id": int(unit_id),
+                    "strategy": "random",
+                    "score": None,
+                    "probabilities": {},
+                    "committee_probability": None,
+                    "classifier_fit_ids": {},
+                    "fallback": True,
+                }
         units = self.units()
         unit_ids = [int(unit["unit_id"]) for unit in units]
         unit_position = {unit_id: position for position, unit_id in enumerate(unit_ids)}

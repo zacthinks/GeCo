@@ -472,7 +472,8 @@ def test_develop_code_summary_does_not_refresh_on_focal_navigation() -> None:
     assert 'Input("apply-refresh-store", "data")' not in callback
     assert 'Input("explore-annotation-refresh-store", "data")' not in callback
     function_body = app_source[start:app_source.index("    @app.callback(", start)]
-    assert "project.current_annotations(int(code_id))" in function_body
+    assert "project.database.atomic_annotation_count(int(code_id))" in function_body
+    assert "project.current_annotations(int(code_id))" not in function_body
     assert "project.training_label_counts(int(code_id))" in function_body
     assert 'if workspace != "focus":' in function_body
     assert "return no_update, no_update, no_update" in function_body

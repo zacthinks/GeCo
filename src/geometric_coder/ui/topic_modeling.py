@@ -103,6 +103,12 @@ def register_topic_details_callbacks(
     # GeCo's UI units are now lazy: iteration would perform one SQLite
     # lookup per document and make large linked workspaces hang at launch.
 
+    # Descriptions are independent of the focal point. Retain only the ten
+    # highest-weight terms for each component, never a full topic-vocabulary
+    # matrix. A registry refresh invalidates these small summaries.
+    descriptor_cache: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    descriptor_revision: int | None = None
+
     @app.callback(
         Output("topic-model-new-name", "value"),
         Input("topic-manager-model", "value"),
@@ -150,14 +156,39 @@ def register_topic_details_callbacks(
                 return "", "The focal observation no longer exists.", ""
             position = int(unit["row_position"])
         try:
-            # Read a single key. When no focal exists, sample one key only to
-            # obtain the immutable topic axis and optional descriptors.
+            nonlocal descriptor_revision
+            revision = int(_revision or 0)
+            if descriptor_revision != revision:
+                descriptor_cache.clear()
+                descriptor_revision = revision
+            # Read a single keyed membership/ArgMax row. Descriptions are
+            # immutable for a given registry revision and read just once.
+            need_description = int(model_id) not in descriptor_cache
             rows = project.topic_model_rows(
                 model_id,
                 positions=[position if position is not None else 0],
-                include_description=True,
+                include_description=need_description,
             )
+            if need_description:
+                descriptions: dict[str, list[dict[str, Any]]] = {}
+                if rows.descriptions is not None:
+                    for index, topic_id in enumerate(rows.topic_ids):
+                        weights = _dense_row(rows.descriptions.values, index)
+                        indices = np.argsort(-weights, kind="stable")[:10]
+                        descriptions[topic_id] = [
+                            {
+                                "name": str(rows.descriptions.columns[int(i)]),
+                                "weight": float(weights[int(i)]),
+                            }
+                            for i in indices
+                        ]
+                descriptor_cache[int(model_id)] = descriptions
+                if len(descriptor_cache) > 8:
+                    descriptor_cache.pop(next(iter(descriptor_cache)))
             summary = topic_inspection(rows, selected_component=component)
+            summary["descriptors"] = descriptor_cache.get(int(model_id), {}).get(
+                summary["selected_component"]
+            )
         except Exception as exc:
             # Missing external artifacts and provider failures must be visible,
             # never silently treated as uncovered/unassigned observations.

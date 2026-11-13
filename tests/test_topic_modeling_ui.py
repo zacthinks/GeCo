@@ -137,3 +137,43 @@ def test_topic_callback_registration_never_enumerates_lazy_corpus():
         units=TrapUnits(),
     )
     assert len(app.callbacks) >= 3
+
+
+def test_topic_description_matrix_only_read_once_per_registry_revision():
+    """Changing focal points should not re-read the full topic-vocabulary matrix."""
+    from dash import html
+    from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
+
+    class FakeProject:
+        def __init__(self):
+            self.includes = []
+
+        def topic_model_rows(self, model_id, *, positions, include_description=False):
+            self.includes.append(bool(include_description))
+            return _rows(descriptors=include_description)
+
+    class FakeApp:
+        def __init__(self):
+            self.callbacks = {}
+
+        def callback(self, *args, **kwargs):
+            def register(fn):
+                self.callbacks[fn.__name__] = fn
+                return fn
+            return register
+
+    project = FakeProject()
+    app = FakeApp()
+    register_topic_details_callbacks(
+        app, project, html=html,
+        Input=lambda *args: None, Output=lambda *args: None,
+        State=lambda *args: None, callback_context=object(),
+        no_update=object(), units=[{"unit_id": 1}],
+    )
+    inspect = app.callbacks["inspect"]
+    first = inspect(1, None, "topic_0", 0)
+    second = inspect(1, None, "topic_1", 0)
+    assert project.includes == [True, False]
+    assert first[2] and second[2]
+    inspect(1, None, "topic_0", 1)
+    assert project.includes == [True, False, True]
