@@ -3334,12 +3334,20 @@ class ProjectDatabase:
         return [_scale_comparison_row(row) for row in rows]
 
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
-        """Return usable effective pairs for the current Scale version and eligibility."""
+        """Return current, eligible human judgments for later Scale fitting.
+
+        The stored history may include nonhuman origins for provenance. Only
+        explicitly human-prefixed origins (human_direct, human_imported, etc.)
+        contribute human evidence; skips are never training judgments.
+        """
         current = self.get_scale(scale_id)
         events = [
             item for item in self.scale_comparisons(
                 scale_id, version_number=current["version_number"], effective_only=True,
-            ) if item["outcome"] != "unsure"
+            )
+            if item["outcome_usable"]
+            and item["origin"].startswith("human_")
+            and len(item["origin"]) > len("human_")
         ]
         ids = list(dict.fromkeys(
             obs for item in events
