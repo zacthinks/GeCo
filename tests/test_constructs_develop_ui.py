@@ -138,15 +138,15 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
     assert saved["focus_classifier_spec_id"] is None
     assert saved["focus_committee_id"] is None
     restored = restore(session_id)
-    assert restored[25] == scale
-    assert restored[26] is None
+    assert restored[23] == scale
+    assert restored[24] is None
 
     project.patch_session_state(
         session_id, {"focus_construct_id": None, "focus_code_id": code}
     )
     restored_legacy = restore(session_id)
-    assert restored_legacy[25] == code
-    assert restored_legacy[26] == code
+    assert restored_legacy[23] == code
+    assert restored_legacy[24] == code
 
 
 def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Path) -> None:
