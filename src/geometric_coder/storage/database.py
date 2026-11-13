@@ -2982,6 +2982,14 @@ class ProjectDatabase:
         if not isinstance(eligibility, Mapping):
             raise TypeError("Scale eligibility must be a mapping or None.")
         raw = dict(eligibility)
+        # Preserve the original creation API's TypeError for non-JSON values,
+        # while rejecting unsupported but serializable eligibility settings.
+        try:
+            json.dumps(raw, allow_nan=False)
+        except TypeError as error:
+            raise TypeError("Scale eligibility must contain JSON-compatible values.") from error
+        except ValueError as error:
+            raise ValueError("Scale eligibility must contain finite JSON values.") from error
         kind = raw.get("kind")
         if kind == "all":
             if set(raw) != {"kind"}:
