@@ -116,7 +116,10 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
     code = project.create_code("Code")
     scale = project.create_scale("Scale")
     app = create_app(project)
-    callbacks = [inspect.unwrap(entry["callback"]) for entry in app.callback_map.values()]
+    callbacks = [
+        inspect.unwrap(entry["callback"])
+        for entry in app.callback_map.values() if "callback" in entry
+    ]
     persist = next(func for func in callbacks if func.__name__ == "persist_session_state")
     restore = next(func for func in callbacks if func.__name__ == "restore_session")
     session_id = int(project.sessions()[0]["session_id"])
@@ -155,7 +158,10 @@ def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Pa
 
     project = _project(tmp_path)
     app = create_app(project)
-    callbacks = [inspect.unwrap(entry["callback"]) for entry in app.callback_map.values()]
+    callbacks = [
+        inspect.unwrap(entry["callback"])
+        for entry in app.callback_map.values() if "callback" in entry
+    ]
     create = next(func for func in callbacks if func.__name__ == "create_center_scale")
     save = next(func for func in callbacks if func.__name__ == "save_code_center_version")
     revision, message, _, _ = create(1, "Quality", "Initial", 0)
