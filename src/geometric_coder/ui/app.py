@@ -3866,6 +3866,8 @@ def create_app(
         Output("focus-scale-heading", "children"),
         Output("focus-scale-description", "children"),
         Output("focus-scale-eligibility", "children"),
+        Output("focus-code-summary", "style"),
+        Output("focus-new-code-button", "style"),
         Output("focus-active-area", "style"),
         Input("focus-construct-dropdown", "value"),
         prevent_initial_call=True,
@@ -3876,16 +3878,16 @@ def create_app(
         except (KeyError, ValueError, TypeError):
             construct = None
         if construct is not None and construct["type"] == "code":
-            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}
+            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}
         if construct is None:
-            return None, {"display": "none"}, {"display": "none"}, "", "", "", {}
+            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}
         scale = project.scale(int(construct["construct_id"]))
         eligibility = scale.get("eligibility", {"kind": "all"})
         return (
             None, {"display": "none"}, {}, f"Scale: {scale['name']}",
             scale["description"] or "No description has been written yet.",
             f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
-            {"display": "none"},
+            {"display": "none"}, {"display": "none"}, {"display": "none"},
         )
 
     @app.callback(
@@ -9801,17 +9803,20 @@ def _focus_layout(
                                         style={"display": "none"},
                                     ),
                                     html.Button(
-                                        "New Code", id="focus-new-code-button", n_clicks=0
+                                        "New Code", id="focus-new-code-button", n_clicks=0,
+                                        style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
                                     ),
                                 ],
                                 className="code-selector-row",
                             ),
                             html.Div(
-                                id="focus-code-definition", className="code-definition"
-                            ),
-                            html.Div(id="focus-label-counts", className="focus-counts"),
-                            html.Div(
-                                id="focus-code-create-status", className="control-status"
+                                [
+                                    html.Div(id="focus-code-definition", className="code-definition"),
+                                    html.Div(id="focus-label-counts", className="focus-counts"),
+                                    html.Div(id="focus-code-create-status", className="control-status"),
+                                ],
+                                id="focus-code-summary",
+                                style=({"display": "none"} if initial_code_id is None else {}),
                             ),
                         ],
                         className="focus-code-select",
@@ -9851,7 +9856,15 @@ def _focus_layout(
                                   if initial_construct_id is not None and initial_code_id is None else ""),
                         className="code-definition",
                     ),
-                    html.Div(id="focus-scale-eligibility", className="focus-counts"),
+                    html.Div(
+                        id="focus-scale-eligibility",
+                        children=(
+                            f"Definition version {next(row['version_number'] for row in constructs if row['construct_id'] == initial_construct_id)} · "
+                            f"Eligibility: {json.dumps(next(row['eligibility'] for row in constructs if row['construct_id'] == initial_construct_id), sort_keys=True)}"
+                            if initial_construct_id is not None and initial_code_id is None else ""
+                        ),
+                        className="focus-counts",
+                    ),
                     html.P(
                         "Comparative development for this Scale will be available in a subsequent phase.",
                         className="focus-help",
