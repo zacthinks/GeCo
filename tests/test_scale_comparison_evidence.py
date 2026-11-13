@@ -76,6 +76,47 @@ def test_orientation_parity_skip_and_reopening(tmp_path: Path, external: bool) -
     assert reopened.scale_training_comparisons(scale) == project.scale_training_comparisons(scale)
 
 
+@pytest.mark.parametrize("external", [False, True])
+def test_nonhuman_comparison_origins_remain_in_history_not_training(
+    tmp_path: Path, external: bool,
+) -> None:
+    project = _project(tmp_path, external=external)
+    scale = project.create_scale("Accuracy")
+    a, b, c, _ = _ids(project)
+    machine = project.record_scale_comparison(
+        scale, a, b, "first_higher", origin="model_apply",
+    )
+    imported = project.record_scale_comparison(
+        scale, b, c, "parity", origin="human_imported",
+        selection_provenance={"source": "prior-study"},
+    )
+    direct = project.record_scale_comparison(
+        scale, a, c, "second_higher", origin="human_direct",
+    )
+    skipped = project.record_scale_comparison(
+        scale, a, b, "unsure", origin="human_imported",
+    )
+    history = project.scale_comparisons(scale)
+    assert [event["comparison_event_id"] for event in history] == [
+        machine, imported, direct, skipped,
+    ]
+    # A non-skip outcome alone does not confer human training eligibility.
+    assert history[0]["outcome_usable"] is True
+    assert history[0]["origin"] == "model_apply"
+    assert [event["comparison_event_id"] for event in
+            project.scale_comparisons(scale, effective_only=True)] == [
+        machine, imported, direct, skipped,
+    ]
+    assert [event["comparison_event_id"] for event in
+            project.scale_training_comparisons(scale)] == [imported, direct]
+    reopened = GeometricCoder.open(
+        project.project_dir, external_provider=object() if external else None,
+    )
+    assert reopened.scale_comparisons(scale) == history
+    assert [event["comparison_event_id"] for event in
+            reopened.scale_training_comparisons(scale)] == [imported, direct]
+
+
 def test_corrections_are_append_only_with_one_terminal_event_per_chain(
     tmp_path: Path,
 ) -> None:
