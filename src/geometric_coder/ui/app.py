@@ -3968,6 +3968,10 @@ def create_app(
         Output("focus-code-summary", "style"),
         Output("focus-new-code-button", "style"),
         Output("focus-active-area", "style"),
+        Output("focus-scale-top-summary", "children"),
+        Output("focus-scale-top-summary", "style"),
+        Output("focus-scale-count-summary", "children"),
+        Output("focus-scale-count-summary", "style"),
         Input("focus-construct-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         prevent_initial_call=True,
@@ -3989,23 +3993,33 @@ def create_app(
         except (KeyError, ValueError, TypeError):
             construct = None
         if refresh_only and (construct is None or construct["type"] == "code"):
-            return (no_update,) * 9
+            return (no_update,) * 13
         if construct is not None and construct["type"] == "code":
-            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}
+            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}, "", {"display": "none"}, "", {"display": "none"}
         if construct is None:
-            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}
+            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}, "", {"display": "none"}, "", {"display": "none"}
         scale = project.scale(int(construct["construct_id"]))
         eligibility = scale.get("eligibility", {"kind": "all"})
         definition = (
             f"Scale: {scale['name']}",
             scale["description"] or "No description has been written yet.",
-            f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
+            f"Definition version {scale['version_number']} · "
+            + ("All observations eligible" if eligibility.get("kind") == "all"
+               else "Eligibility restricted by Scale definition"),
         )
+        count = int(project.scale_model_status(int(construct["construct_id"])).get("comparison_count") or 0)
+        summary = html.Div([
+            html.Strong(scale["name"]),
+            html.Div(scale["description"] or "No description yet."),
+            html.Small(definition[2]),
+        ], className="code-definition")
+        count_summary = f"{count:,} usable comparisons · Scale development"
         if refresh_only:
-            return (no_update,) * 3 + definition + (no_update,) * 3
+            return (no_update,) * 3 + definition + (no_update,) * 3 + (summary, {}, count_summary, {})
         return (
             None, {"display": "none"}, {}, *definition,
             {"display": "none"}, {}, {"display": "none"},
+            summary, {}, count_summary, {},
         )
 
     @app.callback(
@@ -4118,7 +4132,7 @@ def create_app(
             else "Eligibility restricted by the Scale definition"
         )
         status = project.scale_model_status(int(construct_id))
-        count = status.get("comparison_count", 0)
+        count = int(status.get("comparison_count") or 0)
         summary = [
             html.Div(f"Definition version {scale['version_number']} · {readable}"),
             html.Div(f"{count:,} usable comparisons · Model: {status['status'].replace('_', ' ').title()}"),
@@ -4128,6 +4142,15 @@ def create_app(
             ]),
         ]
         return "Continuous Scale", summary, "Scale name", {}, "scale-center-mode"
+
+    @app.callback(
+        Output("code-center-view-tabs", "value"),
+        Input("construct-center-selected-store", "data"),
+    )
+    def select_center_default_view(construct_id):
+        if construct_id is None:
+            return "list"
+        return "geometry" if project.construct(int(construct_id))["type"] == "scale" else "list"
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -4973,6 +4996,10 @@ def create_app(
             html.Strong(_observation_display_key(project, observation)),
             html.Small(str(observation["kind"]).replace("_", " ").title()),
             html.P(str(observation["text"])),
+            html.Details([
+                html.Summary("Metadata"),
+                _metadata_table(html, observation["metadata"]),
+            ]),
         ]
 
     @app.callback(
@@ -10176,6 +10203,7 @@ def _focus_layout(
                                 ],
                                 className="code-selector-row",
                             ),
+                            html.Div(id="focus-scale-top-summary", style={"display": "none"}),
                             html.Div(
                                 [
                                     html.Div(id="focus-code-definition", className="code-definition"),
@@ -10188,6 +10216,7 @@ def _focus_layout(
                         ],
                         className="focus-code-select",
                     ),
+                    html.Div(id="focus-scale-count-summary", className="focus-teaching-select", style={"display": "none"}),
                     html.Div(
                         [
                             html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
