@@ -291,3 +291,50 @@ def test_real_davidson_end_to_end_after_phase2a_merge(tmp_path):
     reopened_scores = reopened.scale_scores(scale, [a, e], include_uncertainty=True)
     assert reopened_scores[0]["score"] > reopened_scores[1]["score"]
     assert reopened_scores[0]["scaler_fit_id"] == second_fit["fit"]["scaler_fit_id"]
+
+
+def test_eligibility_and_code_dependency_revision_stale_even_without_count_change(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, c, d, "second_higher")
+    project.configure_scale_model(scale, rep)
+    project.train_scale(scale, estimator_factory=RecordingScaler)
+    assert project.scale_model_status(scale)["status"] == "current"
+
+    gate = project.create_code("Eligible")
+    for obs in [a, b, c, d, e]:
+        project.annotate(obs, gate, "positive", origin="human_direct")
+    project.update_scale_eligibility(scale, {
+        "kind": "filtered",
+        "code_filters": [{"code_id": gate, "value": "positive", "source": "human"}],
+    })
+    assert project.scale_model_status(scale)["status"] == "stale"
+    project.train_scale(scale, estimator_factory=RecordingScaler)
+    assert project.scale_model_status(scale)["status"] == "current"
+    before = project.scale_model_status(scale)["comparison_count"]
+
+    # Code definition revisions affect filter semantics even when membership is same.
+    project.update_code(gate, name="Eligible", description="New meaning")
+    assert project.scale_model_status(scale)["comparison_count"] == before
+    assert project.scale_model_status(scale)["status"] == "stale"
+
+
+def test_changing_geometry_invalidates_frozen_fit(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, _) = _setup(tmp_path)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, c, d, "second_higher")
+    project.configure_scale_model(scale, rep)
+    project.train_scale(scale, estimator_factory=RecordingScaler)
+    assert project.scale_model_status(scale)["status"] == "current"
+    path, is_sparse = project.artifacts.save_geometry_matrix(
+        "alternate", np.ones((5, 2), dtype=float)
+    )
+    other_geom = project.database.register_geometry(
+        name="alternate", class_name="SyntheticGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path=path,
+        matrix_sparse=is_sparse, state_path=None, supports_query=False,
+        supports_text_transform=False,
+    )
+    other_rep = project.database.representation_for_legacy("geometry", other_geom)
+    project.configure_scale_model(scale, other_rep["representation_id"])
+    assert project.scale_model_status(scale)["status"] == "stale"
