@@ -108,6 +108,28 @@ def test_center_lists_both_types_and_guards_binary_content(tmp_path: Path) -> No
     assert display(code)[-1] == {}
 
 
+def test_scale_hashtags_are_searchable_in_constructs_center(tmp_path: Path) -> None:
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Argument quality", "A descriptive #argument #quality Scale.")
+    project.create_code("Other", "A #binary Code")
+    app = create_app(project)
+
+    tags = _callback(app, "code-center-tags.options")(0, 0)
+    assert {"label": "#argument", "value": "argument"} in tags
+    assert {"label": "#binary", "value": "binary"} in tags
+
+    rows, _, _ = _callback(app, "code-center-table.data")(
+        "", "full", ["argument"], 0, 0, 0, None
+    )
+    assert len(rows) == 1
+    assert rows[0]["construct_id"] == scale
+    assert rows[0]["type"] == "Scale"
+    assert "#quality" in rows[0]["hashtags"]
+
+
 def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) -> None:
     pytest.importorskip("dash")
     from geometric_coder.ui.app import create_app
