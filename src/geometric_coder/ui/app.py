@@ -1314,6 +1314,13 @@ def create_app(
         )
 
     @app.callback(
+        Output("geco-settings-candidate-custom", "style"),
+        Input("geco-settings-candidate-budget", "value"),
+    )
+    def show_custom_candidate_budget(mode: int | str | None) -> dict[str, str]:
+        return {} if mode == "custom" else {"display": "none"}
+
+    @app.callback(
         Output("geco-settings-candidate-status", "children"),
         Input("geco-settings-candidate-budget", "value"),
         Input("geco-settings-candidate-custom", "value"),
