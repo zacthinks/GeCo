@@ -184,3 +184,70 @@ def test_schema_19_to_20_upgrade_preserves_comparison_history(tmp_path):
     assert reopened.database.project_metadata()["schema_version"] == 20
     assert reopened.scale_comparisons(scale)[0]["comparison_event_id"] == event
     assert reopened.scale_model_status(scale)["status"] == "not_configured"
+
+
+def test_external_geometry_uses_requested_key_order(tmp_path):
+    """Provider rows must follow requested stable keys, not numeric observation IDs."""
+
+    class KeyedProvider:
+        def geometry_matrix(self, external_ref, keys):
+            assert external_ref == {"geometry": "keyed"}
+            return np.asarray([
+                [float(item["user_key"]["key"]), 2.0] for item in keys
+            ])
+
+    project = GeometricCoder.create_external(
+        project_dir=tmp_path / "linked.geco",
+        data=pd.DataFrame({
+            "key": [101, 102, 103, 104],
+            "text": ["a", "b", "c", "d"],
+        }),
+        keys=["key"], text="text", metadata=[], external_provider=KeyedProvider(),
+    )
+    geom = project.database.register_geometry(
+        name="external_features", class_name="ExternalGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path="",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False, storage_kind="external",
+        external_ref={"geometry": "keyed"},
+    )
+    representation = project.database.representation_for_legacy("geometry", geom)
+    scale_id = project.create_scale("Strongness")
+    ids = [project.database.observation_for_unit(i) for i in range(1, 5)]
+    project.record_scale_comparison(scale_id, ids[3], ids[0], "first_higher")
+    project.record_scale_comparison(scale_id, ids[2], ids[1], "parity")
+    data = build_scale_training_data(project, scale_id, geom)
+    assert data.features[:, 0].tolist() == [101., 102., 103., 104.]
+    assert data.pairs.tolist() == [[0, 3], [1, 2]]
+    assert data.outcomes.tolist() == [2, 1]
+    project.configure_scale_model(scale_id, representation["representation_id"])
+    fit = project.train_scale(scale_id, estimator_factory=RecordingScaler)
+    assert fit["status"] == "current"
+    assert project.scale_scores(scale_id, [ids[2], ids[0]])[0]["score"] == 103.
+
+
+def test_migration_failure_rolls_back_all_new_tables(tmp_path, monkeypatch):
+    from geometric_coder.storage import database as storage_database
+
+    project, _, _, _, _ = _setup(tmp_path)
+    db_path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE scaler_fits")
+        connection.execute("DROP TABLE scaler_specs")
+        connection.execute("UPDATE project SET schema_version = 19")
+    original = storage_database._MIGRATIONS[19]
+
+    def fail_after_table_creation(connection):
+        original(connection)
+        raise RuntimeError("forced schema-20 migration failure")
+
+    monkeypatch.setitem(storage_database._MIGRATIONS, 19, fail_after_table_creation)
+    with pytest.raises(RuntimeError, match="forced schema-20"):
+        GeometricCoder.open(project.project_dir)
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT schema_version FROM project").fetchone()[0] == 19
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name='scaler_specs'"
+        ).fetchone() is None
+    monkeypatch.setitem(storage_database._MIGRATIONS, 19, original)
+    assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 20
