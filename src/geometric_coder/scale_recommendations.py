@@ -76,6 +76,17 @@ def refresh_scale_acquisition(
                 supported, reason = False, "posterior_moments_unavailable"
         except (ArithmeticError, ValueError, RuntimeError, OSError, KeyError) as error:
             supported, reason = False, "posterior_load_failed"
+    # Sparse local .npz reads decompress the full CSR matrix. Load it once
+    # per acquisition refresh, then slice candidate rows in memory. Dense
+    # local geometries stay page/mmap-backed; external providers remain paged.
+    from scipy import sparse
+    geometry = project.database.get_geometry(geometry_id)
+    cached_sparse = None
+    if (supported and geometry["storage_kind"] == "local"
+            and geometry["matrix_sparse"]):
+        cached_sparse = project.geometry_matrix(geometry_id)
+        if not sparse.issparse(cached_sparse):
+            raise ValueError("Configured local sparse geometry is not a sparse matrix.")
     accumulated: list[tuple[int, int, float | None]] = []
     for batch in run.batches():
         if not supported:
@@ -88,9 +99,9 @@ def refresh_scale_acquisition(
         try:
             ids = sorted({obs for pair in batch.tasks for obs in pair})
             positions = _atomic_positions(project, ids)
-            matrix = project.geometry_page_rows(
-                geometry_id, [positions[obs] for obs in ids]
-            )
+            row_positions = [positions[obs] for obs in ids]
+            matrix = (cached_sparse[row_positions] if cached_sparse is not None
+                      else project.geometry_page_rows(geometry_id, row_positions))
             row_of = {obs: i for i, obs in enumerate(ids)}
             local_pairs = np.asarray(
                 [(row_of[a], row_of[b]) for a, b in batch.tasks],
@@ -126,13 +137,19 @@ def refresh_scale_acquisition(
         "sampled": [run.eligibility_fingerprint],
         "method": "joint_laplace_gh_7x7_v1" if supported else "random_v1",
     }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-    # Phase 3A explicitly requires this freshness guard before publishing.
-    # Reject rankings if evidence/eligibility changed during evaluation.
-    run.assert_current()
-    latest = scale_model_status(project, int(scale_id))
-    if (latest["status"] != "current" or latest.get("fit") is None
-            or int(latest["fit"]["scaler_fit_id"]) != fit_id):
-        raise RuntimeError("Scaler fit changed during acquisition; discard ranking.")
+    # The storage layer invokes this after acquiring BEGIN IMMEDIATE, before
+    # replacing any ranking. Separate read connections see the latest
+    # committed state, while competing SQLite writers are blocked.
+    def check_publication_freshness() -> None:
+        run.assert_current()
+        latest = scale_model_status(project, int(scale_id))
+        if (latest["status"] != "current" or latest.get("fit") is None
+                or int(latest["fit"]["scaler_fit_id"]) != fit_id):
+            raise RuntimeError("Scaler fit changed during acquisition; discard ranking.")
+        current = project.database.scale_acquisition_run(int(scale_id))
+        if current is not None and current["scaler_fit_id"] > fit_id:
+            raise RuntimeError("A newer fit already published an acquisition ranking.")
+
     summary = project.database.store_scale_acquisition(
         scale_id=int(scale_id), fit_id=fit_id, scale_version_id=version_id,
         spec_id=spec_id, fingerprint=fingerprint,
@@ -146,6 +163,7 @@ def refresh_scale_acquisition(
         },
         strategy="eig" if supported else "random",
         reason=reason, ranked_pairs=accumulated,
+        publication_guard=check_publication_freshness,
     )
     return {**summary, "reason": reason, "provenance": provenance}
 
