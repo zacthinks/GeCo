@@ -147,7 +147,7 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     )
     assert repeated["mode"] == "independent"
     _, _, _, _, prior, *rest = display(repeated, [], scale, 0)
-    assert "Confirm an independent repeat" in prior
+    assert "confirm an independent repeat" in prior
     assert all(rest[:4])
     _, rejection, _ = _manage(
         manage, "scale-judge-second", scale=scale, session=session, task=repeated,
@@ -354,7 +354,7 @@ def test_random_pair_is_primary_flow_and_next_pair_changes_ids(tmp_path: Path) -
 
     next_pair = _callback(app, "next_scale_pair")
     next_task, message, repeat = next_pair(1, scale, session)
-    assert message == "New pair ready."
+    assert message == ""
     assert repeat == []
     assert next_task["status"] == "ready"
     assert set((next_task["first"], next_task["second"])) != first_pair
@@ -534,7 +534,7 @@ def test_next_pair_with_single_available_pair_reports_exhaustion_without_event(
     app = create_app(project)
     next_pair = _callback(app, "next_scale_pair")
     first, message, _ = next_pair(1, scale, session)
-    assert message == "New pair ready."
+    assert message == ""
     assert first["acquisition"]["strategy"] == "random"
     second, message, _ = next_pair(2, scale, session)
     assert second is no_update
