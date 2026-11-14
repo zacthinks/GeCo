@@ -276,6 +276,10 @@ def test_laplace_variances_survive_prior_subtraction_cancellation(
     assert np.all(expected_positions > 0.1)
     assert np.all(expected_pairs > 0.1)
 
+    # Even in this cancellation-prone case, an explicitly requested dual
+    # posterior must remain dual and agree with the direct primal oracle.
+    assert dual.posterior_.mode == 'dual-exact'
+    expected_covariances = primal.pair_posterior_moments(data, pairs)[1]
     for model in (primal, dual, LinearDavidsonScaler.from_state(dual.to_state())):
         positions = model.posterior_position_variance(data, chunk_size=1)
         pair_covariances = model.pair_posterior_moments(data, pairs)[1]
@@ -283,9 +287,43 @@ def test_laplace_variances_survive_prior_subtraction_cancellation(
         assert np.allclose(
             pair_covariances[:, 0, 0], expected_pairs, rtol=rtol, atol=1e-7
         )
+        assert np.allclose(
+            pair_covariances, expected_covariances, rtol=rtol, atol=1e-7
+        )
         assert np.linalg.eigvalsh(pair_covariances).min() >= -1e-9
         assert np.isclose(
             pair_covariances[0, 1, 1],
             model.posterior_variance_eta_,
             rtol=1e-9, atol=1e-12,
+        )
+
+
+def test_ill_conditioned_dual_works_beyond_primal_dimension_limit():
+    # A fallback to the parameter-space Cholesky is unavailable above 2048
+    # features. The rotated dual factor must still recover the 1D oracle.
+    amplitudes = np.array([[-10_000.], [10_000.]])
+    reference = np.array([[-1e-4], [1e-4]])
+    pair = np.array([[0, 1], [0, 1]])
+    outcomes = np.array([0, 2])
+    oracle = LinearDavidsonScaler(posterior_method='primal').fit(
+        amplitudes, pair, outcomes, reference_X=reference
+    ).build_posterior()
+    X = np.zeros((2, 2050))
+    X[:, 0] = amplitudes[:, 0]
+    ref = np.zeros_like(X)
+    ref[:, 0] = reference[:, 0]
+    dual = LinearDavidsonScaler(posterior_method='dual').fit(
+        sparse.csr_matrix(X), pair, outcomes, reference_X=sparse.csr_matrix(ref)
+    ).build_posterior()
+    assert dual.posterior_.mode == 'dual-exact'
+    expected = oracle.posterior_position_variance(amplitudes)
+    for model in (dual, LinearDavidsonScaler.from_state(dual.to_state())):
+        assert np.allclose(
+            model.posterior_position_variance(sparse.csr_matrix(X), chunk_size=1),
+            expected, rtol=1e-2, atol=1e-7,
+        )
+        assert np.allclose(
+            model.pair_posterior_moments(sparse.csr_matrix(X), pair)[1],
+            oracle.pair_posterior_moments(amplitudes, pair)[1],
+            rtol=1e-2, atol=1e-7,
         )
