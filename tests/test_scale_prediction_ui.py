@@ -189,13 +189,15 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
     plot, message, page, pages = render(code, 1, 0, "", "", None)
     assert plot.data == () and message == "" and page is None
     inspect_point = by_name["inspect_scale_prediction_point"]
-    assert inspect_point(
+    cleared = inspect_point(
         {"points": [{"customdata": [1, 1]}]},
         {"scale_id": scale, "fit_id": 999, "observation_ids": [1]},
         code,
         0,
         "1",
-    ) == html.P("Select a plotted observation to inspect it.")
+    )
+    assert isinstance(cleared, html.P)
+    assert cleared.children == "Select a plotted observation to inspect it."
 
 
 def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
@@ -219,9 +221,9 @@ def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
         if inspect.unwrap(entry["callback"]).__name__ == "inspect_scale_prediction_point"
     )
     stale_click = {"points": [{"customdata": [1, 1]}]}
-    assert preview(stale_click, None, scale, 0, "1") == html.P(
-        "Select a plotted observation to inspect it."
-    )
+    cleared = preview(stale_click, None, scale, 0, "1")
+    assert isinstance(cleared, html.P)
+    assert cleared.children == "Select a plotted observation to inspect it."
 
     output = next(
         entry for key, entry in app.callback_map.items()
