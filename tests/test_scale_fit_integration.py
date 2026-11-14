@@ -338,3 +338,34 @@ def test_changing_geometry_invalidates_frozen_fit(tmp_path):
     other_rep = project.database.representation_for_legacy("geometry", other_geom)
     project.configure_scale_model(scale, other_rep["representation_id"])
     assert project.scale_model_status(scale)["status"] == "stale"
+
+
+def test_develop_auto_training_runs_only_after_saved_evidence(tmp_path, monkeypatch):
+    import inspect
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project, scale, rep, geom, (a, b, c, d, _) = _setup(tmp_path)
+    event = project.record_scale_comparison(scale, a, b, "first_higher")
+    app = create_app(project)
+    auto = next(
+        inspect.unwrap(item["callback"])
+        for item in app.callback_map.values()
+        if "callback" in item
+        and inspect.unwrap(item["callback"]).__name__ == "train_after_saved_scale_comparison"
+    )
+    calls = []
+    def trained(scale_id):
+        calls.append(scale_id)
+        return {"status": "current", "reused": False, "fit": {"scaler_fit_id": 42}}
+    monkeypatch.setattr(project, "train_scale", trained)
+    task = {"status": "saved", "event_id": event, "scale_id": scale}
+    saved = f"Saved event {event}: A is higher."
+    assert auto("New pair ready.", task, scale, ["auto"], rep) == ""
+    assert "manual" in auto(saved, task, scale, [], rep)
+    assert calls == []
+    assert "fit 42" in auto(saved, task, scale, ["auto"], rep)
+    assert calls == [scale]
+    assert auto(saved, {"status": "ready", "event_id": event, "scale_id": scale},
+                scale, ["auto"], rep) == ""
+    assert calls == [scale]
