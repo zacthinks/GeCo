@@ -373,9 +373,23 @@ def train_scale_model(
     else:
         for retired in saved.get("_retired_artifact_paths", []):
             (project.project_dir / retired).unlink(missing_ok=True)
+    # The numeric fit is already durable. Only a newly accepted fit may
+    # refresh its candidate ranking; recommendation clicks never train or rank.
+    # Phase 3A's shared candidate sampler must be present before this hook runs.
+    acquisition: dict[str, Any]
+    try:
+        from geometric_coder.scale_recommendations import refresh_scale_acquisition
+        acquisition = refresh_scale_acquisition(project, int(scale_id))
+    except (ArithmeticError, ValueError, RuntimeError, OSError, KeyError,
+            ImportError, np.linalg.LinAlgError) as error:
+        # A recoverable acquisition failure must not invalidate the successfully
+        # persisted scaler; Develop will use its shared random fallback.
+        acquisition = {"strategy": "random", "reason": "refresh_unavailable",
+                       "detail": str(error)}
     return {
         **scale_model_status(project, int(scale_id)),
         "reused": False, "training_selection": selection,
+        "acquisition": acquisition,
     }
 
 
