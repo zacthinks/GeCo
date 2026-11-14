@@ -78,7 +78,10 @@ def refresh_scale_acquisition(
     for batch in run.batches():
         if not supported:
             accumulated.extend((a, b, None) for a, b in batch.tasks)
-            run.acknowledge_evaluated(batch, [])
+            # A seeded random selection is itself the acquisition evaluation.
+            # Acknowledging zero would ask the shared sampler to exhaust the
+            # entire O(N^2) space attempting to fulfill an EIG-only budget.
+            run.acknowledge_evaluated(batch)
             continue
         try:
             ids = sorted({obs for pair in batch.tasks for obs in pair})
@@ -105,7 +108,9 @@ def refresh_scale_acquisition(
             # global EIG ranking. Preserve sampler order for all candidates.
             supported, reason = False, "eig_calculation_failed"
             accumulated.extend((a, b, None) for a, b in batch.tasks)
-            run.acknowledge_evaluated(batch, [])
+            # Remaining tasks have received random acquisition, not EIG.
+            # Credit them as acquired so the finite task budget still bounds work.
+            run.acknowledge_evaluated(batch)
     if supported:
         accumulated.sort(key=lambda item: (-float(item[2]), item[0], item[1]))
     else:
@@ -119,6 +124,13 @@ def refresh_scale_acquisition(
         "sampled": [run.eligibility_fingerprint],
         "method": "joint_laplace_gh_7x7_v1" if supported else "random_v1",
     }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    # Phase 3A explicitly requires this freshness guard before publishing.
+    # Reject rankings if evidence/eligibility changed during evaluation.
+    run.assert_current()
+    latest = scale_model_status(project, int(scale_id))
+    if (latest["status"] != "current" or latest.get("fit") is None
+            or int(latest["fit"]["scaler_fit_id"]) != fit_id):
+        raise RuntimeError("Scaler fit changed during acquisition; discard ranking.")
     summary = project.database.store_scale_acquisition(
         scale_id=int(scale_id), fit_id=fit_id, scale_version_id=version_id,
         spec_id=spec_id, fingerprint=fingerprint,
