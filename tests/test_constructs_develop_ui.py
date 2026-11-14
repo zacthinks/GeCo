@@ -76,13 +76,15 @@ def test_construct_selector_callback_hides_binary_develop_for_scales(tmp_path: P
     assert selected_scale[2] == {}
     assert selected_scale[3] == "Scale: Scale"
     assert "continuous definition" in selected_scale[4]
-    assert selected_scale[-1] == {"display": "none"}
+    assert selected_scale[8] == {"display": "none"}
+    assert selected_scale[-1] == {}
+    assert "All observations eligible" in selected_scale[5]
 
     selected_code = callback(code)
     assert selected_code[0] == code
     assert selected_code[1] == {}
     assert selected_code[2] == {"display": "none"}
-    assert selected_code[-1] == {}
+    assert selected_code[-1] == {"display": "none"}
 
     cleared = callback(None)
     assert cleared[0] is None
@@ -104,8 +106,10 @@ def test_center_lists_both_types_and_guards_binary_content(tmp_path: Path) -> No
     ]
     assert "2 constructs" in status
     display = _callback(app, "code-center-type-label.children")
-    assert display(scale)[-1] == {"display": "none"}
-    assert display(code)[-1] == {}
+    assert display(scale)[-2] == {}
+    assert display(scale)[-1] == "scale-center-mode"
+    assert display(code)[-2] == {}
+    assert display(code)[-1] == ""
 
 
 def test_scale_hashtags_are_searchable_in_constructs_center(tmp_path: Path) -> None:
