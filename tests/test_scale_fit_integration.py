@@ -193,7 +193,7 @@ def test_external_geometry_uses_requested_key_order(tmp_path):
         def geometry_matrix(self, external_ref, keys):
             assert external_ref == {"geometry": "keyed"}
             return np.asarray([
-                [float(item["user_key"]["key"]), 2.0] for item in keys
+                [float(item["key"]), 2.0] for item in keys
             ])
 
     project = GeometricCoder.create_external(
