@@ -2215,6 +2215,12 @@ class GeometricCoder:
         """Read a single stored comparison event."""
         return self.database.scale_comparison_event(int(scale_id), int(event_id))
 
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Inspect only a bounded candidate set for previously judged pairs."""
+        return self.database.scale_existing_pairs(int(scale_id), observation_ids)
+
     def scale_pair_history_count(
         self, scale_id: int, first: int, second: int,
     ) -> int:
