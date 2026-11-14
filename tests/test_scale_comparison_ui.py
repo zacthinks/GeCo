@@ -267,9 +267,52 @@ def test_session_restoration_keeps_orientation_and_saved_pair(tmp_path: Path) ->
         finally:
             context_value.reset(token)
         if active == other_session:
-            assert reopened["status"] == "selecting"
+            assert reopened["status"] == "ready"
+            assert reopened["scale_id"] == scale
+            assert reopened["first"] != reopened["second"]
         else:
             assert (reopened["first"], reopened["second"], reopened["submission_key"]) == snapshot
+
+
+def test_random_pair_is_primary_flow_and_next_pair_changes_ids(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Quality")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "focus-construct-dropdown.value", "value": scale}]
+    ))
+    try:
+        task, status, _ = manage(
+            scale, session, *([0] * 11), [], [], None, None, [], [], [], None,
+        )
+    finally:
+        context_value.reset(token)
+    assert status == ""
+    assert task["status"] == "ready"
+    assert task["first"] != task["second"]
+    assert task["reviewer_key"] is None
+    assert project.database.get_session(session)["state"]["scale_comparison_task"] == task
+    first_pair = set((task["first"], task["second"]))
+
+    saved, _, _ = _manage(
+        manage, "scale-judge-parity", scale=scale, session=session, task=task,
+    )
+    assert saved["status"] == "saved"
+    assert project.scale_comparisons(scale)[-1]["outcome"] == "parity"
+
+    next_pair = _callback(app, "next_scale_pair")
+    next_task, message, repeat = next_pair(1, scale, session)
+    assert message == "New pair ready."
+    assert repeat == []
+    assert next_task["status"] == "ready"
+    assert set((next_task["first"], next_task["second"])) != first_pair
+    assert next_task["submission_key"] != task["submission_key"]
+    assert next_task["reviewer_key"] is None
+    assert len(project.scale_comparisons(scale)) == 1
 
 
 def test_history_labels_nonhuman_and_earlier_definitions(tmp_path: Path) -> None:
