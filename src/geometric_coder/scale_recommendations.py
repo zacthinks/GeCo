@@ -72,6 +72,8 @@ def refresh_scale_acquisition(
                 supported, reason = False, "posterior_unavailable"
             elif not bool(getattr(estimator, "success_", True)):
                 supported, reason = False, "fit_unsuccessful"
+            elif not callable(getattr(estimator, "pair_posterior_moments", None)):
+                supported, reason = False, "posterior_moments_unavailable"
         except (ArithmeticError, ValueError, RuntimeError, OSError, KeyError) as error:
             supported, reason = False, "posterior_load_failed"
     accumulated: list[tuple[int, int, float | None]] = []
