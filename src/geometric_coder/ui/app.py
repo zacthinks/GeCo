@@ -169,7 +169,7 @@ def _current_semantic_scores(
     return payload.get("scores") or {}
 
 
-_DEFAULT_UI_SETTINGS = {"cv_folds": 5}
+_DEFAULT_UI_SETTINGS = {"cv_folds": 5, "candidate_evaluation_budget": -1}
 
 
 def _read_ui_settings(project_dir: Path) -> dict[str, int]:
