@@ -10174,6 +10174,7 @@ def _focus_layout(
                         className="focus-counts",
                     ),
                     comparison_layout(dcc=dcc, html=html, dash_table=dash_table,
+                                      hierarchy=hierarchy,
                                       auto_train=bool(initial_state.get("scale_auto_train", False)),
                                       tune_hyperparameters=bool(initial_state.get("scale_tune_hyperparameters", False))),
                 ],
