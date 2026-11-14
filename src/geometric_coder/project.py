@@ -2141,6 +2141,21 @@ class GeometricCoder:
         """Read the latest or a historical Construct definition."""
         return self.database.get_construct(int(construct_id), version_number)
 
+    def code_scale_bootstrap_preview(self, code_id: int) -> dict[str, Any]:
+        """Count effective human Present/Absent atomic observations without creating a Scale."""
+        return self.database.code_scale_bootstrap_preview(int(code_id))
+
+    def create_scale_from_code(
+        self, name: str, description: str, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Create an independent Scale with an atomic Cartesian batch of ordinary comparisons."""
+        return self.database.create_scale_from_code(
+            name, description, int(code_id), expected_preview=expected_preview,
+            submission_key=submission_key, session_id=session_id,
+        )
+
     def create_scale(
         self, name: str, description: str = "",
         eligibility: Mapping[str, Any] | None = None,
