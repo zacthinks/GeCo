@@ -403,6 +403,26 @@ def test_develop_eig_selection_provenance_survives_reopen(tmp_path: Path) -> Non
     task, _, _ = next_pair(1, scale, session)
     assert task["acquisition"]["strategy"] == "eig"
     assert task["acquisition"]["source_run_id"] == acquisition["run_id"]
+    # Navigating without answering must advance through the frozen ranking,
+    # not silently create an Unsure / Skip event or change any saved scores.
+    initial_pair = {task["first"], task["second"]}
+    frozen_page = project.database.scale_acquisition_page(acquisition["run_id"])
+    count_before = len(project.scale_comparisons(scale))
+    task2, _, _ = next_pair(2, scale, session)
+    assert {task2["first"], task2["second"]} != initial_pair
+    assert task2["acquisition"]["navigation_offset"] > task["acquisition"]["navigation_offset"]
+    assert len(project.scale_comparisons(scale)) == count_before
+    reopened_mid_navigation = GeometricCoder.open(project.project_dir)
+    reopened_app = create_app(reopened_mid_navigation)
+    task3, _, _ = _callback(reopened_app, "next_scale_pair")(3, scale, session)
+    assert {task3["first"], task3["second"]} not in (
+        initial_pair, {task2["first"], task2["second"]}
+    )
+    assert len(reopened_mid_navigation.scale_comparisons(scale)) == count_before
+    assert reopened_mid_navigation.database.scale_acquisition_page(
+        acquisition["run_id"]
+    ) == frozen_page
+    task = task3
     display = _callback(app, "display_scale_task")
     _, _, _, _, note, *_ = display(task, [], scale, 0)
     assert "Bayesian information gain" in note
@@ -433,6 +453,11 @@ def test_develop_random_fallback_provenance_and_reason(tmp_path: Path) -> None:
     app = create_app(project)
     task, _, _ = _callback(app, "next_scale_pair")(1, scale, session)
     assert task["acquisition"]["strategy"] == "random"
+    first_pair = {task["first"], task["second"]}
+    next_task, _, _ = _callback(app, "next_scale_pair")(2, scale, session)
+    assert {next_task["first"], next_task["second"]} != first_pair
+    assert project.scale_comparisons(scale) == []
+    task = next_task
     display = _callback(app, "display_scale_task")
     _, _, _, _, note, *_ = display(task, [], scale, 0)
     assert "randomly" in note.lower()
