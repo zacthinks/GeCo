@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from array import array
-from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +152,47 @@ def test_scale_comparison_controls_are_centered_without_replacing_judgment_ids()
         "scale-prediction-map", "scale-prediction-page-state",
     ]:
         assert find(layout, name) is not None
+
+
+def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path):
+    pytest.importorskip("dash")
+    import inspect
+    import pandas as pd
+    from dash import no_update
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "prediction-callback.geco",
+        data=pd.DataFrame({"key": [1, 2, 3], "text": ["A", "B", "C"]}),
+        keys=["key"], text="text", geometries=None,
+    )
+    scale = project.create_scale("Clarity", "Continuous")
+    code = project.create_code("Relevant")
+    app = create_app(project)
+    by_name = {
+        inspect.unwrap(record["callback"]).__name__: inspect.unwrap(record["callback"])
+        for record in app.callback_map.values()
+        if "callback" in record
+    }
+    assert "render_scale_predictions" in by_name
+    assert "inspect_scale_prediction_point" in by_name
+    assert "step_scale_prediction_page" in by_name
+
+    render = by_name["render_scale_predictions"]
+    plot, message, page, pages = render(scale, 1, 0, "", "", None)
+    assert plot.data == ()
+    assert "train" in message.lower()
+    assert page is None and pages == 1
+
+    plot, message, page, pages = render(code, 1, 0, "", "", None)
+    assert plot.data == () and message == "" and page is None
+    inspect_point = by_name["inspect_scale_prediction_point"]
+    assert inspect_point(
+        {"points": [{"customdata": [1, 1]}]},
+        {"scale_id": scale, "fit_id": 999, "observation_ids": [1]},
+        code,
+        project.sessions()[0]["session_id"],
+        None,
+        None,
+    ) == (no_update, no_update, no_update)
