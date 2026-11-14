@@ -4943,6 +4943,7 @@ def create_app(
         Input("code-center-page-previous", "n_clicks"),
         Input("code-center-page-next", "n_clicks"),
         Input("code-center-page-size", "value"),
+        Input("construct-center-selected-store", "data"),
         State("code-center-page-number", "value"),
         prevent_initial_call=True,
     )
@@ -4950,14 +4951,17 @@ def create_app(
         previous_clicks: int,
         next_clicks: int,
         page_size: Any,
+        construct_id: int | None,
         page_number: Any,
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks
         size = _coerce_positive_int(page_size, default=5000)
+        if construct_id is not None and project.construct(int(construct_id))["type"] == "scale":
+            size = min(size, 500)
         page_count = deterministic_page_count(len(units), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
-        if triggered == "code-center-page-size":
+        if triggered in {"code-center-page-size", "construct-center-selected-store"}:
             current = 1
         elif triggered == "code-center-page-previous":
             current = max(1, current - 1)
