@@ -153,8 +153,9 @@ def test_validation_and_extreme_fit():
     assert np.isfinite(m.predict_comparisons(X*10000, pairs)).all()
 
 
-def test_small_m_large_d_dense_and_csr():
-    X, pairs, y, _ = example(n=48, d=768, m=12)
+@pytest.mark.parametrize('d', [256, 768, 1536])
+def test_small_m_large_d_dense_and_csr(d):
+    X, pairs, y, _ = example(n=48, d=d, m=12)
     for matrix in (X, sparse.csr_matrix(X)):
         m = LinearDavidsonScaler(posterior_method='auto').fit(matrix, pairs, y)
         m.build_posterior()
@@ -168,3 +169,18 @@ def test_synthetic_ordering_recovery():
     m = LinearDavidsonScaler().fit(X, pairs, y)
     assert m.success_
     assert spearmanr(X @ truth, m.predict_scores(X)).statistic > .8
+
+
+def test_empty_input_and_invalid_prior():
+    X, _, _, _ = example()
+    model = LinearDavidsonScaler().fit(
+        X, np.empty((0, 2), dtype=int), np.empty((0,), dtype=int)
+    ).build_posterior()
+    assert model.evidence_status_ == 'prior-only'
+    assert model.posterior_.mode == 'prior-only'
+    with pytest.raises(ValueError):
+        LinearDavidsonScaler(score_prior_sd=np.inf)
+    with pytest.raises(ValueError):
+        LinearDavidsonScaler(eta_prior_sd=np.inf)
+    with pytest.raises(ValueError):
+        LinearDavidsonScaler(eta_prior=np.nan)
