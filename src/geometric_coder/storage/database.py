@@ -3458,11 +3458,18 @@ class ProjectDatabase:
                 count = int(connection.execute(
                     "SELECT COUNT(*) FROM scale_comparison_events AS e "
                     "JOIN scale_versions AS v ON e.scale_version_id = v.scale_version_id "
-                    "WHERE v.scale_id = ?", (scale_id,),
+                    "WHERE v.scale_id = ? AND e.submission_key LIKE ?",
+                    (scale_id, f"{prefix}%"),
                 ).fetchone()[0])
+                first_session = connection.execute(
+                    "SELECT session_id FROM scale_comparison_events "
+                    "WHERE submission_key = ?", (f"{prefix}0",),
+                ).fetchone()
                 if (version is None or version["name"] != clean_name
                         or version["description_markdown"] != description
-                        or count != expected_preview.get("comparisons")):
+                        or count != expected_preview.get("comparisons")
+                        or first_session is None
+                        or first_session["session_id"] != session_id):
                     raise ValueError("Creation key was reused with different Scale details.")
                 return {
                     "scale_id": scale_id, "comparisons_created": count, "retried": True,
