@@ -59,8 +59,14 @@ required; this is a conservative heuristic, not a model-identifiability proof.
   pairs without recomputing scores.
 - Explicit Train accepts accumulated evidence and refreshes the queue through
   the same successful-fit hook.
-- Next pair, opening context, switching tabs, and viewing/correcting the
-  current browser selection never train or re-rank the model.
+- **Next pair** advances through the persisted frozen order using a
+  session-local cursor, even if the currently displayed comparison is
+  unanswered. This does not write a judgment, retrain, or re-rank the model.
+  Reopening that session resumes its cursor; a new ranked run resets it.
+  Judged or newly ineligible pairs are skipped. If no alternative pair remains,
+  the UI says so rather than re-showing the same unanswered pair.
+- Opening context, switching tabs, and viewing/correcting the current browser
+  selection never train or re-rank the model.
 
 The UI keeps a single comparison, four actions (A higher, approximately equal,
 B higher, unsure/skip), and Next pair. Manual selection, comparison history and
@@ -73,6 +79,8 @@ correction remain available.
    Use an analytic geometry supported by the trained linear Davidson scaler.
 2. With no saved Scale comparisons, click **Next pair** and confirm that one
    eligible, previously unjudged pair appears with random acquisition.
+   Click Next pair twice without saving and confirm that each click
+   advances to another pair while comparison history remains unchanged.
    Try all four judgment buttons and confirm the history records actual
    comparisons; skips must not become parity evidence.
 3. Record at least six effective comparisons involving four observations and
