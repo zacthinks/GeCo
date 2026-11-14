@@ -209,6 +209,7 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                 {"name": "Source pair (A / B)", "id": "pair"},
                 {"name": "Judgment", "id": "judgment"},
                 {"name": "Provenance", "id": "origin"},
+                {"name": "Reviewer", "id": "reviewer"},
                 {"name": "Status", "id": "state"},
                 {"name": "Corrects", "id": "corrects"},
             ],
@@ -408,6 +409,12 @@ def register_comparison_callbacks(
                     raise ValueError("An earlier Scale definition cannot be corrected under the current definition.")
                 if not str(previous["origin"]).startswith("human_"):
                     raise ValueError("A nonhuman event cannot be edited as a human judgment.")
+                current_reviewer = (reviewer or "").strip() or None
+                if current_reviewer != previous["reviewer_key"]:
+                    raise ValueError(
+                        "To correct this event, use its original reviewer key. "
+                        "An independent judgment can be added instead."
+                    )
                 first, second = (
                     int(previous["presented_first_id"]),
                     int(previous["presented_second_id"]),
@@ -615,6 +622,7 @@ def register_comparison_callbacks(
                     f"Human · {row['origin']}" if is_human
                     else f"Nonhuman · {row['origin']}"
                 ),
+                "reviewer": row["reviewer_key"] or "Not specified",
                 "state": "Superseded" if event_id in superseded else "Effective",
                 "corrects": row["supersedes_event_id"] or "",
             })
