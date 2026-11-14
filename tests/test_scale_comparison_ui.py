@@ -173,6 +173,52 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert len(project.scale_training_comparisons(scale)) == 2
 
 
+def test_saved_judgment_can_be_changed_in_place_without_new_effective_evidence(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity", "Comparative clarity")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    display = _callback(app, "display_scale_task")
+
+    units = project.database.unit_rows_at_positions([0, 1])
+    task = _prepare_scale_task(project, {
+        "scale_id": scale, "session_id": session,
+        "picked_a": units[0]["observation_id"],
+        "picked_b": units[1]["observation_id"],
+        "status": "selecting",
+    }, None)
+    saved, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                          session=session, task=task)
+    assert saved["status"] == "saved"
+    assert display(saved, [], scale, 0)[5:9] == (False, False, False, False)
+    assert "judgment-selected" in display(saved, [], scale, 0)[9]
+
+    unchanged, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                              session=session, task=saved)
+    assert unchanged is no_update
+    assert len(project.scale_comparisons(scale)) == 1
+
+    changed, _, _ = _manage(manage, "scale-judge-parity", scale=scale,
+                            session=session, task=saved)
+    assert changed["first"] == saved["first"]
+    assert changed["second"] == saved["second"]
+    assert changed["submission_key"] != saved["submission_key"]
+    assert changed["supersedes_event_id"] == saved["event_id"]
+    assert changed["outcome"] == "parity"
+    assert len(project.scale_comparisons(scale)) == 2
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+
+    changed_again, _, _ = _manage(manage, "scale-judge-second", scale=scale,
+                                  session=session, task=changed)
+    assert changed_again["supersedes_event_id"] == changed["event_id"]
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+
+
 def test_reversed_presentation_preserves_actual_orientation(tmp_path: Path, monkeypatch) -> None:
     from geometric_coder.ui.app import create_app
     import geometric_coder.ui.scale_comparisons as comparisons
