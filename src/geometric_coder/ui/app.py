@@ -4102,21 +4102,32 @@ def create_app(
         Output("code-center-eligibility", "children"),
         Output("code-center-edit-name-label", "children"),
         Output("code-center-binary-content", "style"),
+        Output("code-center-binary-content", "className"),
         Input("construct-center-selected-store", "data"),
     )
-    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, str, dict[str, str]]:
+    def show_center_construct_type(construct_id: int | None) -> tuple[Any, ...]:
         if construct_id is None:
-            return "", "", "Construct name", {"display": "none"}
+            return "", "", "Construct name", {"display": "none"}, ""
         construct = project.construct(int(construct_id))
         if construct["type"] == "code":
-            return "Binary Code", "", "Code label", {}
+            return "Binary Code", "", "Code label", {}, ""
         scale = project.scale(int(construct_id))
-        return (
-            "Continuous Scale",
-            "Eligibility: " + json.dumps(scale.get("eligibility", {"kind": "all"}), sort_keys=True),
-            "Scale name",
-            {"display": "none"},
+        eligibility = scale.get("eligibility", {"kind": "all"})
+        readable = (
+            "All observations eligible" if eligibility.get("kind") == "all"
+            else "Eligibility restricted by the Scale definition"
         )
+        status = project.scale_model_status(int(construct_id))
+        count = status.get("comparison_count", 0)
+        summary = [
+            html.Div(f"Definition version {scale['version_number']} · {readable}"),
+            html.Div(f"{count:,} usable comparisons · Model: {status['status'].replace('_', ' ').title()}"),
+            html.Details([
+                html.Summary("Advanced eligibility details"),
+                html.Pre(json.dumps(eligibility, sort_keys=True, indent=2)),
+            ]),
+        ]
+        return "Continuous Scale", summary, "Scale name", {}, "scale-center-mode"
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -4614,7 +4625,7 @@ def create_app(
     @app.callback(
         Output("code-center-map", "figure"),
         Output("code-center-page-status", "children"),
-        Input("code-center-selected-store", "data"),
+        Input("construct-center-selected-store", "data"),
         Input("code-center-geometry", "value"),
         Input("code-center-view", "value"),
         Input("code-center-page-size", "value"),
@@ -4648,9 +4659,11 @@ def create_app(
             return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
+        construct = project.construct(int(code_id)) if code_id is not None else None
+        is_scale = construct is not None and construct["type"] == "scale"
         positive_observations = (
             project.positive_observations_for_code(int(code_id))
-            if code_id is not None else []
+            if construct is not None and not is_scale else []
         )
         positive = {
             int(observation["unit_id"])
@@ -4659,8 +4672,10 @@ def create_app(
         }
         positive_positions = set(project.database.unit_positions_for_ids(positive).values())
         size = _coerce_positive_int(page_size, default=5000)
+        if is_scale:
+            size = min(size, 500)  # Bound score calls and linked-provider reads.
         number = _coerce_positive_int(page_number, default=1)
-        include_all_positives = "include" in set(include_positive_values or [])
+        include_all_positives = not is_scale and "include" in set(include_positive_values or [])
         page = deterministic_page_with_inclusions(
             len(units),
             page_size=size,
@@ -4697,6 +4712,50 @@ def create_app(
             elif trace.name == "Filtered":
                 trace.name = "Other atomic observations"
                 trace.showlegend = True
+        if is_scale:
+            # Build on the existing Construct Center geometry and stable unit IDs.
+            # Unscored points remain neutral; stale fits are never displayed as current.
+            model = project.scale_model_status(int(code_id))
+            if model["status"] == "current" and model.get("fit") is not None:
+                ids = [int(unit["observation_id"]) for unit in page_units]
+                eligible_ids = set(project.eligible_scale_observation_ids(int(code_id), ids))
+                selected_ids = [value for value in ids if value in eligible_ids]
+                if selected_ids:
+                    rows = project.scale_scores(
+                        int(code_id), selected_ids, include_uncertainty=False,
+                    )
+                    scored = {int(row["observation_id"]): float(row["score"]) for row in rows}
+                    coords = project.view_coordinate_rows(int(view_id), positions)
+                    plotted = [
+                        (unit, coord, scored[int(unit["observation_id"])])
+                        for unit, coord in zip(page_units, coords)
+                        if int(unit["observation_id"]) in scored
+                    ]
+                    if plotted:
+                        figure.add_trace(go.Scattergl(
+                            x=[float(point[0]) for _, point, _ in plotted],
+                            y=[float(point[1]) for _, point, _ in plotted],
+                            customdata=[int(unit["unit_id"]) for unit, _, _ in plotted],
+                            text=[_observation_display_key(project, project.observation(
+                                int(unit["observation_id"]))) for unit, _, _ in plotted],
+                            mode="markers", name="Fitted Scale position",
+                            marker={
+                                "size": 8, "opacity": 0.88,
+                                "color": [score for _, _, score in plotted],
+                                "colorscale": "Viridis", "showscale": True,
+                                "colorbar": {"title": "Scale position"},
+                            },
+                            hovertemplate="%{text}<br>Scale position: %{marker.color:.3g}<extra></extra>",
+                        ))
+            reason = (
+                "Current fitted scores shown from low to high."
+                if model["status"] == "current" else
+                "Scale scores unavailable or stale; neutral points do not represent low scores."
+            )
+            # Preserve focal rings and the shared plot click inspector.
+            figure.update_layout(showlegend=True)
+            return figure, f"Page {page.page_index + 1} of {page.page_count} · {reason}"
+
         derived_positive = [
             observation for observation in positive_observations
             if observation["kind"] != "atomic"
