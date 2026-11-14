@@ -251,6 +251,28 @@ def _selected_focus_construct_id(
     return value if value in by_id else None
 
 
+def _scale_develop_content(
+    html: Any, scale: dict[str, Any], comparison_count: int,
+) -> tuple[Any, Any, Any, Any, str]:
+    """Use the same readable Scale header on initial load and later refreshes."""
+    eligibility = scale.get("eligibility") or {"kind": "all"}
+    detail = (
+        "All observations eligible" if eligibility.get("kind") == "all"
+        else "Eligibility restricted by Scale definition"
+    )
+    definition = f"Definition version {scale['version_number']} · {detail}"
+    description = scale["description"] or "No description has been written yet."
+    summary = html.Div([
+        html.Strong(scale["name"]),
+        html.Div(scale["description"] or "No description yet."),
+        html.Small(definition),
+    ], className="code-definition")
+    return (
+        f"Scale: {scale['name']}", description, definition, summary,
+        f"{comparison_count:,} usable comparisons · Scale development",
+    )
+
+
 def _construct_options(constructs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -1063,6 +1085,7 @@ def create_app(
                             classifier_specs=classifier_specs,
                             hierarchy=hierarchy,
                             initial_state=initial_state,
+                            project=project,
                         ),
                     ),
                     dcc.Tab(
@@ -3999,21 +4022,11 @@ def create_app(
         if construct is None:
             return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}, "", {"display": "none"}, "", {"display": "none"}
         scale = project.scale(int(construct["construct_id"]))
-        eligibility = scale.get("eligibility", {"kind": "all"})
-        definition = (
-            f"Scale: {scale['name']}",
-            scale["description"] or "No description has been written yet.",
-            f"Definition version {scale['version_number']} · "
-            + ("All observations eligible" if eligibility.get("kind") == "all"
-               else "Eligibility restricted by Scale definition"),
-        )
         count = int(project.scale_model_status(int(construct["construct_id"])).get("comparison_count") or 0)
-        summary = html.Div([
-            html.Strong(scale["name"]),
-            html.Div(scale["description"] or "No description yet."),
-            html.Small(definition[2]),
-        ], className="code-definition")
-        count_summary = f"{count:,} usable comparisons · Scale development"
+        heading, description, eligibility, summary, count_summary = _scale_develop_content(
+            html, scale, count,
+        )
+        definition = (heading, description, eligibility)
         if refresh_only:
             return (no_update,) * 3 + definition + (no_update,) * 3 + (summary, {}, count_summary, {})
         return (
@@ -4717,8 +4730,9 @@ def create_app(
         )
         if view_record is None:
             return _empty_figure("This view is no longer available."), ""
+        coordinates = project.view_coordinate_rows(int(view_id), positions)
         figure = build_geometry_figure(
-            coordinates=project.view_coordinate_rows(int(view_id), positions),
+            coordinates=coordinates,
             units=page_units,
             eligible=page_eligible,
             focal_unit_id=None,
@@ -4753,10 +4767,12 @@ def create_app(
                         int(code_id), selected_ids, include_uncertainty=False,
                     )
                     scored = {int(row["observation_id"]): float(row["score"]) for row in rows}
-                    coords = project.view_coordinate_rows(int(view_id), positions)
+                    # Reuse the actual displayed base coordinates. In a 1D view,
+                    # build_geometry_figure has already applied stable Y jitter.
+                    displayed = _base_geometry_display_points(figure)
                     plotted = [
-                        (unit, coord, scored[int(unit["observation_id"])])
-                        for unit, coord in zip(page_units, coords)
+                        (unit, displayed[int(unit["unit_id"])], scored[int(unit["observation_id"])])
+                        for unit in page_units
                         if int(unit["observation_id"]) in scored
                     ]
                     if plotted:
@@ -10174,6 +10190,7 @@ def _focus_layout(
     classifier_specs: list[dict[str, Any]],
     hierarchy: list[dict[str, Any]],
     initial_state: dict[str, Any],
+    project: Any,
 ) -> Any:
     """Return a shared Construct selector with the existing binary Develop workspace."""
     from geometric_coder.ui.scale_comparisons import comparison_layout
@@ -10184,6 +10201,19 @@ def _focus_layout(
     initial_code_id = (
         initial_construct_id if initial_construct_id in code_ids else None
     )
+    initial_scale = (
+        project.scale(int(initial_construct_id))
+        if initial_construct_id is not None and initial_code_id is None else None
+    )
+    if initial_scale is None:
+        scale_heading, scale_description, scale_eligibility = "", "", ""
+        scale_summary, scale_count_summary = "", ""
+    else:
+        count = int(project.scale_model_status(int(initial_construct_id)).get("comparison_count") or 0)
+        (scale_heading, scale_description, scale_eligibility,
+         scale_summary, scale_count_summary) = _scale_develop_content(
+            html, initial_scale, count,
+        )
 
     classifier_specs = [
         row
@@ -10234,7 +10264,10 @@ def _focus_layout(
                                 ],
                                 className="code-selector-row",
                             ),
-                            html.Div(id="focus-scale-top-summary", style={"display": "none"}),
+                            html.Div(
+                                id="focus-scale-top-summary", children=scale_summary,
+                                style=({} if initial_scale is not None else {"display": "none"}),
+                            ),
                             html.Div(
                                 [
                                     html.Div(id="focus-code-definition", className="code-definition"),
@@ -10247,7 +10280,11 @@ def _focus_layout(
                         ],
                         className="focus-code-select",
                     ),
-                    html.Div(id="focus-scale-count-summary", className="focus-teaching-select", style={"display": "none"}),
+                    html.Div(
+                        id="focus-scale-count-summary", children=scale_count_summary,
+                        className="focus-teaching-select",
+                        style=({} if initial_scale is not None else {"display": "none"}),
+                    ),
                     html.Div(
                         [
                             html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
@@ -10274,22 +10311,16 @@ def _focus_layout(
                 [
                     html.H3(
                         id="focus-scale-heading",
-                        children=(f"Scale: {next(row['name'] for row in constructs if row['construct_id'] == initial_construct_id)}"
-                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                        children=scale_heading,
                     ),
                     html.Div(
                         id="focus-scale-description",
-                        children=(next(row.get("description", "") for row in constructs if row['construct_id'] == initial_construct_id)
-                                  if initial_construct_id is not None and initial_code_id is None else ""),
+                        children=scale_description,
                         className="code-definition",
                     ),
                     html.Div(
                         id="focus-scale-eligibility",
-                        children=(
-                            f"Definition version {next(row['version_number'] for row in constructs if row['construct_id'] == initial_construct_id)} · "
-                            f"Eligibility: {json.dumps(next(row['eligibility'] for row in constructs if row['construct_id'] == initial_construct_id), sort_keys=True)}"
-                            if initial_construct_id is not None and initial_code_id is None else ""
-                        ),
+                        children=scale_eligibility,
                         className="focus-counts",
                     ),
                     comparison_layout(dcc=dcc, html=html, dash_table=dash_table,
@@ -11393,6 +11424,15 @@ def _coerce_positive_int(value: Any, *, default: int) -> int:
     except (TypeError, ValueError):
         return int(default)
     return parsed if parsed >= 1 else int(default)
+
+
+def _base_geometry_display_points(figure: Any) -> dict[int, tuple[float, float]]:
+    """Map stable unit IDs to the coordinates plotted by the shared geometry view."""
+    return {
+        int(unit_id): (float(x), float(y))
+        for trace in figure.data[:2]  # Filtered and Eligible base-point traces.
+        for unit_id, x, y in zip(trace.customdata, trace.x, trace.y, strict=True)
+    }
 
 
 def _clicked_unit_id(click_data: dict[str, Any] | None) -> int | None:
