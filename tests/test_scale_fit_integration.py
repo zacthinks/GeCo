@@ -381,6 +381,7 @@ def test_code_to_scale_bootstrap_is_nine_ordinary_training_rows(tmp_path):
     scale = project.create_scale_from_code(
         "Bootstrapped ordinal", "Present higher than Absent", code,
         expected_preview=project.code_scale_bootstrap_preview(code),
+        submission_key="b" * 32,
     )["scale_id"]
     training = build_scale_training_data(project, scale, geom)
     assert training.n_comparisons == 6
