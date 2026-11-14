@@ -245,6 +245,7 @@ def comparison_layout(
             ], className="scale-judgment-actions"),
         ], className="scale-comparison-grid"),
         html.Div(id="scale-action-status", style={"display": "none"}),
+        html.Div(id="scale-action-warning", className="control-status"),
         html.Button(
             "Next pair", id="scale-next-pair", n_clicks=0,
             className="primary-action",
@@ -409,6 +410,38 @@ def register_comparison_callbacks(
             scale_id, representation_id,
             hyperparameters=current["hyperparameters"] if current is not None else {},
         )
+
+    @app.callback(
+        Output("scale-context-window", "value", allow_duplicate=True),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window-minus", "n_clicks"),
+        Input("scale-context-window-plus", "n_clicks"),
+        State("scale-context-window", "value"),
+        prevent_initial_call=True,
+    )
+    def update_scale_context_window(level, minus, plus, current):
+        del level, minus, plus
+        triggered = callback_context.triggered_id
+        if triggered == "scale-context-level":
+            return "1"
+        try:
+            value = max(1, min(100, int(current or 1)))
+        except (TypeError, ValueError):
+            value = 1
+        if triggered == "scale-context-window-minus":
+            return str(max(1, value - 1))
+        if triggered == "scale-context-window-plus":
+            return str(min(100, value + 1))
+        return str(value)
+
+    @app.callback(
+        Output("scale-action-warning", "children"),
+        Input("scale-action-status", "children"),
+    )
+    def show_scale_action_warning(message):
+        if not message or str(message).startswith("Saved event "):
+            return ""
+        return message
 
     @app.callback(
         Output("scale-model-selection-status", "children"),
@@ -579,6 +612,8 @@ def register_comparison_callbacks(
 
     @app.callback(
         Output("scale-model-summary", "children"),
+        Output("scale-model-status-badge", "children"),
+        Output("scale-model-status-badge", "className"),
         Input("focus-construct-dropdown", "value"),
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
@@ -587,10 +622,10 @@ def register_comparison_callbacks(
     def refresh_scale_model_summary(
         construct_id: int | None, _manual: str | None,
         _automatic: str | None, _task: dict[str, Any] | None,
-    ) -> str:
+    ) -> tuple[str, str, str]:
         scale_id = active_scale_id(construct_id)
         if scale_id is None:
-            return ""
+            return "", "Unavailable", "classifier-status-badge status-unavailable"
         status = project.scale_model_status(scale_id)
         descriptor = status["status"].replace("_", " ").capitalize()
         count = status.get("comparison_count")
@@ -615,9 +650,17 @@ def register_comparison_callbacks(
             diagnostics = fit.get("diagnostics") or {}
             if diagnostics.get("posterior_available") is False:
                 details += "; posterior uncertainty unavailable"
+        badge_class = {
+            "current": "status-current", "stale": "status-stale",
+            "not_trained": "status-not-trained",
+        }.get(str(status["status"]), "status-unavailable")
+        badge_label = {
+            "current": "Current", "stale": "Stale",
+            "not_trained": "Not trained",
+        }.get(str(status["status"]), "Unavailable")
         return (
-            f"{descriptor} — {details}. Scalar scores are exploratory, "
-            "not validated measurements."
+            details + ". Scalar scores are exploratory, not validated measurements.",
+            badge_label, "classifier-status-badge " + badge_class,
         )
 
     def key_label(observation_id: int) -> str:
@@ -959,7 +1002,7 @@ def register_comparison_callbacks(
             # Context selection affects presentation only, never evidence.
             context = project.context(
                 unit_id, level=int(context_level if context_level is not None else 0),
-                window=max(1, min(100, int(context_window or 1))),
+                window=max(1, min(100, int(context_window or 1))) if str(context_window or "1").isdigit() else 1,
             )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
