@@ -27,6 +27,39 @@ def _row_sumsq(M):
         return np.asarray(M.multiply(M).sum(axis=1)).ravel()
     return np.einsum('ij,ij->i', M, M)
 
+
+def _stable_dual_variances(G, L, whitened):
+    """Evaluate Woodbury covariance quadratics without subtractive cancellation.
+
+    For A=I+GG.T and u=A^-1 Gv, the quadratic v.T(I+G.T G)^-1 v
+    equals ||v-G.T u||^2 + ||u||^2, a nonnegative sum of squares.
+    """
+    u = cho_solve((L, True), G @ whitened.T, check_finite=False)
+    residual = whitened - u.T @ G
+    return _row_sumsq(residual) + np.sum(u * u, axis=0)
+
+
+def _repair_dual_beta_variances(G, L, rows, beta_sd, prior, variance):
+    """Recompute cancellation-sensitive beta variances in bounded chunks."""
+    bad = np.flatnonzero((prior > 0) & (variance <= 1e-8 * prior))
+    chunk_size = min(256, max(1, 8_388_608 // (8 * G.shape[1])))
+    for start in range(0, len(bad), chunk_size):
+        indices = bad[start:start + chunk_size]
+        chunk = rows[indices]
+        if sparse.issparse(chunk):
+            chunk = chunk.toarray()
+        whitened = np.zeros((len(indices), G.shape[1]), dtype=float)
+        whitened[:, :-1] = np.asarray(chunk) * beta_sd
+        variance[indices] = _stable_dual_variances(G, L, whitened)
+    return variance
+
+
+def _stable_dual_eta_variance(G, L, eta_sd):
+    whitened = np.zeros((1, G.shape[1]))
+    whitened[0, -1] = eta_sd
+    return float(_stable_dual_variances(G, L, whitened)[0])
+
+
 def _validate_pair_indices(indices, n_rows):
     """Validate row indices before conversion, including unsigned overflows."""
     raw = np.asarray(indices)
@@ -240,8 +273,7 @@ class LinearDavidsonScaler:
             G[n,-1]=sig_e*np.sqrt(max(residual,0))
             L=cholesky(np.eye(n+1)+G@G.T,lower=True,check_finite=False)
             self.posterior_=LaplaceSpectrum('dual-exact', dual_G=G, dual_L=L)
-            te=solve_triangular(L,G[:,-1]*sig_e,lower=True,check_finite=False)
-            self.posterior_variance_eta_=max(0,sig_e**2-np.dot(te,te))
+            self.posterior_variance_eta_=_stable_dual_eta_variance(G,L,sig_e)
             return self
         raise RuntimeError('unsupported posterior covariance method')
 
@@ -279,9 +311,11 @@ class LinearDavidsonScaler:
             projected = np.asarray(D @ G[:, :-1].T) * sig_b
             proj = solve_triangular(L, projected.T, lower=True, check_finite=False)
             eta_proj=solve_triangular(L,G[:,-1]*sig_e,lower=True,check_finite=False)
-            variance=sig_b**2*_row_sumsq(D)-np.sum(proj**2,axis=0)
+            prior = sig_b**2*_row_sumsq(D)
+            variance=prior-np.sum(proj**2,axis=0)
+            variance=_repair_dual_beta_variances(G,L,D,sig_b,prior,variance)
             cov=-(proj.T@eta_proj)
-            variance_eta=sig_e**2-np.dot(eta_proj,eta_proj)
+            variance_eta=self.posterior_variance_eta_
         else:
             variance = sig_b**2 * _row_sumsq(D)
             cov = np.zeros(len(mu))
@@ -307,15 +341,17 @@ class LinearDavidsonScaler:
             xc2=_row_sumsq(centered)
             if self.posterior_.full_cov is not None:
                 C=self.posterior_.full_cov[:-1,:-1]
-                correction=sig**2*xc2-np.einsum('ij,ij->i',centered@C,centered)
+                variance=np.einsum('ij,ij->i',centered@C,centered)
             elif self.posterior_.dual_G is not None:
                 G,L=self.posterior_.dual_G,self.posterior_.dual_L
                 P=np.asarray(centered@G[:,:-1].T)*sig
                 W=solve_triangular(L,P.T,lower=True,check_finite=False)
-                correction=np.sum(W**2,axis=0)
+                prior=sig**2*xc2
+                variance=prior-np.sum(W**2,axis=0)
+                variance=_repair_dual_beta_variances(G,L,centered,sig,prior,variance)
             else:
-                correction=np.zeros(len(xc2))
-            ret[i:i+rows_per_chunk]=np.maximum(0,sig**2*xc2-correction)
+                variance=sig**2*xc2
+            ret[i:i+rows_per_chunk]=np.maximum(0,variance)
         return ret
 
     def pair_posterior_moments(self, X, pairs):
@@ -415,9 +451,7 @@ class LinearDavidsonScaler:
                 model.posterior_variance_eta_ = float(q.full_cov[-1, -1])
             elif q.dual_G is not None:
                 sig_e = 1. / np.sqrt(model.lambda_eta_)
-                projection = solve_triangular(q.dual_L, q.dual_G[:, -1] * sig_e,
-                                              lower=True, check_finite=False)
-                model.posterior_variance_eta_ = max(0., float(sig_e**2 - projection @ projection))
+                model.posterior_variance_eta_ = _stable_dual_eta_variance(q.dual_G, q.dual_L, sig_e)
             else:
                 model.posterior_variance_eta_ = 1. / model.lambda_eta_
         return model
