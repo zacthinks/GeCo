@@ -6784,6 +6784,115 @@ class ProjectDatabase:
         }
 
 
+    def configure_scaler(
+        self, scale_id: int, representation_id: int,
+        estimator_family: str, hyperparameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a Scale's sole active configuration without deleting historical fits."""
+        payload = json.dumps(
+            dict(hyperparameters), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+            if current is not None and (
+                int(current["representation_id"]) == int(representation_id)
+                and current["estimator_family"] == estimator_family
+                and current["hyperparameters_json"] == payload
+            ):
+                return _scaler_spec_row(current)
+            connection.execute(
+                """INSERT INTO scaler_specs (
+                    scale_id, representation_id, estimator_family,
+                    hyperparameters_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scale_id) DO UPDATE SET
+                    representation_id=excluded.representation_id,
+                    estimator_family=excluded.estimator_family,
+                    hyperparameters_json=excluded.hyperparameters_json,
+                    updated_at=excluded.updated_at""",
+                (int(scale_id), int(representation_id), estimator_family,
+                 payload, utc_now()),
+            )
+        result = self.get_scaler_spec(int(scale_id))
+        assert result is not None
+        return result
+
+    def get_scaler_spec(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+        return _scaler_spec_row(row) if row is not None else None
+
+    def find_scaler_fit(
+        self, scale_id: int, snapshot_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND snapshot_fingerprint = ?
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id), snapshot_fingerprint),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def latest_scaler_fit(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id),),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def register_scaler_fit(
+        self, *, scale_id: int, scaler_spec_id: int,
+        scale_version_id: int, fingerprint: str,
+        snapshot: Mapping[str, Any], artifact_path: str,
+        diagnostics: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Publish a completed artifact reference atomically; failed fits never publish."""
+        snapshot_json = json.dumps(
+            dict(snapshot), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        diagnostics_json = json.dumps(
+            dict(diagnostics), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            spec = connection.execute(
+                "SELECT scale_id FROM scaler_specs WHERE scaler_spec_id = ?",
+                (int(scaler_spec_id),),
+            ).fetchone()
+            if spec is None or int(spec["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and configuration belong to different Scales.")
+            version = connection.execute(
+                "SELECT scale_id FROM scale_versions WHERE scale_version_id = ?",
+                (int(scale_version_id),),
+            ).fetchone()
+            if version is None or int(version["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and definition belong to different Scales.")
+            connection.execute(
+                """INSERT OR IGNORE INTO scaler_fits(
+                    scaler_spec_id, scale_id, scale_version_id,
+                    snapshot_fingerprint, snapshot_json, artifact_path,
+                    diagnostics_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(scaler_spec_id), int(scale_id), int(scale_version_id),
+                 fingerprint, snapshot_json, artifact_path, diagnostics_json, utc_now()),
+            )
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scaler_spec_id = ?
+                   AND snapshot_fingerprint = ?""",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+        assert row is not None
+        return _scaler_fit_row(row)
+
+
 
 def _next_committee_deleted_name(
     connection: sqlite3.Connection,
@@ -7395,3 +7504,27 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+def _scaler_spec_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "representation_id": int(row["representation_id"]),
+        "estimator_family": str(row["estimator_family"]),
+        "hyperparameters": json.loads(row["hyperparameters_json"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _scaler_fit_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_fit_id": int(row["scaler_fit_id"]),
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "scale_version_id": int(row["scale_version_id"]),
+        "snapshot_fingerprint": str(row["snapshot_fingerprint"]),
+        "snapshot": json.loads(row["snapshot_json"]),
+        "artifact_path": str(row["artifact_path"]),
+        "diagnostics": json.loads(row["diagnostics_json"]),
+        "created_at": str(row["created_at"]),
+    }
