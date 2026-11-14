@@ -192,6 +192,40 @@ def comparison_layout(
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
         ], className="focus-coding-panel"),
+        html.Details([
+            html.Summary("Scale prediction positions"),
+            html.P(
+                "Horizontal: centered estimated Scale position. Vertical: "
+                "model-conditional epistemic uncertainty (posterior SD) when available. "
+                "This is not total measurement error or evidence of construct validity.",
+                className="focus-help",
+            ),
+            html.Div([
+                html.Button(
+                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
+                ),
+                html.Label("Page", htmlFor="scale-prediction-page"),
+                dcc.Input(
+                    id="scale-prediction-page", type="number",
+                    min=1, max=1, step=1, value=1,
+                    className="page-number-input",
+                ),
+                html.Button(
+                    "Previous", id="scale-prediction-previous", n_clicks=0,
+                ),
+                html.Button("Next", id="scale-prediction-next", n_clicks=0),
+            ], className="scale-prediction-toolbar"),
+            html.Div(
+                id="scale-prediction-status",
+                className="control-status", role="status",
+            ),
+            dcc.Store(id="scale-prediction-page-state"),
+            dcc.Graph(
+                id="scale-prediction-map",
+                figure={"data": [], "layout": {}},
+                config={"displayModeBar": True, "scrollZoom": True},
+            ),
+        ], className="focus-coding-panel scale-prediction-panel"),
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
@@ -204,31 +238,42 @@ def comparison_layout(
         ),
         html.Div(id="scale-task-warning", className="control-status"),
         html.Div([
-            html.Div(id="scale-reading-first", className="reading-pane"),
-            html.Div(id="scale-reading-second", className="reading-pane"),
-        ], style={
-            "display": "grid",
-            "gridTemplateColumns": "repeat(auto-fit, minmax(290px, 1fr))",
-            "gap": "16px", "alignItems": "start",
-        }),
-        html.Div([
-            html.Button(
-                "A is higher", id="scale-judge-first", n_clicks=0,
-                className="judgment-button positive-button", disabled=True,
+            html.Div(
+                id="scale-reading-first",
+                className="scale-reading-card",
             ),
-            html.Button(
-                "Approximately equal", id="scale-judge-parity", n_clicks=0,
-                className="judgment-button", disabled=True,
+            html.Div([
+                html.P("Compare A and B", className="scale-judgment-heading"),
+                html.Button(
+                    "A higher  ›", id="scale-judge-first", n_clicks=0,
+                    className="judgment-button positive-button",
+                    title="Observation A expresses more of this Scale",
+                    **{"aria-label": "A is higher than B"}, disabled=True,
+                ),
+                html.Button(
+                    "Approximately equal  ≈", id="scale-judge-parity",
+                    n_clicks=0, className="judgment-button",
+                    title="Both observations express approximately the same amount",
+                    disabled=True,
+                ),
+                html.Button(
+                    "‹  B higher", id="scale-judge-second", n_clicks=0,
+                    className="judgment-button negative-button",
+                    title="Observation B expresses more of this Scale",
+                    **{"aria-label": "B is higher than A"}, disabled=True,
+                ),
+                html.Button(
+                    "Unsure / Skip  ?", id="scale-judge-unsure",
+                    n_clicks=0, className="judgment-button unsure-button",
+                    title="Record an unsure response; not a parity judgment",
+                    disabled=True,
+                ),
+            ], className="scale-judgment-actions"),
+            html.Div(
+                id="scale-reading-second",
+                className="scale-reading-card",
             ),
-            html.Button(
-                "B is higher", id="scale-judge-second", n_clicks=0,
-                className="judgment-button negative-button", disabled=True,
-            ),
-            html.Button(
-                "Unsure / Skip", id="scale-judge-unsure", n_clicks=0,
-                className="judgment-button unsure-button", disabled=True,
-            ),
-        ], className="code-center-assignment-buttons"),
+        ], className="scale-comparison-grid"),
         html.Div(id="scale-action-status", className="control-status"),
         html.Button(
             "Next pair", id="scale-next-pair", n_clicks=0,
@@ -338,6 +383,8 @@ def register_comparison_callbacks(
 ) -> None:
     from dash import Input, Output, State, callback_context, no_update
     from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
+    register_scale_prediction_callbacks(app, project)
     del hierarchy
 
     def active_scale_id(construct_id: int | None) -> int | None:
@@ -551,7 +598,23 @@ def register_comparison_callbacks(
                 f"; saved fit {fit['scaler_fit_id']} "
                 f"({diagnostics.get('geometry_dimensions', '?')} features)"
             )
-        return f"{descriptor} — {details}. Scalar scores are exploratory, not validated measurements."
+        config = status.get("configuration") or {}
+        if config.get("representation_id") is not None:
+            try:
+                representation = project.database.get_representation(
+                    int(config["representation_id"])
+                )
+                details += f"; geometry: {representation['name']}"
+            except (KeyError, ValueError):
+                details += "; geometry unavailable"
+        if fit is not None:
+            diagnostics = fit.get("diagnostics") or {}
+            if diagnostics.get("posterior_available") is False:
+                details += "; posterior uncertainty unavailable"
+        return (
+            f"{descriptor} — {details}. Scalar scores are exploratory, "
+            "not validated measurements."
+        )
 
     def key_label(observation_id: int) -> str:
         unit = project.observation(int(observation_id))
