@@ -1233,12 +1233,23 @@ def create_app(
                                 options=[
                                     {"label": "Default (Codes: Exhaustive; Scales: 1,000)", "value": -1},
                                     {"label": "Exhaustive (0)", "value": 0},
-                                    {"label": "100 tasks", "value": 100},
-                                    {"label": "1,000 tasks", "value": 1000},
-                                    {"label": "10,000 tasks", "value": 10000},
+                                    {"label": "Custom finite budget", "value": "custom"},
                                 ],
-                                value=_read_ui_settings(project.project_dir)["candidate_evaluation_budget"],
+                                value=(
+                                    "custom"
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                ),
                                 clearable=False, searchable=False,
+                            ),
+                            dcc.Input(
+                                id="geco-settings-candidate-custom",
+                                type="number", min=1, max=1_000_000, step=1,
+                                value=max(
+                                    1, _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                ),
+                                placeholder="Number of candidate tasks",
+                                className="text-input",
                             ),
                             html.Small(
                                 "Counts distinct scored observations for Codes or unordered pairs for Scales. "
@@ -1305,22 +1316,35 @@ def create_app(
     @app.callback(
         Output("geco-settings-candidate-status", "children"),
         Input("geco-settings-candidate-budget", "value"),
+        Input("geco-settings-candidate-custom", "value"),
         prevent_initial_call=True,
     )
-    def save_candidate_budget_setting(budget: int | None) -> str:
-        if budget is None:
+    def save_candidate_budget_setting(mode: int | str | None, custom: int | float | None) -> str:
+        if mode is None:
             return ""
+        if mode == "custom":
+            if (custom is None or isinstance(custom, bool)
+                    or not isinstance(custom, (int, float))
+                    or not float(custom).is_integer()):
+                return "Enter a whole-number candidate budget between 1 and 1,000,000."
+            budget = int(custom)
+            if not 1 <= budget <= 1_000_000:
+                return "Enter a candidate budget between 1 and 1,000,000."
+        elif mode in (-1, 0):
+            budget = int(mode)
+        else:
+            return "Choose Default, Exhaustive, or Custom."
         try:
             _save_ui_settings(
-                project.project_dir, candidate_evaluation_budget=int(budget),
+                project.project_dir, candidate_evaluation_budget=budget,
             )
         except (OSError, ValueError) as error:
             return f"Unable to save candidate budget: {error}"
         return (
             "Default budget: Codes exhaustive; Scales 1,000 tasks."
-            if int(budget) == -1
-            else ("Exhaustive candidate evaluation." if int(budget) == 0
-                  else f"Evaluate up to {int(budget):,} distinct tasks.")
+            if budget == -1
+            else ("Exhaustive candidate evaluation." if budget == 0
+                  else f"Evaluate up to {budget:,} distinct tasks.")
         )
 
     @app.callback(
