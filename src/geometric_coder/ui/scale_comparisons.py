@@ -153,11 +153,16 @@ def _random_scale_task(
 def comparison_layout(
     *, dcc: Any, html: Any, dash_table: Any,
     auto_train: bool = False, tune_hyperparameters: bool = False,
+    hierarchy: list[dict[str, Any]] | None = None,
 ) -> Any:
     """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
         html.Div([
-            html.H4("Scale model"),
+            html.Div([
+                html.H3("Scale model"),
+                html.Span("Not trained", id="scale-model-status-badge",
+                          className="classifier-status-badge status-not-trained"),
+            ], className="active-classifier-heading"),
             html.Label("Analytic geometry"),
             dcc.Dropdown(
                 id="scale-model-geometry", options=[], value=None,
@@ -191,59 +196,56 @@ def comparison_layout(
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
-        ], className="focus-coding-panel"),
-
+        ], className="focus-sidebar scale-model-panel"),
+        html.Div([
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
-            "Scale, or whether they are approximately equal. When a fitted Scale "
-            "model has adequate evidence, Next pair recommends comparisons "
-            "using Bayesian information gain; otherwise it uses random "
-            "selection. Next pair advances without recording a judgment. "
-            "The Unsure / Skip action, by contrast, records an explicit response.",
+            "Scale. Click a judgment to save it, change it if needed, then "
+            "choose Next pair. Unsure / Skip records a response; Next pair does not.",
             className="focus-help",
         ),
         html.Div(id="scale-task-warning", className="control-status"),
-        html.Div(id="scale-pair-history-note", className="control-status"),
+        html.Div(id="scale-pair-history-note", className="scale-acquisition-note"),
+        html.Div([
+            html.Div([
+                html.Label("Context level"),
+                dcc.Dropdown(id="scale-context-level", options=[
+                    {"label": item["column_name"], "value": int(item["level_index"])}
+                    for item in (hierarchy or [])
+                ], value=int(hierarchy[-1]["level_index"]) if hierarchy else None,
+                clearable=False, searchable=False),
+            ], className="context-control"),
+            html.Div([
+                html.Label("Window"),
+                html.Div([
+                    html.Button("−", id="scale-context-window-minus", n_clicks=0),
+                    dcc.Input(id="scale-context-window", type="text", inputMode="numeric", value="1"),
+                    html.Button("+", id="scale-context-window-plus", n_clicks=0),
+                ], className="window-stepper"),
+            ], className="context-control"),
+        ], className="context-controls scale-context-controls"),
 
         html.Div([
-            html.Div(
-                id="scale-reading-first",
-                className="scale-reading-card",
-            ),
+            html.Div(id="scale-reading-first", className="scale-reading-card"),
+            html.Div(id="scale-reading-second", className="scale-reading-card"),
             html.Div([
                 html.P("Compare A and B", className="scale-judgment-heading"),
-                html.Button(
-                    "A higher  ›", id="scale-judge-first", n_clicks=0,
-                    className="judgment-button positive-button",
-                    title="Observation A expresses more of this Scale",
-                    **{"aria-label": "A is higher than B"}, disabled=True,
-                ),
-                html.Button(
-                    "Approximately equal  ≈", id="scale-judge-parity",
-                    n_clicks=0, className="judgment-button",
-                    title="Both observations express approximately the same amount",
-                    disabled=True,
-                ),
-                html.Button(
-                    "‹  B higher", id="scale-judge-second", n_clicks=0,
-                    className="judgment-button negative-button",
-                    title="Observation B expresses more of this Scale",
-                    **{"aria-label": "B is higher than A"}, disabled=True,
-                ),
-                html.Button(
-                    "Unsure / Skip  ?", id="scale-judge-unsure",
-                    n_clicks=0, className="judgment-button unsure-button",
-                    title="Record an unsure response; not a parity judgment",
-                    disabled=True,
-                ),
+                html.Button("A higher", id="scale-judge-first", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("Approximately equal", id="scale-judge-parity", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("B higher", id="scale-judge-second", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("Unsure / Skip", id="scale-judge-unsure", n_clicks=0,
+                            className="judgment-button scale-judgment-button",
+                            title="Record uncertainty, not equality", disabled=True),
+                html.Div(id="scale-saved-indicator", className="scale-saved-indicator",
+                         role="status"),
             ], className="scale-judgment-actions"),
-            html.Div(
-                id="scale-reading-second",
-                className="scale-reading-card",
-            ),
         ], className="scale-comparison-grid"),
-        html.Div(id="scale-action-status", className="control-status"),
+        html.Div(id="scale-action-status", style={"display": "none"}),
+        html.Div(id="scale-action-warning", className="control-status"),
         html.Button(
             "Next pair", id="scale-next-pair", n_clicks=0,
             className="primary-action",
@@ -281,9 +283,10 @@ def comparison_layout(
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
+            html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
         ], className="focus-coding-panel scale-prediction-panel", open=False),
         html.Details([
-            html.Summary("More options · choose a pair manually"),
+            html.Summary("Advanced · manual pairs and independent repeats"),
             html.P(
                 "Optional: choose two specific observations instead of the "
                 "recommended pair (Bayesian information gain or random fallback). "
@@ -378,7 +381,8 @@ def comparison_layout(
                 className="focus-help",
             ),
         ], className="focus-coding-panel"),
-    ], className="focus-coding-panel")
+        ], className="scale-comparison-main"),
+    ], className="focus-workspace scale-workspace")
 
 def register_comparison_callbacks(
     app: Any, project: Any, *, total_units: int, hierarchy: list[dict[str, Any]],
@@ -388,7 +392,6 @@ def register_comparison_callbacks(
     from geometric_coder.ui.app import _metadata_table, _render_context_units
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
     register_scale_prediction_callbacks(app, project)
-    del hierarchy
 
     def active_scale_id(construct_id: int | None) -> int | None:
         if construct_id is None:
@@ -408,6 +411,38 @@ def register_comparison_callbacks(
             scale_id, representation_id,
             hyperparameters=current["hyperparameters"] if current is not None else {},
         )
+
+    @app.callback(
+        Output("scale-context-window", "value", allow_duplicate=True),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window-minus", "n_clicks"),
+        Input("scale-context-window-plus", "n_clicks"),
+        State("scale-context-window", "value"),
+        prevent_initial_call=True,
+    )
+    def update_scale_context_window(level, minus, plus, current):
+        del level, minus, plus
+        triggered = callback_context.triggered_id
+        if triggered == "scale-context-level":
+            return "1"
+        try:
+            value = max(1, min(100, int(current or 1)))
+        except (TypeError, ValueError):
+            value = 1
+        if triggered == "scale-context-window-minus":
+            return str(max(1, value - 1))
+        if triggered == "scale-context-window-plus":
+            return str(min(100, value + 1))
+        return str(value)
+
+    @app.callback(
+        Output("scale-action-warning", "children"),
+        Input("scale-action-status", "children"),
+    )
+    def show_scale_action_warning(message):
+        if not message or str(message).startswith("Saved event "):
+            return ""
+        return message
 
     @app.callback(
         Output("scale-model-selection-status", "children"),
@@ -578,6 +613,8 @@ def register_comparison_callbacks(
 
     @app.callback(
         Output("scale-model-summary", "children"),
+        Output("scale-model-status-badge", "children"),
+        Output("scale-model-status-badge", "className"),
         Input("focus-construct-dropdown", "value"),
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
@@ -586,10 +623,10 @@ def register_comparison_callbacks(
     def refresh_scale_model_summary(
         construct_id: int | None, _manual: str | None,
         _automatic: str | None, _task: dict[str, Any] | None,
-    ) -> str:
+    ) -> tuple[str, str, str]:
         scale_id = active_scale_id(construct_id)
         if scale_id is None:
-            return ""
+            return "", "Unavailable", "classifier-status-badge status-unavailable"
         status = project.scale_model_status(scale_id)
         descriptor = status["status"].replace("_", " ").capitalize()
         count = status.get("comparison_count")
@@ -614,9 +651,17 @@ def register_comparison_callbacks(
             diagnostics = fit.get("diagnostics") or {}
             if diagnostics.get("posterior_available") is False:
                 details += "; posterior uncertainty unavailable"
+        badge_class = {
+            "current": "status-current", "stale": "status-stale",
+            "not_trained": "status-not-trained",
+        }.get(str(status["status"]), "status-unavailable")
+        badge_label = {
+            "current": "Current", "stale": "Stale",
+            "not_trained": "Not trained",
+        }.get(str(status["status"]), "Unavailable")
         return (
-            f"{descriptor} — {details}. Scalar scores are exploratory, "
-            "not validated measurements."
+            details + ". Scalar scores are exploratory, not validated measurements.",
+            badge_label, "classifier-status-badge " + badge_class,
         )
 
     def key_label(observation_id: int) -> str:
@@ -812,7 +857,15 @@ def register_comparison_callbacks(
                 ), []
             if trigger in _OUTCOMES:
                 if task.get("status") == "saved":
-                    return task, f"Already saved as event {task.get('event_id')}.", no_update
+                    # A changed answer is a correction of the same displayed pair,
+                    # not an independent additional comparison. Retain orientation.
+                    if _OUTCOMES[trigger] == task.get("outcome"):
+                        return no_update, no_update, no_update
+                    task = {
+                        **task, "status": "ready", "mode": "correction",
+                        "supersedes_event_id": int(task["event_id"]),
+                        "submission_key": uuid.uuid4().hex,
+                    }
                 if task.get("status") != "ready":
                     raise ValueError("Prepare a comparison before recording a judgment.")
                 if task.get("snapshot") != _scale_task_snapshot(project, scale_id):
@@ -893,7 +946,7 @@ def register_comparison_callbacks(
         project.patch_session_state(
             int(session_id), {"scale_comparison_task": task},
         )
-        return task, "New pair ready.", []
+        return task, "", []
 
     @app.callback(
         Output("scale-selection-summary", "children"),
@@ -905,19 +958,29 @@ def register_comparison_callbacks(
         Output("scale-judge-parity", "disabled"),
         Output("scale-judge-second", "disabled"),
         Output("scale-judge-unsure", "disabled"),
+        Output("scale-judge-first", "className"),
+        Output("scale-judge-parity", "className"),
+        Output("scale-judge-second", "className"),
+        Output("scale-judge-unsure", "className"),
+        Output("scale-saved-indicator", "children"),
         Input("scale-task-store", "data"),
         Input("scale-repeat-ack", "value"),
         Input("focus-construct-dropdown", "value"),
         Input("focus-refresh-store", "data"),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window", "value"),
     )
     def display_scale_task(
         task: dict[str, Any] | None, repeat_ack: list[str] | None,
         construct_id: int | None, refresh: int | None,
+        context_level: int | None = None, context_window: Any = 1,
     ) -> tuple[Any, ...]:
         del refresh
+        base_classes = ("judgment-button scale-judgment-button",) * 4
+        empty_state = (*base_classes, "")
         scale_id = active_scale_id(construct_id)
         if scale_id is None or not isinstance(task, dict) or task.get("scale_id") != scale_id:
-            return "", "", "", "", "", True, True, True, True
+            return "", "", "", "", "", True, True, True, True, *empty_state
         summary = []
         for field, name in (("picked_a", "First selection"), ("picked_b", "Second selection")):
             value = task.get(field)
@@ -925,7 +988,7 @@ def register_comparison_callbacks(
                 f"{name}: {key_label(value) if value is not None else 'Choose an observation'}"
             )
         if task.get("status") not in {"ready", "saved"}:
-            return " · ".join(summary), "", "", "", "", True, True, True, True
+            return " · ".join(summary), "", "", "", "", True, True, True, True, *empty_state
         first, second = int(task["first"]), int(task["second"])
         snapshot_ok = task.get("snapshot") == _scale_task_snapshot(project, scale_id)
         eligible = set(project.eligible_scale_observation_ids(scale_id, [first, second])) == {first, second}
@@ -936,20 +999,12 @@ def register_comparison_callbacks(
         def reading(observation_id: int, letter: str) -> Any:
             item = project.observation(observation_id)
             unit_id = int(item["unit_id"])
-            # A bounded local context avoids loading an entire long document.
-            # Adjacent units must belong to the same parent source hierarchy.
-            position = int(item["row_position"])
-            positions = range(max(0, position - 3), min(total_units, position + 4))
-            nearby = project.database.unit_rows_at_positions(list(positions))
-            parent_keys = list(project.metadata["key_columns"])[:-1]
-            context = [
-                unit for unit in nearby
-                if (int(unit["unit_id"]) == unit_id
-                    or (parent_keys and all(
-                        unit["user_key"].get(key) == item["user_key"].get(key)
-                        for key in parent_keys
-                    )))
-            ]
+            # Use the same bounded, hierarchy-aware reader as Code Develop.
+            # Context selection affects presentation only, never evidence.
+            context = project.context(
+                unit_id, level=int(context_level if context_level is not None else 0),
+                window=max(1, min(100, int(context_window or 1))) if str(context_window or "1").isdigit() else 1,
+            )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
                 key_columns=list(project.metadata["key_columns"]),
@@ -959,51 +1014,38 @@ def register_comparison_callbacks(
             return html.Div([
                 html.H4(f"Observation {letter}"),
                 html.P(key_label(observation_id), className="focal-key"),
-                html.P(item["text"], className="focal-text"),
+                html.Div(children, className="context-content focus-context-content"),
                 html.Details([
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),
                 ]),
-                html.Details([
-                    html.Summary("Surrounding context"),
-                    html.Div(children, className="context-content"),
-                ]),
             ], className="focus-coding-panel")
         match_count = project.scale_pair_history_count(scale_id, first, second)
         correction = task.get("mode") == "correction"
-        prior_message = (
-            f"Correcting event {task['supersedes_event_id']} (append-only)."
-            if correction else (
-                f"This pair has {match_count} previous event(s), including earlier definitions "
-                "and corrections. Confirm an independent repeat to record another judgment."
-                if match_count else "No previous judgment for this pair."
-            )
-        )
         acquisition = task.get("acquisition")
-        if isinstance(acquisition, dict):
-            strategy = acquisition.get("strategy")
-            reason = acquisition.get("reason")
-            if strategy == "eig":
-                selection_note = "Selected by Bayesian information gain."
-            elif strategy == "random":
-                selection_note = "Selected randomly"
-                if reason:
-                    selection_note += f" (fallback: {str(reason).replace('_', ' ')})"
-                selection_note += "."
-            else:
-                selection_note = ""
-            if selection_note:
-                prior_message = f"{selection_note} {prior_message}"
-        enabled = (
-            task["status"] == "ready" and snapshot_ok and eligible
-            and (correction or not match_count or "repeat" in (repeat_ack or []))
+        strategy = acquisition.get("strategy") if isinstance(acquisition, dict) else None
+        selection_note = (
+            "Recommended pair" if strategy == "eig" else
+            "Random pair" if strategy == "random" else "Manual pair"
         )
-        if task["status"] == "saved":
-            warning = f"Saved event {task['event_id']}. Prepare a new task to judge again."
+        if match_count and task.get("status") == "ready" and not correction:
+            selection_note += " · Existing evidence; confirm an independent repeat below."
+        enabled = (
+            task["status"] in {"ready", "saved"} and snapshot_ok and eligible
+            and (task["status"] == "saved" or correction or not match_count
+                 or "repeat" in (repeat_ack or []))
+        )
+        selected = task.get("outcome") if task["status"] == "saved" else None
+        classes = tuple(
+            cls + (" judgment-selected" if selected == outcome else "")
+            for cls, outcome in zip(base_classes, _OUTCOMES.values())
+        )
+        saved_indicator = "Saved · Change your answer or choose Next pair" if selected else ""
         return (
             " · ".join(summary),
             reading(first, "A"), reading(second, "B"),
-            warning, prior_message, *([not enabled] * 4),
+            warning, selection_note, *([not enabled] * 4),
+            *classes, saved_indicator,
         )
 
     @app.callback(

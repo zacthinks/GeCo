@@ -160,7 +160,8 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
 def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     """Wire bounded Scale scoring and point inspection into the Develop tab."""
     from dash import Input, Output, State, callback_context, no_update
-    from geometric_coder.ui.app import _append_navigation_history
+    from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from dash import html, dcc
     import plotly.graph_objects as go
 
     @app.callback(
@@ -220,52 +221,63 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
             return go.Figure(), f"Scale prediction unavailable: {error}", None, 1
 
     @app.callback(
-        Output("focal-unit-store", "data", allow_duplicate=True),
-        Output("navigation-history-store", "data", allow_duplicate=True),
-        Output("focus-span-selection-store", "data", allow_duplicate=True),
+        Output("scale-prediction-preview", "children"),
         Input("scale-prediction-map", "clickData"),
-        State("scale-prediction-page-state", "data"),
-        State("focus-construct-dropdown", "value"),
-        State("active-session-store", "data"),
-        State("focal-unit-store", "data"),
-        State("navigation-history-store", "data"),
+        Input("scale-prediction-page-state", "data"),
+        Input("focus-construct-dropdown", "value"),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window", "value"),
         prevent_initial_call=True,
     )
     def inspect_scale_prediction_point(
-        click_data: Any, page_state: Any, construct_id: Any, session_id: Any,
-        focal_unit_id: Any, history: Any,
-    ) -> tuple[Any, Any, Any]:
+        click_data: Any, page_state: Any, construct_id: Any,
+        level: Any, window: Any,
+    ) -> Any:
+        empty = html.P("Select a plotted observation to inspect it.")
         if not isinstance(page_state, dict) or not click_data:
-            return no_update, no_update, no_update
+            return empty
         try:
             scale_id = int(construct_id)
             if page_state.get("scale_id") != scale_id:
-                return no_update, no_update, no_update
+                return empty
             if project.construct(scale_id)["type"] != "scale":
-                return no_update, no_update, no_update
+                return empty
             state = project.scale_model_status(scale_id)
             fit = state.get("fit")
             if state["status"] not in {"current", "stale"} or fit is None:
-                return no_update, no_update, no_update
+                return empty
             if int(fit["scaler_fit_id"]) != int(page_state["fit_id"]):
-                return no_update, no_update, no_update
+                return empty
             selected = click_data["points"][0]["customdata"]
             observation_id, unit_id = int(selected[0]), int(selected[1])
             if observation_id not in page_state["observation_ids"]:
-                return no_update, no_update, no_update
+                return empty
             observation = project.observation(observation_id)
             if observation["kind"] != "atomic" or int(observation["unit_id"]) != unit_id:
-                return no_update, no_update, no_update
+                return empty
             if observation_id not in project.eligible_scale_observation_ids(
                 scale_id, [observation_id],
             ):
-                return no_update, no_update, no_update
-            project.record_visit(
-                int(session_id), unit_id, method="scale_prediction_geometry",
-                source_unit_id=(
-                    int(focal_unit_id) if focal_unit_id is not None else None
-                ),
+                return empty
+            context = project.context(
+                unit_id,
+                level=int(level if level is not None else 0),
+                window=max(1, min(100, int(window or 1))) if str(window or "1").isdigit() else 1,
             )
+            reading = _render_context_units(
+                html, dcc, context, focal_unit_id=unit_id,
+                key_columns=list(project.metadata["key_columns"]),
+                selected_unit_ids=[unit_id], checkbox_type="scale-prediction-context",
+                span_selection_enabled=False,
+            )
+            label = " › ".join(f"{key}: {value}" for key, value in observation["user_key"].items())
+            preview = html.Div([
+                html.H4("Selected observation"),
+                html.Strong(label or f"Observation {observation_id}"),
+                html.P(str(observation["text"])),
+                html.Details([html.Summary("Context"), reading]),
+                html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
+            ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
-            return no_update, no_update, no_update
-        return unit_id, _append_navigation_history(history, unit_id), [unit_id]
+            return empty
+        return preview

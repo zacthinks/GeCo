@@ -117,7 +117,7 @@ def test_prediction_rejects_misaligned_score_results_and_forged_fit():
         scale_prediction_page(project, 7)
 
 
-def test_scale_comparison_controls_are_centered_without_replacing_judgment_ids():
+def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_ids():
     dash = pytest.importorskip("dash")
     from geometric_coder.ui.scale_comparisons import comparison_layout
     from dash import dcc, html, dash_table
@@ -138,18 +138,19 @@ def test_scale_comparison_controls_are_centered_without_replacing_judgment_ids()
                 return result
         return None
 
-    grid = next(
-        component for component in layout.children
-        if getattr(component, "className", None) == "scale-comparison-grid"
-    )
+    main = next(component for component in layout.children
+                if getattr(component, "className", None) == "scale-comparison-main")
+    grid = next(component for component in main.children
+                if getattr(component, "className", None) == "scale-comparison-grid")
     assert [getattr(child, "id", None) or child.className
             for child in grid.children] == [
-        "scale-reading-first", "scale-judgment-actions", "scale-reading-second",
+        "scale-reading-first", "scale-reading-second", "scale-judgment-actions",
     ]
     for name in [
         "scale-judge-first", "scale-judge-second", "scale-judge-parity",
         "scale-judge-unsure", "scale-next-pair",
         "scale-prediction-map", "scale-prediction-page-state",
+        "scale-context-level", "scale-context-window", "scale-prediction-preview",
     ]:
         assert find(layout, name) is not None
 
@@ -158,7 +159,7 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
     pytest.importorskip("dash")
     import inspect
     import pandas as pd
-    from dash import no_update
+    from dash import html
     from geometric_coder import GeometricCoder
     from geometric_coder.ui.app import create_app
 
@@ -188,11 +189,49 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
     plot, message, page, pages = render(code, 1, 0, "", "", None)
     assert plot.data == () and message == "" and page is None
     inspect_point = by_name["inspect_scale_prediction_point"]
-    assert inspect_point(
+    cleared = inspect_point(
         {"points": [{"customdata": [1, 1]}]},
         {"scale_id": scale, "fit_id": 999, "observation_ids": [1]},
         code,
-        project.sessions()[0]["session_id"],
-        None,
-        None,
-    ) == (no_update, no_update, no_update)
+        0,
+        "1",
+    )
+    assert isinstance(cleared, html.P)
+    assert cleared.children == "Select a plotted observation to inspect it."
+
+
+def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
+    pytest.importorskip("dash")
+    import inspect
+    import pandas as pd
+    from dash import html
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "preview-reset.geco",
+        data=pd.DataFrame({"key": [1, 2], "text": ["A", "B"]}),
+        keys=["key"], text="text", geometries=None,
+    )
+    scale = project.create_scale("Clarity")
+    app = create_app(project)
+    preview = next(
+        inspect.unwrap(entry["callback"])
+        for entry in app.callback_map.values()
+        if "callback" in entry
+        and inspect.unwrap(entry["callback"]).__name__ == "inspect_scale_prediction_point"
+    )
+    stale_click = {"points": [{"customdata": [1, 1]}]}
+    cleared = preview(stale_click, None, scale, 0, "1")
+    assert isinstance(cleared, html.P)
+    assert cleared.children == "Select a plotted observation to inspect it."
+
+    output = next(
+        entry for key, entry in app.callback_map.items()
+        if "scale-prediction-preview.children" in key
+    )
+    names = [item["id"] for item in output["inputs"]]
+    assert "scale-prediction-page-state" in names
+    assert "focus-construct-dropdown" in names
+    assert "scale-context-level" in names
+    assert "scale-context-window" in names

@@ -95,11 +95,12 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert task["first"] != task["second"]
     assert task["snapshot"]["version_number"] == 1
     assert len(task["submission_key"]) >= 16
-    selection, first_display, second_display, warning, note, *disabled = display(task, [], scale, 0)
+    selection, first_display, second_display, warning, note, *rest = display(task, [], scale, 0)
+    disabled = rest[:4]
     assert "First selection" in selection
     assert first_display and second_display
     assert not any(disabled)
-    assert "No previous" in note
+    assert "Manual pair" in note
     assert not warning
 
     judged, message, _ = _manage(manage, "scale-judge-first", scale=scale, session=session, task=task)
@@ -115,7 +116,8 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert saved[0]["selection_provenance"]["mode"] == "independent"
     assert saved[0]["session_id"] == session
     retried, _, _ = _manage(manage, "scale-judge-first", scale=scale, session=session, task=judged)
-    assert retried["event_id"] == judged["event_id"]
+    from dash import no_update
+    assert retried is no_update
     assert len(project.scale_comparisons(scale)) == 1
 
     history, _, _ = listing(scale, judged, "focus")
@@ -144,9 +146,9 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
         manage, "scale-new-repeat", scale=scale, session=session, task=corrected,
     )
     assert repeated["mode"] == "independent"
-    _, _, _, _, prior, *disabled = display(repeated, [], scale, 0)
-    assert "Confirm an independent repeat" in prior
-    assert all(disabled)
+    _, _, _, _, prior, *rest = display(repeated, [], scale, 0)
+    assert "confirm an independent repeat" in prior
+    assert all(rest[:4])
     _, rejection, _ = _manage(
         manage, "scale-judge-second", scale=scale, session=session, task=repeated,
     )
@@ -169,6 +171,52 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert unsure["status"] == "saved"
     assert project.scale_comparisons(scale)[-1]["outcome"] == "unsure"
     assert len(project.scale_training_comparisons(scale)) == 2
+
+
+def test_saved_judgment_can_be_changed_in_place_without_new_effective_evidence(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity", "Comparative clarity")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    display = _callback(app, "display_scale_task")
+
+    units = project.database.unit_rows_at_positions([0, 1])
+    task = _prepare_scale_task(project, {
+        "scale_id": scale, "session_id": session,
+        "picked_a": units[0]["observation_id"],
+        "picked_b": units[1]["observation_id"],
+        "status": "selecting",
+    }, None)
+    saved, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                          session=session, task=task)
+    assert saved["status"] == "saved"
+    assert display(saved, [], scale, 0)[5:9] == (False, False, False, False)
+    assert "judgment-selected" in display(saved, [], scale, 0)[9]
+
+    unchanged, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                              session=session, task=saved)
+    assert unchanged is no_update
+    assert len(project.scale_comparisons(scale)) == 1
+
+    changed, _, _ = _manage(manage, "scale-judge-parity", scale=scale,
+                            session=session, task=saved)
+    assert changed["first"] == saved["first"]
+    assert changed["second"] == saved["second"]
+    assert changed["submission_key"] != saved["submission_key"]
+    assert changed["supersedes_event_id"] == saved["event_id"]
+    assert changed["outcome"] == "parity"
+    assert len(project.scale_comparisons(scale)) == 2
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+
+    changed_again, _, _ = _manage(manage, "scale-judge-second", scale=scale,
+                                  session=session, task=changed)
+    assert changed_again["supersedes_event_id"] == changed["event_id"]
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
 
 
 def test_reversed_presentation_preserves_actual_orientation(tmp_path: Path, monkeypatch) -> None:
@@ -237,7 +285,7 @@ def test_eligibility_self_pair_and_stale_definition(tmp_path: Path) -> None:
     assert project.scale_comparisons(scale) == []
     assert all(display is True for display in _callback(
         app, "display_scale_task"
-    )(task, [], scale, 1)[-4:])
+    )(task, [], scale, 1)[5:9])
 
 
 def test_session_restoration_keeps_orientation_and_saved_pair(tmp_path: Path) -> None:
@@ -306,7 +354,7 @@ def test_random_pair_is_primary_flow_and_next_pair_changes_ids(tmp_path: Path) -
 
     next_pair = _callback(app, "next_scale_pair")
     next_task, message, repeat = next_pair(1, scale, session)
-    assert message == "New pair ready."
+    assert message == ""
     assert repeat == []
     assert next_task["status"] == "ready"
     assert set((next_task["first"], next_task["second"])) != first_pair
@@ -425,7 +473,7 @@ def test_develop_eig_selection_provenance_survives_reopen(tmp_path: Path) -> Non
     task = task3
     display = _callback(app, "display_scale_task")
     _, _, _, _, note, *_ = display(task, [], scale, 0)
-    assert "Bayesian information gain" in note
+    assert "Recommended pair" in note
     manage = _callback(app, "manage_scale_comparison")
     saved, _, _ = _manage(
         manage, "scale-judge-first", scale=scale, session=session, task=task
@@ -460,8 +508,7 @@ def test_develop_random_fallback_provenance_and_reason(tmp_path: Path) -> None:
     task = next_task
     display = _callback(app, "display_scale_task")
     _, _, _, _, note, *_ = display(task, [], scale, 0)
-    assert "randomly" in note.lower()
-    assert "fallback" in note.lower()
+    assert "Random pair" in note
     saved, _, _ = _manage(
         _callback(app, "manage_scale_comparison"),
         "scale-judge-parity", scale=scale, session=session, task=task,
@@ -487,7 +534,7 @@ def test_next_pair_with_single_available_pair_reports_exhaustion_without_event(
     app = create_app(project)
     next_pair = _callback(app, "next_scale_pair")
     first, message, _ = next_pair(1, scale, session)
-    assert message == "New pair ready."
+    assert message == ""
     assert first["acquisition"]["strategy"] == "random"
     second, message, _ = next_pair(2, scale, session)
     assert second is no_update
@@ -512,8 +559,7 @@ def test_develop_pair_help_describes_eig_and_random_fallback() -> None:
         return collect_strings(component.children)
 
     content = " ".join(collect_strings(layout))
-    assert "Bayesian information gain" in content
-    assert "random selection" in content
-    assert "without recording a judgment" in content
+    assert "Next pair" in content
+    assert "Unsure / Skip records a response" in content
     assert "manual" in content.lower()
     assert "Pairs are sampled randomly for now" not in content
