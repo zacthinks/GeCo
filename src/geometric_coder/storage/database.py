@@ -6941,8 +6941,14 @@ class ProjectDatabase:
         spec_id: int, fingerprint: str, provenance: Mapping[str, Any],
         diagnostics: Mapping[str, Any], strategy: str, reason: str | None,
         ranked_pairs: Sequence[tuple[int, int, float | None]],
+        publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        """Atomically replace one bounded frozen ranking; no O(N²) expansion."""
+        """Atomically validate and replace one bounded frozen ranking.
+
+        A guard may read through separate connections while BEGIN IMMEDIATE holds
+        the SQLite writer lock; competing changes cannot commit until publication
+        finishes. The guard must only read and raise on a stale snapshot.
+        """
         if strategy not in {"eig", "random"}:
             raise ValueError("Invalid acquisition strategy.")
         if any(low >= high for low, high, _ in ranked_pairs):
@@ -6958,6 +6964,8 @@ class ProjectDatabase:
         diag = json.dumps(dict(diagnostics), sort_keys=True, allow_nan=False)
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if publication_guard is not None:
+                publication_guard()
             fit = connection.execute(
                 "SELECT scale_id, scale_version_id, scaler_spec_id FROM scaler_fits "
                 "WHERE scaler_fit_id = ?", (int(fit_id),)
