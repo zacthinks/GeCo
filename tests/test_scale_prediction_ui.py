@@ -117,7 +117,7 @@ def test_prediction_rejects_misaligned_score_results_and_forged_fit():
         scale_prediction_page(project, 7)
 
 
-def test_scale_comparison_controls_are_centered_without_replacing_judgment_ids():
+def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_ids():
     dash = pytest.importorskip("dash")
     from geometric_coder.ui.scale_comparisons import comparison_layout
     from dash import dcc, html, dash_table
@@ -138,18 +138,19 @@ def test_scale_comparison_controls_are_centered_without_replacing_judgment_ids()
                 return result
         return None
 
-    grid = next(
-        component for component in layout.children
-        if getattr(component, "className", None) == "scale-comparison-grid"
-    )
+    main = next(component for component in layout.children
+                if getattr(component, "className", None) == "scale-comparison-main")
+    grid = next(component for component in main.children
+                if getattr(component, "className", None) == "scale-comparison-grid")
     assert [getattr(child, "id", None) or child.className
             for child in grid.children] == [
-        "scale-reading-first", "scale-judgment-actions", "scale-reading-second",
+        "scale-reading-first", "scale-reading-second", "scale-judgment-actions",
     ]
     for name in [
         "scale-judge-first", "scale-judge-second", "scale-judge-parity",
         "scale-judge-unsure", "scale-next-pair",
         "scale-prediction-map", "scale-prediction-page-state",
+        "scale-context-level", "scale-context-window", "scale-prediction-preview",
     ]:
         assert find(layout, name) is not None
 
@@ -192,7 +193,6 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
         {"points": [{"customdata": [1, 1]}]},
         {"scale_id": scale, "fit_id": 999, "observation_ids": [1]},
         code,
-        project.sessions()[0]["session_id"],
-        None,
-        None,
-    ) == (no_update, no_update, no_update)
+        0,
+        "1",
+    ) is no_update
