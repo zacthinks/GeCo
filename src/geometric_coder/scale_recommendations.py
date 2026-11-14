@@ -244,6 +244,8 @@ def next_scale_recommendation(
                             "fallback_reason": state["reason"],
                             "run_id": run_id,
                             "seed": state["provenance"].get("random_seed"),
+                            "source_fit_id": state["scaler_fit_id"],
+                            "source_fingerprint": state["selection_fingerprint"],
                         }
             offset += len(page)
     effective_seed = secrets.randbits(63) if seed is None else int(seed)
