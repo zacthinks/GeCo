@@ -1592,3 +1592,11 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .scale-comparison-grid { grid-template-columns: 1fr; }
   .scale-judgment-actions { grid-column: 1; }
 }
+
+/* Reuse the Construct Center geometric inspector without binary assignment UI. */
+.scale-center-mode .code-center-assignment-panel,
+.scale-center-mode .code-center-positive-toggle { display: none; }
+.scale-center-mode .code-center-geometry-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 720px) {
+  .scale-center-mode .code-center-geometry-controls { grid-template-columns: 1fr; }
+}
