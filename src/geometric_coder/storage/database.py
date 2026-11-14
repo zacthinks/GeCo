@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -124,6 +124,31 @@ _CONSTRUCT_SCHEMA_SQL = (
         ON scale_comparison_events(scale_version_id, comparison_event_id)""",
     """CREATE INDEX IF NOT EXISTS scale_comparison_events_supersedes_idx
         ON scale_comparison_events(supersedes_event_id)""",
+)
+
+_SCALER_SCHEMA_SQL = (
+    """CREATE TABLE IF NOT EXISTS scaler_specs (
+        scaler_spec_id INTEGER PRIMARY KEY,
+        scale_id INTEGER NOT NULL UNIQUE REFERENCES scales(scale_id),
+        representation_id INTEGER NOT NULL REFERENCES representations(representation_id),
+        estimator_family TEXT NOT NULL,
+        hyperparameters_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS scaler_fits (
+        scaler_fit_id INTEGER PRIMARY KEY,
+        scaler_spec_id INTEGER NOT NULL REFERENCES scaler_specs(scaler_spec_id),
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        snapshot_fingerprint TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        artifact_path TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(scaler_spec_id, snapshot_fingerprint)
+    )""",
+    """CREATE INDEX IF NOT EXISTS scaler_fits_scale_idx
+        ON scaler_fits(scale_id, scaler_fit_id DESC)""",
 )
 
 _SCHEMA = """
@@ -829,6 +854,12 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
 
 
 
+def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
+    """Add Scale model configuration and immutable fit records transactionally."""
+    for statement in _SCALER_SCHEMA_SQL:
+        connection.execute(statement)
+
+
 def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
     """Add typed Construct identities without rewriting any existing Code rows.
 
@@ -863,6 +894,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     16: _migrate_16_to_17,
     17: _migrate_17_to_18,
     18: _migrate_18_to_19,
+    19: _migrate_19_to_20,
 }
 
 
@@ -909,6 +941,8 @@ class ProjectDatabase:
             for statement in _QUERY_SEARCH_SQL:
                 connection.execute(statement)
             for statement in _CONSTRUCT_SCHEMA_SQL:
+                connection.execute(statement)
+            for statement in _SCALER_SCHEMA_SQL:
                 connection.execute(statement)
             connection.execute(
                 """
