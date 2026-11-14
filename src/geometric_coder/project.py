@@ -2221,6 +2221,26 @@ class GeometricCoder:
         """Inspect only a bounded candidate set for previously judged pairs."""
         return self.database.scale_existing_pairs(int(scale_id), observation_ids)
 
+    def candidate_run(
+        self, construct_id: int, *, budget: int | None = None,
+        seed: int = 0, batch_size: int = 128,
+        session_id: int | None = None,
+        source_fit_id: int | None = None,
+        source_configuration_id: int | None = None,
+    ) -> Any:
+        """Create a reproducible Code-observation or Scale-pair candidate run.
+
+        Sampling is lazy and read-only. The scorer must acknowledge completed
+        evaluations explicitly; rankings belong to the existing frozen
+        recommendation lifecycle, not to this method.
+        """
+        from geometric_coder.candidate_sampling import prepare_candidate_run
+        return prepare_candidate_run(
+            self, construct_id, budget=budget, seed=seed, batch_size=batch_size,
+            session_id=session_id, source_fit_id=source_fit_id,
+            source_configuration_id=source_configuration_id,
+        )
+
     def scale_pair_history_count(
         self, scale_id: int, first: int, second: int,
     ) -> int:

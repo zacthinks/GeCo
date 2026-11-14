@@ -24,3 +24,6 @@ jobs:
 
       - name: Run pytest
         run: uv run pytest -q -rs
+
+      - name: Benchmark 300k Scale candidate sampling
+        run: uv run python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000

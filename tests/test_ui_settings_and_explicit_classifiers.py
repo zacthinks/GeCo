@@ -45,14 +45,53 @@ def test_new_code_and_reopen_do_not_create_classifiers(tmp_path: Path) -> None:
 def test_cv_setting_defaults_to_five_and_persists_per_project(tmp_path: Path) -> None:
     root = tmp_path / "settings.geco"
     root.mkdir()
-    assert _read_ui_settings(root) == {"cv_folds": 5}
+    assert _read_ui_settings(root) == {"cv_folds": 5, "candidate_evaluation_budget": -1}
     _save_ui_settings(root, cv_folds=3)
-    assert _read_ui_settings(root) == {"cv_folds": 3}
+    assert _read_ui_settings(root) == {"cv_folds": 3, "candidate_evaluation_budget": -1}
     with pytest.raises(ValueError, match="between 2 and 10"):
         _save_ui_settings(root, cv_folds=1)
-    assert _read_ui_settings(root) == {"cv_folds": 3}
+    assert _read_ui_settings(root) == {"cv_folds": 3, "candidate_evaluation_budget": -1}
     (root / "ui_settings.json").write_text('{"cv_folds": "garbled"}', encoding="utf-8")
-    assert _read_ui_settings(root) == {"cv_folds": 5}
+    assert _read_ui_settings(root) == {"cv_folds": 5, "candidate_evaluation_budget": -1}
+
+
+
+def test_custom_candidate_budget_requires_a_value_before_saving(tmp_path: Path) -> None:
+    import inspect
+
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    app = create_app(project)
+
+    def find(component, component_id):
+        if getattr(component, "id", None) == component_id:
+            return component
+        children = getattr(component, "children", None)
+        if not isinstance(children, (list, tuple)):
+            children = [children] if children is not None else []
+        for child in children:
+            found = find(child, component_id)
+            if found is not None:
+                return found
+        return None
+
+    field = find(app.layout, "geco-settings-candidate-custom")
+    assert field is not None
+    assert field.value is None
+
+    callback = next(
+        inspect.unwrap(spec["callback"])
+        for output, spec in app.callback_map.items()
+        if "geco-settings-candidate-status.children" in output
+    )
+    assert "Enter a whole-number" in callback("custom", field.value)
+    assert _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] == -1
+
+    assert "Evaluate up to 25" in callback("custom", 25)
+    assert _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] == 25
+    assert find(create_app(project).layout, "geco-settings-candidate-custom").value == 25
 
 
 def test_cv_folds_pass_through_saved_evidence_training(tmp_path: Path) -> None:

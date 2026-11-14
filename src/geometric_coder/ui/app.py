@@ -169,7 +169,7 @@ def _current_semantic_scores(
     return payload.get("scores") or {}
 
 
-_DEFAULT_UI_SETTINGS = {"cv_folds": 5}
+_DEFAULT_UI_SETTINGS = {"cv_folds": 5, "candidate_evaluation_budget": -1}
 
 
 def _read_ui_settings(project_dir: Path) -> dict[str, int]:
@@ -185,17 +185,35 @@ def _read_ui_settings(project_dir: Path) -> dict[str, int]:
         folds = int(raw.get("cv_folds", 5))
     except (TypeError, ValueError):
         folds = 5
-    return {"cv_folds": folds if 2 <= folds <= 10 else 5}
+    try:
+        budget = int(raw.get("candidate_evaluation_budget", -1))
+    except (ValueError, TypeError):
+        budget = -1
+    if budget not in {-1, 0} and not 1 <= budget <= 1_000_000:
+        budget = -1
+    return {"cv_folds": folds if 2 <= folds <= 10 else 5,
+            "candidate_evaluation_budget": budget}
 
 
-def _save_ui_settings(project_dir: Path, *, cv_folds: int) -> None:
+def _save_ui_settings(
+    project_dir: Path, *, cv_folds: int | None = None,
+    candidate_evaluation_budget: int | None = None,
+) -> None:
     """Save the project CV default atomically; no database/schema migration."""
-    folds = int(cv_folds)
-    if not 2 <= folds <= 10:
-        raise ValueError("Cross-validation folds must be between 2 and 10.")
+    settings = _read_ui_settings(project_dir)
+    if cv_folds is not None:
+        folds = int(cv_folds)
+        if not 2 <= folds <= 10:
+            raise ValueError("Cross-validation folds must be between 2 and 10.")
+        settings["cv_folds"] = folds
+    if candidate_evaluation_budget is not None:
+        budget = int(candidate_evaluation_budget)
+        if budget not in {-1, 0} and not 1 <= budget <= 1_000_000:
+            raise ValueError("Candidate evaluation budget must be Default, Exhaustive, or 1 to 1,000,000.")
+        settings["candidate_evaluation_budget"] = budget
     path = project_dir / "ui_settings.json"
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"cv_folds": folds}, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -1208,6 +1226,38 @@ def create_app(
                                 className="geco-settings-folds",
                             ),
                             html.Small("Maximum folds requested when tuning; fewer are used when labeled evidence is limited."),
+                            html.H3("Candidate acquisition"),
+                            html.Label("Candidate evaluation budget", htmlFor="geco-settings-candidate-budget"),
+                            dcc.Dropdown(
+                                id="geco-settings-candidate-budget",
+                                options=[
+                                    {"label": "Default (Codes: Exhaustive; Scales: 1,000)", "value": -1},
+                                    {"label": "Exhaustive (0)", "value": 0},
+                                    {"label": "Custom finite budget", "value": "custom"},
+                                ],
+                                value=(
+                                    "custom"
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                ),
+                                clearable=False, searchable=False,
+                            ),
+                            dcc.Input(
+                                id="geco-settings-candidate-custom",
+                                type="number", min=1, max=1_000_000, step=1,
+                                value=(
+                                    _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else None
+                                ),
+                                placeholder="Number of candidate tasks",
+                                className="text-input",
+                            ),
+                            html.Small(
+                                "Counts distinct scored observations for Codes or unordered pairs for Scales. "
+                                "Exhaustive Scale acquisition refuses infeasibly large pair spaces instead of sampling."
+                            ),
+                            html.Div(id="geco-settings-candidate-status", className="control-status", role="status"),
                             html.Div(id="geco-settings-status", className="control-status", role="status"),
                         ], className="modal-card geco-settings-card", role="dialog",
                            **{"aria-modal": "true", "aria-label": "GeCo Settings"}),
@@ -1263,6 +1313,47 @@ def create_app(
         enabled = not isinstance(prefs, dict) or prefs.get("enabled", True) is not False
         return (["enabled"] if enabled else []), (
             "app-shell" if enabled else "app-shell geco-tooltip-disabled"
+        )
+
+    @app.callback(
+        Output("geco-settings-candidate-custom", "style"),
+        Input("geco-settings-candidate-budget", "value"),
+    )
+    def show_custom_candidate_budget(mode: int | str | None) -> dict[str, str]:
+        return {} if mode == "custom" else {"display": "none"}
+
+    @app.callback(
+        Output("geco-settings-candidate-status", "children"),
+        Input("geco-settings-candidate-budget", "value"),
+        Input("geco-settings-candidate-custom", "value"),
+        prevent_initial_call=True,
+    )
+    def save_candidate_budget_setting(mode: int | str | None, custom: int | float | None) -> str:
+        if mode is None:
+            return ""
+        if mode == "custom":
+            if (custom is None or isinstance(custom, bool)
+                    or not isinstance(custom, (int, float))
+                    or not float(custom).is_integer()):
+                return "Enter a whole-number candidate budget between 1 and 1,000,000."
+            budget = int(custom)
+            if not 1 <= budget <= 1_000_000:
+                return "Enter a candidate budget between 1 and 1,000,000."
+        elif mode in (-1, 0):
+            budget = int(mode)
+        else:
+            return "Choose Default, Exhaustive, or Custom."
+        try:
+            _save_ui_settings(
+                project.project_dir, candidate_evaluation_budget=budget,
+            )
+        except (OSError, ValueError) as error:
+            return f"Unable to save candidate budget: {error}"
+        return (
+            "Default budget: Codes exhaustive; Scales 1,000 tasks."
+            if budget == -1
+            else ("Exhaustive candidate evaluation." if budget == 0
+                  else f"Evaluate up to {budget:,} distinct tasks.")
         )
 
     @app.callback(
