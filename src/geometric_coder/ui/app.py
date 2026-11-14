@@ -8,6 +8,7 @@ from html import escape as html_escape
 from hashlib import blake2b
 import json
 import re
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import Iterator, Sequence
@@ -5137,11 +5138,16 @@ def create_app(
                     construct_id = int(created["scale_id"])
                 else:
                     construct_id = project.create_scale(clean_name, definition or "")
-            except (ValueError, KeyError, RuntimeError) as error:
+            except (ValueError, KeyError, RuntimeError, sqlite3.DatabaseError) as error:
+                message = (
+                    "Database error: Scale creation and comparisons were rolled back. "
+                    f"Details: {error}"
+                    if isinstance(error, sqlite3.DatabaseError) else str(error)
+                )
                 return (
                     {"display": "flex"}, target, no_update, no_update,
                     no_update, no_update, no_update, no_update, no_update,
-                    name or "", definition or "", str(error),
+                    name or "", definition or "", message,
                 )
             focus_value = construct_id if target == "focus" else no_update
             return (
