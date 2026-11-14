@@ -4780,7 +4780,28 @@ def create_app(
                 if model["status"] == "current" else
                 "Scale scores unavailable or stale; neutral points do not represent low scores."
             )
-            # Preserve focal rings and the shared plot click inspector.
+            # Preserve the focal ring as trace 0: the existing lightweight
+            # selection callback patches this trace rather than rebuilding.
+            focal_x, focal_y, focal_ids, focal_hover = [], [], [], []
+            if focal_unit_id is not None:
+                try:
+                    focal_observation = project.observation(int(focal_unit_id))
+                    point = project.observation_view_coordinates(int(focal_unit_id), int(view_id))[0]
+                except (KeyError, ValueError):
+                    pass
+                else:
+                    focal_x, focal_y = [float(point[0])], [float(point[1])]
+                    focal_ids = [int(focal_unit_id)]
+                    focal_hover = [_observation_display_key(project, focal_observation)]
+            figure.add_trace(go.Scattergl(
+                x=focal_x, y=focal_y, mode="markers", name="Focal observation",
+                customdata=focal_ids, hovertext=focal_hover,
+                hovertemplate="%{hovertext}<extra></extra>",
+                marker={"size": 13, "color": "rgba(0, 0, 0, 0)",
+                        "line": {"color": "#178547", "width": 2.6}},
+                showlegend=False,
+            ))
+            figure.data = (figure.data[-1], *figure.data[:-1])
             figure.update_layout(showlegend=True)
             return figure, f"Page {page.page_index + 1} of {page.page_count} · {reason}"
 
