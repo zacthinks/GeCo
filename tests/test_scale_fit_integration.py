@@ -650,3 +650,98 @@ def test_phase3a_phase3b_random_bootstrap_has_finite_budget(tmp_path):
         row["acquisition_score"] is None
         for row in project.database.scale_acquisition_page(run["run_id"])
     )
+
+
+def test_publication_guard_rejects_interleaved_evidence_without_replacing_run(
+    tmp_path, monkeypatch,
+):
+    """An intervening saved judgment invalidates the candidate snapshot at commit."""
+    from geometric_coder.scale_recommendations import refresh_scale_acquisition
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    for first, second, outcome in (
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ):
+        project.record_scale_comparison(scale, first, second, outcome)
+    trained = project.train_scale(scale)
+    original = project.database.store_scale_acquisition
+    prior = project.database.scale_acquisition_run(scale)
+    assert prior is not None
+    prior_page = project.database.scale_acquisition_page(prior["run_id"])
+
+    def interleave(*args, **kwargs):
+        project.record_scale_comparison(scale, d, e, "first_higher")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project.database, "store_scale_acquisition", interleave)
+    with pytest.raises(RuntimeError, match="changed during acquisition"):
+        refresh_scale_acquisition(project, scale, seed=11)
+    current = project.database.scale_acquisition_run(scale)
+    assert current == prior
+    assert project.database.scale_acquisition_page(prior["run_id"]) == prior_page
+
+
+def test_publication_guard_runs_inside_locked_transaction(tmp_path):
+    """A failing freshness guard rolls back instead of deleting the old queue."""
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    fit = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    kwargs = dict(
+        scale_id=scale, fit_id=fit["scaler_fit_id"],
+        scale_version_id=fit["scale_version_id"],
+        spec_id=fit["scaler_spec_id"], fingerprint="first",
+        provenance={}, diagnostics={}, strategy="random",
+        reason="fixture", ranked_pairs=[(a, d, None)],
+    )
+    first = project.database.store_scale_acquisition(**kwargs)
+    with pytest.raises(RuntimeError, match="intervening"):
+        project.database.store_scale_acquisition(
+            **{**kwargs, "fingerprint": "second"},
+            publication_guard=lambda: (_ for _ in ()).throw(
+                RuntimeError("intervening change")
+            ),
+        )
+    assert project.database.scale_acquisition_run(scale)["run_id"] == first["run_id"]
+
+
+def test_sparse_acquisition_loads_local_csr_once_across_batches(
+    tmp_path, monkeypatch,
+):
+    """Multiple candidate batches do not decompress the same local CSR repeatedly."""
+    from geometric_coder.scale_recommendations import refresh_scale_acquisition
+
+    project, scale, rep, geometry, (a, b, c, d, e) = _setup(
+        tmp_path, sparse_geometry=True
+    )
+    project.configure_scale_model(scale, rep)
+    for first, second, outcome in (
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ):
+        project.record_scale_comparison(scale, first, second, outcome)
+    project.train_scale(scale)
+    calls = []
+    original = project.geometry_matrix
+
+    def counting_load(geometry_arg):
+        calls.append(geometry_arg)
+        return original(geometry_arg)
+
+    monkeypatch.setattr(project, "geometry_matrix", counting_load)
+    # One batch per task to make repeated load attempts observable.
+    import geometric_coder.candidate_sampling as sampling
+    actual = sampling.prepare_candidate_run
+
+    def one_at_a_time(*args, **kwargs):
+        return actual(*args, **{**kwargs, "batch_size": 1})
+
+    monkeypatch.setattr(sampling, "prepare_candidate_run", one_at_a_time)
+    acquisition = refresh_scale_acquisition(project, scale, seed=17)
+    assert acquisition["strategy"] == "eig"
+    assert acquisition["count"] > 1
+    assert calls == [geometry]
