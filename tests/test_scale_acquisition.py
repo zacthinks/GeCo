@@ -111,7 +111,7 @@ def test_dense_sparse_eig_agreement():
     X = rng.normal(size=(25, 6))
     X[np.abs(X) < 0.8] = 0
     pairs = np.stack((rng.integers(0, 24, 40), rng.integers(1, 25, 40)), axis=1)
-    pairs[:, 1] = (pairs[:, 0] + 1 + pairs[:, 1]) % 25
+    pairs[:, 1] = (pairs[:, 0] + 1 + rng.integers(0, 24, len(pairs))) % 25
     outcome = rng.integers(0, 3, len(pairs))
     a = LinearDavidsonScaler().fit(X, pairs, outcome, reference_X=X).build_posterior()
     b = LinearDavidsonScaler().fit(
