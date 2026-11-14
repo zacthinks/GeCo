@@ -784,10 +784,7 @@ def register_comparison_callbacks(
         project.patch_session_state(
             int(session_id), {"scale_comparison_task": task},
         )
-        return task, ("New pair ready · " + (
-            "Bayesian information gain" if task.get("acquisition", {}).get("strategy") == "eig"
-            else "random selection"
-        ) + "."), []
+        return task, "New pair ready.", []
 
     @app.callback(
         Output("scale-selection-summary", "children"),
