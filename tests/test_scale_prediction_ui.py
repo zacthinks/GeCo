@@ -218,7 +218,8 @@ def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
     preview = next(
         inspect.unwrap(entry["callback"])
         for entry in app.callback_map.values()
-        if inspect.unwrap(entry["callback"]).__name__ == "inspect_scale_prediction_point"
+        if "callback" in entry
+        and inspect.unwrap(entry["callback"]).__name__ == "inspect_scale_prediction_point"
     )
     stale_click = {"points": [{"customdata": [1, 1]}]}
     cleared = preview(stale_click, None, scale, 0, "1")
