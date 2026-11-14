@@ -114,7 +114,23 @@ def _random_scale_task(
     from geometric_coder.scale_recommendations import next_scale_recommendation
 
     del total_units
-    choice = next_scale_recommendation(project, int(scale_id))
+    stored = project.database.get_session(int(session_id))["state"].get(
+        "scale_comparison_task"
+    )
+    previous = _restore_scale_task(project, int(scale_id), int(session_id), stored)
+    acquisition = previous.get("acquisition")
+    navigation = acquisition if isinstance(acquisition, dict) else {}
+    current_pair = None
+    if previous.get("status") in {"ready", "saved"}:
+        current_pair = tuple(sorted((
+            int(previous["first"]), int(previous["second"]),
+        )))
+    choice = next_scale_recommendation(
+        project, int(scale_id),
+        navigation_run_id=navigation.get("navigation_run_id"),
+        navigation_offset=navigation.get("navigation_offset", 0),
+        exclude_pair=current_pair,
+    )
     first, second = choice["pair"]
     task = _prepare_scale_task(project, {
         "scale_id": int(scale_id), "session_id": int(session_id),
@@ -128,6 +144,8 @@ def _random_scale_task(
         "random_seed": choice.get("seed"),
         "source_fit_id": choice.get("source_fit_id"),
         "source_selection_fingerprint": choice.get("source_fingerprint"),
+        "navigation_run_id": choice.get("navigation_run_id"),
+        "navigation_offset": choice.get("navigation_offset", 0),
     }
     return task
 
@@ -177,8 +195,11 @@ def comparison_layout(
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
-            "Scale, or whether they are approximately equal. Pairs are sampled "
-            "randomly for now; informative pair recommendations will come later.",
+            "Scale, or whether they are approximately equal. When a fitted Scale "
+            "model has adequate evidence, Next pair recommends comparisons "
+            "using Bayesian information gain; otherwise it uses random "
+            "selection. Next pair advances without recording a judgment. "
+            "The Unsure / Skip action, by contrast, records an explicit response.",
             className="focus-help",
         ),
         html.Div(id="scale-task-warning", className="control-status"),
@@ -216,8 +237,9 @@ def comparison_layout(
         html.Details([
             html.Summary("More options · choose a pair manually"),
             html.P(
-                "Optional: choose two specific observations instead of a randomly "
-                "presented pair. Selection uses a small page, never the entire corpus.",
+                "Optional: choose two specific observations instead of the "
+                "recommended pair (Bayesian information gain or random fallback). "
+                "Manual selection uses a small page, never the entire corpus.",
                 className="focus-help",
             ),
             html.Label("Observation browser page"),
