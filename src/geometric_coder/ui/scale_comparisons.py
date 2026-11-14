@@ -166,6 +166,7 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any, auto_train: bool 
                 ),
             ], className="classifier-training-options"),
             html.Div(id="scale-model-preference-status", style={"display": "none"}),
+            html.Div(id="scale-model-selection-status", className="control-status"),
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
@@ -323,6 +324,34 @@ def register_comparison_callbacks(
             return None
         return int(construct_id) if row["type"] == "scale" else None
 
+    def ensure_scale_configuration(scale_id: int, representation_id: int) -> None:
+        """Preserve existing hyperparameters while changing the analytic geometry."""
+        current = project.database.get_scaler_spec(scale_id)
+        if current is not None and current["representation_id"] == representation_id:
+            return
+        project.configure_scale_model(
+            scale_id, representation_id,
+            hyperparameters=current["hyperparameters"] if current is not None else {},
+        )
+
+    @app.callback(
+        Output("scale-model-selection-status", "children"),
+        Input("scale-model-geometry", "value"),
+        State("focus-construct-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_geometry(
+        representation_id: int | None, construct_id: int | None,
+    ) -> str:
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None or representation_id is None:
+            return ""
+        try:
+            ensure_scale_configuration(scale_id, int(representation_id))
+            return "Analytic geometry saved."
+        except (KeyError, ValueError) as error:
+            return f"Geometry selection was not saved: {error}"
+
     @app.callback(
         Output("scale-model-preference-status", "children"),
         Input("scale-auto-train", "value"),
@@ -380,7 +409,7 @@ def register_comparison_callbacks(
         if representation_id is None:
             return "Choose an analytic geometry before training."
         try:
-            project.configure_scale_model(scale_id, int(representation_id))
+            ensure_scale_configuration(scale_id, int(representation_id))
             result = project.train_scale(scale_id)
             if result["status"] == "insufficient_evidence":
                 return str(result["reason"])
