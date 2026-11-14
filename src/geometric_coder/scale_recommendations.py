@@ -147,11 +147,17 @@ def scale_acquisition_status(project: Any, scale_id: int) -> dict[str, Any]:
     if fit is None or int(fit["scaler_fit_id"]) != run["scaler_fit_id"]:
         return {"strategy": "random", "reason": "fit_changed", "run_id": None}
     current_scale = project.scale(int(scale_id))
+    config = status.get("configuration")
+    snapshot = fit["snapshot"]
+    frozen_geometry = snapshot["geometry"]
     if (int(current_scale["scale_version_id"]) != run["scale_version_id"]
             or int(fit["scaler_spec_id"]) != run["scaler_spec_id"]
-            or fit["snapshot"]["eligibility"] != project.scale_eligibility(int(scale_id))):
+            or snapshot["eligibility"] != project.scale_eligibility(int(scale_id))
+            or config is None
+            or int(config["representation_id"]) != int(frozen_geometry["representation_id"])
+            or str(config["estimator_family"]) != str(snapshot["estimator_family"])
+            or config["hyperparameters"] != snapshot["hyperparameters"]):
         return {"strategy": "random", "reason": "definition_or_configuration_changed", "run_id": None}
-    frozen_geometry = fit["snapshot"]["geometry"]
     try:
         if frozen_geometry != _geometry_snapshot(
             project, int(frozen_geometry["representation_id"])
