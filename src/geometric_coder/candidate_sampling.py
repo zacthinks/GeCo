@@ -86,6 +86,8 @@ class CandidateRun:
     batch_size: int
     _ids: array = field(repr=False)
     _database: Any = field(repr=False)
+    _project: Any = field(repr=False)
+    _session_id: int | None = field(repr=False)
     sampled_count: int = 0
     evaluated_count: int = 0
     inspected_task_count: int = 0
@@ -123,6 +125,28 @@ class CandidateRun:
             "source_configuration_id": self.source_configuration_id,
         }
 
+    def assert_current(self) -> None:
+        """Reject publishing a ranking if eligibility or judgment evidence changed.
+
+        Phase 3B must call this immediately before committing frozen rankings,
+        within its publication transaction or under an equivalent consistency
+        guard. This O(N) snapshot recheck does not enumerate the O(N**2) pair
+        space; it also detects Code session-visit and annotation changes.
+        Source-fit freshness must be checked separately by the ranking owner.
+        """
+        latest = prepare_candidate_run(
+            self._project, self.construct_id,
+            budget=self.requested_budget, seed=self.seed,
+            batch_size=self.batch_size, session_id=self._session_id,
+            source_fit_id=self.source_fit_id,
+            source_configuration_id=self.source_configuration_id,
+        )
+        if latest.eligibility_fingerprint != self.eligibility_fingerprint:
+            raise RuntimeError(
+                "Candidate eligibility, definition, or judgment history changed "
+                "during acquisition. Discard this ranking and restart the run."
+            )
+
     def acknowledge_evaluated(
         self, batch: CandidateBatch,
         completed_tasks: Sequence[tuple[int, ...]] | None = None,
@@ -137,6 +161,12 @@ class CandidateRun:
         self._acknowledged = True
 
     def batches(self) -> Iterator[CandidateBatch]:
+        """Offer each task once until the *acknowledged* budget is met.
+
+        A partially or wholly failed scorer batch consumes sampled identities,
+        but not the evaluation budget. The next batch draws unseen replacements.
+        Advancing without acknowledgment is an integration error.
+        """
         if self._started:
             raise RuntimeError("A candidate run can only be consumed once.")
         self._started = True
@@ -152,9 +182,9 @@ class CandidateRun:
         buffer: list[tuple[int, ...]] = []
         sequence = 0
         permutation = _permutation(self.possible_task_count, self.seed)
-        # Each SQL exclusion check contains at most MAX_BATCH_SIZE canonical pairs.
-        for positions_start in range(0, self.possible_task_count, self.batch_size):
-            count = min(self.batch_size, self.possible_task_count - positions_start)
+        # Only fixed-size SQL membership batches, even for very large pair spaces.
+        for start in range(0, self.possible_task_count, self.batch_size):
+            count = min(self.batch_size, self.possible_task_count - start)
             ranks = [next(permutation) for _ in range(count)]
             self.inspected_task_count += count
             if self.construct_type == "code":
@@ -170,11 +200,12 @@ class CandidateRun:
                 )
                 accepted = [pair for pair in pairs if pair not in judged]
 
-            for task in accepted:
-                if self.sampled_count + len(buffer) >= limit:
-                    break
+            for index, task in enumerate(accepted):
+                # The same sampled task is never offered twice, whether its
+                # scoring succeeded or failed.
                 buffer.append(task)
-                if len(buffer) == self.batch_size or self.sampled_count + len(buffer) == limit:
+                remaining = limit - self.evaluated_count
+                if len(buffer) == min(self.batch_size, remaining):
                     batch = CandidateBatch(sequence, tuple(buffer))
                     self.sampled_count += len(buffer)
                     sequence += 1
@@ -182,10 +213,18 @@ class CandidateRun:
                     self._pending_batch = batch
                     self._acknowledged = False
                     yield batch
-            if self.sampled_count >= limit:
-                # A finite budget does not claim that every candidate was inspected.
-                self.exhausted = self.inspected_task_count >= self.possible_task_count
-                return
+                    if not self._acknowledged:
+                        raise RuntimeError(
+                            "Acknowledge the previous candidate batch before requesting another."
+                        )
+                    if self.evaluated_count == limit:
+                        # Even if the entire rank window was inspected, it may
+                        # contain un-emitted eligible tasks beyond this index.
+                        self.exhausted = (
+                            start + count == self.possible_task_count
+                            and index + 1 == len(accepted)
+                        )
+                        return
 
         if buffer:
             batch = CandidateBatch(sequence, tuple(buffer))
@@ -193,12 +232,18 @@ class CandidateRun:
             self._pending_batch = batch
             self._acknowledged = False
             yield batch
+            if not self._acknowledged:
+                raise RuntimeError(
+                    "Acknowledge the previous candidate batch before requesting another."
+                )
         self.exhausted = True
-        if self.sampled_count == 0:
+        if self.evaluated_count < limit:
             self.unavailable_reason = (
-                "Every eligible Scale pair has an existing judgment."
-                if self.construct_type == "scale" else "No eligible unjudged observations."
+                "No additional eligible unjudged tasks remain. "
+                f"Evaluated {self.evaluated_count:,} of the requested "
+                f"{self.requested_budget or self.possible_task_count:,} tasks."
             )
+
 
 
 def prepare_candidate_run(
@@ -279,4 +324,5 @@ def prepare_candidate_run(
         source_fit_id=source_fit_id,
         source_configuration_id=source_configuration_id,
         batch_size=batch_size, _ids=ids, _database=project.database,
+        _project=project, _session_id=session_id if kind == "code" else None,
     )
