@@ -369,3 +369,24 @@ def test_develop_auto_training_runs_only_after_saved_evidence(tmp_path, monkeypa
     assert auto(saved, {"status": "ready", "event_id": event, "scale_id": scale},
                 scale, ["auto"], rep) == ""
     assert calls == [scale]
+
+
+def test_code_to_scale_bootstrap_is_nine_ordinary_training_rows(tmp_path):
+    project, _, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    code = project.create_code("Binary indicator")
+    for obs in [a, b]:
+        project.annotate(obs, code, "positive", origin="human_direct")
+    for obs in [c, d, e]:
+        project.annotate(obs, code, "negative", origin="human_direct")
+    scale = project.create_scale_from_code(
+        "Bootstrapped ordinal", "Present higher than Absent", code,
+        expected_preview=project.code_scale_bootstrap_preview(code),
+    )["scale_id"]
+    training = build_scale_training_data(project, scale, geom)
+    assert training.n_comparisons == 6
+    assert training.outcomes.tolist() == [0] * 6
+    assert len(set(training.comparison_event_ids)) == 6
+    project.configure_scale_model(scale, rep)
+    fit = project.train_scale(scale, estimator_factory=RecordingScaler)
+    assert fit["status"] == "current"
+    assert fit["fit"]["diagnostics"]["comparison_count"] == 6
