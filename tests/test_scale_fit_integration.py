@@ -182,7 +182,7 @@ def test_schema_19_to_20_upgrade_preserves_comparison_history(tmp_path):
         con.execute("DROP TABLE scaler_specs")
         con.execute("UPDATE project SET schema_version = 19")
     reopened = GeometricCoder.open(project.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 20
+    assert reopened.database.project_metadata()["schema_version"] == 21
     assert reopened.scale_comparisons(scale)[0]["comparison_event_id"] == event
     assert reopened.scale_model_status(scale)["status"] == "not_configured"
 
@@ -251,7 +251,7 @@ def test_migration_failure_rolls_back_all_new_tables(tmp_path, monkeypatch):
             "SELECT name FROM sqlite_master WHERE name='scaler_specs'"
         ).fetchone() is None
     monkeypatch.setitem(storage_database._MIGRATIONS, 19, original)
-    assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 20
+    assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 21
 
 
 def test_no_comparisons_and_parity_only_stay_untrained(tmp_path):
