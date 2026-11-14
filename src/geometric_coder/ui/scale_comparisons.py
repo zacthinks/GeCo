@@ -251,6 +251,11 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                 "definitions, corrected events, and imported evidence.",
                 className="focus-help",
             ),
+            html.Label("History page (latest first)"),
+            dcc.Input(
+                id="scale-history-page", type="number", min=1, step=1, value=1,
+                className="page-number-input",
+            ),
             dash_table.DataTable(
                 id="scale-history", data=[], row_selectable="single", selected_rows=[],
                 columns=[
@@ -452,14 +457,10 @@ def register_comparison_callbacks(
                 if not 0 <= index < len(history_rows):
                     raise ValueError("Select a valid history row.")
                 event_id = int(history_rows[index]["comparison_event_id"])
-                events = project.scale_comparisons(scale_id)
-                previous = next(
-                    (row for row in events if row["comparison_event_id"] == event_id),
-                    None,
-                )
+                previous = project.scale_comparison_event(scale_id, event_id)
                 if previous is None:
                     raise ValueError("The selected comparison is no longer available.")
-                if any(row["supersedes_event_id"] == event_id for row in events):
+                if previous["is_superseded"]:
                     raise ValueError("This judgment was already corrected. Select its latest revision.")
                 if previous["version_number"] != project.scale(scale_id)["version_number"]:
                     raise ValueError("An earlier Scale definition cannot be corrected under the current definition.")
@@ -499,11 +500,9 @@ def register_comparison_callbacks(
                 first, second = int(task["first"]), int(task["second"])
                 if set(project.eligible_scale_observation_ids(scale_id, [first, second])) != {first, second}:
                     raise ValueError("The pair is no longer eligible. Prepare a new task.")
-                prior = project.scale_comparisons(scale_id)
-                previously_judged = any(
-                    {row["observation_low_id"], row["observation_high_id"]} == {first, second}
-                    for row in prior
-                )
+                previously_judged = project.scale_pair_history_count(
+                    scale_id, first, second,
+                ) > 0
                 if (task.get("mode") != "correction" and previously_judged
                         and "repeat" not in (repeat_ack or [])):
                     raise ValueError(
@@ -633,23 +632,19 @@ def register_comparison_callbacks(
                     html.Div(children, className="context-content"),
                 ]),
             ], className="focus-coding-panel")
-        history = project.scale_comparisons(scale_id)
-        matches = [
-            row for row in history
-            if {row["observation_low_id"], row["observation_high_id"]} == {first, second}
-        ]
+        match_count = project.scale_pair_history_count(scale_id, first, second)
         correction = task.get("mode") == "correction"
         prior_message = (
             f"Correcting event {task['supersedes_event_id']} (append-only)."
             if correction else (
-                f"This pair has {len(matches)} previous event(s), including earlier definitions "
+                f"This pair has {match_count} previous event(s), including earlier definitions "
                 "and corrections. Confirm an independent repeat to record another judgment."
-                if matches else "No previous judgment for this pair."
+                if match_count else "No previous judgment for this pair."
             )
         )
         enabled = (
             task["status"] == "ready" and snapshot_ok and eligible
-            and (correction or not matches or "repeat" in (repeat_ack or []))
+            and (correction or not match_count or "repeat" in (repeat_ack or []))
         )
         if task["status"] == "saved":
             warning = f"Saved event {task['event_id']}. Prepare a new task to judge again."
@@ -666,27 +661,27 @@ def register_comparison_callbacks(
         Input("focus-construct-dropdown", "value"),
         Input("scale-task-store", "data"),
         Input("workspace-tabs", "value"),
+        Input("scale-history-page", "value"),
     )
     def refresh_scale_history(
         construct_id: int | None, task: Any, workspace: str | None,
+        page: int | None = 1,
     ) -> tuple[Any, list[int], str]:
         del task
         scale_id = active_scale_id(construct_id)
         if scale_id is None or workspace != "focus":
             return [], [], ""
-        history = project.scale_comparisons(scale_id)
+        history, total, current_page = project.scale_comparison_history_page(
+            scale_id, page=max(1, int(page or 1)), page_size=_HISTORY_SIZE,
+        )
         current_version = int(project.scale(scale_id)["version_number"])
-        superseded = {
-            row["supersedes_event_id"] for row in history
-            if row["supersedes_event_id"] is not None
-        }
         labels: dict[int, str] = {}
         def label(obs: int) -> str:
             if obs not in labels:
                 labels[obs] = key_label(obs)
             return labels[obs]
         records = []
-        for row in reversed(history[-_HISTORY_SIZE:]):
+        for row in history:
             event_id = int(row["comparison_event_id"])
             is_human = str(row["origin"]).startswith("human_")
             records.append({
@@ -703,12 +698,13 @@ def register_comparison_callbacks(
                 ),
                 "reviewer": row["reviewer_key"] or "Not specified",
                 "state": (
-                    ("Superseded" if event_id in superseded else "Effective")
+                    ("Superseded" if row["is_superseded"] else "Effective")
                     + (" · earlier definition" if int(row["version_number"]) != current_version else "")
                 ),
                 "corrects": row["supersedes_event_id"] or "",
             })
         return records, [], (
-            f"{len(history):,} recorded event(s), showing the latest {len(records):,}. "
-            "Older events remain in the stored append-only history."
+            f"{total:,} recorded event(s), page {current_page:,} of "
+            f"{max(1, (total + _HISTORY_SIZE - 1) // _HISTORY_SIZE):,} "
+            f"({len(records):,} visible). Older events can be opened by changing pages."
         )
