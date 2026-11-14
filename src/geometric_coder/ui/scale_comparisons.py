@@ -813,7 +813,15 @@ def register_comparison_callbacks(
                 ), []
             if trigger in _OUTCOMES:
                 if task.get("status") == "saved":
-                    return task, f"Already saved as event {task.get('event_id')}.", no_update
+                    # A changed answer is a correction of the same displayed pair,
+                    # not an independent additional comparison. Retain orientation.
+                    if _OUTCOMES[trigger] == task.get("outcome"):
+                        return no_update, no_update, no_update
+                    task = {
+                        **task, "status": "ready", "mode": "correction",
+                        "supersedes_event_id": int(task["event_id"]),
+                        "submission_key": uuid.uuid4().hex,
+                    }
                 if task.get("status") != "ready":
                     raise ValueError("Prepare a comparison before recording a judgment.")
                 if task.get("snapshot") != _scale_task_snapshot(project, scale_id):
@@ -894,7 +902,7 @@ def register_comparison_callbacks(
         project.patch_session_state(
             int(session_id), {"scale_comparison_task": task},
         )
-        return task, "New pair ready.", []
+        return task, "", []
 
     @app.callback(
         Output("scale-selection-summary", "children"),
@@ -906,19 +914,29 @@ def register_comparison_callbacks(
         Output("scale-judge-parity", "disabled"),
         Output("scale-judge-second", "disabled"),
         Output("scale-judge-unsure", "disabled"),
+        Output("scale-judge-first", "className"),
+        Output("scale-judge-parity", "className"),
+        Output("scale-judge-second", "className"),
+        Output("scale-judge-unsure", "className"),
+        Output("scale-saved-indicator", "children"),
         Input("scale-task-store", "data"),
         Input("scale-repeat-ack", "value"),
         Input("focus-construct-dropdown", "value"),
         Input("focus-refresh-store", "data"),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window", "value"),
     )
     def display_scale_task(
         task: dict[str, Any] | None, repeat_ack: list[str] | None,
         construct_id: int | None, refresh: int | None,
+        context_level: int | None = None, context_window: Any = 1,
     ) -> tuple[Any, ...]:
         del refresh
+        base_classes = ("judgment-button scale-judgment-button",) * 4
+        empty_state = (*base_classes, "")
         scale_id = active_scale_id(construct_id)
         if scale_id is None or not isinstance(task, dict) or task.get("scale_id") != scale_id:
-            return "", "", "", "", "", True, True, True, True
+            return "", "", "", "", "", True, True, True, True, *empty_state
         summary = []
         for field, name in (("picked_a", "First selection"), ("picked_b", "Second selection")):
             value = task.get(field)
@@ -926,7 +944,7 @@ def register_comparison_callbacks(
                 f"{name}: {key_label(value) if value is not None else 'Choose an observation'}"
             )
         if task.get("status") not in {"ready", "saved"}:
-            return " · ".join(summary), "", "", "", "", True, True, True, True
+            return " · ".join(summary), "", "", "", "", True, True, True, True, *empty_state
         first, second = int(task["first"]), int(task["second"])
         snapshot_ok = task.get("snapshot") == _scale_task_snapshot(project, scale_id)
         eligible = set(project.eligible_scale_observation_ids(scale_id, [first, second])) == {first, second}
@@ -937,20 +955,12 @@ def register_comparison_callbacks(
         def reading(observation_id: int, letter: str) -> Any:
             item = project.observation(observation_id)
             unit_id = int(item["unit_id"])
-            # A bounded local context avoids loading an entire long document.
-            # Adjacent units must belong to the same parent source hierarchy.
-            position = int(item["row_position"])
-            positions = range(max(0, position - 3), min(total_units, position + 4))
-            nearby = project.database.unit_rows_at_positions(list(positions))
-            parent_keys = list(project.metadata["key_columns"])[:-1]
-            context = [
-                unit for unit in nearby
-                if (int(unit["unit_id"]) == unit_id
-                    or (parent_keys and all(
-                        unit["user_key"].get(key) == item["user_key"].get(key)
-                        for key in parent_keys
-                    )))
-            ]
+            # Use the same bounded, hierarchy-aware reader as Code Develop.
+            # Context selection affects presentation only, never evidence.
+            context = project.context(
+                unit_id, level=int(context_level if context_level is not None else 0),
+                window=max(1, min(100, int(context_window or 1))),
+            )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
                 key_columns=list(project.metadata["key_columns"]),
@@ -960,52 +970,39 @@ def register_comparison_callbacks(
             return html.Div([
                 html.H4(f"Observation {letter}"),
                 html.P(key_label(observation_id), className="focal-key"),
-                html.P(item["text"], className="focal-text"),
+                html.Div(children, className="context-content focus-context-content"),
                 html.Details([
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),
-                ]),
-                html.Details([
-                    html.Summary("Surrounding context"),
-                    html.Div(children, className="context-content"),
                 ]),
                 ], className="scale-comparison-main"),
     ], className="focus-workspace scale-workspace")
         match_count = project.scale_pair_history_count(scale_id, first, second)
         correction = task.get("mode") == "correction"
-        prior_message = (
-            f"Correcting event {task['supersedes_event_id']} (append-only)."
-            if correction else (
-                f"This pair has {match_count} previous event(s), including earlier definitions "
-                "and corrections. Confirm an independent repeat to record another judgment."
-                if match_count else "No previous judgment for this pair."
-            )
-        )
         acquisition = task.get("acquisition")
-        if isinstance(acquisition, dict):
-            strategy = acquisition.get("strategy")
-            reason = acquisition.get("reason")
-            if strategy == "eig":
-                selection_note = "Selected by Bayesian information gain."
-            elif strategy == "random":
-                selection_note = "Selected randomly"
-                if reason:
-                    selection_note += f" (fallback: {str(reason).replace('_', ' ')})"
-                selection_note += "."
-            else:
-                selection_note = ""
-            if selection_note:
-                prior_message = f"{selection_note} {prior_message}"
-        enabled = (
-            task["status"] == "ready" and snapshot_ok and eligible
-            and (correction or not match_count or "repeat" in (repeat_ack or []))
+        strategy = acquisition.get("strategy") if isinstance(acquisition, dict) else None
+        selection_note = (
+            "Recommended pair" if strategy == "eig" else
+            "Random pair" if strategy == "random" else "Manual pair"
         )
-        if task["status"] == "saved":
-            warning = f"Saved event {task['event_id']}. Prepare a new task to judge again."
+        if match_count and task.get("status") == "ready" and not correction:
+            selection_note += " · Existing evidence; confirm an independent repeat below."
+        enabled = (
+            task["status"] in {"ready", "saved"} and snapshot_ok and eligible
+            and (task["status"] == "saved" or correction or not match_count
+                 or "repeat" in (repeat_ack or []))
+        )
+        selected = task.get("outcome") if task["status"] == "saved" else None
+        classes = tuple(
+            cls + (" judgment-selected" if selected == outcome else "")
+            for cls, outcome in zip(base_classes, _OUTCOMES.values())
+        )
+        saved_indicator = "Saved · Change your answer or choose Next pair" if selected else ""
         return (
             " · ".join(summary),
             reading(first, "A"), reading(second, "B"),
-            warning, prior_message, *([not enabled] * 4),
+            warning, selection_note, *([not enabled] * 4),
+            *classes, saved_indicator,
         )
 
     @app.callback(
