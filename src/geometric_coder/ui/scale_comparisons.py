@@ -225,7 +225,7 @@ def comparison_layout(
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
-        ], className="focus-coding-panel scale-prediction-panel"),
+        ], className="focus-coding-panel scale-prediction-panel", open=True),
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
@@ -237,6 +237,8 @@ def comparison_layout(
             className="focus-help",
         ),
         html.Div(id="scale-task-warning", className="control-status"),
+        html.Div(id="scale-pair-history-note", className="control-status"),
+
         html.Div([
             html.Div(
                 id="scale-reading-first",
@@ -325,7 +327,7 @@ def comparison_layout(
                 style={"display": "none"},
             ),
             html.H4("Repeat an existing comparison"),
-            html.Div(id="scale-pair-history-note", className="control-status"),
+
             dcc.Checklist(
                 id="scale-repeat-ack",
                 options=[{
