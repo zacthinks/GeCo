@@ -2141,6 +2141,21 @@ class GeometricCoder:
         """Read the latest or a historical Construct definition."""
         return self.database.get_construct(int(construct_id), version_number)
 
+    def code_scale_bootstrap_preview(self, code_id: int) -> dict[str, Any]:
+        """Count effective human Present/Absent atomic observations without creating a Scale."""
+        return self.database.code_scale_bootstrap_preview(int(code_id))
+
+    def create_scale_from_code(
+        self, name: str, description: str, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Create an independent Scale with an atomic Cartesian batch of ordinary comparisons."""
+        return self.database.create_scale_from_code(
+            name, description, int(code_id), expected_preview=expected_preview,
+            submission_key=submission_key, session_id=session_id,
+        )
+
     def create_scale(
         self, name: str, description: str = "",
         eligibility: Mapping[str, Any] | None = None,
@@ -2184,6 +2199,34 @@ class GeometricCoder:
         """Retrieve append-only comparison history or effective terminal judgments."""
         return self.database.scale_comparisons(
             scale_id, version_number=version_number, effective_only=effective_only,
+        )
+
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return one page of comparison history with supersession status."""
+        return self.database.scale_comparison_history_page(
+            int(scale_id), page=page, page_size=page_size,
+        )
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Read a single stored comparison event."""
+        return self.database.scale_comparison_event(int(scale_id), int(event_id))
+
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Inspect only a bounded candidate set for previously judged pairs."""
+        return self.database.scale_existing_pairs(int(scale_id), observation_ids)
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        """Count events for one canonical pair without loading full history."""
+        return self.database.scale_pair_history_count(
+            int(scale_id), int(first), int(second),
         )
 
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:

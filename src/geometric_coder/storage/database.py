@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -3333,6 +3334,99 @@ class ProjectDatabase:
             ).fetchall()
         return [_scale_comparison_row(row) for row in rows]
 
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Page complete, immutable comparison history, including superseded events."""
+        if page_size < 1 or page_size > 200:
+            raise ValueError("History page size must be between 1 and 200.")
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            total = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events AS e "
+                "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                "WHERE v.scale_id = ?", (int(scale_id),),
+            ).fetchone()[0])
+            pages = max(1, (total + page_size - 1) // page_size)
+            current_page = max(1, min(int(page), pages))
+            rows = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ?
+                   ORDER BY e.comparison_event_id DESC LIMIT ? OFFSET ?""",
+                (int(scale_id), int(page_size), (current_page - 1) * page_size),
+            ).fetchall()
+        return [
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            for row in rows
+        ], total, current_page
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Get one historical event for correction without scanning a large batch."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.comparison_event_id = ?""",
+                (int(scale_id), int(event_id)),
+            ).fetchone()
+        return (
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            if row is not None else None
+        )
+
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Find previously compared canonical pairs within a small candidate batch."""
+        ids = list(dict.fromkeys(int(item) for item in observation_ids))
+        if len(ids) < 2:
+            return set()
+        if len(ids) > 400:
+            raise ValueError("Pair candidate lookup requires at most 400 observations.")
+        placeholders = ", ".join("?" for _ in ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT e.observation_low_id, e.observation_high_id
+                    FROM scale_comparison_events AS e
+                    WHERE e.scale_version_id IN (
+                        SELECT scale_version_id FROM scale_versions WHERE scale_id = ?
+                    )
+                    AND e.observation_low_id IN ({placeholders})
+                    AND e.observation_high_id IN ({placeholders})""",
+                (int(scale_id), *ids, *ids),
+            ).fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        low, high = sorted((int(first), int(second)))
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.observation_low_id = ?
+                     AND e.observation_high_id = ?""",
+                (int(scale_id), low, high),
+            ).fetchone()
+        return int(row[0])
+
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
         """Return current, eligible human judgments for later Scale fitting.
 
@@ -3359,6 +3453,191 @@ class ProjectDatabase:
             if item["observation_low_id"] in eligible
             and item["observation_high_id"] in eligible
         ]
+
+    # A hard cap prevents an accidental many-million-row batch. Above the cap
+    # the researcher can create an ordinary Scale instead; nothing is truncated.
+    _MAX_CODE_BOOTSTRAP_COMPARISONS = 100_000
+
+    def _human_code_bootstrap_snapshot(
+        self, connection: sqlite3.Connection, code_id: int,
+    ) -> tuple[dict[str, Any], list[int], list[int]]:
+        """Current effective human labels on atomic observations, in stable order."""
+        code_version = connection.execute(
+            "SELECT version_number FROM code_versions WHERE code_id = ? "
+            "ORDER BY version_number DESC LIMIT 1", (int(code_id),),
+        ).fetchone()
+        if code_version is None:
+            raise KeyError(f"Unknown code_id: {code_id}")
+        present: list[int] = []
+        absent: list[int] = []
+        digest = hashlib.sha256(f"code:{code_id}:v{code_version[0]}|".encode())
+        rows = connection.execute(
+            """SELECT ca.observation_id, ca.value, ca.annotation_event_id
+               FROM current_annotations AS ca
+               JOIN observations AS o ON o.observation_id = ca.observation_id
+               WHERE ca.code_id = ? AND o.kind = 'atomic'
+                 AND ca.value IN ('positive', 'negative')
+                 AND substr(ca.origin, 1, 6) = 'human_'
+                 AND length(ca.origin) > 6
+               ORDER BY ca.observation_id""",
+            (int(code_id),),
+        )
+        for row in rows:
+            observation_id = int(row["observation_id"])
+            if row["value"] == "positive":
+                present.append(observation_id)
+            else:
+                absent.append(observation_id)
+            digest.update(
+                f"{observation_id}:{row['value']}:{row['annotation_event_id']}|".encode()
+            )
+        comparisons = len(present) * len(absent)
+        preview = {
+            "code_id": int(code_id),
+            "code_version": int(code_version[0]),
+            "present": len(present),
+            "absent": len(absent),
+            "comparisons": comparisons,
+            "fingerprint": digest.hexdigest(),
+            "limit": self._MAX_CODE_BOOTSTRAP_COMPARISONS,
+        }
+        return preview, present, absent
+
+    def code_scale_bootstrap_preview(self, code_id: int) -> dict[str, Any]:
+        """Preview the full human Present x Absent Cartesian product."""
+        with self.connect() as connection:
+            preview, _, _ = self._human_code_bootstrap_snapshot(connection, int(code_id))
+        return preview
+
+    def create_scale_from_code(
+        self, name: str, description: str, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Commit the independent Scale and every normal human comparison atomically.
+
+        The opaque submission key uses existing event idempotency. No new evidence
+        type, weight, or provenance field is created. No partial batch is committed.
+        """
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Scale name may not be empty.")
+        if (not isinstance(submission_key, str) or len(submission_key) != 32
+                or any(letter not in "0123456789abcdef" for letter in submission_key)):
+            raise ValueError("A valid creation submission key is required.")
+        if not isinstance(expected_preview, Mapping):
+            raise ValueError("Review the Code comparison counts before confirming.")
+        code_id = int(code_id)
+        prefix = f"scale-init-{submission_key}-{code_id}-"
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                """SELECT v.scale_id, e.submission_key
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE e.submission_key LIKE ? LIMIT 1""",
+                (f"scale-init-{submission_key}-%",),
+            ).fetchone()
+            if previous is not None:
+                if not str(previous["submission_key"]).startswith(prefix):
+                    raise ValueError("This creation key was already used for a different Code.")
+                scale_id = int(previous["scale_id"])
+                version = connection.execute(
+                    "SELECT name, description_markdown FROM scale_versions "
+                    "WHERE scale_id = ? AND version_number = 1",
+                    (scale_id,),
+                ).fetchone()
+                count = int(connection.execute(
+                    "SELECT COUNT(*) FROM scale_comparison_events AS e "
+                    "JOIN scale_versions AS v ON e.scale_version_id = v.scale_version_id "
+                    "WHERE v.scale_id = ? AND e.submission_key LIKE ?",
+                    (scale_id, f"{prefix}%"),
+                ).fetchone()[0])
+                first_session = connection.execute(
+                    "SELECT session_id FROM scale_comparison_events "
+                    "WHERE submission_key = ?", (f"{prefix}0",),
+                ).fetchone()
+                if (version is None or version["name"] != clean_name
+                        or version["description_markdown"] != description
+                        or count != expected_preview.get("comparisons")
+                        or first_session is None
+                        or first_session["session_id"] != session_id):
+                    raise ValueError("Creation key was reused with different Scale details.")
+                return {
+                    "scale_id": scale_id, "comparisons_created": count, "retried": True,
+                }
+
+            snapshot, present, absent = self._human_code_bootstrap_snapshot(
+                connection, code_id,
+            )
+            if snapshot != dict(expected_preview):
+                raise ValueError(
+                    "The Code's effective human annotations changed after preview. "
+                    "Review the counts again before creating this Scale."
+                )
+            if not present or not absent:
+                raise ValueError(
+                    "Bootstrapping requires at least one human Present and one human Absent "
+                    "atomic observation. Create the Scale without bootstrapping instead."
+                )
+            total = snapshot["comparisons"]
+            if total > self._MAX_CODE_BOOTSTRAP_COMPARISONS:
+                raise ValueError(
+                    f"Bootstrapping would create {total:,} comparisons, above the "
+                    f"{self._MAX_CODE_BOOTSTRAP_COMPARISONS:,} safety limit. "
+                    "No Scale or comparisons were created."
+                )
+            if session_id is not None and connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (int(session_id),),
+            ).fetchone() is None:
+                raise ValueError("The active session is no longer available.")
+            identity = connection.execute(
+                "INSERT INTO constructs(type, created_at) VALUES ('scale', ?)",
+                (now,),
+            )
+            scale_id = int(identity.lastrowid)
+            connection.execute(
+                "INSERT INTO scales(scale_id, eligibility_spec_json, "
+                "eligibility_revision, updated_at) VALUES (?, ?, 1, ?)",
+                (scale_id, '{"kind":"all"}', now),
+            )
+            version = connection.execute(
+                "INSERT INTO scale_versions(scale_id, version_number, name, "
+                "description_markdown, created_at) VALUES (?, 1, ?, ?, ?)",
+                (scale_id, clean_name, description, now),
+            )
+            version_id = int(version.lastrowid)
+            connection.executemany(
+                """INSERT INTO scale_comparison_events(
+                    scale_version_id, observation_low_id, observation_high_id,
+                    presented_first_id, presented_second_id, outcome, origin,
+                    reviewer_key, session_id, selection_provenance_json,
+                    supersedes_event_id, submission_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (version_id, min(first, second), max(first, second),
+                     first, second, "first_higher", "human_direct",
+                     None, session_id, "{}", None,
+                     f"{prefix}{index}", now)
+                    for index, (first, second) in enumerate(
+                        (first, second)
+                        for first in present for second in absent
+                    )
+                ),
+            )
+            written = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events WHERE scale_version_id = ?",
+                (version_id,),
+            ).fetchone()[0])
+            if written != total:
+                raise RuntimeError(
+                    f"Expected {total} comparisons but wrote {written}; "
+                    "rolling back the entire bootstrap."
+                )
+            return {
+                "scale_id": scale_id, "comparisons_created": written, "retried": False,
+            }
 
     def create_scale(
         self, name: str, description: str = "",

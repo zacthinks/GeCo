@@ -8,6 +8,7 @@ from html import escape as html_escape
 from hashlib import blake2b
 import json
 import re
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import Iterator, Sequence
@@ -640,6 +641,7 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.scale_comparisons import register_comparison_callbacks
     from geometric_coder.ui.figures import one_dimensional_jitter_spread
     from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
@@ -896,6 +898,7 @@ def create_app(
                     data=None,
                 ),
                 dcc.Store(id="focus-recommendation-store", data={}),
+                dcc.Store(id="scale-task-store", data=None),
                 dcc.Store(id="focus-refresh-store", data=0),
                 dcc.Store(id="focus-model-refresh-store", data=0),
                 # A stored code/evidence event separates quick annotation writes
@@ -1035,6 +1038,7 @@ def create_app(
                         children=_focus_layout(
                             dcc=dcc,
                             html=html,
+                            dash_table=dash_table,
                             codes=codes,
                             constructs=constructs,
                             geometries=geometries,
@@ -3906,7 +3910,7 @@ def create_app(
             return (no_update,) * 3 + definition + (no_update,) * 3
         return (
             None, {"display": "none"}, {}, *definition,
-            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            {"display": "none"}, {}, {"display": "none"},
         )
 
     @app.callback(
@@ -3917,8 +3921,14 @@ def create_app(
     def refresh_code_center_hashtags(
         explore_refresh: int | None, focus_refresh: int | None
     ) -> list[dict[str, str]]:
+        from geometric_coder.storage.database import _extract_hashtags
+
         del explore_refresh, focus_refresh
-        return [{"label": f"#{tag}", "value": tag} for tag in project.code_hashtags()]
+        tags = set(project.code_hashtags())
+        for row in project.constructs():
+            if row["type"] == "scale":
+                tags.update(_extract_hashtags(str(row.get("description", ""))))
+        return [{"label": f"#{tag}", "value": tag} for tag in sorted(tags, key=str.casefold)]
 
     @app.callback(
         Output("code-center-table", "data"),
@@ -3941,15 +3951,21 @@ def create_app(
         matches = project.search_codes(query=query or "", scope=str(scope or "full"), hashtags=hashtags or [])
         code_tags = {int(row["code_id"]): row.get("hashtags", []) for row in matches}
         code_ids = set(code_tags)
+        from geometric_coder.storage.database import _extract_hashtags
+
         term = (query or "").casefold().strip()
         rows = []
         for construct in project.constructs():
             kind = str(construct["type"])
             if kind == "code" and int(construct["construct_id"]) not in code_ids:
                 continue
+            scale_tags = (
+                _extract_hashtags(str(construct.get("description", "")))
+                if kind == "scale" else []
+            )
             if kind == "scale":
-                if hashtags:
-                    continue  # Hashtag filter retains its existing Code-specific semantics.
+                if hashtags and not set(hashtags).issubset(scale_tags):
+                    continue
                 searchable = str(construct["name"])
                 if str(scope or "full") != "label":
                     searchable += " " + str(construct.get("description", ""))
@@ -3961,7 +3977,10 @@ def create_app(
                 "type": "Scale" if kind == "scale" else "Code",
                 "name": str(construct["name"]),
                 "hashtags": " ".join(
-                    f"#{tag}" for tag in code_tags.get(int(construct["construct_id"]), [])
+                    f"#{tag}" for tag in (
+                        scale_tags if kind == "scale"
+                        else code_tags.get(int(construct["construct_id"]), [])
+                    )
                 ),
             })
         selected_rows = [
@@ -4146,30 +4165,6 @@ def create_app(
             f"Version {number} of {number}",
             number <= 1, True, False, {"display": "none"}, {}, f"Saved version {number}.",
         )
-
-    @app.callback(
-        Output("construct-refresh-store", "data", allow_duplicate=True),
-        Output("code-center-create-scale-status", "children"),
-        Output("code-center-new-scale-name", "value"),
-        Output("code-center-new-scale-description", "value"),
-        Input("code-center-create-scale", "n_clicks"),
-        State("code-center-new-scale-name", "value"),
-        State("code-center-new-scale-description", "value"),
-        State("construct-refresh-store", "data"),
-        prevent_initial_call=True,
-    )
-    def create_center_scale(
-        clicks: int | None, name: str | None, description: str | None, refresh: int | None
-    ) -> tuple[Any, str, str, str]:
-        if not clicks:
-            return no_update, "", no_update, no_update
-        if not (name or "").strip():
-            return no_update, "Enter a Scale name.", no_update, no_update
-        try:
-            scale_id = project.create_scale((name or "").strip(), description or "")
-        except ValueError as error:
-            return no_update, str(error), no_update, no_update
-        return int(refresh or 0) + 1, f"Created Scale {scale_id}.", "", ""
 
     @app.callback(
         Output("code-center-teaching-button", "disabled"),
@@ -4966,6 +4961,73 @@ def create_app(
         return _code_options(project.codes())
 
     @app.callback(
+        Output("code-modal-bootstrap-toggle", "value"),
+        Output("code-modal-bootstrap-code", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def reset_code_bootstrap_on_modal_open(_target: str | None) -> tuple[list[str], None]:
+        # Opening another Construct starts with independent Scale creation.
+        return [], None
+
+    @app.callback(
+        Output("code-modal-bootstrap-wrapper", "style"),
+        Output("code-modal-bootstrap-code", "options"),
+        Output("code-modal-bootstrap-details", "style"),
+        Input("code-modal-target-store", "data"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("focus-refresh-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+    )
+    def configure_code_bootstrap(
+        target: str | None, construct_type: str | None, enabled: list[str] | None,
+        *_refresh: Any,
+    ) -> tuple[dict[str, str], list[dict[str, Any]], dict[str, str]]:
+        visible = target in {"focus", "center"} and construct_type == "scale"
+        if not visible:
+            return {"display": "none"}, [], {"display": "none"}
+        options = _code_options(project.codes())
+        details = {} if "enabled" in (enabled or []) else {"display": "none"}
+        return {}, options, details
+
+    @app.callback(
+        Output("code-modal-bootstrap-snapshot", "data"),
+        Output("code-modal-bootstrap-preview", "children"),
+        Output("code-modal-bootstrap-confirm", "value"),
+        Input("code-modal-bootstrap-code", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def preview_code_bootstrap(
+        code_id: int | None, enabled: list[str] | None,
+        construct_type: str | None, target: str | None,
+    ) -> tuple[dict[str, Any] | None, str, list[str]]:
+        if (target not in {"focus", "center"} or construct_type != "scale"
+                or "enabled" not in (enabled or [])):
+            return None, "", []
+        if code_id is None:
+            return None, "Choose a Code to preview eligible Present and Absent observations.", []
+        try:
+            preview = project.code_scale_bootstrap_preview(int(code_id))
+        except (KeyError, TypeError, ValueError) as error:
+            return None, str(error), []
+        count = int(preview["comparisons"])
+        explanation = (
+            f"{preview['present']:,} human Present × {preview['absent']:,} human Absent "
+            f"= {count:,} comparisons. Every ordered Present–Absent pair will be "
+            "recorded individually, and all existing Code annotations remain unchanged."
+        )
+        if not preview["present"] or not preview["absent"]:
+            explanation += " Both groups must be nonempty; you may create a Scale without bootstrapping."
+        if count > int(preview["limit"]):
+            explanation += (
+                f" This exceeds the {preview['limit']:,}-comparison safety limit. "
+                "No partial comparisons will be created."
+            )
+        return {"preview": preview, "token": uuid.uuid4().hex}, explanation, []
+
+    @app.callback(
         Output("code-modal", "style"),
         Output("code-modal-target-store", "data"),
         Output("explore-code-refresh-store", "data", allow_duplicate=True),
@@ -4990,6 +5052,12 @@ def create_app(
         State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"),
         State("explore-code-palette-store", "data"),
+        State("code-modal-construct-type", "value"),
+        State("code-modal-bootstrap-toggle", "value"),
+        State("code-modal-bootstrap-code", "value"),
+        State("code-modal-bootstrap-confirm", "value"),
+        State("code-modal-bootstrap-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
     def manage_code_modal(
@@ -5005,6 +5073,12 @@ def create_app(
         explore_refresh: int | None,
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
+        construct_type: str | None = "code",
+        bootstrap_enabled: list[str] | None = None,
+        bootstrap_code_id: int | None = None,
+        bootstrap_confirmed: list[str] | None = None,
+        bootstrap_snapshot: dict[str, Any] | None = None,
+        session_id: int | None = None,
     ) -> tuple[Any, ...]:
         del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
@@ -5034,7 +5108,54 @@ def create_app(
             return (
                 {"display": "flex"}, target, no_update, no_update,
                 no_update, no_update, no_update, no_update, no_update,
-                name or "", definition or "", "Enter a code label.",
+                name or "", definition or "", "Enter a Construct label.",
+            )
+        kind = "code" if target == "explore" else construct_type
+        if kind not in {"code", "scale"}:
+            return (
+                {"display": "flex"}, target, no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update,
+                name or "", definition or "", "Choose Code or Scale.",
+            )
+        if kind == "scale":
+            try:
+                if "enabled" in (bootstrap_enabled or []):
+                    if (bootstrap_code_id is None or "confirmed" not in (bootstrap_confirmed or [])
+                            or not isinstance(bootstrap_snapshot, dict)
+                            or not isinstance(bootstrap_snapshot.get("preview"), dict)
+                            or not isinstance(bootstrap_snapshot.get("token"), str)
+                            or bootstrap_snapshot["preview"].get("code_id") != bootstrap_code_id):
+                        raise ValueError(
+                            "Select a Code, review the complete comparison count, "
+                            "and confirm the Present > Absent assumption."
+                        )
+                    created = project.create_scale_from_code(
+                        clean_name, definition or "", int(bootstrap_code_id),
+                        expected_preview=bootstrap_snapshot["preview"],
+                        submission_key=bootstrap_snapshot["token"],
+                        session_id=int(session_id) if session_id is not None else None,
+                    )
+                    construct_id = int(created["scale_id"])
+                else:
+                    construct_id = project.create_scale(clean_name, definition or "")
+            except (ValueError, KeyError, RuntimeError, sqlite3.DatabaseError) as error:
+                message = (
+                    "Database error: Scale creation and comparisons were rolled back. "
+                    f"Details: {error}"
+                    if isinstance(error, sqlite3.DatabaseError) else str(error)
+                )
+                return (
+                    {"display": "flex"}, target, no_update, no_update,
+                    no_update, no_update, no_update, no_update, no_update,
+                    name or "", definition or "", message,
+                )
+            focus_value = construct_id if target == "focus" else no_update
+            return (
+                {"display": "none"}, None,
+                int(explore_refresh or 0) + 1,
+                int(focus_refresh or 0) + 1,
+                no_update, no_update, focus_value, no_update, no_update,
+                "", "", "",
             )
         existing = {
             str(code["name"]).casefold(): int(code["code_id"])
@@ -5070,6 +5191,20 @@ def create_app(
             "",
             "",
         )
+
+    @app.callback(
+        Output("code-modal-type-wrapper", "style"),
+        Output("code-modal-heading", "children"),
+        Output("code-modal-create-button", "children"),
+        Output("code-modal-construct-type", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def show_construct_type_for_modal(
+        target: str | None,
+    ) -> tuple[dict[str, str], str, str, str]:
+        if target == "explore":
+            return {"display": "none"}, "New Code", "Create Code", "code"
+        return {}, "New Construct", "Create Construct", "code"
 
     @app.callback(
         Output("explore-code-palette-store", "data", allow_duplicate=True),
@@ -7784,6 +7919,10 @@ def create_app(
 
     from geometric_coder.ui.analyses import register_analysis_callbacks
     register_analysis_callbacks(app, project)
+    register_comparison_callbacks(
+        app, project, total_units=len(units), hierarchy=hierarchy,
+        html=html, dcc=dcc,
+    )
     return app
 
 
@@ -8697,16 +8836,7 @@ def _code_center_layout(
             html.Aside(
                 [
                     html.H2("Constructs"),
-                    html.Button("New Code", id="code-center-new-code-button", n_clicks=0),
-                    html.Details([
-                        html.Summary("New Scale"),
-                        html.Label("Scale name"),
-                        dcc.Input(id="code-center-new-scale-name", type="text", className="text-input"),
-                        html.Label("Description"),
-                        dcc.Textarea(id="code-center-new-scale-description", className="memo-editor code-center-editor"),
-                        html.Button("Create Scale", id="code-center-create-scale", n_clicks=0, className="primary-action"),
-                        html.Div(id="code-center-create-scale-status", className="control-status"),
-                    ]),
+                    html.Button("New Construct", id="code-center-new-code-button", n_clicks=0),
                     html.Label("Search Constructs"),
                     dcc.Input(id="code-center-query", type="text", debounce=True, className="text-input", placeholder="Search labels or descriptions"),
                     dcc.RadioItems(
@@ -9460,25 +9590,42 @@ def _testing_center_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     )
 
 def _code_modal(*, dcc: Any, html: Any) -> Any:
-    """Return the shared code-creation modal used by Explore and Develop."""
+    """Return one shared Code/Scale creation modal for Develop and Constructs."""
     return html.Div(
         [
             html.Div(
                 [
                     html.Div(
                         [
-                            html.H2("New Code"),
+                            html.H2("New Construct", id="code-modal-heading"),
                             html.Button("×", id="code-modal-cancel-button", n_clicks=0),
                         ],
                         className="modal-header",
                     ),
                     html.Div(
                         [
-                            html.Label("Code label"),
+                            html.Label("Construct type"),
+                            dcc.RadioItems(
+                                id="code-modal-construct-type",
+                                options=[
+                                    {"label": "Code", "value": "code"},
+                                    {"label": "Scale", "value": "scale"},
+                                ],
+                                value="code",
+                                inline=True,
+                                className="memo-center-scope",
+                            ),
+                        ],
+                        id="code-modal-type-wrapper",
+                        className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Construct label"),
                             dcc.Input(
                                 id="code-modal-name",
                                 type="text",
-                                placeholder="Enter a concise code label",
+                                placeholder="Enter a concise construct label",
                                 className="text-input code-name-input",
                             ),
                         ],
@@ -9489,18 +9636,61 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                             html.Label("Description (optional)"),
                             dcc.Textarea(
                                 id="code-modal-definition",
-                                placeholder="Describe what the code captures. Markdown and #hashtags are supported.",
+                                placeholder="Describe what this construct measures or captures. Markdown and #hashtags are supported.",
                                 className="code-definition-editor code-modal-definition",
                             ),
                         ],
                         className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Bootstrap from existing Code (optional)"),
+                            dcc.Checklist(
+                                id="code-modal-bootstrap-toggle",
+                                options=[{"label": "Bootstrap from existing Code", "value": "enabled"}],
+                                value=[],
+                            ),
+                            html.Div(
+                                [
+                                    html.P(
+                                        "This assumes that every observation marked Present for the selected Code is higher on the new Scale than every observation marked Absent. Only use this option if that interpretation makes sense for your research.",
+                                        className="focus-help",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="code-modal-bootstrap-code",
+                                        options=[],
+                                        value=None,
+                                        placeholder="Select an existing Code",
+                                        clearable=True,
+                                    ),
+                                    html.Div(
+                                        id="code-modal-bootstrap-preview",
+                                        className="control-status",
+                                    ),
+                                    dcc.Checklist(
+                                        id="code-modal-bootstrap-confirm",
+                                        options=[{
+                                            "label": "I confirm the complete comparison count and the Present > Absent assumption.",
+                                            "value": "confirmed",
+                                        }],
+                                        value=[],
+                                    ),
+                                ],
+                                id="code-modal-bootstrap-details",
+                                style={"display": "none"},
+                            ),
+                            dcc.Store(id="code-modal-bootstrap-snapshot"),
+                        ],
+                        id="code-modal-bootstrap-wrapper",
+                        className="code-modal-field",
+                        style={"display": "none"},
                     ),
                     html.Div(id="code-modal-status", className="control-status modal-status"),
                     html.Div(
                         [
                             html.Button("Cancel", id="code-modal-cancel-footer", n_clicks=0),
                             html.Button(
-                                "Create Code",
+                                "Create Construct",
                                 id="code-modal-create-button",
                                 n_clicks=0,
                                 className="primary-action",
@@ -9765,6 +9955,7 @@ def _focus_layout(
     *,
     dcc: Any,
     html: Any,
+    dash_table: Any,
     codes: list[dict[str, Any]],
     constructs: list[dict[str, Any]],
     geometries: list[dict[str, Any]],
@@ -9773,6 +9964,8 @@ def _focus_layout(
     initial_state: dict[str, Any],
 ) -> Any:
     """Return a shared Construct selector with the existing binary Develop workspace."""
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+
     del geometries
     code_ids = {int(code["code_id"]) for code in codes}
     initial_construct_id = _selected_focus_construct_id(constructs, initial_state)
@@ -9824,8 +10017,7 @@ def _focus_layout(
                                         style={"display": "none"},
                                     ),
                                     html.Button(
-                                        "New Code", id="focus-new-code-button", n_clicks=0,
-                                        style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
+                                        "New Construct", id="focus-new-code-button", n_clicks=0,
                                     ),
                                 ],
                                 className="code-selector-row",
@@ -9886,14 +10078,11 @@ def _focus_layout(
                         ),
                         className="focus-counts",
                     ),
-                    html.P(
-                        "Comparative development for this Scale will be available in a subsequent phase.",
-                        className="focus-help",
-                    ),
+                    comparison_layout(dcc=dcc, html=html, dash_table=dash_table),
                 ],
                 id="focus-scale-state",
                 style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
-                className="focus-disabled-message",
+                className="focus-scale-comparison",
             ),
             html.Div(
                 [
