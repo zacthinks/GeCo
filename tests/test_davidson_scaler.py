@@ -184,3 +184,62 @@ def test_empty_input_and_invalid_prior():
         LinearDavidsonScaler(eta_prior_sd=np.inf)
     with pytest.raises(ValueError):
         LinearDavidsonScaler(eta_prior=np.nan)
+
+
+@pytest.mark.parametrize('sparse_input', [False, True])
+def test_large_offset_reference_variance_and_centered_uncertainty(sparse_input):
+    # E[x**2] - E[x]**2 loses the variance in float64 here.
+    X = np.array([[99_999_999., 0.], [100_000_001., 0.],
+                  [100_000_000., 3.]])
+    representation = sparse.csr_matrix(X) if sparse_input else X
+    m = LinearDavidsonScaler().fit(
+        representation, np.empty((0, 2), dtype=int),
+        np.empty(0, dtype=int), reference_X=representation
+    ).build_posterior()
+    centered = X - X.mean(axis=0)
+    expected = np.sum(centered**2, axis=1)
+    assert np.isclose(m.reference_variance_, np.mean(expected), rtol=1e-12)
+    assert np.isclose(m.lambda_beta_, np.mean(expected), rtol=1e-12)
+    assert np.allclose(
+        m.posterior_position_variance(representation),
+        expected / m.lambda_beta_, rtol=1e-12, atol=1e-12
+    )
+    assert np.allclose(m.posterior_position_variance(
+        sparse.csr_matrix(X) if sparse_input else X, chunk_size=1
+    ), expected / m.lambda_beta_, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize('sparse_input', [False, True])
+def test_high_offset_one_dimensional_reference_remains_regularized(sparse_input):
+    X = np.array([[99_999_999.], [100_000_001.]])
+    representation = sparse.csr_matrix(X) if sparse_input else X
+    m = LinearDavidsonScaler().fit(
+        representation, np.empty((0, 2), dtype=int), np.empty(0, dtype=int)
+    ).build_posterior()
+    assert m.reference_variance_ == pytest.approx(1.)
+    assert m.lambda_beta_ == pytest.approx(1.)
+    assert np.allclose(m.posterior_position_variance(representation), [1., 1.])
+
+
+@pytest.mark.parametrize('bad_pairs', [
+    [[-1, 1]], [[0, 0]], [[0, 99]],
+    [[0.5, 1.]], [[0., 1.]], [[True, False]],
+    [[np.uint64(2**63 + 1), np.uint64(1)]],
+])
+def test_prediction_pair_indices_are_validated(bad_pairs):
+    X, pairs, y, _ = example()
+    model = LinearDavidsonScaler().fit(X, pairs, y).build_posterior()
+    for method in (model.predict_comparisons, model.pair_posterior_moments,
+                   model.posterior_pair_moments):
+        with pytest.raises(ValueError):
+            method(X, bad_pairs)
+
+
+def test_empty_prediction_pair_arrays_have_valid_shapes():
+    X, pairs, y, _ = example()
+    model = LinearDavidsonScaler().fit(X, pairs, y).build_posterior()
+    empty = np.empty((0, 2), dtype=int)
+    assert model.predict_comparisons(X, empty).shape == (0, 3)
+    mean, covariance = model.pair_posterior_moments(X, empty)
+    assert mean.shape == (0, 2)
+    assert covariance.shape == (0, 2, 2)
