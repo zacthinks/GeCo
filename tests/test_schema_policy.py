@@ -52,7 +52,7 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 def test_current_schema_and_upgrade_registry() -> None:
     assert SCHEMA_VERSION == 21
-    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18, 19}
+    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18, 19, 20}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -124,7 +124,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 21):
+    for version in (12, 22):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
