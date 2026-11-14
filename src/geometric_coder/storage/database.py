@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -3207,6 +3208,117 @@ class ProjectDatabase:
                 ).fetchall()
                 selected.update(int(row[0]) for row in rows)
         return [value for value in wanted if value in selected]
+
+    def acquisition_eligible_atomic_ids(
+        self, construct_type: str, construct_id: int, *,
+        eligibility_spec: Mapping[str, Any] | None = None,
+        session_id: int | None = None,
+    ) -> array:
+        """Stream stable atomic IDs into a compact array (no text or pair arrays).
+
+        Scale filtering uses the same predicates and human-positive Code
+        eligibility as eligible_scale_observation_ids. Code excludes effective
+        assignments, plus session visits if a session is supplied.
+        """
+        from array import array
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        ids = array("q")
+        if construct_type not in {"code", "scale"}:
+            raise ValueError("Unknown acquisition construct type.")
+        if construct_type == "scale":
+            spec = dict(eligibility_spec or {"kind": "all"})
+            predicate, params = compile_filter_sql(
+                spec.get("metadata_clauses", []),
+                operator=spec.get("metadata_operator", "and"),
+            )
+            extra = ""
+            extra_params: list[Any] = []
+            for item in spec.get("code_filters", []):
+                extra += """ AND EXISTS (
+                    SELECT 1 FROM current_annotations AS ca
+                    WHERE ca.observation_id = u.observation_id
+                      AND ca.code_id = ? AND ca.value = 'positive'
+                      AND substr(ca.origin, 1, 6) = 'human_'
+                )"""
+                extra_params.append(int(item["code_id"]))
+            query = (
+                "SELECT u.observation_id FROM units AS u "
+                "JOIN observations AS o ON o.observation_id = u.observation_id "
+                "WHERE o.kind = 'atomic' AND (" + predicate + ")" + extra +
+                " ORDER BY u.observation_id"
+            )
+            query_params: tuple[Any, ...] = (*params, *extra_params)
+        else:
+            query = """
+                SELECT u.observation_id FROM units AS u
+                JOIN observations AS o ON o.observation_id = u.observation_id
+                WHERE o.kind = 'atomic'
+                AND NOT EXISTS (
+                    SELECT 1 FROM annotation_events AS ae
+                    WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM annotation_event_retractions AS aer
+                          WHERE aer.annotation_event_id = ae.annotation_event_id
+                      )
+                )
+            """
+            query_params = (int(construct_id),)
+            if session_id is not None:
+                query += """ AND NOT EXISTS (
+                    SELECT 1 FROM navigation_events AS nv
+                    WHERE nv.session_id = ? AND nv.unit_id = u.unit_id
+                )"""
+                query_params += (int(session_id),)
+            query += " ORDER BY u.observation_id"
+        with self.connect() as connection:
+            if construct_type == "scale":
+                register_filter_functions(connection)
+            for row in connection.execute(query, query_params):
+                ids.append(int(row[0]))
+        return ids
+
+    def scale_judgment_revision(self, scale_id: int) -> tuple[int, int]:
+        """Cheap append-only evidence revision across all definition versions."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*), COALESCE(MAX(e.comparison_event_id), 0)
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ?""",
+                (int(scale_id),),
+            ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def scale_judged_candidate_pairs(
+        self, scale_id: int, pairs: Sequence[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        """Indexed batched membership of exact canonical pairs, all versions."""
+        if not pairs:
+            return set()
+        if len(pairs) > 256:
+            raise ValueError("Candidate membership checks require at most 256 pairs.")
+        if any(low >= high for low, high in pairs):
+            raise ValueError("Candidate pair identities must be canonical.")
+        values = ", ".join("(?, ?)" for _ in pairs)
+        parameters = [part for pair in pairs for part in pair]
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""WITH candidates(low, high) AS (VALUES {values})
+                    SELECT DISTINCT c.low, c.high
+                    FROM candidates AS c
+                    WHERE EXISTS (
+                        SELECT 1 FROM scale_comparison_events AS e
+                        JOIN scale_versions AS v
+                          ON v.scale_version_id = e.scale_version_id
+                        WHERE v.scale_id = ? AND e.observation_low_id = c.low
+                          AND e.observation_high_id = c.high
+                    )""",
+                (*parameters, int(scale_id)),
+            ).fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
 
     def record_scale_comparison(
         self, scale_id: int, first_observation_id: int,
