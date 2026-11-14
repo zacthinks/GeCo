@@ -6827,6 +6827,51 @@ class ProjectDatabase:
             ).fetchone()
         return _scaler_spec_row(row) if row is not None else None
 
+    def scale_reference_positions(self, scale_id: int, max_rows: int = 2048) -> tuple[list[int], int]:
+        """Deterministically sample eligible atomic rows with bounded memory.
+
+        Use the same metadata and human-Code predicates as comparison eligibility.
+        Reservoir sampling avoids reading the entire corpus's text or keys.
+        """
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+        spec = self.get_scale(int(scale_id))["eligibility"]
+        predicate, params = compile_filter_sql(
+            spec.get("metadata_clauses", []),
+            operator=spec.get("metadata_operator", "and"),
+        )
+        extra = ""
+        extra_params: list[Any] = []
+        for item in spec.get("code_filters", []):
+            extra += """ AND EXISTS (
+                SELECT 1 FROM current_annotations AS ca
+                WHERE ca.observation_id = u.observation_id
+                  AND ca.code_id = ? AND ca.value = 'positive'
+                  AND substr(ca.origin, 1, 6) = 'human_'
+            )"""
+            extra_params.append(int(item["code_id"]))
+        import random
+        rng = random.Random(0)
+        reservoir: list[int] = []
+        total = 0
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            for row in connection.execute(
+                f"SELECT u.row_position FROM units AS u WHERE ({predicate}) {extra} "
+                "ORDER BY u.row_position",
+                [*params, *extra_params],
+            ):
+                position = int(row["row_position"])
+                total += 1
+                if len(reservoir) < max_rows:
+                    reservoir.append(position)
+                else:
+                    index = rng.randrange(total)
+                    if index < max_rows:
+                        reservoir[index] = position
+        return sorted(reservoir), total
+
     def find_scaler_fit(
         self, scale_id: int, snapshot_fingerprint: str,
     ) -> dict[str, Any] | None:
@@ -6843,6 +6888,7 @@ class ProjectDatabase:
         with self.connect() as connection:
             row = connection.execute(
                 """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND artifact_path != ''
                    ORDER BY scaler_fit_id DESC LIMIT 1""",
                 (int(scale_id),),
             ).fetchone()
@@ -6854,7 +6900,12 @@ class ProjectDatabase:
         snapshot: Mapping[str, Any], artifact_path: str,
         diagnostics: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Publish a completed artifact reference atomically; failed fits never publish."""
+        """Publish one live artifact; keep lightweight historical fit metadata.
+
+        Old sidecars are retired only after the transaction commits. Reusing an
+        earlier evidence fingerprint refreshes that row instead of letting its
+        unique key prevent replacing an already retired artifact.
+        """
         snapshot_json = json.dumps(
             dict(snapshot), sort_keys=True, separators=(",", ":"), allow_nan=False
         )
@@ -6875,22 +6926,49 @@ class ProjectDatabase:
             ).fetchone()
             if version is None or int(version["scale_id"]) != int(scale_id):
                 raise ValueError("Scaler fit and definition belong to different Scales.")
+            existing = connection.execute(
+                "SELECT scaler_fit_id, artifact_path FROM scaler_fits "
+                "WHERE scaler_spec_id = ? AND snapshot_fingerprint = ?",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+            retired = [
+                str(row["artifact_path"]) for row in connection.execute(
+                    "SELECT artifact_path FROM scaler_fits "
+                    "WHERE scale_id = ? AND artifact_path != '' AND artifact_path != ?",
+                    (int(scale_id), artifact_path),
+                )
+            ]
             connection.execute(
-                """INSERT OR IGNORE INTO scaler_fits(
-                    scaler_spec_id, scale_id, scale_version_id,
-                    snapshot_fingerprint, snapshot_json, artifact_path,
-                    diagnostics_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (int(scaler_spec_id), int(scale_id), int(scale_version_id),
-                 fingerprint, snapshot_json, artifact_path, diagnostics_json, utc_now()),
+                "UPDATE scaler_fits SET artifact_path = '' "
+                "WHERE scale_id = ? AND artifact_path != ?",
+                (int(scale_id), artifact_path),
             )
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO scaler_fits (
+                        scaler_spec_id, scale_id, scale_version_id,
+                        snapshot_fingerprint, snapshot_json, artifact_path,
+                        diagnostics_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (int(scaler_spec_id), int(scale_id), int(scale_version_id),
+                     fingerprint, snapshot_json, artifact_path,
+                     diagnostics_json, utc_now()),
+                )
+            else:
+                connection.execute(
+                    """UPDATE scaler_fits SET scale_version_id = ?,
+                        snapshot_json = ?, artifact_path = ?, diagnostics_json = ?,
+                        created_at = ? WHERE scaler_fit_id = ?""",
+                    (int(scale_version_id), snapshot_json, artifact_path,
+                     diagnostics_json, utc_now(), int(existing["scaler_fit_id"])),
+                )
             row = connection.execute(
                 """SELECT * FROM scaler_fits WHERE scaler_spec_id = ?
                    AND snapshot_fingerprint = ?""",
                 (int(scaler_spec_id), fingerprint),
             ).fetchone()
         assert row is not None
-        return _scaler_fit_row(row)
+        return {**_scaler_fit_row(row), "_retired_artifact_paths": retired}
 
 
 
