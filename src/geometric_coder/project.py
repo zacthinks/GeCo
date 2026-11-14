@@ -2268,10 +2268,14 @@ class GeometricCoder:
 
     def train_scale(
         self, scale_id: int, *, estimator_factory: Any = None,
+        tune: bool = False, retune_current: bool = False, folds: int = 5,
     ) -> dict[str, Any]:
-        """Fit or reuse a numerical Scale using current human comparison evidence."""
+        """Fit a Scale, optionally selecting model parameters by grouped CV."""
         from geometric_coder.scale_models import train_scale_model
-        return train_scale_model(self, scale_id, estimator_factory=estimator_factory)
+        return train_scale_model(
+            self, scale_id, estimator_factory=estimator_factory,
+            tune=tune, retune_current=retune_current, folds=folds,
+        )
 
     def scale_scores(
         self, scale_id: int, observation_ids: Sequence[int], *,
