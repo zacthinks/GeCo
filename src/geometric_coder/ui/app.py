@@ -640,6 +640,9 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.scale_comparisons import (
+        comparison_layout, register_comparison_callbacks,
+    )
     from geometric_coder.ui.figures import one_dimensional_jitter_spread
     from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
@@ -896,6 +899,7 @@ def create_app(
                     data=None,
                 ),
                 dcc.Store(id="focus-recommendation-store", data={}),
+                dcc.Store(id="scale-task-store", data=None),
                 dcc.Store(id="focus-refresh-store", data=0),
                 dcc.Store(id="focus-model-refresh-store", data=0),
                 # A stored code/evidence event separates quick annotation writes
@@ -1035,6 +1039,7 @@ def create_app(
                         children=_focus_layout(
                             dcc=dcc,
                             html=html,
+                            dash_table=dash_table,
                             codes=codes,
                             constructs=constructs,
                             geometries=geometries,
@@ -7784,6 +7789,10 @@ def create_app(
 
     from geometric_coder.ui.analyses import register_analysis_callbacks
     register_analysis_callbacks(app, project)
+    register_comparison_callbacks(
+        app, project, total_units=len(units), hierarchy=hierarchy,
+        html=html, dcc=dcc,
+    )
     return app
 
 
@@ -9765,6 +9774,7 @@ def _focus_layout(
     *,
     dcc: Any,
     html: Any,
+    dash_table: Any,
     codes: list[dict[str, Any]],
     constructs: list[dict[str, Any]],
     geometries: list[dict[str, Any]],
@@ -9886,14 +9896,11 @@ def _focus_layout(
                         ),
                         className="focus-counts",
                     ),
-                    html.P(
-                        "Comparative development for this Scale will be available in a subsequent phase.",
-                        className="focus-help",
-                    ),
+                    comparison_layout(dcc=dcc, html=html, dash_table=dash_table),
                 ],
                 id="focus-scale-state",
                 style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
-                className="focus-disabled-message",
+                className="focus-scale-comparison",
             ),
             html.Div(
                 [
