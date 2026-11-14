@@ -4969,6 +4969,7 @@ def create_app(
         State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"),
         State("explore-code-palette-store", "data"),
+        State("code-modal-construct-type", "value"),
         prevent_initial_call=True,
     )
     def manage_code_modal(
@@ -4984,6 +4985,7 @@ def create_app(
         explore_refresh: int | None,
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
+        construct_type: str | None = "code",
     ) -> tuple[Any, ...]:
         del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
@@ -5013,7 +5015,31 @@ def create_app(
             return (
                 {"display": "flex"}, target, no_update, no_update,
                 no_update, no_update, no_update, no_update, no_update,
-                name or "", definition or "", "Enter a code label.",
+                name or "", definition or "", "Enter a Construct label.",
+            )
+        kind = "code" if target == "explore" else construct_type
+        if kind not in {"code", "scale"}:
+            return (
+                {"display": "flex"}, target, no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update,
+                name or "", definition or "", "Choose Code or Scale.",
+            )
+        if kind == "scale":
+            try:
+                construct_id = project.create_scale(clean_name, definition or "")
+            except ValueError as error:
+                return (
+                    {"display": "flex"}, target, no_update, no_update,
+                    no_update, no_update, no_update, no_update, no_update,
+                    name or "", definition or "", str(error),
+                )
+            focus_value = construct_id if target == "focus" else no_update
+            return (
+                {"display": "none"}, None,
+                int(explore_refresh or 0) + 1,
+                int(focus_refresh or 0) + 1,
+                no_update, no_update, focus_value, no_update, no_update,
+                "", "", "",
             )
         existing = {
             str(code["name"]).casefold(): int(code["code_id"])
@@ -5049,6 +5075,13 @@ def create_app(
             "",
             "",
         )
+
+    @app.callback(
+        Output("code-modal-type-wrapper", "style"),
+        Input("code-modal-target-store", "data"),
+    )
+    def show_construct_type_for_modal(target: str | None) -> dict[str, str]:
+        return {"display": "none"} if target == "explore" else {}
 
     @app.callback(
         Output("explore-code-palette-store", "data", allow_duplicate=True),
