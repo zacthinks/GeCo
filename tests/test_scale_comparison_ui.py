@@ -122,7 +122,7 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert len(history) == 1
     correction, _, _ = _manage(
         manage, "scale-correct", scale=scale, session=session, task=judged,
-        history=history, history_selection=[0],
+        history=history, history_selection=[0], reviewer="researcher",
     )
     assert correction["mode"] == "correction"
     assert correction["first"] == task["first"]
