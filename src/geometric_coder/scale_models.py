@@ -10,11 +10,9 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy import sparse
 
 from geometric_coder.scale_training import _atomic_positions, build_scale_training_data
 from geometric_coder.exceptions import ConfigurationError
@@ -62,6 +60,7 @@ def _geometry_snapshot(project: Any, representation_id: int) -> dict[str, Any]:
         "geometry_id": int(geometry["geometry_id"]),
         "representation_dimensions": representation["dimensions"],
         "geometry_created_at": geometry["created_at"],
+        "atomic_row_count": project.database.unit_count(),
         "geometry_config": geometry["config"],
         "geometry_dependencies": geometry["dependency_names"],
         "storage_kind": geometry["storage_kind"],
@@ -105,6 +104,8 @@ def _training_snapshot(
         "scale_version_number": int(scale["version_number"]),
         "eligibility": eligibility,
         "geometry": _geometry_snapshot(project, int(spec["representation_id"])),
+        # The reference sample is deterministic and frozen by these parameters.
+        "reference_policy": {"method": "even_corpus_rows", "max_rows": 2048},
         "scaler_spec_id": int(spec["scaler_spec_id"]),
         "estimator_family": str(spec["estimator_family"]),
         "hyperparameters": dict(spec["hyperparameters"]),
@@ -145,7 +146,7 @@ def scale_model_status(project: Any, scale_id: int) -> dict[str, Any]:
 
 def _production_estimator_factory(**parameters: Any) -> Any:
     try:
-        from geometric_coder.scalers import LinearDavidsonScaler
+        from geometric_coder.davidson_scaler import LinearDavidsonScaler
     except ImportError as error:
         raise ConfigurationError(
             "Davidson numerical estimator is not installed yet. "
@@ -195,7 +196,18 @@ def train_scale_model(
     )
     constructor = estimator_factory or _production_estimator_factory
     model = constructor(**dict(spec["hyperparameters"]))
-    model.fit(training.features, training.pairs, training.outcomes)
+    # Reference rows establish feature RMS/prior strength/score center separately
+    # from the actively compared observation subset. For large linked projects,
+    # use a fixed, evenly spaced corpus sample rather than materialize all rows.
+    corpus_rows = int(snapshot["geometry"]["atomic_row_count"])
+    reference_positions = np.linspace(
+        0, corpus_rows - 1, num=min(corpus_rows, 2048), dtype=np.int64
+    ).tolist()
+    reference = project.geometry_page_rows(geometry_id, reference_positions)
+    model.fit(
+        training.features, training.pairs, training.outcomes,
+        reference_X=reference,
+    )
     if not bool(getattr(model, "success_", True)):
         raise RuntimeError(
             f"Scale optimization failed: {getattr(model, 'message_', 'unknown reason')}"
@@ -219,6 +231,9 @@ def train_scale_model(
         "optimization_iterations": getattr(model, "n_iterations_", None),
         "optimality": getattr(model, "optimality_", None),
         "posterior_available": getattr(model, "posterior_", None) is not None,
+        "reference_observation_count": len(reference_positions),
+        "reference_population_count": corpus_rows,
+        "reference_method": "evenly_spaced_corpus_rows",
         "posterior_error": posterior_error,
         "interpretation": "Exploratory, model-dependent scalar projection; not validated measurement.",
     }
@@ -228,7 +243,10 @@ def train_scale_model(
         # Unique sidecar path prevents a concurrent/failed fit replacing valid data.
         path = project.artifacts.save_model(
             f"scaler_{scale_id}_{fingerprint[:16]}_{uuid.uuid4().hex}",
-            model,
+            (
+                {"estimator_family": "linear_davidson", "state": model.to_state()}
+                if callable(getattr(model, "to_state", None)) else model
+            ),
         )
         saved = project.database.register_scaler_fit(
             scale_id=int(scale_id), scaler_spec_id=int(spec["scaler_spec_id"]),
@@ -270,6 +288,9 @@ def scale_model_scores(
         return []
     positions = _atomic_positions(project, selected)
     model = project.artifacts.load_model(project.project_dir, fit["artifact_path"])
+    if isinstance(model, dict) and model.get("estimator_family") == "linear_davidson":
+        from geometric_coder.davidson_scaler import LinearDavidsonScaler
+        model = LinearDavidsonScaler.from_state(model["state"])
     matrix = project.geometry_page_rows(
         int(frozen_geometry["geometry_id"]), [positions[i] for i in selected]
     )
