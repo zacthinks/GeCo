@@ -103,24 +103,102 @@ def _prepare_scale_task(
     }
 
 
+def _random_scale_task(
+    project: Any, scale_id: int, session_id: int, total_units: int,
+) -> dict[str, Any]:
+    """Prepare a random eligible pair without loading the corpus or fitting models.
+
+    Draw bounded batches of immutable row positions, resolve to observation IDs,
+    and reject previously judged unordered pairs. This is a temporary discovery
+    strategy until model-informed acquisition is implemented.
+    """
+    if total_units < 2:
+        raise ValueError("At least two observations are needed for a comparison.")
+    previously_judged = {
+        (int(event["observation_low_id"]), int(event["observation_high_id"]))
+        for event in project.scale_comparisons(scale_id)
+    }
+    rng = secrets.SystemRandom()
+    for _ in range(8):
+        positions = rng.sample(range(total_units), min(total_units, 64))
+        units = project.database.unit_rows_at_positions(positions)
+        ids = [int(row["observation_id"]) for row in units]
+        eligible = project.eligible_scale_observation_ids(scale_id, ids)
+        if len(eligible) < 2:
+            continue
+        rng.shuffle(eligible)
+        for first in eligible:
+            for second in eligible:
+                if first == second:
+                    continue
+                if tuple(sorted((first, second))) in previously_judged:
+                    continue
+                return _prepare_scale_task(project, {
+                    "scale_id": int(scale_id), "session_id": int(session_id),
+                    "picked_a": first, "picked_b": second,
+                    "status": "selecting",
+                }, None)
+    raise ValueError(
+        "No unjudged eligible pair was found in the bounded random sample. "
+        "Try the manual observation selector under More options."
+    )
+
+
 def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
-    """One bounded, human-only comparison panel for the Scale Develop branch."""
+    """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
-        html.H3("Compare observations"),
+        html.H3("Compare two observations"),
         html.P(
-            "Browse atomic observations, choose two, then prepare a comparison. "
-            "No model is trained by these judgments.",
+            "Read both observations and choose which expresses more of the selected "
+            "Scale, or whether they are approximately equal. Pairs are sampled "
+            "randomly for now; informative pair recommendations will come later.",
             className="focus-help",
         ),
+        html.Div(id="scale-task-warning", className="control-status"),
         html.Div([
-            html.Div([
-                html.Label("Observation browser page"),
-                dcc.Input(
-                    id="scale-browse-page", type="number", min=1, step=1,
-                    value=1, className="page-number-input",
-                ),
-                html.Div(id="scale-browse-status", className="control-status"),
-            ]),
+            html.Div(id="scale-reading-first", className="reading-pane"),
+            html.Div(id="scale-reading-second", className="reading-pane"),
+        ], style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fit, minmax(290px, 1fr))",
+            "gap": "16px", "alignItems": "start",
+        }),
+        html.Div([
+            html.Button(
+                "A is higher", id="scale-judge-first", n_clicks=0,
+                className="judgment-button positive-button", disabled=True,
+            ),
+            html.Button(
+                "Approximately equal", id="scale-judge-parity", n_clicks=0,
+                className="judgment-button", disabled=True,
+            ),
+            html.Button(
+                "B is higher", id="scale-judge-second", n_clicks=0,
+                className="judgment-button negative-button", disabled=True,
+            ),
+            html.Button(
+                "Unsure / Skip", id="scale-judge-unsure", n_clicks=0,
+                className="judgment-button unsure-button", disabled=True,
+            ),
+        ], className="code-center-assignment-buttons"),
+        html.Div(id="scale-action-status", className="control-status"),
+        html.Button(
+            "Next pair", id="scale-next-pair", n_clicks=0,
+            className="primary-action",
+        ),
+        html.Details([
+            html.Summary("More options · choose a pair manually"),
+            html.P(
+                "Optional: choose two specific observations instead of a randomly "
+                "presented pair. Selection uses a small page, never the entire corpus.",
+                className="focus-help",
+            ),
+            html.Label("Observation browser page"),
+            dcc.Input(
+                id="scale-browse-page", type="number", min=1, step=1,
+                value=1, className="page-number-input",
+            ),
+            html.Div(id="scale-browse-status", className="control-status"),
             dash_table.DataTable(
                 id="scale-browser",
                 columns=[
@@ -143,91 +221,63 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                 ),
             ], className="memo-actions"),
             html.Div(id="scale-selection-summary", className="control-status"),
-            html.Div([
-                html.Label("Reviewer key (optional)"),
-                dcc.Input(
-                    id="scale-reviewer-key", type="text", placeholder="Researcher identifier",
-                    className="text-input",
-                ),
-                html.Button(
-                    "Prepare comparison", id="scale-prepare", n_clicks=0,
-                    className="primary-action",
-                ),
-                html.Button("Clear selection", id="scale-clear", n_clicks=0),
-            ], className="memo-actions"),
+            html.Button(
+                "Show selected pair", id="scale-prepare", n_clicks=0,
+                className="primary-action",
+            ),
+            html.Button("Clear selection", id="scale-clear", n_clicks=0),
+            dcc.Input(
+                id="scale-reviewer-key", type="text", value="",
+                style={"display": "none"},
+            ),
+            html.H4("Repeat an existing comparison"),
+            html.Div(id="scale-pair-history-note", className="control-status"),
+            dcc.Checklist(
+                id="scale-repeat-ack",
+                options=[{
+                    "label": "Make an independent second judgment of this pair",
+                    "value": "repeat",
+                }],
+                value=[],
+            ),
+            html.Button(
+                "Compare this pair again", id="scale-new-repeat", n_clicks=0,
+            ),
         ], className="focus-coding-panel"),
-        html.Div(id="scale-task-warning", className="control-status"),
-        html.Div([
-            html.Div(id="scale-reading-first", className="reading-pane"),
-            html.Div(id="scale-reading-second", className="reading-pane"),
-        ], style={
-            "display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(290px, 1fr))",
-            "gap": "16px", "alignItems": "start",
-        }),
-        html.Div(id="scale-pair-history-note", className="control-status"),
-        dcc.Checklist(
-            id="scale-repeat-ack",
-            options=[{
-                "label": "I intend to record a new, independent judgment of this previously judged pair.",
-                "value": "repeat",
-            }],
-            value=[],
-        ),
-        html.Div([
-            html.Button(
-                "A is higher", id="scale-judge-first", n_clicks=0,
-                className="judgment-button positive-button", disabled=True,
+        html.Details([
+            html.Summary("Comparison history and corrections"),
+            html.P(
+                "Past judgments remain available, including earlier Scale "
+                "definitions, corrected events, and imported evidence.",
+                className="focus-help",
             ),
-            html.Button(
-                "Approximately equal", id="scale-judge-parity", n_clicks=0,
-                className="judgment-button", disabled=True,
+            dash_table.DataTable(
+                id="scale-history", data=[], row_selectable="single", selected_rows=[],
+                columns=[
+                    {"name": "Event", "id": "comparison_event_id"},
+                    {"name": "Definition", "id": "version"},
+                    {"name": "Observations (A / B)", "id": "pair"},
+                    {"name": "Judgment", "id": "judgment"},
+                    {"name": "Provenance", "id": "origin"},
+                    {"name": "Reviewer", "id": "reviewer"},
+                    {"name": "Status", "id": "state"},
+                    {"name": "Corrects", "id": "corrects"},
+                ],
+                page_size=20,
+                style_table={"overflowX": "auto"},
+                style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
             ),
+            html.Div(id="scale-history-status", className="control-status"),
             html.Button(
-                "B is higher", id="scale-judge-second", n_clicks=0,
-                className="judgment-button negative-button", disabled=True,
+                "Correct selected judgment", id="scale-correct", n_clicks=0,
             ),
-            html.Button(
-                "Unsure / Skip", id="scale-judge-unsure", n_clicks=0,
-                className="judgment-button unsure-button", disabled=True,
+            html.P(
+                "Corrections preserve the original definition and its recorded "
+                "history.",
+                className="focus-help",
             ),
-        ], className="code-center-assignment-buttons"),
-        html.Div(id="scale-action-status", className="control-status"),
-        html.Button(
-            "New independent judgment of this pair", id="scale-new-repeat", n_clicks=0,
-        ),
-        html.H3("Comparison history"),
-        html.P(
-            "History includes earlier definitions, corrected judgments, intentional "
-            "repeats, and separately labeled nonhuman evidence.",
-            className="focus-help",
-        ),
-        dash_table.DataTable(
-            id="scale-history", data=[], row_selectable="single", selected_rows=[],
-            columns=[
-                {"name": "Event", "id": "comparison_event_id"},
-                {"name": "Definition", "id": "version"},
-                {"name": "Source pair (A / B)", "id": "pair"},
-                {"name": "Judgment", "id": "judgment"},
-                {"name": "Provenance", "id": "origin"},
-                {"name": "Reviewer", "id": "reviewer"},
-                {"name": "Status", "id": "state"},
-                {"name": "Corrects", "id": "corrects"},
-            ],
-            page_size=20,
-            style_table={"overflowX": "auto"},
-            style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
-        ),
-        html.Div(id="scale-history-status", className="control-status"),
-        html.Button(
-            "Correct selected judgment", id="scale-correct", n_clicks=0,
-        ),
-        html.P(
-            "Corrections retain the original definition and append a new event. "
-            "A judgment on an earlier definition is viewable but not editable here.",
-            className="focus-help",
-        ),
+        ], className="focus-coding-panel"),
     ], className="focus-coding-panel")
-
 
 def register_comparison_callbacks(
     app: Any, project: Any, *, total_units: int, hierarchy: list[dict[str, Any]],
