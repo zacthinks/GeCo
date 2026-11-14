@@ -141,7 +141,7 @@ def _random_scale_task(
     )
 
 
-def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
+def comparison_layout(*, dcc: Any, html: Any, dash_table: Any, auto_train: bool = False) -> Any:
     """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
         html.Div([
@@ -162,9 +162,10 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                         "label": "Automatically train after saved comparisons",
                         "value": "auto",
                     }],
-                    value=[],
+                    value=["auto"] if auto_train else [],
                 ),
             ], className="classifier-training-options"),
+            html.Div(id="scale-model-preference-status", style={"display": "none"}),
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
@@ -321,6 +322,21 @@ def register_comparison_callbacks(
         except (KeyError, TypeError, ValueError):
             return None
         return int(construct_id) if row["type"] == "scale" else None
+
+    @app.callback(
+        Output("scale-model-preference-status", "children"),
+        Input("scale-auto-train", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_auto_training(
+        values: list[str] | None, session_id: int | None,
+    ) -> str:
+        if session_id is not None:
+            project.patch_session_state(
+                int(session_id), {"scale_auto_train": "auto" in (values or [])}
+            )
+        return ""
 
     @app.callback(
         Output("scale-model-geometry", "options"),
