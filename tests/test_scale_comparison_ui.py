@@ -362,3 +362,86 @@ def test_large_project_page_is_bounded(tmp_path: Path, monkeypatch) -> None:
     assert len(rows) == 20
     assert rows[-1]["unit_id"] == 10000
     assert rows[0]["eligibility"] == "Eligible"
+
+
+def test_develop_eig_selection_provenance_survives_reopen(tmp_path: Path) -> None:
+    """Recommendation lineage remains distinct from the human judgment origin."""
+    import numpy as np
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=12)
+    matrix = np.column_stack((np.arange(12, 0, -1, dtype=float),
+                              np.arange(12, dtype=float) % 2))
+    path, is_sparse = project.artifacts.save_geometry_matrix("eig_test", matrix)
+    geometry_id = project.database.register_geometry(
+        name="eig_test", class_name="SyntheticGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path=path,
+        matrix_sparse=is_sparse, state_path=None, supports_query=False,
+        supports_text_transform=False,
+    )
+    representation = project.database.representation_for_legacy("geometry", geometry_id)
+    scale = project.create_scale("Clarity")
+    observations = [project.database.observation_for_unit(i) for i in range(1, 13)]
+    for i, j, outcome in [
+        (0, 1, "first_higher"), (1, 2, "first_higher"),
+        (0, 2, "first_higher"), (3, 4, "parity"),
+        (2, 3, "first_higher"), (4, 5, "first_higher"),
+    ]:
+        project.record_scale_comparison(
+            scale, observations[i], observations[j], outcome
+        )
+    project.configure_scale_model(scale, int(representation["representation_id"]))
+    fit = project.train_scale(scale)
+    assert fit["acquisition"]["strategy"] == "eig"
+    from geometric_coder.scale_recommendations import scale_acquisition_status
+    acquisition = scale_acquisition_status(project, scale)
+    assert acquisition["strategy"] == "eig"
+
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    next_pair = _callback(app, "next_scale_pair")
+    task, _, _ = next_pair(1, scale, session)
+    assert task["acquisition"]["strategy"] == "eig"
+    assert task["acquisition"]["source_run_id"] == acquisition["run_id"]
+    display = _callback(app, "display_scale_task")
+    _, _, _, _, note, *_ = display(task, [], scale, 0)
+    assert "Bayesian information gain" in note
+    manage = _callback(app, "manage_scale_comparison")
+    saved, _, _ = _manage(
+        manage, "scale-judge-first", scale=scale, session=session, task=task
+    )
+    assert saved["status"] == "saved"
+    reopened = GeometricCoder.open(project.project_dir)
+    event = reopened.scale_comparison_event(scale, saved["event_id"])
+    provenance = event["selection_provenance"]
+    assert event["origin"] == "human_direct"
+    assert provenance["strategy"] == "eig"
+    assert provenance["source_acquisition_run_id"] == acquisition["run_id"]
+    assert provenance["fallback_reason"] is None
+    assert provenance["mode"] == "independent"
+
+
+def test_develop_random_fallback_provenance_and_reason(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=8)
+    scale = project.create_scale("Random-first scale")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    task, _, _ = _callback(app, "next_scale_pair")(1, scale, session)
+    assert task["acquisition"]["strategy"] == "random"
+    display = _callback(app, "display_scale_task")
+    _, _, _, _, note, *_ = display(task, [], scale, 0)
+    assert "randomly" in note.lower()
+    assert "fallback" in note.lower()
+    saved, _, _ = _manage(
+        _callback(app, "manage_scale_comparison"),
+        "scale-judge-parity", scale=scale, session=session, task=task,
+    )
+    provenance = GeometricCoder.open(project.project_dir).scale_comparison_event(
+        scale, saved["event_id"]
+    )["selection_provenance"]
+    assert provenance["strategy"] == "random"
+    assert provenance["random_seed"] is not None
+    assert provenance["source_acquisition_run_id"] is None
+    assert provenance["fallback_reason"] == "no_frozen_ranking"
