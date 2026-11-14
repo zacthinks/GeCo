@@ -640,9 +640,7 @@ def create_app(
             "default dependencies."
         ) from error
 
-    from geometric_coder.ui.scale_comparisons import (
-        comparison_layout, register_comparison_callbacks,
-    )
+    from geometric_coder.ui.scale_comparisons import register_comparison_callbacks
     from geometric_coder.ui.figures import one_dimensional_jitter_spread
     from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
