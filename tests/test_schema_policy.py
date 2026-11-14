@@ -135,6 +135,45 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
         assert _version_and_topics(path) == (version, True)
 
 
+def test_20_to_21_acquisition_tables_migrate_transactionally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_workspace(tmp_path)
+    path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE scale_acquisition_pairs")
+        connection.execute("DROP TABLE scale_acquisition_runs")
+        connection.execute("UPDATE project SET schema_version = 20")
+
+    original = storage_database._MIGRATIONS[20]
+
+    def broken(connection: sqlite3.Connection) -> None:
+        original(connection)
+        raise RuntimeError("injected acquisition migration failure")
+
+    monkeypatch.setitem(storage_database._MIGRATIONS, 20, broken)
+    with pytest.raises(RuntimeError, match="injected acquisition migration failure"):
+        GeometricCoder.open(project.project_dir)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT schema_version FROM project").fetchone()[0] == 20
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_runs'"
+        ).fetchone() is None
+
+    monkeypatch.setitem(storage_database._MIGRATIONS, 20, original)
+    GeometricCoder.open(project.project_dir)
+    GeometricCoder.open(project.project_dir)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT schema_version FROM project").fetchone()[0] == 21
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_runs'"
+        ).fetchone() is not None
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_pairs'"
+        ).fetchone() is not None
+
+
 def test_external_workspace_needs_provider_before_migrating(tmp_path: Path) -> None:
     project = _make_workspace(tmp_path, external=True)
     path = project.project_dir / project.DATABASE_FILENAME
