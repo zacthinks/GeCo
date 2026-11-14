@@ -565,3 +565,88 @@ def test_frozen_scale_acquisition_storage_survives_reopen_and_refit(tmp_path):
             ranked_pairs=[ranking[0], ranking[0]],
         )
     assert reopened.database.scale_acquisition_page(run["run_id"]) == page
+
+
+def test_phase3a_phase3b_fit_ranking_frozen_and_reopen(tmp_path):
+    """A real Davidson fit, shared sampler, durable queue and human evidence lifecycle."""
+    from geometric_coder.scale_recommendations import (
+        next_scale_recommendation, scale_acquisition_status,
+    )
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    events = [
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ]
+    for first, second, outcome in events:
+        project.record_scale_comparison(scale, first, second, outcome)
+
+    result = project.train_scale(scale)
+    assert result["status"] == "current"
+    rank = scale_acquisition_status(project, scale)
+    assert rank["strategy"] == "eig"
+    assert rank["scaler_fit_id"] == result["fit"]["scaler_fit_id"]
+    assert rank["diagnostics"]["evaluated_candidate_count"] == 4
+    page = project.database.scale_acquisition_page(rank["run_id"])
+    assert len(page) == 4
+    assert all(row["acquisition_score"] >= 0 for row in page)
+    assert [row["acquisition_score"] for row in page] == sorted(
+        (row["acquisition_score"] for row in page), reverse=True
+    )
+
+    first_choice = next_scale_recommendation(project, scale)
+    assert first_choice["strategy"] == "eig"
+    assert tuple(first_choice["pair"]) == (
+        page[0]["observation_low_id"], page[0]["observation_high_id"]
+    )
+
+    # Saving a judgment with automatic training off must only stale the fit
+    # and consume a cached recommendation; it must not refresh the sorted scores.
+    project.record_scale_comparison(
+        scale, *first_choice["pair"], "first_higher"
+    )
+    assert project.scale_model_status(scale)["status"] == "stale"
+    frozen = scale_acquisition_status(project, scale)
+    assert frozen["frozen"] and frozen["run_id"] == rank["run_id"]
+    second_choice = next_scale_recommendation(project, scale)
+    assert second_choice["strategy"] == "eig"
+    assert second_choice["pair"] != first_choice["pair"]
+    assert project.database.scale_acquisition_page(rank["run_id"]) == page
+
+    reopened = GeometricCoder.open(project.project_dir)
+    assert scale_acquisition_status(reopened, scale)["run_id"] == rank["run_id"]
+    assert next_scale_recommendation(reopened, scale)["pair"] == second_choice["pair"]
+
+    project.train_scale(scale)
+    new_run = scale_acquisition_status(project, scale)
+    assert new_run["run_id"] != rank["run_id"]
+    assert new_run["scaler_fit_id"] != rank["scaler_fit_id"]
+
+
+def test_phase3a_phase3b_random_bootstrap_has_finite_budget(tmp_path):
+    from geometric_coder.scale_recommendations import (
+        next_scale_recommendation, refresh_scale_acquisition,
+    )
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    random_pair = next_scale_recommendation(project, scale, seed=5)
+    assert random_pair["strategy"] == "random"
+    assert random_pair["pair"][0] < random_pair["pair"][1]
+    assert random_pair["run_id"] is None
+    assert project.scale_training_comparisons(scale) == []
+
+    project.configure_scale_model(scale, rep)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    trained = project.train_scale(scale)
+    assert trained["status"] == "current"
+    run = refresh_scale_acquisition(project, scale, budget=3, seed=8)
+    assert run["strategy"] == "random"
+    assert run["count"] == 3
+    assert run["provenance"]["evaluated_candidate_count"] == 3
+    assert all(
+        row["acquisition_score"] is None
+        for row in project.database.scale_acquisition_page(run["run_id"])
+    )
