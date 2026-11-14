@@ -106,39 +106,27 @@ def _prepare_scale_task(
 def _random_scale_task(
     project: Any, scale_id: int, session_id: int, total_units: int,
 ) -> dict[str, Any]:
-    """Prepare a random eligible pair without loading the corpus or fitting models.
+    """Prepare one recommended pair using a frozen ranking or shared sampler.
 
-    Draw bounded batches of immutable row positions, resolve to observation IDs,
-    and reject previously judged unordered pairs. This is a temporary discovery
-    strategy until model-informed acquisition is implemented.
+    Name retained for the existing callback entry points; this is no longer a
+    second sampler and does not fit models on navigation.
     """
-    if total_units < 2:
-        raise ValueError("At least two observations are needed for a comparison.")
-    rng = secrets.SystemRandom()
-    for _ in range(8):
-        positions = rng.sample(range(total_units), min(total_units, 64))
-        units = project.database.unit_rows_at_positions(positions)
-        ids = [int(row["observation_id"]) for row in units]
-        eligible = project.eligible_scale_observation_ids(scale_id, ids)
-        if len(eligible) < 2:
-            continue
-        previously_judged = project.scale_existing_pairs(scale_id, eligible)
-        rng.shuffle(eligible)
-        for first in eligible:
-            for second in eligible:
-                if first == second:
-                    continue
-                if tuple(sorted((first, second))) in previously_judged:
-                    continue
-                return _prepare_scale_task(project, {
-                    "scale_id": int(scale_id), "session_id": int(session_id),
-                    "picked_a": first, "picked_b": second,
-                    "status": "selecting",
-                }, None)
-    raise ValueError(
-        "No unjudged eligible pair was found in the bounded random sample. "
-        "Try the manual observation selector under More options."
-    )
+    from geometric_coder.scale_recommendations import next_scale_recommendation
+
+    del total_units
+    choice = next_scale_recommendation(project, int(scale_id))
+    first, second = choice["pair"]
+    task = _prepare_scale_task(project, {
+        "scale_id": int(scale_id), "session_id": int(session_id),
+        "picked_a": first, "picked_b": second,
+        "status": "selecting",
+    }, None)
+    task["acquisition"] = {
+        "strategy": choice["strategy"],
+        "reason": choice.get("fallback_reason"),
+        "source_run_id": choice.get("run_id"),
+    }
+    return task
 
 
 def comparison_layout(
@@ -796,7 +784,10 @@ def register_comparison_callbacks(
         project.patch_session_state(
             int(session_id), {"scale_comparison_task": task},
         )
-        return task, "New pair ready.", []
+        return task, ("New pair ready · " + (
+            "Bayesian information gain" if task.get("acquisition", {}).get("strategy") == "eig"
+            else "random selection"
+        ) + "."), []
 
     @app.callback(
         Output("scale-selection-summary", "children"),
