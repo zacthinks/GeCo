@@ -141,7 +141,10 @@ def _random_scale_task(
     )
 
 
-def comparison_layout(*, dcc: Any, html: Any, dash_table: Any, auto_train: bool = False) -> Any:
+def comparison_layout(
+    *, dcc: Any, html: Any, dash_table: Any,
+    auto_train: bool = False, tune_hyperparameters: bool = False,
+) -> Any:
     """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
         html.Div([
@@ -157,6 +160,14 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any, auto_train: bool 
                     className="primary-action",
                 ),
                 dcc.Checklist(
+                    id="scale-tune-hyperparameters",
+                    options=[{
+                        "label": "Tune hyperparameters with cross-validation",
+                        "value": "tune",
+                    }],
+                    value=["tune"] if tune_hyperparameters else [],
+                ),
+                dcc.Checklist(
                     id="scale-auto-train",
                     options=[{
                         "label": "Automatically train after saved comparisons",
@@ -166,6 +177,7 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any, auto_train: bool 
                 ),
             ], className="classifier-training-options"),
             html.Div(id="scale-model-preference-status", style={"display": "none"}),
+            html.Div(id="scale-model-tune-preference-status", style={"display": "none"}),
             html.Div(id="scale-model-selection-status", className="control-status"),
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
@@ -368,6 +380,23 @@ def register_comparison_callbacks(
         return ""
 
     @app.callback(
+        Output("scale-model-tune-preference-status", "children"),
+        Input("scale-tune-hyperparameters", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_tuning(
+        values: list[str] | None, session_id: int | None,
+    ) -> str:
+        if session_id is not None:
+            project.patch_session_state(
+                int(session_id), {
+                    "scale_tune_hyperparameters": "tune" in (values or []),
+                },
+            )
+        return ""
+
+    @app.callback(
         Output("scale-model-geometry", "options"),
         Output("scale-model-geometry", "value"),
         Input("focus-construct-dropdown", "value"),
@@ -395,11 +424,13 @@ def register_comparison_callbacks(
         Input("scale-model-train", "n_clicks"),
         State("focus-construct-dropdown", "value"),
         State("scale-model-geometry", "value"),
+        State("scale-tune-hyperparameters", "value"),
         prevent_initial_call=True,
     )
     def train_selected_scale(
         clicks: int | None, construct_id: int | None,
         representation_id: int | None,
+        tune_values: list[str] | None = None,
     ) -> str:
         if not clicks:
             return ""
@@ -410,13 +441,26 @@ def register_comparison_callbacks(
             return "Choose an analytic geometry before training."
         try:
             ensure_scale_configuration(scale_id, int(representation_id))
-            result = project.train_scale(scale_id)
+            tune = "tune" in (tune_values or [])
+            result = (
+                project.train_scale(
+                    scale_id, tune=True, retune_current=True,
+                ) if tune else project.train_scale(scale_id)
+            )
             if result["status"] == "insufficient_evidence":
                 return str(result["reason"])
+            selection = result.get("training_selection", {})
+            suffix = (
+                f" CV-tuned with {selection['folds']} folds."
+                if selection.get("tuned") else (
+                    " CV skipped; current hyperparameters retained."
+                    if tune else ""
+                )
+            )
             return (
                 "Current Scale model reused."
                 if result.get("reused")
-                else f"Scale fit {result['fit']['scaler_fit_id']} saved."
+                else f"Scale fit {result['fit']['scaler_fit_id']} saved.{suffix}"
             )
         except (ValueError, KeyError, RuntimeError) as error:
             return f"Scale training unavailable: {error}"
@@ -428,12 +472,14 @@ def register_comparison_callbacks(
         State("focus-construct-dropdown", "value"),
         State("scale-auto-train", "value"),
         State("scale-model-geometry", "value"),
+        State("scale-tune-hyperparameters", "value"),
         prevent_initial_call=True,
     )
     def train_after_saved_scale_comparison(
         message: str | None, task: dict[str, Any] | None,
         construct_id: int | None, auto_values: list[str] | None,
         representation_id: int | None,
+        tune_values: list[str] | None = None,
     ) -> str:
         # A saved-evidence signal only; browsing or presenting a pair never fits.
         if not isinstance(message, str) or not message.startswith("Saved event "):
@@ -451,8 +497,12 @@ def register_comparison_callbacks(
         if representation_id is None:
             return "Comparison saved; select an analytic geometry to train."
         try:
-            project.configure_scale_model(scale_id, int(representation_id))
-            result = project.train_scale(scale_id)
+            ensure_scale_configuration(scale_id, int(representation_id))
+            result = (
+                project.train_scale(scale_id, tune=True)
+                if "tune" in (tune_values or [])
+                else project.train_scale(scale_id)
+            )
             if result["status"] == "insufficient_evidence":
                 return f"Comparison saved; {result['reason']}"
             return (
