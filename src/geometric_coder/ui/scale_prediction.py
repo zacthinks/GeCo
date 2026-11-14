@@ -240,24 +240,24 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
             if page_state.get("scale_id") != scale_id:
                 return no_update
             if project.construct(scale_id)["type"] != "scale":
-                return no_update, no_update, no_update
+                return no_update
             state = project.scale_model_status(scale_id)
             fit = state.get("fit")
             if state["status"] not in {"current", "stale"} or fit is None:
-                return no_update, no_update, no_update
+                return no_update
             if int(fit["scaler_fit_id"]) != int(page_state["fit_id"]):
-                return no_update, no_update, no_update
+                return no_update
             selected = click_data["points"][0]["customdata"]
             observation_id, unit_id = int(selected[0]), int(selected[1])
             if observation_id not in page_state["observation_ids"]:
-                return no_update, no_update, no_update
+                return no_update
             observation = project.observation(observation_id)
             if observation["kind"] != "atomic" or int(observation["unit_id"]) != unit_id:
-                return no_update, no_update, no_update
+                return no_update
             if observation_id not in project.eligible_scale_observation_ids(
                 scale_id, [observation_id],
             ):
-                return no_update, no_update, no_update
+                return no_update
             context = project.context(
                 unit_id,
                 level=int(level if level is not None else 0),
@@ -278,5 +278,5 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
             ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
-            return no_update, no_update, no_update
+            return no_update
         return preview
