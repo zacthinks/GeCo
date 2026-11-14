@@ -105,7 +105,7 @@ def _training_snapshot(
         "eligibility": eligibility,
         "geometry": _geometry_snapshot(project, int(spec["representation_id"])),
         # The reference sample is deterministic and frozen by these parameters.
-        "reference_policy": {"method": "even_corpus_rows", "max_rows": 2048},
+        "reference_policy": {"method": "eligible_reservoir_seed_0", "max_rows": 2048},
         "scaler_spec_id": int(spec["scaler_spec_id"]),
         "estimator_family": str(spec["estimator_family"]),
         "hyperparameters": dict(spec["hyperparameters"]),
@@ -155,9 +155,95 @@ def _production_estimator_factory(**parameters: Any) -> Any:
     return LinearDavidsonScaler(**parameters)
 
 
+def _select_scale_hyperparameters(
+    training: Any, reference: Any, current: Mapping[str, Any],
+    constructor: Callable[..., Any], *, folds: int = 5,
+) -> dict[str, Any]:
+    """Grouped pairwise CV using the three-outcome Davidson log score.
+
+    Judgments on the same unordered pair stay in one fold. Unlabeled reference
+    geometry is permitted in every fold but held-out outcomes are never fitted.
+    """
+    pairs = np.asarray(training.pairs, dtype=np.int64)
+    outcomes = np.asarray(training.outcomes, dtype=np.int64)
+    groups: dict[tuple[int, int], list[int]] = {}
+    for index, pair in enumerate(pairs):
+        key = tuple(sorted((int(pair[0]), int(pair[1]))))
+        groups.setdefault(key, []).append(index)
+    keys = sorted(groups)
+    actual_folds = min(int(folds), len(keys))
+    fallback = {
+        "tuned": False, "reason": "insufficient_cv_data", "folds": 0,
+        "selected_hyperparameters": dict(current), "results": [],
+    }
+    if actual_folds < 2 or len(keys) < 3:
+        return fallback
+    rng = np.random.default_rng(0)
+    shuffled = rng.permutation(len(keys))
+    partition = np.array_split(shuffled, actual_folds)
+    splits = []
+    for holdout in partition:
+        held_keys = {keys[int(index)] for index in holdout}
+        test = np.asarray([i for key in held_keys for i in groups[key]], dtype=int)
+        train = np.asarray(
+            [i for key in keys if key not in held_keys for i in groups[key]],
+            dtype=int,
+        )
+        unique_obs = set(pairs[train].ravel().tolist())
+        if (len(train) < 2 or len(unique_obs) < 3
+                or not np.any(outcomes[train] != 1)):
+            return fallback
+        splits.append((train, test))
+    candidates = [
+        {**current, "score_prior_sd": prior, "feature_normalization": normalization}
+        for prior in (0.25, 1.0, 4.0)
+        for normalization in ("none", "rms")
+    ]
+    results = []
+    for candidate in candidates:
+        scores = []
+        for train, test in splits:
+            try:
+                model = constructor(**candidate)
+                model.fit(
+                    training.features, pairs[train], outcomes[train],
+                    reference_X=reference,
+                )
+                if not bool(getattr(model, "success_", True)):
+                    raise RuntimeError("Optimization failed during CV.")
+                probabilities = np.asarray(
+                    model.predict_comparisons(training.features, pairs[test]),
+                    dtype=float,
+                )
+                if probabilities.shape != (len(test), 3) or not np.isfinite(probabilities).all():
+                    raise ValueError("Invalid held-out Davidson probabilities.")
+                scores.append(float(-np.log(
+                    np.clip(probabilities[np.arange(len(test)), outcomes[test]], 1e-15, 1)
+                ).mean()))
+            except (ArithmeticError, ValueError, RuntimeError, np.linalg.LinAlgError):
+                scores = []
+                break
+        if scores:
+            results.append({
+                "hyperparameters": candidate,
+                "mean_log_loss": float(np.mean(scores)),
+                "fold_scores": scores,
+            })
+    if not results:
+        return {**fallback, "reason": "cv_candidates_failed"}
+    selected = min(results, key=lambda row: row["mean_log_loss"])
+    return {
+        "tuned": True, "reason": None, "folds": actual_folds,
+        "metric": "three_outcome_log_loss",
+        "selected_hyperparameters": selected["hyperparameters"],
+        "results": results,
+    }
+
+
 def train_scale_model(
     project: Any, scale_id: int, *,
     estimator_factory: Callable[..., Any] | None = None,
+    tune: bool = False, retune_current: bool = False, folds: int = 5,
 ) -> dict[str, Any]:
     """Train explicitly or at a saved-evidence boundary; reuse an unchanged fit.
 
@@ -165,9 +251,13 @@ def train_scale_model(
     with one directional comparison or exclusively parity evidence is not
     presented as learned; existing fitted state remains preserved.
     """
+    if retune_current and not tune:
+        raise ValueError("retune_current requires tune=True")
     status = scale_model_status(project, int(scale_id))
-    if status["status"] == "current":
-        return {**status, "reused": True}
+    if status["status"] == "current" and not (tune and retune_current):
+        return {**status, "reused": True, "training_selection": {
+            "tuned": False, "reason": "current_fit_reused", "folds": 0,
+        }}
     spec = status["configuration"]
     if spec is None:
         raise ConfigurationError("Select an analytic geometry before training this Scale.")
@@ -195,15 +285,33 @@ def train_scale_model(
         project, int(scale_id), geometry_id, comparisons=events
     )
     constructor = estimator_factory or _production_estimator_factory
-    model = constructor(**dict(spec["hyperparameters"]))
-    # Reference rows establish feature RMS/prior strength/score center separately
-    # from the actively compared observation subset. For large linked projects,
-    # use a fixed, evenly spaced corpus sample rather than materialize all rows.
-    corpus_rows = int(snapshot["geometry"]["atomic_row_count"])
-    reference_positions = np.linspace(
-        0, corpus_rows - 1, num=min(corpus_rows, 2048), dtype=np.int64
-    ).tolist()
+    reference_positions, eligible_count = project.database.scale_reference_positions(
+        int(scale_id), max_rows=2048
+    )
+    if not reference_positions:
+        raise ConfigurationError("This Scale has no eligible reference observations.")
     reference = project.geometry_page_rows(geometry_id, reference_positions)
+    parameters = dict(spec["hyperparameters"])
+    selection: dict[str, Any] = {
+        "tuned": False, "reason": "tuning_disabled", "folds": 0,
+        "selected_hyperparameters": parameters,
+    }
+    if tune:
+        selection = _select_scale_hyperparameters(
+            training, reference, parameters, constructor, folds=int(folds)
+        )
+        parameters = dict(selection["selected_hyperparameters"])
+        if parameters != dict(spec["hyperparameters"]):
+            # Persist the selected configuration, as classifier training does.
+            project.configure_scale_model(
+                int(scale_id), int(spec["representation_id"]),
+                estimator_family=str(spec["estimator_family"]),
+                hyperparameters=parameters,
+            )
+            spec = project.database.get_scaler_spec(int(scale_id))
+            assert spec is not None
+            snapshot, _ = _training_snapshot(project, scale_id, spec)
+    model = constructor(**parameters)
     model.fit(
         training.features, training.pairs, training.outcomes,
         reference_X=reference,
@@ -232,8 +340,9 @@ def train_scale_model(
         "optimality": getattr(model, "optimality_", None),
         "posterior_available": getattr(model, "posterior_", None) is not None,
         "reference_observation_count": len(reference_positions),
-        "reference_population_count": corpus_rows,
-        "reference_method": "evenly_spaced_corpus_rows",
+        "reference_population_count": eligible_count,
+        "reference_method": "eligible_reservoir_seed_0",
+        "training_selection": selection,
         "posterior_error": posterior_error,
         "interpretation": "Exploratory, model-dependent scalar projection; not validated measurement.",
     }
@@ -259,9 +368,15 @@ def train_scale_model(
             (project.project_dir / path).unlink(missing_ok=True)
         raise
     if saved["artifact_path"] != path:
-        # Concurrent completion won the unique-fit transaction.
+        # Another publisher won the transaction.
         (project.project_dir / path).unlink(missing_ok=True)
-    return {**scale_model_status(project, int(scale_id)), "reused": False}
+    else:
+        for retired in saved.get("_retired_artifact_paths", []):
+            (project.project_dir / retired).unlink(missing_ok=True)
+    return {
+        **scale_model_status(project, int(scale_id)),
+        "reused": False, "training_selection": selection,
+    }
 
 
 def scale_model_scores(
