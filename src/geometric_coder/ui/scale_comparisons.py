@@ -381,7 +381,8 @@ def comparison_layout(
                 className="focus-help",
             ),
         ], className="focus-coding-panel"),
-    ], className="focus-coding-panel")
+        ], className="scale-comparison-main"),
+    ], className="focus-workspace scale-workspace")
 
 def register_comparison_callbacks(
     app: Any, project: Any, *, total_units: int, hierarchy: list[dict[str, Any]],
@@ -1018,8 +1019,7 @@ def register_comparison_callbacks(
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),
                 ]),
-                ], className="scale-comparison-main"),
-    ], className="focus-workspace scale-workspace")
+            ], className="focus-coding-panel")
         match_count = project.scale_pair_history_count(scale_id, first, second)
         correction = task.get("mode") == "correction"
         acquisition = task.get("acquisition")
