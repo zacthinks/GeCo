@@ -125,6 +125,7 @@ def _random_scale_task(
         "strategy": choice["strategy"],
         "reason": choice.get("fallback_reason"),
         "source_run_id": choice.get("run_id"),
+        "random_seed": choice.get("seed"),
     }
     return task
 
@@ -673,6 +674,9 @@ def register_comparison_callbacks(
                         raise ValueError("Prepare a pair before requesting another judgment.")
                     task["picked_a"] = task["first"]
                     task["picked_b"] = task["second"]
+                    # A researcher-initiated repeat is a manual choice, not
+                    # another acquisition recommendation from the frozen run.
+                    task.pop("acquisition", None)
                 task = _prepare_scale_task(project, task, reviewer)
                 project.patch_session_state(session_id, {"scale_comparison_task": task})
                 return task, (
@@ -737,13 +741,24 @@ def register_comparison_callbacks(
                         "This pair already has evidence. Confirm an intentional independent repeat."
                     )
                 outcome = _OUTCOMES[trigger]
+                acquisition = task.get("acquisition")
+                selection = acquisition if isinstance(acquisition, dict) else {}
+                strategy = selection.get("strategy")
+                if strategy not in {"eig", "random"}:
+                    strategy = "manual"
                 provenance = {
-                    "strategy": "manual", "workspace": "develop",
+                    "strategy": strategy, "workspace": "develop",
                     "mode": task.get("mode", "independent"),
                     "task_nonce": task["submission_key"],
                     "definition_version": task["snapshot"]["version_number"],
                     "eligibility_revision": task["snapshot"]["eligibility"]["eligibility_revision"],
                 }
+                if strategy != "manual":
+                    # Keep adaptive *selection* distinct from the human
+                    # outcome, which still has origin="human_direct".
+                    provenance["source_acquisition_run_id"] = selection.get("source_run_id")
+                    provenance["fallback_reason"] = selection.get("reason")
+                    provenance["random_seed"] = selection.get("random_seed")
                 event_id = project.record_scale_comparison(
                     scale_id, first, second, outcome,
                     origin="human_direct",
@@ -870,6 +885,21 @@ def register_comparison_callbacks(
                 if match_count else "No previous judgment for this pair."
             )
         )
+        acquisition = task.get("acquisition")
+        if isinstance(acquisition, dict):
+            strategy = acquisition.get("strategy")
+            reason = acquisition.get("reason")
+            if strategy == "eig":
+                selection_note = "Selected by Bayesian information gain."
+            elif strategy == "random":
+                selection_note = "Selected randomly"
+                if reason:
+                    selection_note += f" (fallback: {str(reason).replace('_', ' ')})"
+                selection_note += "."
+            else:
+                selection_note = ""
+            if selection_note:
+                prior_message = f"{selection_note} {prior_message}"
         enabled = (
             task["status"] == "ready" and snapshot_ok and eligible
             and (correction or not match_count or "repeat" in (repeat_ack or []))
