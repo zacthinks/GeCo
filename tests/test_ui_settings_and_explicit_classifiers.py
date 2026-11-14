@@ -68,7 +68,10 @@ def test_custom_candidate_budget_requires_a_value_before_saving(tmp_path: Path) 
     def find(component, component_id):
         if getattr(component, "id", None) == component_id:
             return component
-        for child in getattr(component, "children", None) or []:
+        children = getattr(component, "children", None)
+        if not isinstance(children, (list, tuple)):
+            children = [children] if children is not None else []
+        for child in children:
             found = find(child, component_id)
             if found is not None:
                 return found
