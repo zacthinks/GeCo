@@ -3334,6 +3334,76 @@ class ProjectDatabase:
             ).fetchall()
         return [_scale_comparison_row(row) for row in rows]
 
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Page complete, immutable comparison history, including superseded events."""
+        if page_size < 1 or page_size > 200:
+            raise ValueError("History page size must be between 1 and 200.")
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            total = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events AS e "
+                "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                "WHERE v.scale_id = ?", (int(scale_id),),
+            ).fetchone()[0])
+            pages = max(1, (total + page_size - 1) // page_size)
+            current_page = max(1, min(int(page), pages))
+            rows = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ?
+                   ORDER BY e.comparison_event_id DESC LIMIT ? OFFSET ?""",
+                (int(scale_id), int(page_size), (current_page - 1) * page_size),
+            ).fetchall()
+        return [
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            for row in rows
+        ], total, current_page
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Get one historical event for correction without scanning a large batch."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.comparison_event_id = ?""",
+                (int(scale_id), int(event_id)),
+            ).fetchone()
+        return (
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            if row is not None else None
+        )
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        low, high = sorted((int(first), int(second)))
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.observation_low_id = ?
+                     AND e.observation_high_id = ?""",
+                (int(scale_id), low, high),
+            ).fetchone()
+        return int(row[0])
+
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
         """Return current, eligible human judgments for later Scale fitting.
 
