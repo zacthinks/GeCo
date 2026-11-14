@@ -68,7 +68,7 @@ def test_exact_cartesian_nine_normal_records_and_correction(tmp_path: Path) -> N
     assert all(row["selection_provenance"] == {} for row in events)
     assert all(row["supersedes_event_id"] is None for row in events)
     assert len(project.scale_training_comparisons(scale)) == 9
-    assert project.scale_eligibility(scale)["kind"] == "all"
+    assert project.scale_eligibility(scale)["eligibility"]["kind"] == "all"
     assert project.code(code) == before
     assert project.current_annotations(code) == before_labels
 
@@ -212,6 +212,63 @@ def test_empty_group_and_safety_limit_leave_database_untouched(tmp_path: Path) -
             submission_key="1" * 32,
         )
     assert project.constructs() == [row for row in project.constructs() if row["type"] == "code"]
+
+
+def test_paged_bootstrap_history_exposes_and_corrects_older_events(tmp_path: Path) -> None:
+    pytest.importorskip("dash")
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=18)
+    code = project.create_code("Binary")
+    for unit_id in range(1, 10):
+        project.annotate(
+            project.observation_id_for_unit(unit_id), code, "positive",
+        )
+    for unit_id in range(10, 19):
+        project.annotate(
+            project.observation_id_for_unit(unit_id), code, "negative",
+        )
+    preview = project.code_scale_bootstrap_preview(code)
+    assert preview["comparisons"] == 81
+    result = project.create_scale_from_code(
+        "Eighty-one comparisons", "", code, expected_preview=preview,
+        submission_key="8" * 32,
+    )
+    scale = result["scale_id"]
+    app = create_app(project)
+    history_callback = _callback(app, "refresh_scale_history")
+    page1, _, message1 = history_callback(scale, None, "focus", 1)
+    page2, _, message2 = history_callback(scale, None, "focus", 2)
+    assert len(page1) == 60
+    assert len(page2) == 21
+    assert "page 2 of 2" in message2
+    assert "81 recorded" in message1
+    assert not ({row["comparison_event_id"] for row in page1}
+                & {row["comparison_event_id"] for row in page2})
+    old_event = page2[-1]["comparison_event_id"]
+    assert project.scale_comparison_event(scale, old_event)["is_superseded"] is False
+
+    manage = _callback(app, "manage_scale_comparison")
+    session = int(project.sessions()[0]["session_id"])
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "scale-correct.n_clicks", "value": 1}]
+    ))
+    try:
+        prepared, msg, _ = manage(
+            scale, session, *([0] * 11),
+            [], [], None, None, [], page2, [len(page2) - 1], None,
+        )
+    finally:
+        context_value.reset(token)
+    assert prepared["supersedes_event_id"] == old_event
+    assert "Correcting event" in msg
+    project.record_scale_comparison(
+        scale, prepared["first"], prepared["second"], "parity",
+        supersedes_event_id=old_event,
+    )
+    assert project.scale_comparison_event(scale, old_event)["is_superseded"] is True
 
 
 def test_shared_dialog_bootstrap_preview_and_explicit_confirmation(tmp_path: Path) -> None:
