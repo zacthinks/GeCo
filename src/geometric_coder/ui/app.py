@@ -9783,6 +9783,8 @@ def _focus_layout(
     initial_state: dict[str, Any],
 ) -> Any:
     """Return a shared Construct selector with the existing binary Develop workspace."""
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+
     del geometries
     code_ids = {int(code["code_id"]) for code in codes}
     initial_construct_id = _selected_focus_construct_id(constructs, initial_state)
