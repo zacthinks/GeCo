@@ -223,41 +223,42 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     @app.callback(
         Output("scale-prediction-preview", "children"),
         Input("scale-prediction-map", "clickData"),
-        State("scale-prediction-page-state", "data"),
-        State("focus-construct-dropdown", "value"),
-        State("scale-context-level", "value"),
-        State("scale-context-window", "value"),
+        Input("scale-prediction-page-state", "data"),
+        Input("focus-construct-dropdown", "value"),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window", "value"),
         prevent_initial_call=True,
     )
     def inspect_scale_prediction_point(
         click_data: Any, page_state: Any, construct_id: Any,
         level: Any, window: Any,
     ) -> Any:
+        empty = html.P("Select a plotted observation to inspect it.")
         if not isinstance(page_state, dict) or not click_data:
-            return no_update
+            return empty
         try:
             scale_id = int(construct_id)
             if page_state.get("scale_id") != scale_id:
-                return no_update
+                return empty
             if project.construct(scale_id)["type"] != "scale":
-                return no_update
+                return empty
             state = project.scale_model_status(scale_id)
             fit = state.get("fit")
             if state["status"] not in {"current", "stale"} or fit is None:
-                return no_update
+                return empty
             if int(fit["scaler_fit_id"]) != int(page_state["fit_id"]):
-                return no_update
+                return empty
             selected = click_data["points"][0]["customdata"]
             observation_id, unit_id = int(selected[0]), int(selected[1])
             if observation_id not in page_state["observation_ids"]:
-                return no_update
+                return empty
             observation = project.observation(observation_id)
             if observation["kind"] != "atomic" or int(observation["unit_id"]) != unit_id:
-                return no_update
+                return empty
             if observation_id not in project.eligible_scale_observation_ids(
                 scale_id, [observation_id],
             ):
-                return no_update
+                return empty
             context = project.context(
                 unit_id,
                 level=int(level if level is not None else 0),
@@ -278,5 +279,5 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
             ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
-            return no_update
+            return empty
         return preview
