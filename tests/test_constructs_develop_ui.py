@@ -262,7 +262,9 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
     assert revised[3] == "Scale: Argument quality revised"
     assert revised[4] == "definition v2"
     assert "Definition version 2" in revised[5]
-    assert all(value is no_update for value in revised[6:])
+    assert all(value is no_update for value in revised[6:9])
+    assert "Argument quality revised" in str(revised[9])
+    assert revised[10] == {}
     assert all(value is no_update for value in unchanged_code)
 
     # Explicit selection changes still switch the Code-only controls normally.
