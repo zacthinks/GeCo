@@ -243,3 +243,49 @@ def test_empty_prediction_pair_arrays_have_valid_shapes():
     mean, covariance = model.pair_posterior_moments(X, empty)
     assert mean.shape == (0, 2)
     assert covariance.shape == (0, 2, 2)
+
+
+@pytest.mark.parametrize('sparse_input', [False, True])
+@pytest.mark.parametrize('amplitude, reference_sd, rtol', [
+    (1_000., 1e-4, 5e-4),
+    (10_000., 1e-4, 1e-2),
+])
+def test_laplace_variances_survive_prior_subtraction_cancellation(
+        sparse_input, amplitude, reference_sd, rtol):
+    # The prior beta variance dwarfs the posterior variance. Computing the
+    # latter by subtracting two near-equal prior-scale terms loses precision.
+    X = np.array([[-amplitude], [amplitude]])
+    reference = np.array([[-reference_sd], [reference_sd]])
+    pairs = np.array([[0, 1], [0, 1]])
+    outcomes = np.array([0, 2])  # two independent conflicting judgments
+    data = sparse.csr_matrix(X) if sparse_input else X
+    ref_data = sparse.csr_matrix(reference) if sparse_input else reference
+    primal = LinearDavidsonScaler(posterior_method='primal').fit(
+        data, pairs, outcomes, reference_X=ref_data
+    ).build_posterior()
+    dual = LinearDavidsonScaler(posterior_method='dual').fit(
+        data, pairs, outcomes, reference_X=ref_data
+    ).build_posterior()
+
+    # Direct primal covariance is the non-subtractive oracle.
+    centered = X - reference.mean(axis=0)
+    expected_positions = np.einsum(
+        'ij,ij->i', centered @ primal.posterior_.full_cov[:-1, :-1], centered
+    )
+    expected_pairs = primal.pair_posterior_moments(data, pairs)[1][:, 0, 0]
+    assert np.all(expected_positions > 0.1)
+    assert np.all(expected_pairs > 0.1)
+
+    for model in (primal, dual, LinearDavidsonScaler.from_state(dual.to_state())):
+        positions = model.posterior_position_variance(data, chunk_size=1)
+        pair_covariances = model.pair_posterior_moments(data, pairs)[1]
+        assert np.allclose(positions, expected_positions, rtol=rtol, atol=1e-7)
+        assert np.allclose(
+            pair_covariances[:, 0, 0], expected_pairs, rtol=rtol, atol=1e-7
+        )
+        assert np.linalg.eigvalsh(pair_covariances).min() >= -1e-9
+        assert np.isclose(
+            pair_covariances[0, 1, 1],
+            model.posterior_variance_eta_,
+            rtol=1e-9, atol=1e-12,
+        )
