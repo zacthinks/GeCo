@@ -379,7 +379,7 @@ def test_training_selection_respects_current_eligibility_without_dropping_histor
     )
     assert [row["comparison_event_id"] for row in reopened.scale_training_comparisons(scale)] == [first]
     assert reopened.scale_eligibility(scale)["eligibility_revision"] == 2
-    assert reopened.database.project_metadata()["schema_version"] == 19
+    assert reopened.database.project_metadata()["schema_version"] == 20
 
 
 def test_invalid_eligibility_is_rejected_without_mutating_version(tmp_path: Path) -> None:
@@ -405,4 +405,4 @@ def test_invalid_eligibility_is_rejected_without_mutating_version(tmp_path: Path
     assert project.scale_eligibility(scale)["eligibility"] == {"kind": "all"}
     assert project.scale_eligibility(scale)["eligibility_revision"] == 1
     assert project.scale(scale)["version_number"] == 1
-    assert project.database.project_metadata()["schema_version"] == 19
+    assert project.database.project_metadata()["schema_version"] == 20
