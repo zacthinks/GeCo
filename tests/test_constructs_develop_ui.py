@@ -154,6 +154,8 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
 
 def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Path) -> None:
     pytest.importorskip("dash")
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
     from geometric_coder.ui.app import create_app
 
     project = _project(tmp_path)
@@ -162,12 +164,27 @@ def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Pa
         inspect.unwrap(entry["callback"])
         for entry in app.callback_map.values() if "callback" in entry
     ]
-    create = next(func for func in callbacks if func.__name__ == "create_center_scale")
+    create = next(func for func in callbacks if func.__name__ == "manage_code_modal")
     save = next(func for func in callbacks if func.__name__ == "save_code_center_version")
-    revision, message, _, _ = create(1, "Quality", "Initial", 0)
-    assert revision == 1 and "Created Scale" in message
-    assert project.codes() == []
-    scale = project.constructs()[0]["construct_id"]
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "code-modal-create-button.n_clicks", "value": 1}]
+    ))
+    try:
+        # The shared modal is usable from Constructs without creating any Code.
+        result = create(0, 0, 1, 0, 0, 1, "center", "Quality", "Initial",
+                        0, 0, [], "scale")
+        assert result[0] == {"display": "none"}
+        assert result[6] is not None
+        assert project.codes() == []
+        scale = project.constructs()[0]["construct_id"]
+        assert project.scale(scale)["name"] == "Quality"
+        # The exact same modal can create a Scale directly in Develop.
+        result = create(0, 1, 0, 0, 0, 1, "focus", "Clarity", "Definition",
+                        0, 0, [], "scale")
+        assert result[6] == project.constructs()[1]["construct_id"]
+        assert project.codes() == []
+    finally:
+        context_value.reset(token)
     save(1, scale, "Quality revised", "Revised", 0, 0)
     assert [v["description"] for v in project.scale_versions(scale)] == [
         "Initial", "Revised",
@@ -248,4 +265,6 @@ def test_ui_source_keeps_legacy_code_callbacks_and_new_shared_state() -> None:
     assert 'project.create_scale(' in source
     assert 'project.update_scale(' in source
     assert "project.scale_versions(" in source
-    assert 'Input("code-center-create-scale", "n_clicks")' in source
+    assert 'id="code-modal-construct-type"' in source
+    assert 'Create Construct' in source
+    assert 'New Construct' in source
