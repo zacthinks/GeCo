@@ -217,3 +217,91 @@ def test_empty_and_singleton_eligible_scale_population(tmp_path, monkeypatch, n)
     assert run.evaluated_count == 0
     assert run.exhausted
     assert run.unavailable_reason
+
+
+@pytest.mark.parametrize("kind", ["code", "scale"])
+def test_budget_smaller_than_final_inspected_batch_is_not_exhaustion(tmp_path, kind):
+    project, code, scale = _project(tmp_path, 5)
+    run = project.candidate_run(code if kind == "code" else scale, budget=1, batch_size=128)
+    assert len(_all(run)) == 1
+    assert run.evaluated_count == 1
+    assert run.sampled_count == 1
+    assert not run.exhausted
+
+
+@pytest.mark.parametrize("kind", ["code", "scale"])
+def test_partial_and_zero_success_batches_receive_distinct_replacements(tmp_path, kind):
+    project, code, scale = _project(tmp_path, 12)
+    run = project.candidate_run(
+        code if kind == "code" else scale, budget=5, batch_size=4, seed=31,
+    )
+    iterator = run.batches()
+    first = next(iterator)
+    assert len(first.tasks) == 4
+    run.acknowledge_evaluated(first, first.tasks[:2])
+    second = next(iterator)
+    assert len(second.tasks) == 3
+    assert set(first.tasks).isdisjoint(second.tasks)
+    run.acknowledge_evaluated(second, [])
+    third = next(iterator)
+    assert len(third.tasks) == 3
+    assert set(third.tasks).isdisjoint((*first.tasks, *second.tasks))
+    run.acknowledge_evaluated(third, third.tasks)
+    assert list(iterator) == []
+    assert run.evaluated_count == 5
+    assert run.sampled_count == 10
+    assert not run.exhausted
+    assert len(set((*first.tasks, *second.tasks, *third.tasks))) == 10
+
+
+def test_requires_acknowledgment_before_next_batch(tmp_path):
+    project, code, _ = _project(tmp_path, 12)
+    run = project.candidate_run(code, budget=5, batch_size=2)
+    iterator = run.batches()
+    next(iterator)
+    with pytest.raises(RuntimeError, match="Acknowledge"):
+        next(iterator)
+
+
+def test_all_candidates_failed_then_exhausted_without_retrying(tmp_path):
+    project, code, _ = _project(tmp_path, 5)
+    run = project.candidate_run(code, budget=3, batch_size=2)
+    batches = []
+    for batch in run.batches():
+        batches.extend(batch.tasks)
+        run.acknowledge_evaluated(batch, [])
+    assert len(batches) == 5
+    assert len(set(batches)) == 5
+    assert run.evaluated_count == 0
+    assert run.exhausted
+    assert "No additional" in run.unavailable_reason
+
+
+def test_freshness_guard_rejects_intervening_scale_judgments(tmp_path):
+    project, _, scale = _project(tmp_path, 8)
+    run = project.candidate_run(scale, budget=2)
+    first_batch = next(run.batches())
+    run.acknowledge_evaluated(first_batch)
+    run.assert_current()
+    project.record_scale_comparison(scale, *first_batch.tasks[0], "unsure")
+    with pytest.raises(RuntimeError, match="Discard this ranking"):
+        run.assert_current()
+
+
+def test_freshness_guard_rejects_eligibility_and_code_changes(tmp_path):
+    project, code, scale = _project(tmp_path, 8)
+    scale_run = project.candidate_run(scale, budget=2)
+    project.update_scale_eligibility(scale, {
+        "kind": "filtered",
+        "metadata_clauses": [{
+            "field": "group", "type": "categorical",
+            "operator": "in", "value": ["yes"],
+        }],
+    })
+    with pytest.raises(RuntimeError, match="changed during acquisition"):
+        scale_run.assert_current()
+    session = project.create_session("Acquisition")
+    code_run = project.candidate_run(code, budget=2, session_id=session)
+    project.record_visit(session, 1, method="other")
+    with pytest.raises(RuntimeError, match="changed during acquisition"):
+        code_run.assert_current()
