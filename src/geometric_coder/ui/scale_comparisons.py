@@ -141,9 +141,48 @@ def _random_scale_task(
     )
 
 
-def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
+def comparison_layout(
+    *, dcc: Any, html: Any, dash_table: Any,
+    auto_train: bool = False, tune_hyperparameters: bool = False,
+) -> Any:
     """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
+        html.Div([
+            html.H4("Scale model"),
+            html.Label("Analytic geometry"),
+            dcc.Dropdown(
+                id="scale-model-geometry", options=[], value=None,
+                clearable=False, placeholder="Choose an analytic geometry",
+            ),
+            html.Div([
+                html.Button(
+                    "Train", id="scale-model-train", n_clicks=0,
+                    className="primary-action",
+                ),
+                dcc.Checklist(
+                    id="scale-tune-hyperparameters",
+                    options=[{
+                        "label": "Tune hyperparameters with cross-validation",
+                        "value": "tune",
+                    }],
+                    value=["tune"] if tune_hyperparameters else [],
+                ),
+                dcc.Checklist(
+                    id="scale-auto-train",
+                    options=[{
+                        "label": "Automatically train after saved comparisons",
+                        "value": "auto",
+                    }],
+                    value=["auto"] if auto_train else [],
+                ),
+            ], className="classifier-training-options"),
+            html.Div(id="scale-model-preference-status", style={"display": "none"}),
+            html.Div(id="scale-model-tune-preference-status", style={"display": "none"}),
+            html.Div(id="scale-model-selection-status", className="control-status"),
+            html.Div(id="scale-model-summary", className="focus-model-detail"),
+            html.Div(id="scale-model-train-status", className="control-status"),
+            html.Div(id="scale-model-auto-status", className="control-status"),
+        ], className="focus-coding-panel"),
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
@@ -296,6 +335,210 @@ def register_comparison_callbacks(
         except (KeyError, TypeError, ValueError):
             return None
         return int(construct_id) if row["type"] == "scale" else None
+
+    def ensure_scale_configuration(scale_id: int, representation_id: int) -> None:
+        """Preserve existing hyperparameters while changing the analytic geometry."""
+        current = project.database.get_scaler_spec(scale_id)
+        if current is not None and current["representation_id"] == representation_id:
+            return
+        project.configure_scale_model(
+            scale_id, representation_id,
+            hyperparameters=current["hyperparameters"] if current is not None else {},
+        )
+
+    @app.callback(
+        Output("scale-model-selection-status", "children"),
+        Input("scale-model-geometry", "value"),
+        State("focus-construct-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_geometry(
+        representation_id: int | None, construct_id: int | None,
+    ) -> str:
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None or representation_id is None:
+            return ""
+        try:
+            ensure_scale_configuration(scale_id, int(representation_id))
+            return "Analytic geometry saved."
+        except (KeyError, ValueError) as error:
+            return f"Geometry selection was not saved: {error}"
+
+    @app.callback(
+        Output("scale-model-preference-status", "children"),
+        Input("scale-auto-train", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_auto_training(
+        values: list[str] | None, session_id: int | None,
+    ) -> str:
+        if session_id is not None:
+            project.patch_session_state(
+                int(session_id), {"scale_auto_train": "auto" in (values or [])}
+            )
+        return ""
+
+    @app.callback(
+        Output("scale-model-tune-preference-status", "children"),
+        Input("scale-tune-hyperparameters", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def persist_scale_tuning(
+        values: list[str] | None, session_id: int | None,
+    ) -> str:
+        if session_id is not None:
+            project.patch_session_state(
+                int(session_id), {
+                    "scale_tune_hyperparameters": "tune" in (values or []),
+                },
+            )
+        return ""
+
+    @app.callback(
+        Output("scale-model-geometry", "options"),
+        Output("scale-model-geometry", "value"),
+        Input("focus-construct-dropdown", "value"),
+    )
+    def scale_model_geometry_options(
+        construct_id: int | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None:
+            return [], None
+        reps = [
+            item for item in project.representations()
+            if item["analytic_enabled"] and item["legacy_kind"] == "geometry"
+        ]
+        options = [
+            {"label": str(item["name"]), "value": int(item["representation_id"])}
+            for item in reps
+        ]
+        spec = project.database.get_scaler_spec(scale_id)
+        active = spec["representation_id"] if spec is not None else None
+        return options, active if any(option["value"] == active for option in options) else None
+
+    @app.callback(
+        Output("scale-model-train-status", "children"),
+        Input("scale-model-train", "n_clicks"),
+        State("focus-construct-dropdown", "value"),
+        State("scale-model-geometry", "value"),
+        State("scale-tune-hyperparameters", "value"),
+        prevent_initial_call=True,
+    )
+    def train_selected_scale(
+        clicks: int | None, construct_id: int | None,
+        representation_id: int | None,
+        tune_values: list[str] | None = None,
+    ) -> str:
+        if not clicks:
+            return ""
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None:
+            return "Select a Scale before training."
+        if representation_id is None:
+            return "Choose an analytic geometry before training."
+        try:
+            ensure_scale_configuration(scale_id, int(representation_id))
+            tune = "tune" in (tune_values or [])
+            result = (
+                project.train_scale(
+                    scale_id, tune=True, retune_current=True,
+                ) if tune else project.train_scale(scale_id)
+            )
+            if result["status"] == "insufficient_evidence":
+                return str(result["reason"])
+            selection = result.get("training_selection", {})
+            suffix = (
+                f" CV-tuned with {selection['folds']} folds."
+                if selection.get("tuned") else (
+                    " CV skipped; current hyperparameters retained."
+                    if tune else ""
+                )
+            )
+            return (
+                "Current Scale model reused."
+                if result.get("reused")
+                else f"Scale fit {result['fit']['scaler_fit_id']} saved.{suffix}"
+            )
+        except (ValueError, KeyError, RuntimeError) as error:
+            return f"Scale training unavailable: {error}"
+
+    @app.callback(
+        Output("scale-model-auto-status", "children"),
+        Input("scale-action-status", "children"),
+        State("scale-task-store", "data"),
+        State("focus-construct-dropdown", "value"),
+        State("scale-auto-train", "value"),
+        State("scale-model-geometry", "value"),
+        State("scale-tune-hyperparameters", "value"),
+        prevent_initial_call=True,
+    )
+    def train_after_saved_scale_comparison(
+        message: str | None, task: dict[str, Any] | None,
+        construct_id: int | None, auto_values: list[str] | None,
+        representation_id: int | None,
+        tune_values: list[str] | None = None,
+    ) -> str:
+        # A saved-evidence signal only; browsing or presenting a pair never fits.
+        if not isinstance(message, str) or not message.startswith("Saved event "):
+            return ""
+        if not task or task.get("status") != "saved":
+            return ""
+        event_id = task.get("event_id")
+        if event_id is None or not message.startswith(f"Saved event {event_id}:"):
+            return ""
+        if "auto" not in (auto_values or []):
+            return "Comparison saved; Scale training is manual."
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None or int(task.get("scale_id", -1)) != scale_id:
+            return ""
+        if representation_id is None:
+            return "Comparison saved; select an analytic geometry to train."
+        try:
+            ensure_scale_configuration(scale_id, int(representation_id))
+            result = (
+                project.train_scale(scale_id, tune=True)
+                if "tune" in (tune_values or [])
+                else project.train_scale(scale_id)
+            )
+            if result["status"] == "insufficient_evidence":
+                return f"Comparison saved; {result['reason']}"
+            return (
+                "Comparison saved; Scale fit already current."
+                if result.get("reused")
+                else f"Comparison saved; Scale fit {result['fit']['scaler_fit_id']} updated."
+            )
+        except (KeyError, ValueError, RuntimeError) as error:
+            return f"Comparison saved; automatic Scale training unavailable: {error}"
+
+    @app.callback(
+        Output("scale-model-summary", "children"),
+        Input("focus-construct-dropdown", "value"),
+        Input("scale-model-train-status", "children"),
+        Input("scale-model-auto-status", "children"),
+        Input("scale-task-store", "data"),
+    )
+    def refresh_scale_model_summary(
+        construct_id: int | None, _manual: str | None,
+        _automatic: str | None, _task: dict[str, Any] | None,
+    ) -> str:
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None:
+            return ""
+        status = project.scale_model_status(scale_id)
+        descriptor = status["status"].replace("_", " ").capitalize()
+        count = status.get("comparison_count")
+        fit = status.get("fit")
+        details = f"{count} usable comparisons" if count is not None else "No fit"
+        if fit is not None:
+            diagnostics = fit.get("diagnostics", {})
+            details += (
+                f"; saved fit {fit['scaler_fit_id']} "
+                f"({diagnostics.get('geometry_dimensions', '?')} features)"
+            )
+        return f"{descriptor} — {details}. Scalar scores are exploratory, not validated measurements."
 
     def key_label(observation_id: int) -> str:
         unit = project.observation(int(observation_id))

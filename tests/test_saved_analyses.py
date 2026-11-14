@@ -109,7 +109,7 @@ def test_schema_17_migration_installs_analysis_registry(project):
         conn.execute("DROP TABLE saved_analyses")
         conn.execute("UPDATE project SET schema_version=17")
     reopened = GeometricCoder.open(workspace.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 19
+    assert reopened.database.project_metadata()["schema_version"] == 20
     assert reopened.analyses() == []
     analysis_id = reopened.save_analysis(
         "Migrated analysis", {"kind": "bar", "variables": [_code(equity)]}

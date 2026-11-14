@@ -2249,6 +2249,45 @@ class GeometricCoder:
         """Filter stable atomic observation IDs using current Scale eligibility."""
         return self.database.eligible_scale_observation_ids(scale_id, observation_ids)
 
+    def configure_scale_model(
+        self, scale_id: int, representation_id: int, *,
+        estimator_family: str = "linear_davidson",
+        hyperparameters: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Choose an analytic representation and a persistent Scale estimator."""
+        from geometric_coder.scale_models import configure_scale_model
+        return configure_scale_model(
+            self, scale_id, representation_id,
+            estimator_family=estimator_family, hyperparameters=hyperparameters,
+        )
+
+    def scale_model_status(self, scale_id: int) -> dict[str, Any]:
+        """Check Scale fit freshness without loading a geometry or fitted model."""
+        from geometric_coder.scale_models import scale_model_status
+        return scale_model_status(self, scale_id)
+
+    def train_scale(
+        self, scale_id: int, *, estimator_factory: Any = None,
+        tune: bool = False, retune_current: bool = False, folds: int = 5,
+    ) -> dict[str, Any]:
+        """Fit a Scale, optionally selecting model parameters by grouped CV."""
+        from geometric_coder.scale_models import train_scale_model
+        return train_scale_model(
+            self, scale_id, estimator_factory=estimator_factory,
+            tune=tune, retune_current=retune_current, folds=folds,
+        )
+
+    def scale_scores(
+        self, scale_id: int, observation_ids: Sequence[int], *,
+        allow_stale: bool = False, include_uncertainty: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Predict frozen scalar positions for explicitly selected observations."""
+        from geometric_coder.scale_models import scale_model_scores
+        return scale_model_scores(
+            self, scale_id, observation_ids,
+            allow_stale=allow_stale, include_uncertainty=include_uncertainty,
+        )
+
     def create_code(self, name: str, definition: str = "") -> int:
         """Create a code without implicitly creating classifiers."""
         return self.database.create_code(name, definition)

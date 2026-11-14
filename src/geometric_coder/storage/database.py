@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -124,6 +124,31 @@ _CONSTRUCT_SCHEMA_SQL = (
         ON scale_comparison_events(scale_version_id, comparison_event_id)""",
     """CREATE INDEX IF NOT EXISTS scale_comparison_events_supersedes_idx
         ON scale_comparison_events(supersedes_event_id)""",
+)
+
+_SCALER_SCHEMA_SQL = (
+    """CREATE TABLE IF NOT EXISTS scaler_specs (
+        scaler_spec_id INTEGER PRIMARY KEY,
+        scale_id INTEGER NOT NULL UNIQUE REFERENCES scales(scale_id),
+        representation_id INTEGER NOT NULL REFERENCES representations(representation_id),
+        estimator_family TEXT NOT NULL,
+        hyperparameters_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS scaler_fits (
+        scaler_fit_id INTEGER PRIMARY KEY,
+        scaler_spec_id INTEGER NOT NULL REFERENCES scaler_specs(scaler_spec_id),
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        snapshot_fingerprint TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        artifact_path TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(scaler_spec_id, snapshot_fingerprint)
+    )""",
+    """CREATE INDEX IF NOT EXISTS scaler_fits_scale_idx
+        ON scaler_fits(scale_id, scaler_fit_id DESC)""",
 )
 
 _SCHEMA = """
@@ -829,6 +854,12 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
 
 
 
+def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
+    """Add Scale model configuration and immutable fit records transactionally."""
+    for statement in _SCALER_SCHEMA_SQL:
+        connection.execute(statement)
+
+
 def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
     """Add typed Construct identities without rewriting any existing Code rows.
 
@@ -863,6 +894,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     16: _migrate_16_to_17,
     17: _migrate_17_to_18,
     18: _migrate_18_to_19,
+    19: _migrate_19_to_20,
 }
 
 
@@ -909,6 +941,8 @@ class ProjectDatabase:
             for statement in _QUERY_SEARCH_SQL:
                 connection.execute(statement)
             for statement in _CONSTRUCT_SCHEMA_SQL:
+                connection.execute(statement)
+            for statement in _SCALER_SCHEMA_SQL:
                 connection.execute(statement)
             connection.execute(
                 """
@@ -6750,6 +6784,193 @@ class ProjectDatabase:
         }
 
 
+    def configure_scaler(
+        self, scale_id: int, representation_id: int,
+        estimator_family: str, hyperparameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a Scale's sole active configuration without deleting historical fits."""
+        payload = json.dumps(
+            dict(hyperparameters), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+            if current is not None and (
+                int(current["representation_id"]) == int(representation_id)
+                and current["estimator_family"] == estimator_family
+                and current["hyperparameters_json"] == payload
+            ):
+                return _scaler_spec_row(current)
+            connection.execute(
+                """INSERT INTO scaler_specs (
+                    scale_id, representation_id, estimator_family,
+                    hyperparameters_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scale_id) DO UPDATE SET
+                    representation_id=excluded.representation_id,
+                    estimator_family=excluded.estimator_family,
+                    hyperparameters_json=excluded.hyperparameters_json,
+                    updated_at=excluded.updated_at""",
+                (int(scale_id), int(representation_id), estimator_family,
+                 payload, utc_now()),
+            )
+        result = self.get_scaler_spec(int(scale_id))
+        assert result is not None
+        return result
+
+    def get_scaler_spec(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+        return _scaler_spec_row(row) if row is not None else None
+
+    def scale_reference_positions(self, scale_id: int, max_rows: int = 2048) -> tuple[list[int], int]:
+        """Deterministically sample eligible atomic rows with bounded memory.
+
+        Use the same metadata and human-Code predicates as comparison eligibility.
+        Reservoir sampling avoids reading the entire corpus's text or keys.
+        """
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+        spec = self.get_scale(int(scale_id))["eligibility"]
+        predicate, params = compile_filter_sql(
+            spec.get("metadata_clauses", []),
+            operator=spec.get("metadata_operator", "and"),
+        )
+        extra = ""
+        extra_params: list[Any] = []
+        for item in spec.get("code_filters", []):
+            extra += """ AND EXISTS (
+                SELECT 1 FROM current_annotations AS ca
+                WHERE ca.observation_id = u.observation_id
+                  AND ca.code_id = ? AND ca.value = 'positive'
+                  AND substr(ca.origin, 1, 6) = 'human_'
+            )"""
+            extra_params.append(int(item["code_id"]))
+        import random
+        rng = random.Random(0)
+        reservoir: list[int] = []
+        total = 0
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            for row in connection.execute(
+                f"SELECT u.row_position FROM units AS u WHERE ({predicate}) {extra} "
+                "ORDER BY u.row_position",
+                [*params, *extra_params],
+            ):
+                position = int(row["row_position"])
+                total += 1
+                if len(reservoir) < max_rows:
+                    reservoir.append(position)
+                else:
+                    index = rng.randrange(total)
+                    if index < max_rows:
+                        reservoir[index] = position
+        return sorted(reservoir), total
+
+    def find_scaler_fit(
+        self, scale_id: int, snapshot_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND snapshot_fingerprint = ?
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id), snapshot_fingerprint),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def latest_scaler_fit(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND artifact_path != ''
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id),),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def register_scaler_fit(
+        self, *, scale_id: int, scaler_spec_id: int,
+        scale_version_id: int, fingerprint: str,
+        snapshot: Mapping[str, Any], artifact_path: str,
+        diagnostics: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Publish one live artifact; keep lightweight historical fit metadata.
+
+        Old sidecars are retired only after the transaction commits. Reusing an
+        earlier evidence fingerprint refreshes that row instead of letting its
+        unique key prevent replacing an already retired artifact.
+        """
+        snapshot_json = json.dumps(
+            dict(snapshot), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        diagnostics_json = json.dumps(
+            dict(diagnostics), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            spec = connection.execute(
+                "SELECT scale_id FROM scaler_specs WHERE scaler_spec_id = ?",
+                (int(scaler_spec_id),),
+            ).fetchone()
+            if spec is None or int(spec["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and configuration belong to different Scales.")
+            version = connection.execute(
+                "SELECT scale_id FROM scale_versions WHERE scale_version_id = ?",
+                (int(scale_version_id),),
+            ).fetchone()
+            if version is None or int(version["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and definition belong to different Scales.")
+            existing = connection.execute(
+                "SELECT scaler_fit_id, artifact_path FROM scaler_fits "
+                "WHERE scaler_spec_id = ? AND snapshot_fingerprint = ?",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+            retired = [
+                str(row["artifact_path"]) for row in connection.execute(
+                    "SELECT artifact_path FROM scaler_fits "
+                    "WHERE scale_id = ? AND artifact_path != '' AND artifact_path != ?",
+                    (int(scale_id), artifact_path),
+                )
+            ]
+            connection.execute(
+                "UPDATE scaler_fits SET artifact_path = '' "
+                "WHERE scale_id = ? AND artifact_path != ?",
+                (int(scale_id), artifact_path),
+            )
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO scaler_fits (
+                        scaler_spec_id, scale_id, scale_version_id,
+                        snapshot_fingerprint, snapshot_json, artifact_path,
+                        diagnostics_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (int(scaler_spec_id), int(scale_id), int(scale_version_id),
+                     fingerprint, snapshot_json, artifact_path,
+                     diagnostics_json, utc_now()),
+                )
+            else:
+                connection.execute(
+                    """UPDATE scaler_fits SET scale_version_id = ?,
+                        snapshot_json = ?, artifact_path = ?, diagnostics_json = ?,
+                        created_at = ? WHERE scaler_fit_id = ?""",
+                    (int(scale_version_id), snapshot_json, artifact_path,
+                     diagnostics_json, utc_now(), int(existing["scaler_fit_id"])),
+                )
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scaler_spec_id = ?
+                   AND snapshot_fingerprint = ?""",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+        assert row is not None
+        return {**_scaler_fit_row(row), "_retired_artifact_paths": retired}
+
+
 
 def _next_committee_deleted_name(
     connection: sqlite3.Connection,
@@ -7361,3 +7582,27 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+def _scaler_spec_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "representation_id": int(row["representation_id"]),
+        "estimator_family": str(row["estimator_family"]),
+        "hyperparameters": json.loads(row["hyperparameters_json"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _scaler_fit_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_fit_id": int(row["scaler_fit_id"]),
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "scale_version_id": int(row["scale_version_id"]),
+        "snapshot_fingerprint": str(row["snapshot_fingerprint"]),
+        "snapshot": json.loads(row["snapshot_json"]),
+        "artifact_path": str(row["artifact_path"]),
+        "diagnostics": json.loads(row["diagnostics_json"]),
+        "created_at": str(row["created_at"]),
+    }
