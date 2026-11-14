@@ -153,11 +153,16 @@ def _random_scale_task(
 def comparison_layout(
     *, dcc: Any, html: Any, dash_table: Any,
     auto_train: bool = False, tune_hyperparameters: bool = False,
+    hierarchy: list[dict[str, Any]] | None = None,
 ) -> Any:
     """A single pair-reading task, with optional manual controls and history."""
     return html.Div([
         html.Div([
-            html.H4("Scale model"),
+            html.Div([
+                html.H3("Scale model"),
+                html.Span("Not trained", id="scale-model-status-badge",
+                          className="classifier-status-badge status-not-trained"),
+            ], className="active-classifier-heading"),
             html.Label("Analytic geometry"),
             dcc.Dropdown(
                 id="scale-model-geometry", options=[], value=None,
@@ -191,59 +196,55 @@ def comparison_layout(
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
-        ], className="focus-coding-panel"),
-
+        ], className="focus-sidebar scale-model-panel"),
+        html.Div([
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
-            "Scale, or whether they are approximately equal. When a fitted Scale "
-            "model has adequate evidence, Next pair recommends comparisons "
-            "using Bayesian information gain; otherwise it uses random "
-            "selection. Next pair advances without recording a judgment. "
-            "The Unsure / Skip action, by contrast, records an explicit response.",
+            "Scale. Click a judgment to save it, change it if needed, then "
+            "choose Next pair. Unsure / Skip records a response; Next pair does not.",
             className="focus-help",
         ),
         html.Div(id="scale-task-warning", className="control-status"),
-        html.Div(id="scale-pair-history-note", className="control-status"),
+        html.Div(id="scale-pair-history-note", className="scale-acquisition-note"),
+        html.Div([
+            html.Div([
+                html.Label("Context level"),
+                dcc.Dropdown(id="scale-context-level", options=[
+                    {"label": item["column_name"], "value": int(item["level_index"])}
+                    for item in (hierarchy or [])
+                ], value=int(hierarchy[-1]["level_index"]) if hierarchy else None,
+                clearable=False, searchable=False),
+            ], className="context-control"),
+            html.Div([
+                html.Label("Window"),
+                html.Div([
+                    html.Button("−", id="scale-context-window-minus", n_clicks=0),
+                    dcc.Input(id="scale-context-window", type="text", inputMode="numeric", value="1"),
+                    html.Button("+", id="scale-context-window-plus", n_clicks=0),
+                ], className="window-stepper"),
+            ], className="context-control"),
+        ], className="context-controls scale-context-controls"),
 
         html.Div([
-            html.Div(
-                id="scale-reading-first",
-                className="scale-reading-card",
-            ),
+            html.Div(id="scale-reading-first", className="scale-reading-card"),
+            html.Div(id="scale-reading-second", className="scale-reading-card"),
             html.Div([
                 html.P("Compare A and B", className="scale-judgment-heading"),
-                html.Button(
-                    "A higher  ›", id="scale-judge-first", n_clicks=0,
-                    className="judgment-button positive-button",
-                    title="Observation A expresses more of this Scale",
-                    **{"aria-label": "A is higher than B"}, disabled=True,
-                ),
-                html.Button(
-                    "Approximately equal  ≈", id="scale-judge-parity",
-                    n_clicks=0, className="judgment-button",
-                    title="Both observations express approximately the same amount",
-                    disabled=True,
-                ),
-                html.Button(
-                    "‹  B higher", id="scale-judge-second", n_clicks=0,
-                    className="judgment-button negative-button",
-                    title="Observation B expresses more of this Scale",
-                    **{"aria-label": "B is higher than A"}, disabled=True,
-                ),
-                html.Button(
-                    "Unsure / Skip  ?", id="scale-judge-unsure",
-                    n_clicks=0, className="judgment-button unsure-button",
-                    title="Record an unsure response; not a parity judgment",
-                    disabled=True,
-                ),
+                html.Button("A higher", id="scale-judge-first", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("Approximately equal", id="scale-judge-parity", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("B higher", id="scale-judge-second", n_clicks=0,
+                            className="judgment-button scale-judgment-button", disabled=True),
+                html.Button("Unsure / Skip", id="scale-judge-unsure", n_clicks=0,
+                            className="judgment-button scale-judgment-button",
+                            title="Record uncertainty, not equality", disabled=True),
+                html.Div(id="scale-saved-indicator", className="scale-saved-indicator",
+                         role="status"),
             ], className="scale-judgment-actions"),
-            html.Div(
-                id="scale-reading-second",
-                className="scale-reading-card",
-            ),
         ], className="scale-comparison-grid"),
-        html.Div(id="scale-action-status", className="control-status"),
+        html.Div(id="scale-action-status", style={"display": "none"}),
         html.Button(
             "Next pair", id="scale-next-pair", n_clicks=0,
             className="primary-action",
@@ -281,9 +282,10 @@ def comparison_layout(
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
+            html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
         ], className="focus-coding-panel scale-prediction-panel", open=False),
         html.Details([
-            html.Summary("More options · choose a pair manually"),
+            html.Summary("Advanced · manual pairs and independent repeats"),
             html.P(
                 "Optional: choose two specific observations instead of the "
                 "recommended pair (Bayesian information gain or random fallback). "
@@ -388,7 +390,6 @@ def register_comparison_callbacks(
     from geometric_coder.ui.app import _metadata_table, _render_context_units
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
     register_scale_prediction_callbacks(app, project)
-    del hierarchy
 
     def active_scale_id(construct_id: int | None) -> int | None:
         if construct_id is None:
@@ -968,7 +969,8 @@ def register_comparison_callbacks(
                     html.Summary("Surrounding context"),
                     html.Div(children, className="context-content"),
                 ]),
-            ], className="focus-coding-panel")
+                ], className="scale-comparison-main"),
+    ], className="focus-workspace scale-workspace")
         match_count = project.scale_pair_history_count(scale_id, first, second)
         correction = task.get("mode") == "correction"
         prior_message = (
