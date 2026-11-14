@@ -67,8 +67,12 @@ class LinearDavidsonScaler:
                  posterior_method='auto'):
         if feature_normalization not in ('none', 'rms'):
             raise ValueError('feature_normalization must be none or rms')
-        if score_prior_sd <= 0 or eta_prior_sd <= 0:
-            raise ValueError('proper Gaussian priors required')
+        if (not np.isfinite(score_prior_sd) or score_prior_sd <= 0
+                or not np.isfinite(eta_prior_sd) or eta_prior_sd <= 0
+                or not np.isfinite(eta_prior)):
+            raise ValueError('finite proper Gaussian priors required')
+        if not isinstance(maxiter, int) or maxiter < 1:
+            raise ValueError('maxiter must be a positive integer')
         self.feature_normalization = feature_normalization
         self.score_prior_sd = float(score_prior_sd)
         self.eta_prior = float(eta_prior)
@@ -133,6 +137,9 @@ class LinearDavidsonScaler:
         self.reference_variance_ = centered_energy
         self.lambda_beta_ = max(centered_energy, 1e-8) / self.score_prior_sd**2
         self.lambda_eta_ = 1. / self.eta_prior_sd**2
+        if (not np.isfinite(self.lambda_beta_) or self.lambda_beta_ <= 0
+                or not np.isfinite(self.lambda_eta_) or self.lambda_eta_ <= 0):
+            raise ValueError('prior precision is not finite and positive')
         init = np.zeros(self.n_features_ + 1)
         init[-1] = self.eta_prior
         res = minimize(objective, init, args=(D, ys[use], self.lambda_beta_,
@@ -164,14 +171,6 @@ class LinearDavidsonScaler:
         sig_b = 1 / np.sqrt(self.lambda_beta_)
         sig_e = 1 / np.sqrt(self.lambda_eta_)
         p = d + 1
-        def hmm(z):
-            z=np.atleast_2d(z) if np.asarray(z).ndim==2 else np.asarray(z)[:,None]
-            dv = np.asarray(D @ (z[:d,:] * sig_b))
-            eg = z[d,:] * sig_e
-            b = np.asarray(D.T @ (dd[:,None] * dv + de[:,None] * eg[None,:])) * sig_b
-            e = sig_e * (de @ dv + ee.sum() * eg)
-            return np.vstack((b,e[None,:]))
-        def hmv(z):return hmm(z)[:,0]
         trace = float(sig_b**2 * (dd @ _row_sumsq(D)) + sig_e**2 * ee.sum())
         if n == 0 or trace == 0:
             self.posterior_ = LaplaceSpectrum('prior-only')
@@ -364,6 +363,10 @@ class LinearDavidsonScaler:
             or np.any(model.column_scale_ <= 0)
         ):
             raise ValueError('invalid Davidson scaler state')
+        if (not np.isfinite(model.lambda_beta_) or model.lambda_beta_ <= 0
+                or not np.isfinite(model.lambda_eta_) or model.lambda_eta_ <= 0
+                or not np.isfinite(model.eta_)):
+            raise ValueError('invalid Gaussian prior or tie parameter in state')
         model.origin_ = float(model.feature_mean_ @ model.beta_)
         model.fitted_ = True
         p = state['posterior']
