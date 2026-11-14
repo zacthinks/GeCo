@@ -4960,6 +4960,64 @@ def create_app(
         return _code_options(project.codes())
 
     @app.callback(
+        Output("code-modal-bootstrap-wrapper", "style"),
+        Output("code-modal-bootstrap-code", "options"),
+        Output("code-modal-bootstrap-details", "style"),
+        Input("code-modal-target-store", "data"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("focus-refresh-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+    )
+    def configure_code_bootstrap(
+        target: str | None, construct_type: str | None, enabled: list[str] | None,
+        *_refresh: Any,
+    ) -> tuple[dict[str, str], list[dict[str, Any]], dict[str, str]]:
+        visible = target in {"focus", "center"} and construct_type == "scale"
+        if not visible:
+            return {"display": "none"}, [], {"display": "none"}
+        options = _code_options(project.codes())
+        details = {} if "enabled" in (enabled or []) else {"display": "none"}
+        return {}, options, details
+
+    @app.callback(
+        Output("code-modal-bootstrap-snapshot", "data"),
+        Output("code-modal-bootstrap-preview", "children"),
+        Output("code-modal-bootstrap-confirm", "value"),
+        Input("code-modal-bootstrap-code", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def preview_code_bootstrap(
+        code_id: int | None, enabled: list[str] | None,
+        construct_type: str | None, target: str | None,
+    ) -> tuple[dict[str, Any] | None, str, list[str]]:
+        if (target not in {"focus", "center"} or construct_type != "scale"
+                or "enabled" not in (enabled or [])):
+            return None, "", []
+        if code_id is None:
+            return None, "Choose a Code to preview eligible Present and Absent observations.", []
+        try:
+            preview = project.code_scale_bootstrap_preview(int(code_id))
+        except (KeyError, TypeError, ValueError) as error:
+            return None, str(error), []
+        count = int(preview["comparisons"])
+        explanation = (
+            f"{preview['present']:,} human Present × {preview['absent']:,} human Absent "
+            f"= {count:,} comparisons. Every ordered Present–Absent pair will be "
+            "recorded individually, and all existing Code annotations remain unchanged."
+        )
+        if not preview["present"] or not preview["absent"]:
+            explanation += " Both groups must be nonempty; you may create a Scale without bootstrapping."
+        if count > int(preview["limit"]):
+            explanation += (
+                f" This exceeds the {preview['limit']:,}-comparison safety limit. "
+                "No partial comparisons will be created."
+            )
+        return {"preview": preview, "token": uuid.uuid4().hex}, explanation, []
+
+    @app.callback(
         Output("code-modal", "style"),
         Output("code-modal-target-store", "data"),
         Output("explore-code-refresh-store", "data", allow_duplicate=True),
@@ -4985,6 +5043,11 @@ def create_app(
         State("focus-refresh-store", "data"),
         State("explore-code-palette-store", "data"),
         State("code-modal-construct-type", "value"),
+        State("code-modal-bootstrap-toggle", "value"),
+        State("code-modal-bootstrap-code", "value"),
+        State("code-modal-bootstrap-confirm", "value"),
+        State("code-modal-bootstrap-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
     def manage_code_modal(
@@ -5001,6 +5064,11 @@ def create_app(
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
         construct_type: str | None = "code",
+        bootstrap_enabled: list[str] | None = None,
+        bootstrap_code_id: int | None = None,
+        bootstrap_confirmed: list[str] | None = None,
+        bootstrap_snapshot: dict[str, Any] | None = None,
+        session_id: int | None = None,
     ) -> tuple[Any, ...]:
         del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
@@ -5041,8 +5109,26 @@ def create_app(
             )
         if kind == "scale":
             try:
-                construct_id = project.create_scale(clean_name, definition or "")
-            except ValueError as error:
+                if "enabled" in (bootstrap_enabled or []):
+                    if (bootstrap_code_id is None or "confirmed" not in (bootstrap_confirmed or [])
+                            or not isinstance(bootstrap_snapshot, dict)
+                            or not isinstance(bootstrap_snapshot.get("preview"), dict)
+                            or not isinstance(bootstrap_snapshot.get("token"), str)
+                            or bootstrap_snapshot["preview"].get("code_id") != bootstrap_code_id):
+                        raise ValueError(
+                            "Select a Code, review the complete comparison count, "
+                            "and confirm the Present > Absent assumption."
+                        )
+                    created = project.create_scale_from_code(
+                        clean_name, definition or "", int(bootstrap_code_id),
+                        expected_preview=bootstrap_snapshot["preview"],
+                        submission_key=bootstrap_snapshot["token"],
+                        session_id=int(session_id) if session_id is not None else None,
+                    )
+                    construct_id = int(created["scale_id"])
+                else:
+                    construct_id = project.create_scale(clean_name, definition or "")
+            except (ValueError, KeyError, RuntimeError) as error:
                 return (
                     {"display": "flex"}, target, no_update, no_update,
                     no_update, no_update, no_update, no_update, no_update,
@@ -9540,6 +9626,49 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                             ),
                         ],
                         className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Bootstrap from existing Code (optional)"),
+                            dcc.Checklist(
+                                id="code-modal-bootstrap-toggle",
+                                options=[{"label": "Bootstrap from existing Code", "value": "enabled"}],
+                                value=[],
+                            ),
+                            html.Div(
+                                [
+                                    html.P(
+                                        "This assumes that every observation marked Present for the selected Code is higher on the new Scale than every observation marked Absent. Only use this option if that interpretation makes sense for your research.",
+                                        className="focus-help",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="code-modal-bootstrap-code",
+                                        options=[],
+                                        value=None,
+                                        placeholder="Select an existing Code",
+                                        clearable=True,
+                                    ),
+                                    html.Div(
+                                        id="code-modal-bootstrap-preview",
+                                        className="control-status",
+                                    ),
+                                    dcc.Checklist(
+                                        id="code-modal-bootstrap-confirm",
+                                        options=[{
+                                            "label": "I confirm the complete comparison count and the Present > Absent assumption.",
+                                            "value": "confirmed",
+                                        }],
+                                        value=[],
+                                    ),
+                                ],
+                                id="code-modal-bootstrap-details",
+                                style={"display": "none"},
+                            ),
+                            dcc.Store(id="code-modal-bootstrap-snapshot"),
+                        ],
+                        id="code-modal-bootstrap-wrapper",
+                        className="code-modal-field",
+                        style={"display": "none"},
                     ),
                     html.Div(id="code-modal-status", className="control-status modal-status"),
                     html.Div(
