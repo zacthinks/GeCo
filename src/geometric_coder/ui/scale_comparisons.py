@@ -192,40 +192,7 @@ def comparison_layout(
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
         ], className="focus-coding-panel"),
-        html.Details([
-            html.Summary("Scale prediction positions"),
-            html.P(
-                "Horizontal: centered estimated Scale position. Vertical: "
-                "model-conditional epistemic uncertainty (posterior SD) when available. "
-                "This is not total measurement error or evidence of construct validity.",
-                className="focus-help",
-            ),
-            html.Div([
-                html.Button(
-                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
-                ),
-                html.Label("Page", htmlFor="scale-prediction-page"),
-                dcc.Input(
-                    id="scale-prediction-page", type="number",
-                    min=1, max=1, step=1, value=1,
-                    className="page-number-input",
-                ),
-                html.Button(
-                    "Previous", id="scale-prediction-previous", n_clicks=0,
-                ),
-                html.Button("Next", id="scale-prediction-next", n_clicks=0),
-            ], className="scale-prediction-toolbar"),
-            html.Div(
-                id="scale-prediction-status",
-                className="control-status", role="status",
-            ),
-            dcc.Store(id="scale-prediction-page-state"),
-            dcc.Graph(
-                id="scale-prediction-map",
-                figure={"data": [], "layout": {}},
-                config={"displayModeBar": True, "scrollZoom": True},
-            ),
-        ], className="focus-coding-panel scale-prediction-panel", open=True),
+
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
@@ -281,6 +248,40 @@ def comparison_layout(
             "Next pair", id="scale-next-pair", n_clicks=0,
             className="primary-action",
         ),
+        html.Details([
+            html.Summary("Scale prediction positions"),
+            html.P(
+                "Horizontal: centered estimated Scale position. Vertical: "
+                "model-conditional epistemic uncertainty (posterior SD) when available. "
+                "This is not total measurement error or evidence of construct validity.",
+                className="focus-help",
+            ),
+            html.Div([
+                html.Button(
+                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
+                ),
+                html.Label("Page", htmlFor="scale-prediction-page"),
+                dcc.Input(
+                    id="scale-prediction-page", type="number",
+                    min=1, max=1, step=1, value=1,
+                    className="page-number-input",
+                ),
+                html.Button(
+                    "Previous", id="scale-prediction-previous", n_clicks=0,
+                ),
+                html.Button("Next", id="scale-prediction-next", n_clicks=0),
+            ], className="scale-prediction-toolbar"),
+            html.Div(
+                id="scale-prediction-status",
+                className="control-status", role="status",
+            ),
+            dcc.Store(id="scale-prediction-page-state"),
+            dcc.Graph(
+                id="scale-prediction-map",
+                figure={"data": [], "layout": {}},
+                config={"displayModeBar": True, "scrollZoom": True},
+            ),
+        ], className="focus-coding-panel scale-prediction-panel", open=False),
         html.Details([
             html.Summary("More options · choose a pair manually"),
             html.P(
