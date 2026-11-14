@@ -206,17 +206,32 @@ def scale_acquisition_status(project: Any, scale_id: int) -> dict[str, Any]:
 
 def next_scale_recommendation(
     project: Any, scale_id: int, *, seed: int | None = None,
+    navigation_run_id: int | None = None,
+    navigation_offset: int = 0,
+    exclude_pair: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
-    """Return the top still-eligible, unjudged frozen pair; never fit.
+    """Advance a session through a frozen ranking without recording judgments.
 
-    When no valid ranking remains, use Phase 3A seeded sampling as fallback.
+    The UI persists the next ranking offset in its session-local task, not in
+    Scale evidence or the immutable ranking. A new run ID resets the cursor.
+    Random fallback excludes the currently displayed pair where possible.
+    Neither navigation nor the fallback fits or re-ranks a model.
     """
     from geometric_coder.candidate_sampling import prepare_candidate_run
 
+    if not isinstance(navigation_offset, int) or navigation_offset < 0:
+        raise ValueError("Invalid Scale recommendation cursor.")
+    if exclude_pair is not None:
+        if len(exclude_pair) != 2 or exclude_pair[0] == exclude_pair[1]:
+            raise ValueError("Invalid excluded Scale pair.")
+        exclude_pair = tuple(sorted(map(int, exclude_pair)))
+
     state = scale_acquisition_status(project, int(scale_id))
     run_id = state.get("run_id")
+    offset = navigation_offset if (
+        run_id is not None and navigation_run_id == run_id
+    ) else 0
     if run_id is not None:
-        offset = 0
         while True:
             page = project.database.scale_acquisition_page(
                 int(run_id), offset=offset, limit=128
@@ -230,13 +245,20 @@ def next_scale_recommendation(
             judged = project.database.scale_judged_candidate_pairs(
                 int(scale_id), pairs
             )
-            remaining = [pair for pair in pairs if pair not in judged]
+            remaining = [
+                pair for pair in pairs
+                if pair not in judged and pair != exclude_pair
+            ]
             if remaining:
                 eligible_ids = project.eligible_scale_observation_ids(
                     int(scale_id), [obs for pair in remaining for obs in pair]
                 )
                 eligible = set(eligible_ids)
-                for low, high in remaining:
+                for row in page:
+                    low = int(row["observation_low_id"])
+                    high = int(row["observation_high_id"])
+                    if (low, high) in judged or (low, high) == exclude_pair:
+                        continue
                     if low in eligible and high in eligible:
                         return {
                             "pair": (low, high), "strategy": state["strategy"],
@@ -246,20 +268,34 @@ def next_scale_recommendation(
                             "seed": state["provenance"].get("random_seed"),
                             "source_fit_id": state["scaler_fit_id"],
                             "source_fingerprint": state["selection_fingerprint"],
+                            "navigation_run_id": run_id,
+                            "navigation_offset": int(row["ranking_position"]) + 1,
                         }
             offset += len(page)
+
     effective_seed = secrets.randbits(63) if seed is None else int(seed)
+    # Ask the shared sampler for two tasks so that, even if the first equals
+    # the unanswered current task, another distinct pair can be selected.
+    # The evaluation window stays fixed and does not enumerate pair history.
     run = prepare_candidate_run(
-        project, int(scale_id), budget=1, seed=effective_seed
+        project, int(scale_id),
+        budget=2 if exclude_pair is not None else 1,
+        seed=effective_seed,
     )
     for batch in run.batches():
-        if batch.tasks:
-            return {
-                "pair": tuple(batch.tasks[0]),
-                "strategy": "random",
-                "fallback_reason": (
-                    "frozen_ranking_exhausted" if run_id is not None else state["reason"]
-                ),
-                "run_id": None, "seed": effective_seed,
-            }
-    raise ValueError("No unjudged eligible Scale pair remains in the candidate pool.")
+        for pair in batch.tasks:
+            if tuple(pair) != exclude_pair:
+                return {
+                    "pair": tuple(pair),
+                    "strategy": "random",
+                    "fallback_reason": (
+                        "frozen_ranking_exhausted" if run_id is not None
+                        else state["reason"]
+                    ),
+                    "run_id": None, "seed": effective_seed,
+                    "navigation_run_id": run_id,
+                    "navigation_offset": offset,
+                }
+        # A one-pair eligible pool may consist only of the displayed pair.
+        run.acknowledge_evaluated(batch)
+    raise ValueError("No other unjudged eligible Scale pair is available.")
