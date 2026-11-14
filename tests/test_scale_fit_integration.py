@@ -24,10 +24,11 @@ class RecordingScaler:
         self.n_iterations_ = 2
         self.optimality_ = 0.0
 
-    def fit(self, X, pairs, outcomes):
+    def fit(self, X, pairs, outcomes, *, reference_X=None):
         self.pairs_seen = np.asarray(pairs).copy()
         self.outcomes_seen = np.asarray(outcomes).copy()
         self.rows_seen = X.shape[0]
+        self.reference_rows_seen = reference_X.shape[0]
         self.posterior_ = None
         return self
 
@@ -44,7 +45,7 @@ class RecordingScaler:
 
 
 class FailingScaler(RecordingScaler):
-    def fit(self, X, pairs, outcomes):
+    def fit(self, X, pairs, outcomes, *, reference_X=None):
         raise RuntimeError("simulated optimizer failure")
 
 
