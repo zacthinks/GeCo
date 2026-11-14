@@ -114,10 +114,6 @@ def _random_scale_task(
     """
     if total_units < 2:
         raise ValueError("At least two observations are needed for a comparison.")
-    previously_judged = {
-        (int(event["observation_low_id"]), int(event["observation_high_id"]))
-        for event in project.scale_comparisons(scale_id)
-    }
     rng = secrets.SystemRandom()
     for _ in range(8):
         positions = rng.sample(range(total_units), min(total_units, 64))
@@ -126,6 +122,7 @@ def _random_scale_task(
         eligible = project.eligible_scale_observation_ids(scale_id, ids)
         if len(eligible) < 2:
             continue
+        previously_judged = project.scale_existing_pairs(scale_id, eligible)
         rng.shuffle(eligible)
         for first in eligible:
             for second in eligible:
