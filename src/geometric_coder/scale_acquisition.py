@@ -111,7 +111,19 @@ def score_davidson_pairs(
     gains = np.empty(len(pairs), dtype=float)
     for start in range(0, len(pairs), chunk_size):
         stop = min(start + chunk_size, len(pairs))
-        means, covariance = model.pair_posterior_moments(features, pairs[start:stop])
+        # Restrict geometry to the distinct rows used by this chunk. The
+        # production estimator scales every row of its X argument, so passing
+        # a full 300k-row matrix here would repeat unnecessary transformations.
+        indices, local_pairs = np.unique(
+            pairs[start:stop].ravel(), return_inverse=True
+        )
+        if (np.any(indices < 0) or np.any(indices >= features.shape[0])
+                or np.any(pairs[start:stop, 0] == pairs[start:stop, 1])):
+            raise ValueError("candidate pairs contain invalid row indices")
+        local_features = features[indices]
+        means, covariance = model.pair_posterior_moments(
+            local_features, local_pairs.reshape(-1, 2)
+        )
         gains[start:stop] = three_outcome_information_gain(
             means, covariance, chunk_size=chunk_size
         )
