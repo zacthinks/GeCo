@@ -252,3 +252,42 @@ def test_migration_failure_rolls_back_all_new_tables(tmp_path, monkeypatch):
         ).fetchone() is None
     monkeypatch.setitem(storage_database._MIGRATIONS, 19, original)
     assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 20
+
+
+def test_no_comparisons_and_parity_only_stay_untrained(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, _) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    assert project.train_scale(scale, estimator_factory=RecordingScaler)["status"] == "insufficient_evidence"
+    project.record_scale_comparison(scale, a, b, "unsure")
+    assert project.train_scale(scale, estimator_factory=RecordingScaler)["status"] == "insufficient_evidence"
+    project.record_scale_comparison(scale, a, b, "parity")
+    project.record_scale_comparison(scale, c, d, "parity")
+    assert project.train_scale(scale, estimator_factory=RecordingScaler)["status"] == "insufficient_evidence"
+    assert project.scale_model_status(scale)["status"] == "not_trained"
+
+
+def test_real_davidson_end_to_end_after_phase2a_merge(tmp_path):
+    """Skip until Phase 2A's production module is available on this branch."""
+    pytest.importorskip("geometric_coder.davidson_scaler")
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep, hyperparameters={
+        "score_prior_sd": 1.0, "feature_normalization": "none"
+    })
+    for first, second in [
+        (a, d), (a, e), (b, d), (b, e), (c, d), (c, e)
+    ]:
+        project.record_scale_comparison(scale, first, second, "first_higher")
+    first_fit = project.train_scale(scale)
+    assert first_fit["status"] == "current"
+    scored = project.scale_scores(scale, [a, e])
+    assert scored[0]["score"] > scored[1]["score"]
+    project.record_scale_comparison(scale, a, c, "first_higher")
+    assert project.scale_model_status(scale)["status"] == "stale"
+    second_fit = project.train_scale(scale)
+    assert second_fit["status"] == "current"
+    assert second_fit["fit"]["scaler_fit_id"] != first_fit["fit"]["scaler_fit_id"]
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.scale_model_status(scale)["status"] == "current"
+    reopened_scores = reopened.scale_scores(scale, [a, e], include_uncertainty=True)
+    assert reopened_scores[0]["score"] > reopened_scores[1]["score"]
+    assert reopened_scores[0]["scaler_fit_id"] == second_fit["fit"]["scaler_fit_id"]
