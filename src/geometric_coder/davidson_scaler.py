@@ -310,7 +310,7 @@ class LinearDavidsonScaler:
                 correction=sig**2*xc2-np.einsum('ij,ij->i',centered@C,centered)
             elif self.posterior_.dual_G is not None:
                 G,L=self.posterior_.dual_G,self.posterior_.dual_L
-                P=(np.asarray(Xc@G[:,:-1].T)-self.feature_mean_@G[:,:-1].T)*sig
+                P=np.asarray(centered@G[:,:-1].T)*sig
                 W=solve_triangular(L,P.T,lower=True,check_finite=False)
                 correction=np.sum(W**2,axis=0)
             else:
