@@ -221,6 +221,16 @@ def prepare_candidate_run(
         raise ValueError(f"Batch size must be between 1 and {MAX_BATCH_SIZE}.")
     construct = project.construct(int(construct_id))
     kind = str(construct["type"])
+    if budget is None:
+        # A single project setting applies to either construct type; its
+        # default sentinel preserves legacy exhaustive Code recommendations.
+        try:
+            settings = json.loads((project.project_dir / "ui_settings.json").read_text(encoding="utf-8"))
+            stored_budget = settings.get("candidate_evaluation_budget", -1)
+            if type(stored_budget) is int and stored_budget >= 0:
+                budget = stored_budget
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
     selected_budget = resolve_candidate_budget(kind, budget)
     eligibility = (
         project.scale_eligibility(int(construct_id)) if kind == "scale"
