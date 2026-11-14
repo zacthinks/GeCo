@@ -259,7 +259,6 @@ def comparison_layout(*, dcc: Any, html: Any, dash_table: Any) -> Any:
                     {"name": "Observations (A / B)", "id": "pair"},
                     {"name": "Judgment", "id": "judgment"},
                     {"name": "Provenance", "id": "origin"},
-                    {"name": "Reviewer", "id": "reviewer"},
                     {"name": "Status", "id": "state"},
                     {"name": "Corrects", "id": "corrects"},
                 ],
@@ -389,7 +388,14 @@ def register_comparison_callbacks(
             stored = project.database.get_session(session_id)["state"].get(
                 "scale_comparison_task"
             )
-            return _restore_scale_task(project, scale_id, session_id, stored), "", []
+            current = _restore_scale_task(project, scale_id, session_id, stored)
+            if current["status"] == "selecting" and current.get("picked_a") is None and current.get("picked_b") is None:
+                try:
+                    current = _random_scale_task(project, scale_id, session_id, total_units)
+                except ValueError as error:
+                    return current, str(error), []
+                project.patch_session_state(session_id, {"scale_comparison_task": current})
+            return current, "", []
         task = _restore_scale_task(project, scale_id, session_id, task_state)
         if trigger == "scale-clear":
             task = _restore_scale_task(project, scale_id, session_id, None)
@@ -459,12 +465,8 @@ def register_comparison_callbacks(
                     raise ValueError("An earlier Scale definition cannot be corrected under the current definition.")
                 if not str(previous["origin"]).startswith("human_"):
                     raise ValueError("A nonhuman event cannot be edited as a human judgment.")
-                current_reviewer = (reviewer or "").strip() or None
-                if current_reviewer != previous["reviewer_key"]:
-                    raise ValueError(
-                        "To correct this event, use its original reviewer key. "
-                        "An independent judgment can be added instead."
-                    )
+                # Corrections carry forward the event's recorded identity.
+                # Single-researcher mode does not ask for a reviewer key.
                 first, second = (
                     int(previous["presented_first_id"]),
                     int(previous["presented_second_id"]),
@@ -530,6 +532,32 @@ def register_comparison_callbacks(
         except (KeyError, ValueError, TypeError) as error:
             return no_update, str(error), no_update
         return no_update, no_update, no_update
+
+    @app.callback(
+        Output("scale-task-store", "data", allow_duplicate=True),
+        Output("scale-action-status", "children", allow_duplicate=True),
+        Output("scale-repeat-ack", "value", allow_duplicate=True),
+        Input("scale-next-pair", "n_clicks"),
+        State("focus-construct-dropdown", "value"),
+        State("active-session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def next_scale_pair(
+        clicks: int | None, construct_id: int | None, session_id: int | None,
+    ) -> tuple[Any, str, Any]:
+        if not clicks:
+            return no_update, "", no_update
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None or session_id is None:
+            return no_update, "", no_update
+        try:
+            task = _random_scale_task(project, scale_id, int(session_id), total_units)
+        except ValueError as error:
+            return no_update, str(error), no_update
+        project.patch_session_state(
+            int(session_id), {"scale_comparison_task": task},
+        )
+        return task, "New pair ready.", []
 
     @app.callback(
         Output("scale-selection-summary", "children"),
