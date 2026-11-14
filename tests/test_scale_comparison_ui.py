@@ -473,3 +473,45 @@ def test_develop_random_fallback_provenance_and_reason(tmp_path: Path) -> None:
     assert provenance["random_seed"] is not None
     assert provenance["source_acquisition_run_id"] is None
     assert provenance["fallback_reason"] == "no_frozen_ranking"
+
+
+def test_next_pair_with_single_available_pair_reports_exhaustion_without_event(
+    tmp_path: Path,
+) -> None:
+    """An unanswered pair must not be silently re-served when no alternative exists."""
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=2)
+    scale = project.create_scale("Only two observations")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    next_pair = _callback(app, "next_scale_pair")
+    first, message, _ = next_pair(1, scale, session)
+    assert message == "New pair ready."
+    assert first["acquisition"]["strategy"] == "random"
+    second, message, _ = next_pair(2, scale, session)
+    assert second is no_update
+    assert "No other unjudged eligible Scale pair" in message
+    assert project.scale_comparisons(scale) == []
+    assert project.database.get_session(session)["state"]["scale_comparison_task"] == first
+
+
+def test_develop_pair_help_describes_eig_and_random_fallback() -> None:
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+    from dash import dcc, html, dash_table
+
+    layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
+
+    def collect_strings(component):
+        if isinstance(component, str):
+            return [component]
+        if isinstance(component, (tuple, list)):
+            return [part for item in component for part in collect_strings(item)]
+        return collect_strings(getattr(component, "children", None))
+
+    content = " ".join(collect_strings(layout))
+    assert "Bayesian information gain" in content
+    assert "random selection" in content
+    assert "without recording a judgment" in content
+    assert "manual" in content.lower()
+    assert "Pairs are sampled randomly for now" not in content
