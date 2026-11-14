@@ -10078,7 +10078,7 @@ def _focus_layout(
                         ),
                         className="focus-counts",
                     ),
-                    comparison_layout(dcc=dcc, html=html, dash_table=dash_table),
+                    comparison_layout(dcc=dcc, html=html, dash_table=dash_table,\n                                      auto_train=bool(initial_state.get("scale_auto_train", False))),
                 ],
                 id="focus-scale-state",
                 style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
