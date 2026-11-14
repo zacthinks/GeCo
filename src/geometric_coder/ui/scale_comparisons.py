@@ -523,8 +523,11 @@ def register_comparison_callbacks(
             parent_keys = list(project.metadata["key_columns"])[:-1]
             context = [
                 unit for unit in nearby
-                if all(unit["user_key"].get(key) == item["user_key"].get(key)
-                       for key in parent_keys)
+                if (int(unit["unit_id"]) == unit_id
+                    or (parent_keys and all(
+                        unit["user_key"].get(key) == item["user_key"].get(key)
+                        for key in parent_keys
+                    )))
             ]
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
