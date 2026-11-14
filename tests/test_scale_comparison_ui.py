@@ -171,6 +171,34 @@ def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Pat
     assert len(project.scale_training_comparisons(scale)) == 2
 
 
+def test_reversed_presentation_preserves_actual_orientation(tmp_path: Path, monkeypatch) -> None:
+    from geometric_coder.ui.app import create_app
+    import geometric_coder.ui.scale_comparisons as comparisons
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity")
+    session = int(project.sessions()[0]["session_id"])
+    first = project.observation_id_for_unit(1)
+    second = project.observation_id_for_unit(2)
+    monkeypatch.setattr(comparisons.secrets, "randbelow", lambda upper: 1)
+    task = _prepare_scale_task(project, {
+        "scale_id": scale, "session_id": session,
+        "picked_a": first, "picked_b": second, "status": "selecting",
+    }, None)
+    assert task["first"] == second
+    assert task["second"] == first
+    app = create_app(project)
+    saved, _, _ = _manage(
+        _callback(app, "manage_scale_comparison"), "scale-judge-first",
+        scale=scale, session=session, task=task,
+    )
+    assert saved["status"] == "saved"
+    event = project.scale_comparisons(scale)[0]
+    assert event["presented_first_id"] == second
+    assert event["presented_second_id"] == first
+    assert event["canonical_outcome"] == "high_higher"
+
+
 def test_eligibility_self_pair_and_stale_definition(tmp_path: Path) -> None:
     from geometric_coder.ui.app import create_app
 
