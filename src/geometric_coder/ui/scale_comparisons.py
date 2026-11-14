@@ -597,6 +597,7 @@ def register_comparison_callbacks(
         if scale_id is None or workspace != "focus":
             return [], [], ""
         history = project.scale_comparisons(scale_id)
+        current_version = int(project.scale(scale_id)["version_number"])
         superseded = {
             row["supersedes_event_id"] for row in history
             if row["supersedes_event_id"] is not None
@@ -623,7 +624,10 @@ def register_comparison_callbacks(
                     else f"Nonhuman · {row['origin']}"
                 ),
                 "reviewer": row["reviewer_key"] or "Not specified",
-                "state": "Superseded" if event_id in superseded else "Effective",
+                "state": (
+                    ("Superseded" if event_id in superseded else "Effective")
+                    + (" · earlier definition" if int(row["version_number"]) != current_version else "")
+                ),
                 "corrects": row["supersedes_event_id"] or "",
             })
         return records, [], (
