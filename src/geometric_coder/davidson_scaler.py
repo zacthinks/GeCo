@@ -27,6 +27,34 @@ def _row_sumsq(M):
         return np.asarray(M.multiply(M).sum(axis=1)).ravel()
     return np.einsum('ij,ij->i', M, M)
 
+def _validate_pair_indices(indices, n_rows):
+    """Validate row indices before conversion, including unsigned overflows."""
+    raw = np.asarray(indices)
+    if (raw.ndim != 2 or raw.shape[1] != 2
+            or not np.issubdtype(raw.dtype, np.integer)):
+        raise ValueError('pairs must have shape (m,2) with integer indices')
+    if raw.size and (
+        (raw < 0).any() or (raw >= n_rows).any()
+        or (raw[:, 0] == raw[:, 1]).any()
+    ):
+        raise ValueError('invalid pair indices')
+    return raw.astype(np.int64, copy=False)
+
+
+def _centered_reference_variance(R, center):
+    """Stable reference trace variance without dense CSR materialization."""
+    if sparse.issparse(R):
+        R = R.tocsr(copy=True)
+        R.sum_duplicates()
+        indices = R.indices
+        observed = np.bincount(indices, minlength=R.shape[1])
+        centered_sq = np.square(R.data - center[indices])
+        total = np.bincount(indices, weights=centered_sq, minlength=R.shape[1])
+        # Implicit CSR zeros contribute (0 - center[j])**2.
+        total += (R.shape[0] - observed) * np.square(center)
+        return float(total.sum() / R.shape[0])
+    return float(np.square(np.asarray(R) - center).sum() / R.shape[0])
+
 
 def objective(theta, D, y, lambda_beta, lambda_eta, eta_prior):
     """NLP + exact analytical gradient, unnormalized *sum* NLL."""
@@ -93,18 +121,13 @@ class LinearDavidsonScaler:
         X = X.tocsr() if sparse.issparse(X) else np.asarray(X, dtype=float)
         if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < 1:
             raise ValueError('X must have shape (n>=2, d>=1)')
-        raw_pairs = np.asarray(pair_indices)
+        pairs = _validate_pair_indices(pair_indices, X.shape[0])
         raw_y = np.asarray(outcomes)
-        if (not np.issubdtype(raw_pairs.dtype, np.integer)
-                or not np.issubdtype(raw_y.dtype, np.integer)):
-            raise ValueError("pairs and outcomes must be integer arrays")
-        pairs = np.asarray(raw_pairs, dtype=np.int64)
+        if not np.issubdtype(raw_y.dtype, np.integer):
+            raise ValueError('outcomes must be integer arrays')
         ys = np.asarray(raw_y, dtype=np.int64)
-        if pairs.ndim != 2 or pairs.shape[1] != 2 or ys.shape != (len(pairs),):
-            raise ValueError('pairs must be shape (m,2) and outcomes (m,)')
-        if len(pairs) and ((pairs < 0).any() or (pairs >= X.shape[0]).any() or
-                           (pairs[:, 0] == pairs[:, 1]).any()):
-            raise ValueError('invalid pair indices')
+        if ys.shape != (len(pairs),):
+            raise ValueError('outcomes must have shape (m,) matching pairs')
         if not np.isin(ys, [-1, 0, 1, 2]).all():
             raise ValueError('outcomes must be -1, 0, 1 or 2')
         if not np.isfinite(X.data if sparse.issparse(X) else X).all():
@@ -138,8 +161,7 @@ class LinearDavidsonScaler:
         # prior SD for this reference representation. This is invariant to
         # multiplying all feature vectors by a global positive constant.
         self.feature_mean_ = np.asarray(R.mean(axis=0)).ravel()
-        mean_norm2 = float(_row_sumsq(R).sum()/R.shape[0])
-        centered_energy = max(0., mean_norm2 - float(self.feature_mean_ @ self.feature_mean_))
+        centered_energy = _centered_reference_variance(R, self.feature_mean_)
         self.reference_variance_ = centered_energy
         self.lambda_beta_ = max(centered_energy, 1e-8) / self.score_prior_sd**2
         self.lambda_eta_ = 1. / self.eta_prior_sd**2
@@ -228,18 +250,16 @@ class LinearDavidsonScaler:
         return np.asarray(Z @ self.beta_).ravel() - self.origin_
 
     def predict_comparisons(self, X, pairs):
-        p = np.asarray(pairs, dtype=int)
         scores = self.predict_scores(X)
+        p = _validate_pair_indices(pairs, len(scores))
         return davidson_probabilities(scores[p[:,0]]-scores[p[:,1]], self.eta_)
 
     def posterior_pair_moments(self, X, pairs, *, scores=None):
         """Return mean delta, var(delta), cov(delta,eta), var(eta)."""
         if self.posterior_ is None:
             raise RuntimeError('call build_posterior first')
-        p = np.asarray(pairs,dtype=int)
-        if p.ndim!=2 or p.shape[1]!=2:
-            raise ValueError('pairs must have two columns')
         Z = self._scale_X(X)
+        p = _validate_pair_indices(pairs, Z.shape[0])
         return self._moments_scaled(Z,p,scores=scores)
 
     def _moments_scaled(self, Z, p, *, scores=None):
@@ -271,32 +291,31 @@ class LinearDavidsonScaler:
     def posterior_position_variance(self, X, *, chunk_size=512):
         """Position variance of s(x)=beta^T(x-mean training x), with mean x fixed."""
         if self.posterior_ is None:raise RuntimeError('call build_posterior first')
+        if not isinstance(chunk_size, (int, np.integer)) or chunk_size < 1:
+            raise ValueError('chunk_size must be a positive integer')
         Z=self._scale_X(X)
         ret=np.empty(Z.shape[0])
         sig=1/np.sqrt(self.lambda_beta_)
-        for i in range(0,len(ret),chunk_size):
-            Xc=Z[i:i+chunk_size]
-            if sparse.issparse(Xc):
-                # Sparse centering can densify. Compute algebraic adjustments.
-                xc2 = (_row_sumsq(Xc)
-                       - 2 * np.asarray(Xc @ self.feature_mean_).ravel()
-                       + np.dot(self.feature_mean_, self.feature_mean_))
-            else:
-                Xc=Xc-self.feature_mean_
-                xc2=_row_sumsq(Xc)
+        # CSR centering by differences of squared norms suffers catastrophic
+        # cancellation for large offsets. Densify only bounded score chunks.
+        rows_per_chunk = int(chunk_size)
+        if sparse.issparse(Z):
+            rows_per_chunk = min(rows_per_chunk, max(1, 8_388_608 // (8*Z.shape[1])))
+        for i in range(0,len(ret),rows_per_chunk):
+            Xc=Z[i:i+rows_per_chunk]
+            centered = (Xc.toarray() if sparse.issparse(Xc) else Xc) - self.feature_mean_
+            xc2=_row_sumsq(centered)
             if self.posterior_.full_cov is not None:
                 C=self.posterior_.full_cov[:-1,:-1]
-                W=(Xc.toarray() if sparse.issparse(Xc) else Xc) if sparse.issparse(Z) else Xc
-                W=np.asarray(W)-self.feature_mean_ if sparse.issparse(Z) else W
-                correction=sig**2*xc2-np.einsum('ij,ij->i',W@C,W)
+                correction=sig**2*xc2-np.einsum('ij,ij->i',centered@C,centered)
             elif self.posterior_.dual_G is not None:
                 G,L=self.posterior_.dual_G,self.posterior_.dual_L
-                P=(np.asarray(Z[i:i+chunk_size]@G[:,:-1].T)-self.feature_mean_@G[:,:-1].T)*sig
+                P=(np.asarray(Xc@G[:,:-1].T)-self.feature_mean_@G[:,:-1].T)*sig
                 W=solve_triangular(L,P.T,lower=True,check_finite=False)
                 correction=np.sum(W**2,axis=0)
             else:
                 correction=np.zeros(len(xc2))
-            ret[i:i+chunk_size]=np.maximum(0,sig**2*xc2-correction)
+            ret[i:i+rows_per_chunk]=np.maximum(0,sig**2*xc2-correction)
         return ret
 
     def pair_posterior_moments(self, X, pairs):
