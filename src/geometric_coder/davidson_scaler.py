@@ -95,7 +95,8 @@ class LinearDavidsonScaler:
             raise ValueError('X must have shape (n>=2, d>=1)')
         raw_pairs = np.asarray(pair_indices)
         raw_y = np.asarray(outcomes)
-        if not np.issubdtype(raw_pairs.dtype, np.integer) or not np.issubdtype(raw_y.dtype, np.integer):
+        if (not np.issubdtype(raw_pairs.dtype, np.integer)
+                or not np.issubdtype(raw_y.dtype, np.integer)):
             raise ValueError("pairs and outcomes must be integer arrays")
         pairs = np.asarray(raw_pairs, dtype=np.int64)
         ys = np.asarray(raw_y, dtype=np.int64)
@@ -108,7 +109,12 @@ class LinearDavidsonScaler:
             raise ValueError('outcomes must be -1, 0, 1 or 2')
         if not np.isfinite(X.data if sparse.issparse(X) else X).all():
             raise ValueError('nonfinite X')
-        reference = X if reference_X is None else (reference_X.tocsr() if sparse.issparse(reference_X) else np.asarray(reference_X, dtype=float))
+        if reference_X is None:
+            reference = X
+        elif sparse.issparse(reference_X):
+            reference = reference_X.tocsr()
+        else:
+            reference = np.asarray(reference_X, dtype=float)
         if reference.ndim != 2 or reference.shape[1] != X.shape[1] or reference.shape[0] < 2:
             raise ValueError('reference_X must have shape (r>=2, d) matching X')
         if not np.isfinite(reference.data if sparse.issparse(reference) else reference).all():
@@ -156,7 +162,10 @@ class LinearDavidsonScaler:
         self.origin_ = float(self.feature_mean_ @ self.beta_)
         self.fitted_ = bool(np.isfinite(res.x).all() and np.isfinite(res.fun))
         self.success_ = self.success_ and self.fitted_
-        self.evidence_status_ = 'prior-only' if self.n_comparisons_ == 0 else ('fitted' if self.success_ else 'failed')
+        self.evidence_status_ = (
+            'prior-only' if self.n_comparisons_ == 0
+            else ('fitted' if self.success_ else 'failed')
+        )
         self._D = D
         self._curvature = likelihood_curvature(np.asarray(D @ self.beta_).ravel(), self.eta_)
         self.posterior_ = None
@@ -241,12 +250,14 @@ class LinearDavidsonScaler:
         sig_e = 1/np.sqrt(self.lambda_eta_)
         if self.posterior_.full_cov is not None:
             C=self.posterior_.full_cov
-            variance=np.sum(np.asarray(D@C[:-1,:-1])*(D.toarray() if sparse.issparse(D) else D),axis=1)
+            difference = D.toarray() if sparse.issparse(D) else D
+            variance = np.sum(np.asarray(D @ C[:-1, :-1]) * difference, axis=1)
             cov=np.asarray(D@C[:-1,-1]).ravel()
             variance_eta=C[-1,-1]
         elif self.posterior_.dual_G is not None:
             G,L=self.posterior_.dual_G,self.posterior_.dual_L
-            proj=solve_triangular(L,(np.asarray(D@G[:,:-1].T)*sig_b).T,lower=True,check_finite=False)
+            projected = np.asarray(D @ G[:, :-1].T) * sig_b
+            proj = solve_triangular(L, projected.T, lower=True, check_finite=False)
             eta_proj=solve_triangular(L,G[:,-1]*sig_e,lower=True,check_finite=False)
             variance=sig_b**2*_row_sumsq(D)-np.sum(proj**2,axis=0)
             cov=-(proj.T@eta_proj)
@@ -267,7 +278,9 @@ class LinearDavidsonScaler:
             Xc=Z[i:i+chunk_size]
             if sparse.issparse(Xc):
                 # Sparse centering can densify. Compute algebraic adjustments.
-                xc2=_row_sumsq(Xc) - 2*np.asarray(Xc@self.feature_mean_).ravel() + np.dot(self.feature_mean_,self.feature_mean_)
+                xc2 = (_row_sumsq(Xc)
+                       - 2 * np.asarray(Xc @ self.feature_mean_).ravel()
+                       + np.dot(self.feature_mean_, self.feature_mean_))
             else:
                 Xc=Xc-self.feature_mean_
                 xc2=_row_sumsq(Xc)
@@ -374,7 +387,8 @@ class LinearDavidsonScaler:
             p['mode'],
             dual_G=None if p['dual_G'] is None else np.asarray(p['dual_G'], dtype=float).copy(),
             dual_L=None if p['dual_L'] is None else np.asarray(p['dual_L'], dtype=float).copy(),
-            full_cov=None if p['full_cov'] is None else np.asarray(p['full_cov'], dtype=float).copy()
+            full_cov=(None if p['full_cov'] is None
+                      else np.asarray(p['full_cov'], dtype=float).copy())
         )
         if model.posterior_ is not None:
             q = model.posterior_
