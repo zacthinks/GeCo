@@ -4960,6 +4960,15 @@ def create_app(
         return _code_options(project.codes())
 
     @app.callback(
+        Output("code-modal-bootstrap-toggle", "value"),
+        Output("code-modal-bootstrap-code", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def reset_code_bootstrap_on_modal_open(_target: str | None) -> tuple[list[str], None]:
+        # Opening another Construct starts with independent Scale creation.
+        return [], None
+
+    @app.callback(
         Output("code-modal-bootstrap-wrapper", "style"),
         Output("code-modal-bootstrap-code", "options"),
         Output("code-modal-bootstrap-details", "style"),
