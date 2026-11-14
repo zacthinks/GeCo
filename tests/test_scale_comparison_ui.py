@@ -507,7 +507,9 @@ def test_develop_pair_help_describes_eig_and_random_fallback() -> None:
             return [component]
         if isinstance(component, (tuple, list)):
             return [part for item in component for part in collect_strings(item)]
-        return collect_strings(getattr(component, "children", None))
+        if not hasattr(component, "children"):
+            return []
+        return collect_strings(component.children)
 
     content = " ".join(collect_strings(layout))
     assert "Bayesian information gain" in content
