@@ -55,6 +55,42 @@ def test_cv_setting_defaults_to_five_and_persists_per_project(tmp_path: Path) ->
     assert _read_ui_settings(root) == {"cv_folds": 5, "candidate_evaluation_budget": -1}
 
 
+
+def test_custom_candidate_budget_requires_a_value_before_saving(tmp_path: Path) -> None:
+    import inspect
+
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    app = create_app(project)
+
+    def find(component, component_id):
+        if getattr(component, "id", None) == component_id:
+            return component
+        for child in getattr(component, "children", None) or []:
+            found = find(child, component_id)
+            if found is not None:
+                return found
+        return None
+
+    field = find(app.layout, "geco-settings-candidate-custom")
+    assert field is not None
+    assert field.value is None
+
+    callback = next(
+        inspect.unwrap(spec["callback"])
+        for output, spec in app.callback_map.items()
+        if "geco-settings-candidate-status.children" in output
+    )
+    assert "Enter a whole-number" in callback("custom", field.value)
+    assert _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] == -1
+
+    assert "Evaluate up to 25" in callback("custom", 25)
+    assert _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] == 25
+    assert find(create_app(project).layout, "geco-settings-candidate-custom").value == 25
+
+
 def test_cv_folds_pass_through_saved_evidence_training(tmp_path: Path) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("example", "Example concept")
