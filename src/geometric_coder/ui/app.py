@@ -3909,7 +3909,7 @@ def create_app(
             return (no_update,) * 3 + definition + (no_update,) * 3
         return (
             None, {"display": "none"}, {}, *definition,
-            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            {"display": "none"}, {}, {"display": "none"},
         )
 
     @app.callback(
@@ -4149,30 +4149,6 @@ def create_app(
             f"Version {number} of {number}",
             number <= 1, True, False, {"display": "none"}, {}, f"Saved version {number}.",
         )
-
-    @app.callback(
-        Output("construct-refresh-store", "data", allow_duplicate=True),
-        Output("code-center-create-scale-status", "children"),
-        Output("code-center-new-scale-name", "value"),
-        Output("code-center-new-scale-description", "value"),
-        Input("code-center-create-scale", "n_clicks"),
-        State("code-center-new-scale-name", "value"),
-        State("code-center-new-scale-description", "value"),
-        State("construct-refresh-store", "data"),
-        prevent_initial_call=True,
-    )
-    def create_center_scale(
-        clicks: int | None, name: str | None, description: str | None, refresh: int | None
-    ) -> tuple[Any, str, str, str]:
-        if not clicks:
-            return no_update, "", no_update, no_update
-        if not (name or "").strip():
-            return no_update, "Enter a Scale name.", no_update, no_update
-        try:
-            scale_id = project.create_scale((name or "").strip(), description or "")
-        except ValueError as error:
-            return no_update, str(error), no_update, no_update
-        return int(refresh or 0) + 1, f"Created Scale {scale_id}.", "", ""
 
     @app.callback(
         Output("code-center-teaching-button", "disabled"),
@@ -8704,16 +8680,7 @@ def _code_center_layout(
             html.Aside(
                 [
                     html.H2("Constructs"),
-                    html.Button("New Code", id="code-center-new-code-button", n_clicks=0),
-                    html.Details([
-                        html.Summary("New Scale"),
-                        html.Label("Scale name"),
-                        dcc.Input(id="code-center-new-scale-name", type="text", className="text-input"),
-                        html.Label("Description"),
-                        dcc.Textarea(id="code-center-new-scale-description", className="memo-editor code-center-editor"),
-                        html.Button("Create Scale", id="code-center-create-scale", n_clicks=0, className="primary-action"),
-                        html.Div(id="code-center-create-scale-status", className="control-status"),
-                    ]),
+                    html.Button("New Construct", id="code-center-new-code-button", n_clicks=0),
                     html.Label("Search Constructs"),
                     dcc.Input(id="code-center-query", type="text", debounce=True, className="text-input", placeholder="Search labels or descriptions"),
                     dcc.RadioItems(
@@ -9467,25 +9434,42 @@ def _testing_center_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     )
 
 def _code_modal(*, dcc: Any, html: Any) -> Any:
-    """Return the shared code-creation modal used by Explore and Develop."""
+    """Return one shared Code/Scale creation modal for Develop and Constructs."""
     return html.Div(
         [
             html.Div(
                 [
                     html.Div(
                         [
-                            html.H2("New Code"),
+                            html.H2("New Construct"),
                             html.Button("×", id="code-modal-cancel-button", n_clicks=0),
                         ],
                         className="modal-header",
                     ),
                     html.Div(
                         [
-                            html.Label("Code label"),
+                            html.Label("Construct type"),
+                            dcc.RadioItems(
+                                id="code-modal-construct-type",
+                                options=[
+                                    {"label": "Code", "value": "code"},
+                                    {"label": "Scale", "value": "scale"},
+                                ],
+                                value="code",
+                                inline=True,
+                                className="memo-center-scope",
+                            ),
+                        ],
+                        id="code-modal-type-wrapper",
+                        className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Construct label"),
                             dcc.Input(
                                 id="code-modal-name",
                                 type="text",
-                                placeholder="Enter a concise code label",
+                                placeholder="Enter a concise construct label",
                                 className="text-input code-name-input",
                             ),
                         ],
@@ -9496,7 +9480,7 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                             html.Label("Description (optional)"),
                             dcc.Textarea(
                                 id="code-modal-definition",
-                                placeholder="Describe what the code captures. Markdown and #hashtags are supported.",
+                                placeholder="Describe what this construct measures or captures. Markdown and #hashtags are supported.",
                                 className="code-definition-editor code-modal-definition",
                             ),
                         ],
@@ -9507,7 +9491,7 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                         [
                             html.Button("Cancel", id="code-modal-cancel-footer", n_clicks=0),
                             html.Button(
-                                "Create Code",
+                                "Create Construct",
                                 id="code-modal-create-button",
                                 n_clicks=0,
                                 className="primary-action",
@@ -9834,8 +9818,7 @@ def _focus_layout(
                                         style={"display": "none"},
                                     ),
                                     html.Button(
-                                        "New Code", id="focus-new-code-button", n_clicks=0,
-                                        style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
+                                        "New Construct", id="focus-new-code-button", n_clicks=0,
                                     ),
                                 ],
                                 className="code-selector-row",
