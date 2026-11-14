@@ -340,6 +340,50 @@ def test_changing_geometry_invalidates_frozen_fit(tmp_path):
     assert project.scale_model_status(scale)["status"] == "stale"
 
 
+
+def test_scale_training_preferences_follow_selected_session(tmp_path):
+    """Switching sessions restores both Scale checkboxes, including defaults."""
+    import inspect
+
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project, scale, _, _, _ = _setup(tmp_path)
+    first = project.create_session("Auto-train")
+    second = project.create_session("Manual")
+    project.patch_session_state(first, {
+        "focus_construct_id": scale,
+        "scale_auto_train": True,
+        "scale_tune_hyperparameters": True,
+    })
+    project.patch_session_state(second, {
+        "focus_construct_id": scale,
+        "scale_auto_train": False,
+        "scale_tune_hyperparameters": False,
+    })
+    app = create_app(project)
+    entry = next(
+        item for item in app.callback_map.values()
+        if "callback" in item
+        and inspect.unwrap(item["callback"]).__name__ == "restore_session"
+    )
+    restore = inspect.unwrap(entry["callback"])
+    names = [f"{output.component_id}.{output.component_property}"
+             for output in entry["output"]]
+    for session, expected in [(first, ["auto"]), (second, []), (first, ["auto"])]:
+        values = dict(zip(names, restore(session), strict=True))
+        assert values["active-session-store.data"] == session
+        assert values["scale-auto-train.value"] == expected
+        assert values["scale-tune-hyperparameters.value"] == (
+            ["tune"] if expected else []
+        )
+
+    third = project.create_session("Defaults")
+    values = dict(zip(names, restore(third), strict=True))
+    assert values["scale-auto-train.value"] == []
+    assert values["scale-tune-hyperparameters.value"] == []
+
+
 def test_develop_auto_training_runs_only_after_saved_evidence(tmp_path, monkeypatch):
     import inspect
     pytest.importorskip("dash")
