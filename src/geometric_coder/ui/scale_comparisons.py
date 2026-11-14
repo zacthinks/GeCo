@@ -126,6 +126,8 @@ def _random_scale_task(
         "reason": choice.get("fallback_reason"),
         "source_run_id": choice.get("run_id"),
         "random_seed": choice.get("seed"),
+        "source_fit_id": choice.get("source_fit_id"),
+        "source_selection_fingerprint": choice.get("source_fingerprint"),
     }
     return task
 
@@ -759,6 +761,10 @@ def register_comparison_callbacks(
                     provenance["source_acquisition_run_id"] = selection.get("source_run_id")
                     provenance["fallback_reason"] = selection.get("reason")
                     provenance["random_seed"] = selection.get("random_seed")
+                    provenance["source_fit_id"] = selection.get("source_fit_id")
+                    provenance["source_selection_fingerprint"] = selection.get(
+                        "source_selection_fingerprint"
+                    )
                 event_id = project.record_scale_comparison(
                     scale_id, first, second, outcome,
                     origin="human_direct",
