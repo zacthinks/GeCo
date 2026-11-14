@@ -36,7 +36,7 @@ def _all(run, *, acknowledge=True):
     return tasks
 
 
-@pytest.mark.parametrize("n", [0, 1, 2, 3, 7, 12])
+@pytest.mark.parametrize("n", [2, 3, 7, 12])
 def test_exhaustive_pairs_are_exactly_combinations(tmp_path, n):
     project, _, scale = _project(tmp_path, n)
     run = project.candidate_run(scale, budget=0, seed=5, batch_size=3)
@@ -201,3 +201,19 @@ def test_integer_pair_unranking(n):
     assert [_unrank_pair(rank, n) for rank in range(n * (n - 1) // 2)] == list(
         itertools.combinations(range(n), 2)
     )
+
+
+@pytest.mark.parametrize("n", [0, 1])
+def test_empty_and_singleton_eligible_scale_population(tmp_path, monkeypatch, n):
+    from array import array
+    project, _, scale = _project(tmp_path, 3)
+    monkeypatch.setattr(
+        project.database, "acquisition_eligible_atomic_ids",
+        lambda *args, **kwargs: array("q", range(1, n + 1)),
+    )
+    run = project.candidate_run(scale, budget=0)
+    assert _all(run) == []
+    assert run.possible_task_count == 0
+    assert run.evaluated_count == 0
+    assert run.exhausted
+    assert run.unavailable_reason
