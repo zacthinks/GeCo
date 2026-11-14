@@ -45,14 +45,14 @@ def test_new_code_and_reopen_do_not_create_classifiers(tmp_path: Path) -> None:
 def test_cv_setting_defaults_to_five_and_persists_per_project(tmp_path: Path) -> None:
     root = tmp_path / "settings.geco"
     root.mkdir()
-    assert _read_ui_settings(root) == {"cv_folds": 5}
+    assert _read_ui_settings(root) == {"cv_folds": 5, "candidate_evaluation_budget": -1}
     _save_ui_settings(root, cv_folds=3)
-    assert _read_ui_settings(root) == {"cv_folds": 3}
+    assert _read_ui_settings(root) == {"cv_folds": 3, "candidate_evaluation_budget": -1}
     with pytest.raises(ValueError, match="between 2 and 10"):
         _save_ui_settings(root, cv_folds=1)
-    assert _read_ui_settings(root) == {"cv_folds": 3}
+    assert _read_ui_settings(root) == {"cv_folds": 3, "candidate_evaluation_budget": -1}
     (root / "ui_settings.json").write_text('{"cv_folds": "garbled"}', encoding="utf-8")
-    assert _read_ui_settings(root) == {"cv_folds": 5}
+    assert _read_ui_settings(root) == {"cv_folds": 5, "candidate_evaluation_budget": -1}
 
 
 def test_cv_folds_pass_through_saved_evidence_training(tmp_path: Path) -> None:
