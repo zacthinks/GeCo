@@ -1245,8 +1245,10 @@ def create_app(
                             dcc.Input(
                                 id="geco-settings-candidate-custom",
                                 type="number", min=1, max=1_000_000, step=1,
-                                value=max(
-                                    1, _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                value=(
+                                    _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else None
                                 ),
                                 placeholder="Number of candidate tasks",
                                 className="text-input",
