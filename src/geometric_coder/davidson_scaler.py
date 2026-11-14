@@ -28,6 +28,24 @@ def _row_sumsq(M):
     return np.einsum('ij,ij->i', M, M)
 
 
+def _factor_dual_gram(G):
+    """Return a stable Woodbury factor for the same G.T @ G.
+
+    Cholesky(I + G @ G.T) loses small eigenvalues when large or repeated
+    comparison directions make its Gram matrix ill-conditioned. In that
+    regime, rotate G with a thin SVD: (S @ V.T).T @ (S @ V.T) is unchanged,
+    but the dual Gram becomes diagonal, so its Cholesky factor is accurate.
+    The ordinary Cholesky fast path remains unchanged for well-scaled data.
+    """
+    if np.sum(_row_sumsq(G)) > 1e8:
+        _, singular_values, vh = np.linalg.svd(G, full_matrices=False)
+        rotated = singular_values[:, None] * vh
+        return rotated, np.diag(np.hypot(1., singular_values))
+    L = cholesky(np.eye(G.shape[0]) + G @ G.T,
+                 lower=True, check_finite=False)
+    return G, L
+
+
 def _stable_dual_variances(G, L, whitened):
     """Evaluate Woodbury covariance quadratics without subtractive cancellation.
 
@@ -271,7 +289,7 @@ class LinearDavidsonScaler:
             G[:n,:d]=(D.toarray() if sparse.issparse(D) else D)*(t*sig_b)[:,None]
             G[:n,-1]=b
             G[n,-1]=sig_e*np.sqrt(max(residual,0))
-            L=cholesky(np.eye(n+1)+G@G.T,lower=True,check_finite=False)
+            G, L = _factor_dual_gram(G)
             self.posterior_=LaplaceSpectrum('dual-exact', dual_G=G, dual_L=L)
             self.posterior_variance_eta_=_stable_dual_eta_variance(G,L,sig_e)
             return self
