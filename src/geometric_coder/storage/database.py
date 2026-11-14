@@ -154,7 +154,7 @@ _SCALER_SCHEMA_SQL = (
 
 _SCALE_ACQUISITION_SQL = (
     """CREATE TABLE IF NOT EXISTS scale_acquisition_runs (
-        run_id INTEGER PRIMARY KEY,
+        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
         scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
         scaler_fit_id INTEGER NOT NULL REFERENCES scaler_fits(scaler_fit_id),
         scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
