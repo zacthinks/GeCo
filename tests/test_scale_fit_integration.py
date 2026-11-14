@@ -182,7 +182,7 @@ def test_schema_19_to_20_upgrade_preserves_comparison_history(tmp_path):
         con.execute("DROP TABLE scaler_specs")
         con.execute("UPDATE project SET schema_version = 19")
     reopened = GeometricCoder.open(project.project_dir)
-    assert reopened.database.project_metadata()["schema_version"] == 20
+    assert reopened.database.project_metadata()["schema_version"] == 21
     assert reopened.scale_comparisons(scale)[0]["comparison_event_id"] == event
     assert reopened.scale_model_status(scale)["status"] == "not_configured"
 
@@ -251,7 +251,7 @@ def test_migration_failure_rolls_back_all_new_tables(tmp_path, monkeypatch):
             "SELECT name FROM sqlite_master WHERE name='scaler_specs'"
         ).fetchone() is None
     monkeypatch.setitem(storage_database._MIGRATIONS, 19, original)
-    assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 20
+    assert GeometricCoder.open(project.project_dir).database.project_metadata()["schema_version"] == 21
 
 
 def test_no_comparisons_and_parity_only_stay_untrained(tmp_path):
@@ -526,3 +526,223 @@ def test_tuning_uses_grouped_comparison_folds_and_persists_selection(tmp_path):
     )
     reused = project.train_scale(scale, estimator_factory=DeterministicCVScaler)
     assert reused["reused"]
+
+
+def test_frozen_scale_acquisition_storage_survives_reopen_and_refit(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    project.configure_scale_model(scale, rep)
+    fit = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    metadata = {"random_seed": 7, "requested_budget": 2,
+                "evaluated_candidate_count": 2}
+    ranking = [(a, d, .19), (c, e, .13)]
+    result = project.database.store_scale_acquisition(
+        scale_id=scale,
+        fit_id=fit["scaler_fit_id"],
+        scale_version_id=fit["scale_version_id"],
+        spec_id=fit["scaler_spec_id"],
+        fingerprint="fixture_acquisition_v1",
+        provenance=metadata,
+        diagnostics={"method": "joint_laplace_gh_7x7_v1"},
+        strategy="eig", reason=None, ranked_pairs=ranking,
+    )
+    run = project.database.scale_acquisition_run(scale)
+    assert run is not None and run["run_id"] == result["run_id"]
+    assert run["provenance"] == metadata
+    page = project.database.scale_acquisition_page(run["run_id"])
+    assert [(row["observation_low_id"], row["observation_high_id"],
+             row["acquisition_score"]) for row in page] == ranking
+
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.database.scale_acquisition_page(run["run_id"]) == page
+    with pytest.raises(ValueError, match="Duplicate acquisition pair"):
+        reopened.database.store_scale_acquisition(
+            scale_id=scale, fit_id=fit["scaler_fit_id"],
+            scale_version_id=fit["scale_version_id"],
+            spec_id=fit["scaler_spec_id"], fingerprint="dup",
+            provenance={}, diagnostics={}, strategy="eig", reason=None,
+            ranked_pairs=[ranking[0], ranking[0]],
+        )
+    assert reopened.database.scale_acquisition_page(run["run_id"]) == page
+
+
+def test_phase3a_phase3b_fit_ranking_frozen_and_reopen(tmp_path):
+    """A real Davidson fit, shared sampler, durable queue and human evidence lifecycle."""
+    from geometric_coder.scale_recommendations import (
+        next_scale_recommendation, scale_acquisition_status,
+    )
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    events = [
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ]
+    for first, second, outcome in events:
+        project.record_scale_comparison(scale, first, second, outcome)
+
+    result = project.train_scale(scale)
+    assert result["status"] == "current"
+    rank = scale_acquisition_status(project, scale)
+    assert rank["strategy"] == "eig"
+    assert rank["scaler_fit_id"] == result["fit"]["scaler_fit_id"]
+    assert rank["diagnostics"]["evaluated_candidate_count"] == 4
+    page = project.database.scale_acquisition_page(rank["run_id"])
+    assert len(page) == 4
+    assert all(row["acquisition_score"] >= 0 for row in page)
+    assert [row["acquisition_score"] for row in page] == sorted(
+        (row["acquisition_score"] for row in page), reverse=True
+    )
+
+    first_choice = next_scale_recommendation(project, scale)
+    assert first_choice["strategy"] == "eig"
+    assert tuple(first_choice["pair"]) == (
+        page[0]["observation_low_id"], page[0]["observation_high_id"]
+    )
+
+    # Saving a judgment with automatic training off must only stale the fit
+    # and consume a cached recommendation; it must not refresh the sorted scores.
+    project.record_scale_comparison(
+        scale, *first_choice["pair"], "first_higher"
+    )
+    assert project.scale_model_status(scale)["status"] == "stale"
+    frozen = scale_acquisition_status(project, scale)
+    assert frozen["frozen"] and frozen["run_id"] == rank["run_id"]
+    second_choice = next_scale_recommendation(project, scale)
+    assert second_choice["strategy"] == "eig"
+    assert second_choice["pair"] != first_choice["pair"]
+    assert project.database.scale_acquisition_page(rank["run_id"]) == page
+
+    reopened = GeometricCoder.open(project.project_dir)
+    assert scale_acquisition_status(reopened, scale)["run_id"] == rank["run_id"]
+    assert next_scale_recommendation(reopened, scale)["pair"] == second_choice["pair"]
+
+    project.train_scale(scale)
+    new_run = scale_acquisition_status(project, scale)
+    assert new_run["run_id"] != rank["run_id"]
+    assert new_run["scaler_fit_id"] != rank["scaler_fit_id"]
+
+
+def test_phase3a_phase3b_random_bootstrap_has_finite_budget(tmp_path):
+    from geometric_coder.scale_recommendations import (
+        next_scale_recommendation, refresh_scale_acquisition,
+    )
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    random_pair = next_scale_recommendation(project, scale, seed=5)
+    assert random_pair["strategy"] == "random"
+    assert random_pair["pair"][0] < random_pair["pair"][1]
+    assert random_pair["run_id"] is None
+    assert project.scale_training_comparisons(scale) == []
+
+    project.configure_scale_model(scale, rep)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    trained = project.train_scale(scale)
+    assert trained["status"] == "current"
+    run = refresh_scale_acquisition(project, scale, budget=3, seed=8)
+    assert run["strategy"] == "random"
+    assert run["count"] == 3
+    assert run["provenance"]["evaluated_candidate_count"] == 3
+    assert all(
+        row["acquisition_score"] is None
+        for row in project.database.scale_acquisition_page(run["run_id"])
+    )
+
+
+def test_publication_guard_rejects_interleaved_evidence_without_replacing_run(
+    tmp_path, monkeypatch,
+):
+    """An intervening saved judgment invalidates the candidate snapshot at commit."""
+    from geometric_coder.scale_recommendations import refresh_scale_acquisition
+
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    for first, second, outcome in (
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ):
+        project.record_scale_comparison(scale, first, second, outcome)
+    trained = project.train_scale(scale)
+    original = project.database.store_scale_acquisition
+    prior = project.database.scale_acquisition_run(scale)
+    assert prior is not None
+    prior_page = project.database.scale_acquisition_page(prior["run_id"])
+
+    def interleave(*args, **kwargs):
+        project.record_scale_comparison(scale, d, e, "first_higher")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project.database, "store_scale_acquisition", interleave)
+    with pytest.raises(RuntimeError, match="changed during acquisition"):
+        refresh_scale_acquisition(project, scale, seed=11)
+    current = project.database.scale_acquisition_run(scale)
+    assert current == prior
+    assert project.database.scale_acquisition_page(prior["run_id"]) == prior_page
+
+
+def test_publication_guard_runs_inside_locked_transaction(tmp_path):
+    """A failing freshness guard rolls back instead of deleting the old queue."""
+    project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
+    project.configure_scale_model(scale, rep)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    fit = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    kwargs = dict(
+        scale_id=scale, fit_id=fit["scaler_fit_id"],
+        scale_version_id=fit["scale_version_id"],
+        spec_id=fit["scaler_spec_id"], fingerprint="first",
+        provenance={}, diagnostics={}, strategy="random",
+        reason="fixture", ranked_pairs=[(a, d, None)],
+    )
+    first = project.database.store_scale_acquisition(**kwargs)
+    with pytest.raises(RuntimeError, match="intervening"):
+        project.database.store_scale_acquisition(
+            **{**kwargs, "fingerprint": "second"},
+            publication_guard=lambda: (_ for _ in ()).throw(
+                RuntimeError("intervening change")
+            ),
+        )
+    assert project.database.scale_acquisition_run(scale)["run_id"] == first["run_id"]
+
+
+def test_sparse_acquisition_loads_local_csr_once_across_batches(
+    tmp_path, monkeypatch,
+):
+    """Multiple candidate batches do not decompress the same local CSR repeatedly."""
+    from geometric_coder.scale_recommendations import refresh_scale_acquisition
+
+    project, scale, rep, geometry, (a, b, c, d, e) = _setup(
+        tmp_path, sparse_geometry=True
+    )
+    project.configure_scale_model(scale, rep)
+    for first, second, outcome in (
+        (a, b, "first_higher"), (b, c, "first_higher"),
+        (a, c, "first_higher"), (c, d, "parity"),
+        (a, d, "first_higher"), (b, e, "second_higher"),
+    ):
+        project.record_scale_comparison(scale, first, second, outcome)
+    project.train_scale(scale)
+    calls = []
+    original = project.geometry_matrix
+
+    def counting_load(geometry_arg):
+        calls.append(geometry_arg)
+        return original(geometry_arg)
+
+    monkeypatch.setattr(project, "geometry_matrix", counting_load)
+    # One batch per task to make repeated load attempts observable.
+    import geometric_coder.candidate_sampling as sampling
+    actual = sampling.prepare_candidate_run
+
+    def one_at_a_time(*args, **kwargs):
+        return actual(*args, **{**kwargs, "batch_size": 1})
+
+    monkeypatch.setattr(sampling, "prepare_candidate_run", one_at_a_time)
+    acquisition = refresh_scale_acquisition(project, scale, seed=17)
+    assert acquisition["strategy"] == "eig"
+    assert acquisition["count"] > 1
+    assert calls == [geometry]

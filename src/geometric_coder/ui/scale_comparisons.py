@@ -106,39 +106,48 @@ def _prepare_scale_task(
 def _random_scale_task(
     project: Any, scale_id: int, session_id: int, total_units: int,
 ) -> dict[str, Any]:
-    """Prepare a random eligible pair without loading the corpus or fitting models.
+    """Prepare one recommended pair using a frozen ranking or shared sampler.
 
-    Draw bounded batches of immutable row positions, resolve to observation IDs,
-    and reject previously judged unordered pairs. This is a temporary discovery
-    strategy until model-informed acquisition is implemented.
+    Name retained for the existing callback entry points; this is no longer a
+    second sampler and does not fit models on navigation.
     """
-    if total_units < 2:
-        raise ValueError("At least two observations are needed for a comparison.")
-    rng = secrets.SystemRandom()
-    for _ in range(8):
-        positions = rng.sample(range(total_units), min(total_units, 64))
-        units = project.database.unit_rows_at_positions(positions)
-        ids = [int(row["observation_id"]) for row in units]
-        eligible = project.eligible_scale_observation_ids(scale_id, ids)
-        if len(eligible) < 2:
-            continue
-        previously_judged = project.scale_existing_pairs(scale_id, eligible)
-        rng.shuffle(eligible)
-        for first in eligible:
-            for second in eligible:
-                if first == second:
-                    continue
-                if tuple(sorted((first, second))) in previously_judged:
-                    continue
-                return _prepare_scale_task(project, {
-                    "scale_id": int(scale_id), "session_id": int(session_id),
-                    "picked_a": first, "picked_b": second,
-                    "status": "selecting",
-                }, None)
-    raise ValueError(
-        "No unjudged eligible pair was found in the bounded random sample. "
-        "Try the manual observation selector under More options."
+    from geometric_coder.scale_recommendations import next_scale_recommendation
+
+    del total_units
+    stored = project.database.get_session(int(session_id))["state"].get(
+        "scale_comparison_task"
     )
+    previous = _restore_scale_task(project, int(scale_id), int(session_id), stored)
+    acquisition = previous.get("acquisition")
+    navigation = acquisition if isinstance(acquisition, dict) else {}
+    current_pair = None
+    if previous.get("status") in {"ready", "saved"}:
+        current_pair = tuple(sorted((
+            int(previous["first"]), int(previous["second"]),
+        )))
+    choice = next_scale_recommendation(
+        project, int(scale_id),
+        navigation_run_id=navigation.get("navigation_run_id"),
+        navigation_offset=navigation.get("navigation_offset", 0),
+        exclude_pair=current_pair,
+    )
+    first, second = choice["pair"]
+    task = _prepare_scale_task(project, {
+        "scale_id": int(scale_id), "session_id": int(session_id),
+        "picked_a": first, "picked_b": second,
+        "status": "selecting",
+    }, None)
+    task["acquisition"] = {
+        "strategy": choice["strategy"],
+        "reason": choice.get("fallback_reason"),
+        "source_run_id": choice.get("run_id"),
+        "random_seed": choice.get("seed"),
+        "source_fit_id": choice.get("source_fit_id"),
+        "source_selection_fingerprint": choice.get("source_fingerprint"),
+        "navigation_run_id": choice.get("navigation_run_id"),
+        "navigation_offset": choice.get("navigation_offset", 0),
+    }
+    return task
 
 
 def comparison_layout(
@@ -186,8 +195,11 @@ def comparison_layout(
         html.H3("Compare two observations"),
         html.P(
             "Read both observations and choose which expresses more of the selected "
-            "Scale, or whether they are approximately equal. Pairs are sampled "
-            "randomly for now; informative pair recommendations will come later.",
+            "Scale, or whether they are approximately equal. When a fitted Scale "
+            "model has adequate evidence, Next pair recommends comparisons "
+            "using Bayesian information gain; otherwise it uses random "
+            "selection. Next pair advances without recording a judgment. "
+            "The Unsure / Skip action, by contrast, records an explicit response.",
             className="focus-help",
         ),
         html.Div(id="scale-task-warning", className="control-status"),
@@ -225,8 +237,9 @@ def comparison_layout(
         html.Details([
             html.Summary("More options · choose a pair manually"),
             html.P(
-                "Optional: choose two specific observations instead of a randomly "
-                "presented pair. Selection uses a small page, never the entire corpus.",
+                "Optional: choose two specific observations instead of the "
+                "recommended pair (Bayesian information gain or random fallback). "
+                "Manual selection uses a small page, never the entire corpus.",
                 className="focus-help",
             ),
             html.Label("Observation browser page"),
@@ -685,6 +698,9 @@ def register_comparison_callbacks(
                         raise ValueError("Prepare a pair before requesting another judgment.")
                     task["picked_a"] = task["first"]
                     task["picked_b"] = task["second"]
+                    # A researcher-initiated repeat is a manual choice, not
+                    # another acquisition recommendation from the frozen run.
+                    task.pop("acquisition", None)
                 task = _prepare_scale_task(project, task, reviewer)
                 project.patch_session_state(session_id, {"scale_comparison_task": task})
                 return task, (
@@ -749,13 +765,28 @@ def register_comparison_callbacks(
                         "This pair already has evidence. Confirm an intentional independent repeat."
                     )
                 outcome = _OUTCOMES[trigger]
+                acquisition = task.get("acquisition")
+                selection = acquisition if isinstance(acquisition, dict) else {}
+                strategy = selection.get("strategy")
+                if strategy not in {"eig", "random"}:
+                    strategy = "manual"
                 provenance = {
-                    "strategy": "manual", "workspace": "develop",
+                    "strategy": strategy, "workspace": "develop",
                     "mode": task.get("mode", "independent"),
                     "task_nonce": task["submission_key"],
                     "definition_version": task["snapshot"]["version_number"],
                     "eligibility_revision": task["snapshot"]["eligibility"]["eligibility_revision"],
                 }
+                if strategy != "manual":
+                    # Keep adaptive *selection* distinct from the human
+                    # outcome, which still has origin="human_direct".
+                    provenance["source_acquisition_run_id"] = selection.get("source_run_id")
+                    provenance["fallback_reason"] = selection.get("reason")
+                    provenance["random_seed"] = selection.get("random_seed")
+                    provenance["source_fit_id"] = selection.get("source_fit_id")
+                    provenance["source_selection_fingerprint"] = selection.get(
+                        "source_selection_fingerprint"
+                    )
                 event_id = project.record_scale_comparison(
                     scale_id, first, second, outcome,
                     origin="human_direct",
@@ -882,6 +913,21 @@ def register_comparison_callbacks(
                 if match_count else "No previous judgment for this pair."
             )
         )
+        acquisition = task.get("acquisition")
+        if isinstance(acquisition, dict):
+            strategy = acquisition.get("strategy")
+            reason = acquisition.get("reason")
+            if strategy == "eig":
+                selection_note = "Selected by Bayesian information gain."
+            elif strategy == "random":
+                selection_note = "Selected randomly"
+                if reason:
+                    selection_note += f" (fallback: {str(reason).replace('_', ' ')})"
+                selection_note += "."
+            else:
+                selection_note = ""
+            if selection_note:
+                prior_message = f"{selection_note} {prior_message}"
         enabled = (
             task["status"] == "ready" and snapshot_ok and eligible
             and (correction or not match_count or "repeat" in (repeat_ack or []))

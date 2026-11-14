@@ -14,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -150,6 +150,37 @@ _SCALER_SCHEMA_SQL = (
     )""",
     """CREATE INDEX IF NOT EXISTS scaler_fits_scale_idx
         ON scaler_fits(scale_id, scaler_fit_id DESC)""",
+)
+
+_SCALE_ACQUISITION_SQL = (
+    """CREATE TABLE IF NOT EXISTS scale_acquisition_runs (
+        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        scaler_fit_id INTEGER NOT NULL REFERENCES scaler_fits(scaler_fit_id),
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        scaler_spec_id INTEGER NOT NULL REFERENCES scaler_specs(scaler_spec_id),
+        selection_fingerprint TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        strategy TEXT NOT NULL CHECK (strategy IN ('eig', 'random')),
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(scale_id, scaler_fit_id, selection_fingerprint)
+    )""",
+    """CREATE TABLE IF NOT EXISTS scale_acquisition_pairs (
+        run_id INTEGER NOT NULL REFERENCES scale_acquisition_runs(run_id) ON DELETE CASCADE,
+        observation_low_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        observation_high_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        acquisition_score REAL,
+        ranking_position INTEGER NOT NULL,
+        PRIMARY KEY(run_id, observation_low_id, observation_high_id),
+        UNIQUE(run_id, ranking_position),
+        CHECK(observation_low_id < observation_high_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS scale_acquisition_pairs_ranking_idx
+       ON scale_acquisition_pairs(run_id, ranking_position)""",
+    """CREATE INDEX IF NOT EXISTS scale_acquisition_runs_scale_idx
+       ON scale_acquisition_runs(scale_id, run_id DESC)""",
 )
 
 _SCHEMA = """
@@ -855,6 +886,12 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
 
 
 
+def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
+    """Install bounded Scale recommendation rankings transactionally."""
+    for statement in _SCALE_ACQUISITION_SQL:
+        connection.execute(statement)
+
+
 def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
     """Add Scale model configuration and immutable fit records transactionally."""
     for statement in _SCALER_SCHEMA_SQL:
@@ -896,6 +933,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     17: _migrate_17_to_18,
     18: _migrate_18_to_19,
     19: _migrate_19_to_20,
+    20: _migrate_20_to_21,
 }
 
 
@@ -944,6 +982,8 @@ class ProjectDatabase:
             for statement in _CONSTRUCT_SCHEMA_SQL:
                 connection.execute(statement)
             for statement in _SCALER_SCHEMA_SQL:
+                connection.execute(statement)
+            for statement in _SCALE_ACQUISITION_SQL:
                 connection.execute(statement)
             connection.execute(
                 """
@@ -6895,6 +6935,101 @@ class ProjectDatabase:
             ),
         }
 
+
+    def store_scale_acquisition(
+        self, *, scale_id: int, fit_id: int, scale_version_id: int,
+        spec_id: int, fingerprint: str, provenance: Mapping[str, Any],
+        diagnostics: Mapping[str, Any], strategy: str, reason: str | None,
+        ranked_pairs: Sequence[tuple[int, int, float | None]],
+        publication_guard: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically validate and replace one bounded frozen ranking.
+
+        A guard may read through separate connections while BEGIN IMMEDIATE holds
+        the SQLite writer lock; competing changes cannot commit until publication
+        finishes. The guard must only read and raise on a stale snapshot.
+        """
+        if strategy not in {"eig", "random"}:
+            raise ValueError("Invalid acquisition strategy.")
+        if any(low >= high for low, high, _ in ranked_pairs):
+            raise ValueError("Acquisition pairs must have canonical identity.")
+        values = [(int(a), int(b), None if score is None else float(score))
+                  for a, b, score in ranked_pairs]
+        if len({(a, b) for a, b, _ in values}) != len(values):
+            raise ValueError("Duplicate acquisition pair.")
+        import math
+        if any(score is not None and not math.isfinite(score) for _, _, score in values):
+            raise ValueError("Acquisition scores must be finite.")
+        meta = json.dumps(dict(provenance), sort_keys=True, allow_nan=False)
+        diag = json.dumps(dict(diagnostics), sort_keys=True, allow_nan=False)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if publication_guard is not None:
+                publication_guard()
+            fit = connection.execute(
+                "SELECT scale_id, scale_version_id, scaler_spec_id FROM scaler_fits "
+                "WHERE scaler_fit_id = ?", (int(fit_id),)
+            ).fetchone()
+            if fit is None or (int(fit["scale_id"]), int(fit["scale_version_id"]),
+                               int(fit["scaler_spec_id"])) != (
+                                   int(scale_id), int(scale_version_id), int(spec_id)):
+                raise ValueError("Acquisition ranking cannot reference another Scale fit.")
+            connection.execute(
+                "DELETE FROM scale_acquisition_runs WHERE scale_id = ?", (int(scale_id),)
+            )
+            cursor = connection.execute(
+                """INSERT INTO scale_acquisition_runs
+                (scale_id, scaler_fit_id, scale_version_id, scaler_spec_id,
+                 selection_fingerprint, provenance_json, diagnostics_json,
+                 strategy, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(scale_id), int(fit_id), int(scale_version_id), int(spec_id),
+                 str(fingerprint), meta, diag, strategy, reason, utc_now()),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.executemany(
+                """INSERT INTO scale_acquisition_pairs
+                (run_id, observation_low_id, observation_high_id,
+                 acquisition_score, ranking_position) VALUES (?, ?, ?, ?, ?)""",
+                ((run_id, low, high, score, rank)
+                 for rank, (low, high, score) in enumerate(values)),
+            )
+        return {"run_id": run_id, "count": len(values), "strategy": strategy}
+
+    def scale_acquisition_run(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scale_acquisition_runs WHERE scale_id = ? "
+                "ORDER BY run_id DESC LIMIT 1", (int(scale_id),)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": int(row["run_id"]),
+            "scale_id": int(row["scale_id"]),
+            "scaler_fit_id": int(row["scaler_fit_id"]),
+            "scale_version_id": int(row["scale_version_id"]),
+            "scaler_spec_id": int(row["scaler_spec_id"]),
+            "selection_fingerprint": str(row["selection_fingerprint"]),
+            "provenance": json.loads(row["provenance_json"]),
+            "diagnostics": json.loads(row["diagnostics_json"]),
+            "strategy": str(row["strategy"]), "reason": row["reason"],
+        }
+
+    def scale_acquisition_page(
+        self, run_id: int, *, offset: int = 0, limit: int = 128,
+    ) -> list[dict[str, Any]]:
+        if offset < 0 or limit < 1 or limit > 256:
+            raise ValueError("Invalid bounded acquisition page.")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT observation_low_id, observation_high_id,
+                          acquisition_score, ranking_position
+                   FROM scale_acquisition_pairs WHERE run_id = ?
+                   ORDER BY ranking_position LIMIT ? OFFSET ?""",
+                (int(run_id), int(limit), int(offset)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def configure_scaler(
         self, scale_id: int, representation_id: int,
