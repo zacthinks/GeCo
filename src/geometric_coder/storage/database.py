@@ -3390,6 +3390,29 @@ class ProjectDatabase:
             if row is not None else None
         )
 
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Find previously compared canonical pairs within a small candidate batch."""
+        ids = list(dict.fromkeys(int(item) for item in observation_ids))
+        if len(ids) < 2:
+            return set()
+        if len(ids) > 400:
+            raise ValueError("Pair candidate lookup requires at most 400 observations.")
+        placeholders = ", ".join("?" for _ in ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT e.observation_low_id, e.observation_high_id
+                    FROM scale_comparison_events AS e
+                    WHERE e.scale_version_id IN (
+                        SELECT scale_version_id FROM scale_versions WHERE scale_id = ?
+                    )
+                    AND e.observation_low_id IN ({placeholders})
+                    AND e.observation_high_id IN ({placeholders})""",
+                (int(scale_id), *ids, *ids),
+            ).fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
+
     def scale_pair_history_count(
         self, scale_id: int, first: int, second: int,
     ) -> int:
