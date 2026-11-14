@@ -51,8 +51,8 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 
 def test_current_schema_and_upgrade_registry() -> None:
-    assert SCHEMA_VERSION == 19
-    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18}
+    assert SCHEMA_VERSION == 20
+    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18, 19}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -76,7 +76,7 @@ def test_open_schema_13_upgrades_and_preserves_research_state(
 
     provider = object() if external else None
     reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
-    assert _version_and_topics(path) == (19, True)
+    assert _version_and_topics(path) == (20, True)
     assert reopened.topic_models() == []
     with sqlite3.connect(path) as connection:
         for table, rows in baseline.items():
@@ -97,7 +97,7 @@ def test_latest_schema_skips_migration_function(
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, unexpected)
     reopened = GeometricCoder.open(project.project_dir)
     assert reopened.topic_models() == []
-    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (19, True)
+    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (20, True)
 
 
 def test_13_to_14_upgrade_is_transactional(
@@ -116,7 +116,7 @@ def test_13_to_14_upgrade_is_transactional(
     assert _version_and_topics(path) == (13, False)
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, original)
     assert GeometricCoder.open(project.project_dir).topic_models() == []
-    assert _version_and_topics(path) == (19, True)
+    assert _version_and_topics(path) == (20, True)
 
 
 def test_unsupported_older_and_newer_versions_fail_without_changes(
@@ -124,7 +124,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 20):
+    for version in (12, 21):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
