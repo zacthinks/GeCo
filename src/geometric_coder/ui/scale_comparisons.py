@@ -234,6 +234,7 @@ def register_comparison_callbacks(
 ) -> None:
     from dash import Input, Output, State, callback_context, no_update
     from geometric_coder.ui.app import _metadata_table, _render_context_units
+    del hierarchy
 
     def active_scale_id(construct_id: int | None) -> int | None:
         if construct_id is None:
@@ -514,14 +515,17 @@ def register_comparison_callbacks(
         def reading(observation_id: int, letter: str) -> Any:
             item = project.observation(observation_id)
             unit_id = int(item["unit_id"])
-            # Use the finest recorded hierarchy and a small contextual window.
-            level = int(hierarchy[-1]["level_index"])
-            context = project.context(unit_id, level=level, window=3)
-            if len(context) > 25:
-                position = next(
-                    (i for i, row in enumerate(context) if int(row["unit_id"]) == unit_id), 0
-                )
-                context = context[max(0, position - 12):position + 13]
+            # A bounded local context avoids loading an entire long document.
+            # Adjacent units must belong to the same parent source hierarchy.
+            position = int(item["row_position"])
+            positions = range(max(0, position - 3), min(total_units, position + 4))
+            nearby = project.database.unit_rows_at_positions(list(positions))
+            parent_keys = list(project.metadata["key_columns"])[:-1]
+            context = [
+                unit for unit in nearby
+                if all(unit["user_key"].get(key) == item["user_key"].get(key)
+                       for key in parent_keys)
+            ]
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
                 key_columns=list(project.metadata["key_columns"]),
