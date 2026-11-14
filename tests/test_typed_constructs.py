@@ -54,9 +54,9 @@ def _structure(path: Path) -> dict[str, list[tuple]]:
         return result
 
 
-def test_fresh_project_has_schema_19_and_no_initial_constructs(tmp_path: Path) -> None:
+def test_fresh_project_has_schema_20_and_no_initial_constructs(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    assert project.database.project_metadata()["schema_version"] == 19
+    assert project.database.project_metadata()["schema_version"] == 20
     assert project.constructs() == []
     assert project.codes() == []
     assert _structure(project.project_dir / project.DATABASE_FILENAME)
@@ -189,7 +189,7 @@ def test_real_schema_18_upgrade_preserves_dependent_rows_and_identity(
         project.project_dir,
         external_provider=object() if external else None,
     )
-    assert reopened.database.project_metadata()["schema_version"] == 19
+    assert reopened.database.project_metadata()["schema_version"] == 20
     assert _structure(path) == fresh_shape
     assert [
         (c["construct_id"], c["type"]) for c in reopened.constructs()
