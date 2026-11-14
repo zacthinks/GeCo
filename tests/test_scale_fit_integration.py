@@ -689,6 +689,7 @@ def test_publication_guard_runs_inside_locked_transaction(tmp_path):
     project, scale, rep, _, (a, b, c, d, e) = _setup(tmp_path)
     project.configure_scale_model(scale, rep)
     project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
     fit = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
     kwargs = dict(
         scale_id=scale, fit_id=fit["scaler_fit_id"],
