@@ -391,3 +391,94 @@ def test_code_to_scale_bootstrap_is_nine_ordinary_training_rows(tmp_path):
     fit = project.train_scale(scale, estimator_factory=RecordingScaler)
     assert fit["status"] == "current"
     assert fit["fit"]["diagnostics"]["comparison_count"] == 6
+
+
+def test_reference_sample_respects_scale_code_eligibility(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    gate = project.create_code("Eligible for reference")
+    for obs in (a, b, c):
+        project.annotate(obs, gate, "positive", origin="human_direct")
+    project.update_scale_eligibility(scale, {
+        "kind": "filtered",
+        "code_filters": [{"code_id": gate, "value": "positive", "source": "human"}],
+    })
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    project.configure_scale_model(scale, rep)
+    result = project.train_scale(scale, estimator_factory=RecordingScaler)
+    assert result["status"] == "current"
+    assert result["fit"]["diagnostics"]["reference_population_count"] == 3
+    assert result["fit"]["diagnostics"]["reference_observation_count"] == 3
+    loaded = project.artifacts.load_model(
+        project.project_dir, result["fit"]["artifact_path"]
+    )
+    assert loaded.reference_rows_seen == 3
+
+
+def test_live_scaler_artifact_replaced_without_losing_fit_history(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, c, d, "second_higher")
+    project.configure_scale_model(scale, rep)
+    first = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    old_artifact = project.project_dir / first["artifact_path"]
+    assert old_artifact.is_file()
+    project.record_scale_comparison(scale, a, c, "parity")
+    with pytest.raises(RuntimeError, match="simulated optimizer failure"):
+        project.train_scale(scale, estimator_factory=FailingScaler)
+    assert old_artifact.is_file()
+    second = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    assert second["scaler_fit_id"] != first["scaler_fit_id"]
+    assert not old_artifact.exists()
+    assert (project.project_dir / second["artifact_path"]).is_file()
+    with project.database.connect() as connection:
+        rows = connection.execute(
+            "SELECT artifact_path FROM scaler_fits WHERE scale_id = ? "
+            "ORDER BY scaler_fit_id", (scale,),
+        ).fetchall()
+    assert len(rows) == 2
+    assert [row["artifact_path"] for row in rows].count("") == 1
+
+
+class DeterministicCVScaler(RecordingScaler):
+    cv_fit_records = []
+
+    def fit(self, X, pairs, outcomes, *, reference_X=None):
+        self.__class__.cv_fit_records.append(
+            (np.asarray(pairs).copy(), np.asarray(outcomes).copy())
+        )
+        return super().fit(X, pairs, outcomes, reference_X=reference_X)
+
+    def predict_comparisons(self, X, pairs):
+        return np.tile(np.asarray([[0.55, 0.20, 0.25]]), (len(pairs), 1))
+
+
+def test_tuning_uses_grouped_comparison_folds_and_persists_selection(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    first = project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, a, "second_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    project.record_scale_comparison(scale, c, d, "first_higher")
+    project.record_scale_comparison(scale, d, e, "second_higher")
+    project.configure_scale_model(scale, rep, hyperparameters={
+        "score_prior_sd": 1.0, "feature_normalization": "none",
+    })
+    DeterministicCVScaler.cv_fit_records.clear()
+    result = project.train_scale(
+        scale, estimator_factory=DeterministicCVScaler,
+        tune=True, retune_current=True, folds=2,
+    )
+    assert result["training_selection"]["tuned"]
+    assert result["training_selection"]["folds"] == 2
+    assert project.database.get_scaler_spec(scale)["hyperparameters"] == {
+        "score_prior_sd": 0.25, "feature_normalization": "none",
+    }
+    # Every candidate's training fold includes either both A/B repeats or neither.
+    cv_records = DeterministicCVScaler.cv_fit_records[:-1]
+    assert cv_records
+    assert all(
+        sum(tuple(pair) == (0, 1) for pair in pairs) in (0, 2)
+        for pairs, _outcomes in cv_records
+    )
+    reused = project.train_scale(scale, estimator_factory=DeterministicCVScaler)
+    assert reused["reused"]
