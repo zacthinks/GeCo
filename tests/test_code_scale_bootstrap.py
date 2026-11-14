@@ -81,6 +81,15 @@ def test_exact_cartesian_nine_normal_records_and_correction(tmp_path: Path) -> N
     assert history[-1]["comparison_event_id"] == correction
     assert len(project.scale_comparisons(scale, effective_only=True)) == 9
     assert len(project.scale_training_comparisons(scale)) == 9
+    # Correcting a row later does not make the original creation retry look partial.
+    retried = project.create_scale_from_code(
+        "Argument quality", "Higher means more quality.", code,
+        expected_preview=preview, submission_key="a" * 32,
+    )
+    assert retried["scale_id"] == scale
+    assert retried["comparisons_created"] == 9
+    assert retried["retried"] is True
+    assert len(project.scale_comparisons(scale)) == 10
 
 
 def test_filter_effective_human_annotations_and_atomic_kinds(tmp_path: Path) -> None:
