@@ -418,6 +418,8 @@ def test_develop_eig_selection_provenance_survives_reopen(tmp_path: Path) -> Non
     assert provenance["strategy"] == "eig"
     assert provenance["source_acquisition_run_id"] == acquisition["run_id"]
     assert provenance["random_seed"] == acquisition["provenance"]["random_seed"]
+    assert provenance["source_fit_id"] == acquisition["scaler_fit_id"]
+    assert provenance["source_selection_fingerprint"] == acquisition["selection_fingerprint"]
     assert provenance["fallback_reason"] is None
     assert provenance["mode"] == "independent"
 
