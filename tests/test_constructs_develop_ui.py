@@ -296,3 +296,69 @@ def test_ui_source_keeps_legacy_code_callbacks_and_new_shared_state() -> None:
     assert 'id="code-modal-construct-type"' in source
     assert 'Create Construct' in source
     assert 'New Construct' in source
+
+
+def _component_with_id(root, identifier):
+    if getattr(root, "id", None) == identifier:
+        return root
+    children = getattr(root, "children", None)
+    if children is None:
+        return None
+    for child in (children if isinstance(children, (list, tuple)) else [children]):
+        found = _component_with_id(child, identifier)
+        if found is not None:
+            return found
+    return None
+
+
+def test_restored_scale_develop_layout_starts_with_readable_summary(tmp_path: Path) -> None:
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity", "A continuous definition")
+    session_id = int(project.sessions()[0]["session_id"])
+    project.patch_session_state(session_id, {
+        "workspace": "focus",
+        "focus_construct_id": scale,
+        "focus_code_id": None,
+    })
+    app = create_app(project)
+    layout = app.layout
+
+    eligibility = _component_with_id(layout, "focus-scale-eligibility")
+    assert eligibility is not None
+    assert "Definition version 1" in eligibility.children
+    assert "All observations eligible" in eligibility.children
+    assert "Eligibility:" not in eligibility.children
+    assert "{" not in eligibility.children
+
+    top = _component_with_id(layout, "focus-scale-top-summary")
+    count = _component_with_id(layout, "focus-scale-count-summary")
+    assert top.style == {}
+    assert top.children is not None
+    assert count.style == {}
+    assert "usable comparisons" in count.children
+    assert _component_with_id(layout, "focus-scale-state").style == {}
+
+
+def test_scale_color_overlay_reuses_displayed_1d_coordinates() -> None:
+    import numpy as np
+    from geometric_coder.ui.app import _base_geometry_display_points
+    from geometric_coder.ui.figures import build_geometry_figure
+
+    units = [
+        {"unit_id": 11, "user_key": {"id": "A"}},
+        {"unit_id": 12, "user_key": {"id": "B"}},
+    ]
+    figure = build_geometry_figure(
+        coordinates=np.array([[0.5], [1.5]]),
+        units=units, eligible=[False, False],
+    )
+    displayed = _base_geometry_display_points(figure)
+    assert set(displayed) == {11, 12}
+    assert displayed[11][0] == 0.5
+    assert displayed[12][0] == 1.5
+    assert displayed[11][1] == figure.data[0].y[0]
+    assert displayed[12][1] == figure.data[0].y[1]
+    assert displayed[11][1] != displayed[12][1]
