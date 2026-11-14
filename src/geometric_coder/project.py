@@ -2201,6 +2201,28 @@ class GeometricCoder:
             scale_id, version_number=version_number, effective_only=effective_only,
         )
 
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return one page of comparison history with supersession status."""
+        return self.database.scale_comparison_history_page(
+            int(scale_id), page=page, page_size=page_size,
+        )
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Read a single stored comparison event."""
+        return self.database.scale_comparison_event(int(scale_id), int(event_id))
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        """Count events for one canonical pair without loading full history."""
+        return self.database.scale_pair_history_count(
+            int(scale_id), int(first), int(second),
+        )
+
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
         """Effective, non-skip, eligibility-allowed pairs for the current Scale version."""
         return self.database.scale_training_comparisons(scale_id)
