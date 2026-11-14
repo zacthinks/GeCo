@@ -3920,8 +3920,14 @@ def create_app(
     def refresh_code_center_hashtags(
         explore_refresh: int | None, focus_refresh: int | None
     ) -> list[dict[str, str]]:
+        from geometric_coder.storage.database import _extract_hashtags
+
         del explore_refresh, focus_refresh
-        return [{"label": f"#{tag}", "value": tag} for tag in project.code_hashtags()]
+        tags = set(project.code_hashtags())
+        for row in project.constructs():
+            if row["type"] == "scale":
+                tags.update(_extract_hashtags(str(row.get("description", ""))))
+        return [{"label": f"#{tag}", "value": tag} for tag in sorted(tags, key=str.casefold)]
 
     @app.callback(
         Output("code-center-table", "data"),
@@ -3944,15 +3950,21 @@ def create_app(
         matches = project.search_codes(query=query or "", scope=str(scope or "full"), hashtags=hashtags or [])
         code_tags = {int(row["code_id"]): row.get("hashtags", []) for row in matches}
         code_ids = set(code_tags)
+        from geometric_coder.storage.database import _extract_hashtags
+
         term = (query or "").casefold().strip()
         rows = []
         for construct in project.constructs():
             kind = str(construct["type"])
             if kind == "code" and int(construct["construct_id"]) not in code_ids:
                 continue
+            scale_tags = (
+                _extract_hashtags(str(construct.get("description", "")))
+                if kind == "scale" else []
+            )
             if kind == "scale":
-                if hashtags:
-                    continue  # Hashtag filter retains its existing Code-specific semantics.
+                if hashtags and not set(hashtags).issubset(scale_tags):
+                    continue
                 searchable = str(construct["name"])
                 if str(scope or "full") != "label":
                     searchable += " " + str(construct.get("description", ""))
@@ -3964,7 +3976,10 @@ def create_app(
                 "type": "Scale" if kind == "scale" else "Code",
                 "name": str(construct["name"]),
                 "hashtags": " ".join(
-                    f"#{tag}" for tag in code_tags.get(int(construct["construct_id"]), [])
+                    f"#{tag}" for tag in (
+                        scale_tags if kind == "scale"
+                        else code_tags.get(int(construct["construct_id"]), [])
+                    )
                 ),
             })
         selected_rows = [
