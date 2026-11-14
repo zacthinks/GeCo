@@ -5078,10 +5078,17 @@ def create_app(
 
     @app.callback(
         Output("code-modal-type-wrapper", "style"),
+        Output("code-modal-heading", "children"),
+        Output("code-modal-create-button", "children"),
+        Output("code-modal-construct-type", "value"),
         Input("code-modal-target-store", "data"),
     )
-    def show_construct_type_for_modal(target: str | None) -> dict[str, str]:
-        return {"display": "none"} if target == "explore" else {}
+    def show_construct_type_for_modal(
+        target: str | None,
+    ) -> tuple[dict[str, str], str, str, str]:
+        if target == "explore":
+            return {"display": "none"}, "New Code", "Create Code", "code"
+        return {}, "New Construct", "Create Construct", "code"
 
     @app.callback(
         Output("explore-code-palette-store", "data", allow_duplicate=True),
@@ -9474,7 +9481,7 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                 [
                     html.Div(
                         [
-                            html.H2("New Construct"),
+                            html.H2("New Construct", id="code-modal-heading"),
                             html.Button("×", id="code-modal-cancel-button", n_clicks=0),
                         ],
                         className="modal-header",
