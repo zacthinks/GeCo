@@ -4145,12 +4145,14 @@ def create_app(
 
     @app.callback(
         Output("code-center-view-tabs", "value"),
+        Output("code-center-positive-tab", "disabled"),
         Input("construct-center-selected-store", "data"),
     )
     def select_center_default_view(construct_id):
         if construct_id is None:
-            return "list"
-        return "geometry" if project.construct(int(construct_id))["type"] == "scale" else "list"
+            return "list", False
+        is_scale = project.construct(int(construct_id))["type"] == "scale"
+        return ("geometry" if is_scale else "list"), is_scale
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -4736,6 +4738,9 @@ def create_app(
                 trace.name = "Other atomic observations"
                 trace.showlegend = True
         if is_scale:
+            for trace in figure.data:
+                if trace.name == "Other atomic observations":
+                    trace.name = "Unscored observations"
             # Build on the existing Construct Center geometry and stable unit IDs.
             # Unscored points remain neutral; stale fits are never displayed as current.
             model = project.scale_model_status(int(code_id))
@@ -9100,6 +9105,7 @@ def _code_center_layout(
                         children=[
                             dcc.Tab(
                                 label="Positive units", value="list",
+                                id="code-center-positive-tab",
                                 children=dash_table.DataTable(
                                     id="code-center-units-table",
                                     columns=[
