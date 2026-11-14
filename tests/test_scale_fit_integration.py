@@ -526,3 +526,42 @@ def test_tuning_uses_grouped_comparison_folds_and_persists_selection(tmp_path):
     )
     reused = project.train_scale(scale, estimator_factory=DeterministicCVScaler)
     assert reused["reused"]
+
+
+def test_frozen_scale_acquisition_storage_survives_reopen_and_refit(tmp_path):
+    project, scale, rep, geom, (a, b, c, d, e) = _setup(tmp_path)
+    project.record_scale_comparison(scale, a, b, "first_higher")
+    project.record_scale_comparison(scale, b, c, "parity")
+    project.configure_scale_model(scale, rep)
+    fit = project.train_scale(scale, estimator_factory=RecordingScaler)["fit"]
+    metadata = {"random_seed": 7, "requested_budget": 2,
+                "evaluated_candidate_count": 2}
+    ranking = [(a, d, .19), (c, e, .13)]
+    result = project.database.store_scale_acquisition(
+        scale_id=scale,
+        fit_id=fit["scaler_fit_id"],
+        scale_version_id=fit["scale_version_id"],
+        spec_id=fit["scaler_spec_id"],
+        fingerprint="fixture_acquisition_v1",
+        provenance=metadata,
+        diagnostics={"method": "joint_laplace_gh_7x7_v1"},
+        strategy="eig", reason=None, ranked_pairs=ranking,
+    )
+    run = project.database.scale_acquisition_run(scale)
+    assert run is not None and run["run_id"] == result["run_id"]
+    assert run["provenance"] == metadata
+    page = project.database.scale_acquisition_page(run["run_id"])
+    assert [(row["observation_low_id"], row["observation_high_id"],
+             row["acquisition_score"]) for row in page] == ranking
+
+    reopened = GeometricCoder.open(project.project_dir)
+    assert reopened.database.scale_acquisition_page(run["run_id"]) == page
+    with pytest.raises(ValueError, match="Duplicate acquisition pair"):
+        reopened.database.store_scale_acquisition(
+            scale_id=scale, fit_id=fit["scaler_fit_id"],
+            scale_version_id=fit["scale_version_id"],
+            spec_id=fit["scaler_spec_id"], fingerprint="dup",
+            provenance={}, diagnostics={}, strategy="eig", reason=None,
+            ranked_pairs=[ranking[0], ranking[0]],
+        )
+    assert reopened.database.scale_acquisition_page(run["run_id"]) == page
