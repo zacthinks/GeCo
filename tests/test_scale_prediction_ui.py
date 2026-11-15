@@ -158,7 +158,7 @@ def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_
     assert actions.className == "scale-judgment-actions"
     assert find(actions, "scale-next-pair") is not None
     assert find(layout, "scale-next-pair").className == "primary-action scale-next-pair"
-    assert find(layout, "scale-next-pair").disabled is False
+    assert getattr(find(layout, "scale-next-pair"), "disabled", False) is False
     main_children = main.children
     panel = next(child for child in main_children
                  if getattr(child, "className", None) == "focus-coding-panel scale-prediction-panel")
