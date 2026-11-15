@@ -335,6 +335,12 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
     ) is no_update
     assert isinstance(preview(selected, rerendered, scale, 0, "3"), html.Div)
     assert isinstance(preview(selected, rerendered, scale, 0, "1"), html.Div)
+    # The server can temporarily clear page-state while replacing a figure.
+    # This is not a valid reason to erase the current selection/inspector.
+    assert call_selection(
+        "scale-prediction-page-state.data", None, None, scale, selected,
+    ) is no_update
+    assert preview(selected, None, scale, 0, "1") is no_update
 
     # Stale/fabricated click identities never change the saved inspector.
     fake_click = {"points": [{"customdata": [999999, unit_id]}]}
