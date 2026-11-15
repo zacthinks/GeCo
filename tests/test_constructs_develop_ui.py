@@ -362,3 +362,20 @@ def test_scale_color_overlay_reuses_displayed_1d_coordinates() -> None:
     assert displayed[11][1] == figure.data[0].y[0]
     assert displayed[12][1] == figure.data[0].y[1]
     assert displayed[11][1] != displayed[12][1]
+
+
+def test_scale_center_uses_continuous_signed_green_plotly_colorbar() -> None:
+    from pathlib import Path
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    scale_overlay = source.split('mode="markers", name="Fitted Scale position",', 1)[1]
+    scale_overlay = scale_overlay.split("hovertemplate=", 1)[0]
+    assert '"color": [score for _, _, score in plotted]' in scale_overlay
+    assert '"colorscale": [[0.0, "#e7f1ea"], [1.0, "#1d4930"]]' in scale_overlay
+    assert '"showscale": True' in scale_overlay
+    assert '"colorbar": {"title": "Scale position"}' in scale_overlay
+    assert '"Viridis"' not in scale_overlay
+    assert 'model["status"] == "current"' in source
+    assert 'trace.name = "Unscored observations"' in source
