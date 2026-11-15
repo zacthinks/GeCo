@@ -288,7 +288,8 @@ def test_sentence_transformer_wizard_preserves_custom_entry_and_advanced_control
 
     # Render the actual modal tree, not just a source-string contract.
     modal = ui.representation_modal(
-        object(), html=html, dcc=dcc, dash_table=__import__("dash").dash_table,
+        SimpleNamespace(is_external_backed=False), html=html, dcc=dcc,
+        dash_table=__import__("dash").dash_table,
     )
 
     def find(node, target):
