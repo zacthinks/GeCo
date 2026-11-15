@@ -21,6 +21,41 @@ from geometric_coder.ui.text_geometry import (
 )
 
 
+# Small curated discovery list; model execution remains TeAL-owned. Use cosine
+# variants for Multi-QA because GeCo's semantic search compares cosine scores.
+SENTENCE_TRANSFORMER_PRESETS = [
+    {"label": "General · All MiniLM L12 (recommended, 384d)",
+     "value": "sentence-transformers/all-MiniLM-L12-v2"},
+    {"label": "General · All MiniLM L6 (fast, 384d)",
+     "value": "sentence-transformers/all-MiniLM-L6-v2"},
+    {"label": "General · All MPNet Base (768d)",
+     "value": "sentence-transformers/all-mpnet-base-v2"},
+    {"label": "General · All DistilRoBERTa (768d)",
+     "value": "sentence-transformers/all-distilroberta-v1"},
+    {"label": "Search / Q&A · Multi-QA MPNet (768d)",
+     "value": "sentence-transformers/multi-qa-mpnet-base-cos-v1"},
+    {"label": "Search / Q&A · Multi-QA DistilBERT (768d)",
+     "value": "sentence-transformers/multi-qa-distilbert-cos-v1"},
+    {"label": "Search / Q&A · Multi-QA MiniLM L6 (384d)",
+     "value": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1"},
+    {"label": "Multilingual · MiniLM L12 (384d)",
+     "value": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"},
+    {"label": "Multilingual · MPNet (768d)",
+     "value": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"},
+]
+DEFAULT_SENTENCE_TRANSFORMER_MODEL = SENTENCE_TRANSFORMER_PRESETS[0]["value"]
+
+
+def selected_sentence_transformer_model(
+    selection: str | None, custom_model: str | None,
+) -> str:
+    """Resolve only the model choice; TeAL still validates and loads the model."""
+    if selection == "custom":
+        return str(custom_model or "").strip()
+    if selection in {option["value"] for option in SENTENCE_TRANSFORMER_PRESETS}:
+        return str(selection)
+    raise ValueError("Choose a Sentence Transformer model.")
+
 
 def suggest_representation_name(
     source_name: str, method: str, dimensions: int | None,
@@ -335,14 +370,28 @@ def representation_modal(project: Any, *, html: Any, dcc: Any, dash_table: Any) 
                     ], className="representation-token-details"),
                 ], id="representation-wizard-spacy-wrap", style={"display": "none"}),
                 html.Div([
-                    html.Label("Hugging Face model ID or model-page URL"),
-                    dcc.Input(
-                        id="representation-text-model", type="text",
-                        placeholder="sentence-transformers/all-MiniLM-L6-v2",
-                        className="text-input",
+                    html.Label("Embedding model"),
+                    dcc.Dropdown(
+                        id="representation-text-model",
+                        options=[*SENTENCE_TRANSFORMER_PRESETS, {
+                            "label": "Custom Hugging Face model ID or URL…",
+                            "value": "custom",
+                        }],
+                        value=DEFAULT_SENTENCE_TRANSFORMER_MODEL,
+                        clearable=False,
                     ),
+                    html.Div([
+                        html.Label("Hugging Face model ID or model-page URL"),
+                        dcc.Input(
+                            id="representation-text-model-custom", type="text",
+                            placeholder="organization/model-name",
+                            className="text-input",
+                        ),
+                    ], id="representation-text-model-custom-wrap",
+                       style={"display": "none"}),
                     html.P([
-                        "Choose a model that supports sentence embeddings. ",
+                        "Presets are starting points, not guarantees for every research task. ",
+                        "Use Custom for any other compatible model. ",
                         html.A("Browse Hugging Face Sentence Transformer models",
                                href="https://huggingface.co/models?library=sentence-transformers",
                                target="_blank", rel="noopener noreferrer"),
@@ -1018,6 +1067,13 @@ def register_representation_callbacks(
         )
 
     @app.callback(
+        Output("representation-text-model-custom-wrap", "style"),
+        Input("representation-text-model", "value"),
+    )
+    def show_custom_sentence_transformer_model(selection: str | None) -> dict[str, str]:
+        return {} if selection == "custom" else {"display": "none"}
+
+    @app.callback(
         Output("representation-text-token-source", "options"),
         Input("representation-wizard-origin", "value"),
         Input("representation-wizard-recipe", "value"),
@@ -1065,6 +1121,7 @@ def register_representation_callbacks(
         State({"type": "representation-token-flag", "name": ALL}, "id"),
         State({"type": "representation-token-flag", "name": ALL}, "value"),
         State("representation-text-model", "value"),
+        State("representation-text-model-custom", "value"),
         State("representation-text-revision", "value"),
         State("representation-text-normalize", "value"),
         State("representation-text-truncation", "value"),
@@ -1091,7 +1148,8 @@ def register_representation_callbacks(
         ngram_min: int | None, ngram_max: int | None,
         min_df: int | None, max_features: int | None, binary: list[str] | None,
         flag_ids: list[dict[str, str]], flag_values: list[str],
-        transformer_model: str | None, model_revision: str | None,
+        transformer_model: str | None, custom_transformer_model: str | None,
+        model_revision: str | None,
         normalize: list[str] | None, truncation: str | None,
         values: list[Any], ids: list[dict[str, str]],
         selected_metadata: list[str] | None,
@@ -1112,8 +1170,9 @@ def register_representation_callbacks(
                 }
                 created = create_text_geometry(
                     project, name=name or "", method=recipe or "",
-                    model=(transformer_model if recipe == "sentence_transformer"
-                           else spacy_model),
+                    model=(selected_sentence_transformer_model(
+                        transformer_model, custom_transformer_model,
+                    ) if recipe == "sentence_transformer" else spacy_model),
                     revision=model_revision or None, token_field=token_field or "text",
                     token_flags=flags,
                     existing_tokens=(token_source if token_source not in (None, "new")
