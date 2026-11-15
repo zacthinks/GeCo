@@ -75,6 +75,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                         gd.data[0].customdata && gd.data[0].customdata.length > 20 &&
                         gd._fullLayout && gd._fullLayout.xaxis;
                 }""", timeout=30000)
+                page.locator("#scale-prediction-map .js-plotly-plot").scroll_into_view_if_needed()
                 # Click a plotted WebGL point using actual browser mouse input,
                 # not a direct Python callback invocation.
                 xy = page.evaluate("""() => {
