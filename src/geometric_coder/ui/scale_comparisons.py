@@ -242,16 +242,18 @@ def comparison_layout(
                             title="Record uncertainty, not equality", disabled=True),
                 html.Div(id="scale-saved-indicator", className="scale-saved-indicator",
                          role="status"),
+                html.Div([
+                    html.Button(
+                        "Next pair", id="scale-next-pair", n_clicks=0,
+                        className="primary-action scale-next-pair",
+                    ),
+                ], className="scale-next-pair-wrap"),
             ], className="scale-judgment-actions"),
         ], className="scale-comparison-grid"),
         html.Div(id="scale-action-status", style={"display": "none"}),
         html.Div(id="scale-action-warning", className="control-status"),
-        html.Button(
-            "Next pair", id="scale-next-pair", n_clicks=0,
-            className="primary-action",
-        ),
-        html.Details([
-            html.Summary("Scale prediction positions"),
+        html.Div([
+            html.H4("Scale prediction positions"),
             html.P(
                 "Horizontal: centered estimated Scale position. Vertical: "
                 "model-conditional epistemic uncertainty (posterior SD) when available. "
@@ -278,13 +280,14 @@ def comparison_layout(
                 className="control-status", role="status",
             ),
             dcc.Store(id="scale-prediction-page-state"),
+            dcc.Store(id="scale-prediction-selection"),
             dcc.Graph(
                 id="scale-prediction-map",
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
             html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
-        ], className="focus-coding-panel scale-prediction-panel", open=False),
+        ], className="focus-coding-panel scale-prediction-panel"),
         html.Details([
             html.Summary("Advanced · manual pairs and independent repeats"),
             html.P(

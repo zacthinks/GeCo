@@ -4786,7 +4786,7 @@ def create_app(
                             marker={
                                 "size": 8, "opacity": 0.88,
                                 "color": [score for _, _, score in plotted],
-                                "colorscale": "Viridis", "showscale": True,
+                                "colorscale": [[0.0, "#e7f1ea"], [1.0, "#1d4930"]], "showscale": True,
                                 "colorbar": {"title": "Scale position"},
                             },
                             hovertemplate="%{text}<br>Scale position: %{marker.color:.3g}<extra></extra>",

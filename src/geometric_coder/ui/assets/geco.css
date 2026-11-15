@@ -1552,7 +1552,7 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(165px, 0.58fr);
   gap: 0.75rem;
-  align-items: start;
+  align-items: stretch;
   margin: 0.8rem 0;
 }
 .scale-reading-card { min-width: 0; }
@@ -1563,16 +1563,31 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.8rem;
+  height: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--geco-border);
   border-radius: 10px;
   background: var(--geco-panel);
 }
 .scale-judgment-heading { font-weight: 700; margin: 0 0 0.4rem; }
 .scale-judgment-button { min-height: 40px; min-width: 0; padding: 0.5rem; white-space: normal; }
-.scale-judgment-button.judgment-selected,
-.scale-judgment-button.judgment-selected:hover {
-  color: #fff; border-color: #344c5b; background: #425e70; cursor: pointer;
+.scale-judgment-button.judgment-selected {
+  color: #fff; border-color: var(--geco-green-700); background: var(--geco-green-600);
+  cursor: pointer;
 }
+.scale-judgment-button.judgment-selected:hover:not(:disabled) {
+  color: #fff; border-color: var(--geco-green-800); background: var(--geco-green-700);
+}
+.scale-judgment-button.judgment-selected:focus-visible {
+  outline: 3px solid var(--geco-green-300); outline-offset: 2px;
+}
+.scale-next-pair-wrap {
+  width: 100%;
+  margin-top: auto;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--geco-border);
+}
+.scale-next-pair { display: block; width: 100%; min-height: 44px; padding: 0.65rem; }
 .scale-saved-indicator { font-size: 0.8rem; color: var(--geco-text-muted); }
 .scale-acquisition-note { color: var(--geco-text-muted); font-size: 0.8rem; }
 .scale-context-controls { margin: 0.55rem 0; }
@@ -1586,7 +1601,8 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   .scale-comparison-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .scale-judgment-actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; }
   .scale-judgment-actions button { flex: 1 1 145px; }
-  .scale-judgment-heading { flex-basis: 100%; }
+  .scale-judgment-heading, .scale-saved-indicator { flex-basis: 100%; }
+  .scale-next-pair-wrap { flex: 1 0 100%; margin-top: 0.35rem; }
 }
 @media (max-width: 620px) {
   .scale-comparison-grid { grid-template-columns: 1fr; }
