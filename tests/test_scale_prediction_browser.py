@@ -69,12 +69,26 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 1100})
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
-                page.wait_for_function("""() => {
+                # The app starts on Explore even when a Develop selection was
+                # persisted in the session; open the real researcher workspace.
+                page.get_by_text("Develop", exact=True).first.click()
+                try:
+                    page.wait_for_function("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
                     return gd && gd.data && gd.data[0] &&
                         gd.data[0].customdata && gd.data[0].customdata.length > 20 &&
                         gd._fullLayout && gd._fullLayout.xaxis;
                 }""", timeout=30000)
+                except Exception:
+                    print("Browser debug:", page.evaluate("""() => ({
+                        workspace: document.querySelector('#workspace-tabs')?.innerText?.slice(0,400),
+                        scalePlot: document.querySelector('#scale-prediction-map')?.innerText?.slice(0,300),
+                        status: document.querySelector('#scale-prediction-status')?.innerText,
+                        selectedConstruct: document.querySelector('#focus-construct-dropdown')?.innerText,
+                        graphs: [...document.querySelectorAll('.js-plotly-plot')].length
+                    })"""))
+                    page.screenshot(path="scale-prediction-browser-failure.png", full_page=True)
+                    raise
                 page.locator("#scale-prediction-map .js-plotly-plot").scroll_into_view_if_needed()
                 # Click a plotted WebGL point using actual browser mouse input,
                 # not a direct Python callback invocation.
@@ -110,6 +124,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 page.wait_for_timeout(600)
                 assert "Selected observation" in preview.inner_text()
                 assert project.scale_comparisons(scale) == []
+                page.screenshot(path="scale-prediction-browser-success.png", full_page=True)
 
                 # The next page does not contain the inspected point.
                 number = page.locator("#scale-prediction-page")
