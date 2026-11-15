@@ -154,8 +154,8 @@ def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_
         "scale-context-level", "scale-context-window", "scale-prediction-preview",
     ]:
         assert find(layout, name) is not None
-    actions = find(layout, "scale-judgment-actions")
-    assert actions is not None
+    actions = grid.children[2]
+    assert actions.className == "scale-judgment-actions"
     assert find(actions, "scale-next-pair") is not None
     assert find(layout, "scale-next-pair").className == "primary-action scale-next-pair"
     assert find(layout, "scale-next-pair").disabled is False
