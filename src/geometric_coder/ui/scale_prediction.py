@@ -274,6 +274,24 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     ) -> Any:
         # A figure replacement may emit clickData=None; that is NOT a deselection.
         # Page, construct, eligibility and fit changes can invalidate the selection.
+        # The figure callback can briefly publish a null page snapshot during a
+        # redraw. A missing snapshot is not a page change: retain the last
+        # selection while the same Scale and fitted model remain active.
+        if page_state is None and isinstance(previous, dict):
+            try:
+                scale_id = int(construct_id)
+                status = project.scale_model_status(scale_id)
+                fit = status.get("fit")
+                if (
+                    int(previous["scale_id"]) == scale_id
+                    and project.construct(scale_id)["type"] == "scale"
+                    and status["status"] in {"current", "stale"}
+                    and fit is not None
+                    and int(fit["scaler_fit_id"]) == int(previous["fit_id"])
+                ):
+                    return no_update
+            except (KeyError, ValueError, TypeError, OSError):
+                pass
         valid_previous = _validated_prediction_observation(
             project, previous, page_state, construct_id,
         ) is not None
@@ -312,6 +330,23 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         level: Any, window: Any,
     ) -> Any:
         empty = html.P("Select a plotted observation to inspect it.")
+        if page_state is None and isinstance(selection, dict):
+            # Preserve the currently displayed inspector through a temporary
+            # figure/page-state gap. Genuine fit or Construct loss clears it.
+            try:
+                scale_id = int(construct_id)
+                state = project.scale_model_status(scale_id)
+                fit = state.get("fit")
+                if (
+                    int(selection["scale_id"]) == scale_id
+                    and project.construct(scale_id)["type"] == "scale"
+                    and state["status"] in {"current", "stale"}
+                    and fit is not None
+                    and int(fit["scaler_fit_id"]) == int(selection["fit_id"])
+                ):
+                    return no_update
+            except (KeyError, TypeError, ValueError, OSError):
+                pass
         observation = _validated_prediction_observation(
             project, selection, page_state, construct_id,
         )
