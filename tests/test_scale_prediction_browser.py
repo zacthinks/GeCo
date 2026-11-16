@@ -72,6 +72,14 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 # The app starts on Explore even when a Develop selection was
                 # persisted in the session; open the real researcher workspace.
                 page.get_by_text("Develop", exact=True).first.click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#focus-scale-state')).display !== 'none'",
+                    timeout=15000,
+                )
+                assert not page.locator("#focus-active-area").is_visible()
+                assert not page.locator("#focus-disabled-message").is_visible()
+                assert page.locator("#focus-scale-top-summary").is_visible()
+                assert page.locator("#focus-scale-count-summary button").is_disabled()
                 try:
                     page.wait_for_function("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
