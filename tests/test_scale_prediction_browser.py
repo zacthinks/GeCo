@@ -89,7 +89,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                         const selected = document.querySelector(
                             '#workspace-tabs .workflow-tab-selected');
                         return selected && selected.innerText.trim() === wanted;
-                    }""", tab, timeout=15000)
+                    }""", arg=tab, timeout=15000)
                 page.wait_for_timeout(500)
                 assert page.locator("#focus-scale-state").is_visible()
                 assert not page.locator("#focus-disabled-message").is_visible()
