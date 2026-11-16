@@ -5020,15 +5020,15 @@ class ProjectDatabase:
             multiplier, shift = deterministic_page_permutation_parameters(total, seed)
             best: dict[str, Any] | None = None
             best_key: tuple[float, int] | None = None
-            # Only evaluated candidates, not source observations or generated
-            # rows, count against the budget. A fixed bounded sample is reused
-            # on subsequent clicks; it never grows merely because an item is
-            # visited or labeled.
+            # A fixed sample of at most 'budget' frozen prediction rows is
+            # reused on subsequent clicks. Live exclusions may reduce the
+            # number actually scored; they never cause the window to grow.
             evaluated = 0
             inspected = 0
+            fixed_window = min(total, budget)
             batch_size = 128
-            while inspected < total and evaluated < budget:
-                count = min(batch_size, total - inspected, budget - evaluated)
+            while inspected < fixed_window:
+                count = min(batch_size, fixed_window - inspected)
                 positions = [
                     (multiplier * rank + shift) % total
                     for rank in range(inspected, inspected + count)
