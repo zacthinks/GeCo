@@ -455,6 +455,111 @@ def register_comparison_callbacks(
             return None
         return int(construct_id) if row["type"] == "scale" else None
 
+    @app.callback(
+        Output("scale-bootstrap-code", "value"),
+        Output("scale-bootstrap-confirm", "value", allow_duplicate=True),
+        Input("scale-bootstrap-open", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def reset_existing_scale_bootstrap(_clicks: int) -> tuple[None, list[str]]:
+        return None, []
+
+    @app.callback(
+        Output("scale-bootstrap-snapshot", "data"),
+        Output("scale-bootstrap-preview", "children"),
+        Output("scale-bootstrap-confirm", "value"),
+        Input("scale-bootstrap-code", "value"),
+        prevent_initial_call=True,
+    )
+    def preview_existing_scale_bootstrap(
+        code_id: int | None,
+    ) -> tuple[dict[str, Any] | None, str, list[str]]:
+        if code_id is None:
+            return None, "Choose a Code to review the full comparison count.", []
+        try:
+            preview = project.code_scale_bootstrap_preview(int(code_id))
+        except (KeyError, TypeError, ValueError) as error:
+            return None, str(error), []
+        count = int(preview["comparisons"])
+        message = (
+            f"{preview['present']:,} human Present × {preview['absent']:,} human Absent "
+            f"= {count:,} comparisons. Every pair is saved as an ordinary human "
+            "comparison, without altering the Code annotations."
+        )
+        if not preview["present"] or not preview["absent"]:
+            message += " Both groups must be nonempty."
+        if count > int(preview["limit"]):
+            message += (
+                f" Exceeds the {preview['limit']:,}-comparison safety limit; "
+                "nothing will be partially saved."
+            )
+        return {"preview": preview, "token": uuid.uuid4().hex}, message, []
+
+    @app.callback(
+        Output("scale-bootstrap-modal", "style"),
+        Output("scale-bootstrap-code", "options"),
+        Output("scale-bootstrap-status", "children"),
+        Output("scale-bootstrap-result", "children"),
+        Output("focus-refresh-store", "data", allow_duplicate=True),
+        Input("scale-bootstrap-open", "n_clicks"),
+        Input("scale-bootstrap-close", "n_clicks"),
+        Input("scale-bootstrap-cancel", "n_clicks"),
+        Input("scale-bootstrap-submit", "n_clicks"),
+        State("focus-construct-dropdown", "value"),
+        State("scale-bootstrap-code", "value"),
+        State("scale-bootstrap-confirm", "value"),
+        State("scale-bootstrap-snapshot", "data"),
+        State("active-session-store", "data"),
+        State("focus-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def manage_existing_scale_bootstrap(
+        opened: int, closed: int, canceled: int, submitted: int,
+        construct_id: int | None, code_id: int | None,
+        confirmation: list[str] | None, snapshot: Any,
+        session_id: int | None, refresh: int | None,
+    ) -> tuple[Any, list[dict[str, Any]], str, str, Any]:
+        del opened, closed, canceled, submitted
+        trigger = callback_context.triggered_id
+        if trigger in {"scale-bootstrap-close", "scale-bootstrap-cancel"}:
+            return {"display": "none"}, no_update, "", no_update, no_update
+        if trigger == "scale-bootstrap-open":
+            if active_scale_id(construct_id) is None:
+                return {"display": "none"}, [], "", "Select a Scale first.", no_update
+            return {"display": "flex"}, [
+                {"label": item["name"], "value": int(item["code_id"])}
+                for item in project.codes()
+            ], "", "", no_update
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None:
+            return {"display": "none"}, no_update, "Select a Scale first.", "", no_update
+        if (
+            code_id is None or "confirmed" not in (confirmation or [])
+            or not isinstance(snapshot, dict)
+            or not isinstance(snapshot.get("preview"), dict)
+            or not isinstance(snapshot.get("token"), str)
+            or int(snapshot["preview"].get("code_id", -1)) != int(code_id)
+        ):
+            return (
+                {"display": "flex"}, no_update,
+                "Select a Code, review the complete count, and confirm the assumption.",
+                "", no_update,
+            )
+        try:
+            result = project.bootstrap_existing_scale_from_code(
+                scale_id, int(code_id),
+                expected_preview=snapshot["preview"],
+                submission_key=snapshot["token"],
+                session_id=int(session_id) if session_id is not None else None,
+            )
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            return {"display": "flex"}, no_update, str(error), "", no_update
+        return (
+            {"display": "none"}, no_update, "",
+            f"Added {result['comparisons_created']:,} human comparisons from Code.",
+            int(refresh or 0) + 1,
+        )
+
     def ensure_scale_configuration(scale_id: int, representation_id: int) -> None:
         """Preserve existing hyperparameters while changing the analytic geometry."""
         current = project.database.get_scaler_spec(scale_id)
@@ -672,10 +777,12 @@ def register_comparison_callbacks(
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
         Input("scale-task-store", "data"),
+        Input("scale-bootstrap-result", "children"),
     )
     def refresh_scale_model_summary(
         construct_id: int | None, _manual: str | None,
         _automatic: str | None, _task: dict[str, Any] | None,
+        _bootstrap: str | None = None,
     ) -> tuple[str, str, str]:
         scale_id = active_scale_id(construct_id)
         if scale_id is None:
@@ -1109,12 +1216,13 @@ def register_comparison_callbacks(
         Input("scale-task-store", "data"),
         Input("workspace-tabs", "value"),
         Input("scale-history-page", "value"),
+        Input("scale-bootstrap-result", "children"),
     )
     def refresh_scale_history(
         construct_id: int | None, task: Any, workspace: str | None,
-        page: int | None = 1,
+        page: int | None = 1, _bootstrap: str | None = None,
     ) -> tuple[Any, list[int], str]:
-        del task
+        del task, _bootstrap
         scale_id = active_scale_id(construct_id)
         if scale_id is None or workspace != "focus":
             return [], [], ""
