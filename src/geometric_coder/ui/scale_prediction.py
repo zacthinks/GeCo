@@ -11,7 +11,7 @@ from typing import Any
 import plotly.graph_objects as go
 
 
-MAX_SCALE_PLOT_PAGE_SIZE = 500
+MAX_SCALE_PLOT_PAGE_SIZE = 5000
 DEFAULT_SCALE_PLOT_PAGE_SIZE = 128
 
 
@@ -22,7 +22,7 @@ def scale_prediction_page(
 ) -> dict[str, Any]:
     """Score one stable-ID page without materializing a corpus-wide geometry."""
     if not 1 <= int(page_size) <= MAX_SCALE_PLOT_PAGE_SIZE:
-        raise ValueError("Scale prediction page size must be between 1 and 500.")
+        raise ValueError("Scale prediction page size must be between 1 and 5000.")
     size = int(page_size)
     status = project.scale_model_status(int(scale_id))
     state = str(status["status"])
@@ -96,7 +96,9 @@ def scale_prediction_page(
     }
 
 
-def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
+def scale_prediction_figure(
+    page: dict[str, Any], *, render_token: str | None = None,
+) -> go.Figure:
     """Plot fitted positions against epistemic SD, or an honest 1D histogram."""
     rows = page.get("records") or []
     figure = go.Figure()
@@ -106,7 +108,9 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
             x=[row["score"] for row in rows],
             y=[row["epistemic_sd"] for row in rows],
             customdata=[
-                [row["observation_id"], row["unit_id"]] for row in rows
+                [row["observation_id"], row["unit_id"]] + (
+                    [render_token] if render_token is not None else []
+                ) for row in rows
             ],
             text=[row["label"] for row in rows],
             mode="markers",
@@ -123,7 +127,9 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
             x=[row["score"] for row in rows],
             y=list(range(1, len(rows) + 1)),
             customdata=[
-                [row["observation_id"], row["unit_id"]] for row in rows
+                [row["observation_id"], row["unit_id"]] + (
+                    [render_token] if render_token is not None else []
+                ) for row in rows
             ],
             text=[row["label"] for row in rows],
             mode="markers",
@@ -176,6 +182,10 @@ def _validated_prediction_observation(
             return None
         if int(selection["page"]) != int(page_state["page"]):
             return None
+        if int(selection.get("page_size", DEFAULT_SCALE_PLOT_PAGE_SIZE)) != int(
+            page_state.get("page_size", DEFAULT_SCALE_PLOT_PAGE_SIZE)
+        ):
+            return None
         if observation_id not in page_state["observation_ids"]:
             return None
         if project.construct(scale_id)["type"] != "scale":
@@ -204,6 +214,7 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     from geometric_coder.ui.app import _metadata_table, _render_context_units
     from dash import html, dcc
     import plotly.graph_objects as go
+    import uuid
 
     @app.callback(
         Output("scale-prediction-page", "value", allow_duplicate=True),
@@ -235,24 +246,31 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
         Input("scale-model-geometry", "value"),
+        Input("scale-prediction-page-size", "value"),
     )
     def render_scale_predictions(
         construct_id: int | None, page: int | None, refresh: int | None,
         train_message: Any, automatic_message: Any, geometry_id: Any,
+        page_size: Any = None,
     ) -> tuple[Any, str, Any, int]:
         del refresh, train_message, automatic_message, geometry_id
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
             if construct is None or construct["type"] != "scale":
                 return go.Figure(), "", None, 1
+            size = int(page_size or DEFAULT_SCALE_PLOT_PAGE_SIZE)
             result = scale_prediction_page(
                 project, int(construct_id), page_number=int(page or 1),
+                page_size=size,
             )
-            figure = scale_prediction_figure(result)
+            token = uuid.uuid4().hex
+            figure = scale_prediction_figure(result, render_token=token)
             page_state = {
                 "scale_id": int(construct_id),
                 "fit_id": result.get("fit_id"),
                 "page": result["page"],
+                "page_size": size,
+                "render_token": token,
                 "observation_ids": [
                     record["observation_id"] for record in result["records"]
                 ],
@@ -298,11 +316,21 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         if "scale-prediction-map.clickData" in callback_context.triggered_prop_ids and click_data:
             try:
                 clicked = click_data["points"][0]["customdata"]
+                # Plotly can replay clickData from the previous figure after
+                # a refresh. Require an identity from the exact rendered page.
+                if not (
+                    isinstance(page_state, dict)
+                    and isinstance(clicked, (list, tuple))
+                    and len(clicked) == 3
+                    and clicked[2] == page_state.get("render_token")
+                ):
+                    return no_update
                 observation_id, unit_id = int(clicked[0]), int(clicked[1])
                 candidate = {
                     "scale_id": int(construct_id),
                     "fit_id": int(page_state["fit_id"]),
                     "page": int(page_state["page"]),
+                    "page_size": int(page_state["page_size"]),
                     "observation_id": observation_id,
                     "unit_id": unit_id,
                 }
