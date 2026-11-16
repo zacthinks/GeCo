@@ -150,7 +150,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 manual.get_by_role("button", name="Choose as First").click()
                 page.wait_for_function(
                     "() => document.querySelector('#scale-selection-summary')"
-                    "?.innerText.includes('First selection')",
+                    "?.innerText.includes('Browser observation 20')",
                     timeout=15000,
                 )
 
@@ -168,6 +168,9 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 assert "Selected observation" in preview.inner_text()
                 # Click a different point immediately after refreshing; the
                 # FIRST click must inspect that point, not stale clickData.
+                # Opening Manual Pairs can change scroll position, so restore
+                # the visible Plotly viewport before calculating mouse coords.
+                page.locator("#scale-prediction-map .js-plotly-plot").scroll_into_view_if_needed()
                 second = page.evaluate("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
                     const i = 40;
