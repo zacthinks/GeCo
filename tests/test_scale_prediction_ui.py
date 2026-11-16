@@ -163,7 +163,8 @@ def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_
     panel = next(child for child in main_children
                  if getattr(child, "className", None) == "focus-coding-panel scale-prediction-panel")
     assert panel.__class__.__name__ == "Div"
-    assert panel.children[0].children == "Scale prediction positions"
+    assert panel.children[0].className == "scale-prediction-header"
+    assert panel.children[0].children[0].children == "Scale prediction positions"
 
 
 def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path):
