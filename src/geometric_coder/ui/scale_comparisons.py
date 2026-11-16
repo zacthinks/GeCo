@@ -281,7 +281,7 @@ def comparison_layout(
                 html.Label("Points per page", htmlFor="scale-prediction-page-size"),
                 dcc.Input(
                     id="scale-prediction-page-size", type="text",
-                    inputMode="numeric", debounce=True, value="128",
+                    inputMode="numeric", debounce=True, value="1000",
                     className="page-size-input",
                 ),
                 html.Button("Previous", id="scale-prediction-previous", n_clicks=0),
