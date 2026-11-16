@@ -111,12 +111,40 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                     timeout=15000,
                 )
                 original = preview.inner_text()
-                assert "Browser observation" in original
+                assert "Browser observation 20" in original
                 assert project.scale_comparisons(scale) == []
 
+                page.evaluate("""() => {
+                    const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
+                    window.__oldScaleToken = gd.data[0].customdata[20][2];
+                }""")
                 page.locator("#scale-prediction-refresh").click()
-                page.wait_for_timeout(600)
+                page.wait_for_function("""() => {
+                    const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
+                    return gd && gd.data && gd.data[0] &&
+                           gd.data[0].customdata &&
+                           gd.data[0].customdata[20][2] !== window.__oldScaleToken;
+                }""")
                 assert "Selected observation" in preview.inner_text()
+                # Click a different point immediately after refreshing; the
+                # FIRST click must inspect that point, not stale clickData.
+                second = page.evaluate("""() => {
+                    const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
+                    const i = 40;
+                    const ax = gd._fullLayout.xaxis, ay = gd._fullLayout.yaxis;
+                    const rect = gd.getBoundingClientRect();
+                    return {
+                        x: rect.left + ax._offset + ax.l2p(gd.data[0].x[i]),
+                        y: rect.top + ay._offset + ay.l2p(gd.data[0].y[i])
+                    };
+                }""")
+                page.mouse.click(second["x"], second["y"])
+                page.wait_for_function(
+                    "() => document.querySelector('#scale-prediction-preview')"
+                    "?.innerText.includes('Browser observation 40')",
+                    timeout=15000,
+                )
+                assert "Browser observation 40" in preview.inner_text()
 
                 window = page.locator("#scale-context-window")
                 window.fill("2")
