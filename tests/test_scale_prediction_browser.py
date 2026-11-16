@@ -80,6 +80,22 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 assert not page.locator("#focus-disabled-message").is_visible()
                 assert page.locator("#focus-scale-top-summary").is_visible()
                 assert page.locator("#focus-scale-count-summary button").is_disabled()
+
+                # Switch away after ordinary UI activity, then back. The
+                # active session must not replay its older workspace setting.
+                for tab in ("Explore", "Develop", "Apply and Review", "Develop"):
+                    page.get_by_text(tab, exact=True).first.click()
+                    page.wait_for_function("""wanted => {
+                        const selected = document.querySelector(
+                            '#workspace-tabs .workflow-tab-selected');
+                        return selected && selected.innerText.trim() === wanted;
+                    }""", tab, timeout=15000)
+                page.wait_for_timeout(500)
+                assert page.locator("#focus-scale-state").is_visible()
+                assert not page.locator("#focus-disabled-message").is_visible()
+                assert page.locator("#scale-prediction-page-size").input_value() == "1000"
+                page.locator("#scale-prediction-page-size").fill("64")
+                page.locator("#scale-prediction-page-size").press("Tab")
                 try:
                     page.wait_for_function("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
@@ -122,6 +138,15 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 assert "Browser observation 20" in original
                 assert project.scale_comparisons(scale) == []
 
+                manual = page.locator(".scale-manual-pairs")
+                manual.locator("summary").click()
+                manual.get_by_role("button", name="Choose as First").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#scale-selection-summary')"
+                    "?.innerText.includes('First selection')",
+                    timeout=15000,
+                )
+
                 page.evaluate("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
                     window.__oldScaleToken = gd.data[0].customdata[20][2];
@@ -153,6 +178,22 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                     timeout=15000,
                 )
                 assert "Browser observation 40" in preview.inner_text()
+                manual.get_by_role("button", name="Choose as Second").click()
+                manual.get_by_role("button", name="Show Selected Pair").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#scale-reading-first')"
+                    "?.innerText.includes('Browser observation 20') || "
+                    "document.querySelector('#scale-reading-second')"
+                    "?.innerText.includes('Browser observation 20')",
+                    timeout=15000,
+                )
+                readings = (
+                    page.locator("#scale-reading-first").inner_text()
+                    + page.locator("#scale-reading-second").inner_text()
+                )
+                assert "Browser observation 20" in readings
+                assert "Browser observation 40" in readings
+                assert project.scale_comparisons(scale) == []
 
                 window = page.locator("#scale-context-window")
                 window.fill("2")
