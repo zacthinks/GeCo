@@ -153,7 +153,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 manual.get_by_role("button", name="Choose as First").click()
                 page.wait_for_function(
                     "() => document.querySelector('#scale-selection-summary')"
-                    "?.innerText.includes('Browser observation 20')",
+                    "?.innerText.includes('First selection: key: 20')",
                     timeout=15000,
                 )
 
