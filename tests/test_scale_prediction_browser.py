@@ -68,6 +68,15 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
             )
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 1100})
+                browser_errors = []
+                page.on("pageerror", lambda exc: browser_errors.append("pageerror: " + str(exc)))
+                page.on("console", lambda msg: (
+                    browser_errors.append("console: " + msg.text)
+                    if msg.type == "error" else None
+                ))
+                page.on("requestfailed", lambda req: browser_errors.append(
+                    "requestfailed: " + req.url + " " + str(req.failure)
+                ))
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
                 # The app starts on Explore even when a Develop selection was
                 # persisted in the session; open the real researcher workspace.
@@ -185,6 +194,7 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                             assert "Browser observation 20" in preview.inner_text()
                     except Exception:
                         print("Post-selection navigation failed on:", tab)
+                        print("Browser errors:", browser_errors[-30:])
                         print("Diagnostics:", page.evaluate("""() => ({
                             selected: document.querySelector(
                                 '#workspace-tabs .workflow-tab-selected')?.innerText,
