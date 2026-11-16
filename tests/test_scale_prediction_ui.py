@@ -194,9 +194,11 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
     assert "step_scale_prediction_page" in by_name
 
     render = by_name["render_scale_predictions"]
-    from dash import no_update
-    assert render(scale, 1, 0, "", "", None, workspace="apply") == (
-        no_update, no_update, no_update, no_update,
+    assert not any(
+        input_spec["id"] == "workspace-tabs"
+        for entry in app.callback_map.values()
+        if "scale-prediction-map.figure" in entry
+        for input_spec in entry["inputs"]
     )
     plot, message, page, pages = render(scale, 1, 0, "", "", None)
     assert plot.data == ()
