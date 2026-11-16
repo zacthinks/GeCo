@@ -145,8 +145,10 @@ def test_finite_code_budget_limits_indexed_classifier_acquisition(tmp_path: Path
         code_id=code, name="budgeted", geometry_id=geometry_id,
     )
     units = project.units()
-    project.annotate(int(units[0]["observation_id"]), code, "positive")
-    project.annotate(int(units[1]["observation_id"]), code, "negative")
+    for index in (0, 2):
+        project.annotate(int(units[index]["observation_id"]), code, "positive")
+    for index in (1, 3):
+        project.annotate(int(units[index]["observation_id"]), code, "negative")
     project.train_classifier(code_id=code, classifier_spec_id=spec)
     fit_id = int(project.database.latest_classifier_fit(
         code_id=code, classifier_spec_id=spec,
