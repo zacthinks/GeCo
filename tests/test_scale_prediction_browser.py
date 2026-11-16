@@ -166,6 +166,39 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 assert "Browser observation 20" in original
                 assert project.scale_comparisons(scale) == []
 
+                # Exact researcher-reported regression: returning to Develop
+                # becomes impossible *after* inspecting a plotted Scale point.
+                # All preselection tab transitions above are an insufficient test.
+                for tab in ("Explore", "Develop", "Apply and Review", "Develop",
+                            "Constructs", "Develop", "Memos", "Develop"):
+                    page.get_by_text(tab, exact=True).first.click()
+                    try:
+                        page.wait_for_function("""wanted => {
+                            const selected = document.querySelector(
+                                '#workspace-tabs .workflow-tab-selected');
+                            return selected && selected.innerText.trim() === wanted;
+                        }""", arg=tab, timeout=15000)
+                        if tab == "Develop":
+                            page.locator("#scale-prediction-preview").wait_for(
+                                state="visible", timeout=15000,
+                            )
+                            assert "Browser observation 20" in preview.inner_text()
+                    except Exception:
+                        print("Post-selection navigation failed on:", tab)
+                        print("Diagnostics:", page.evaluate("""() => ({
+                            selected: document.querySelector(
+                                '#workspace-tabs .workflow-tab-selected')?.innerText,
+                            tabText: document.querySelector('#workspace-tabs')?.innerText?.slice(0,400),
+                            selection: document.querySelector('#scale-prediction-selection')?.textContent,
+                            preview: document.querySelector('#scale-prediction-preview')?.innerText?.slice(0,500),
+                            plot: !!document.querySelector('#scale-prediction-map .js-plotly-plot'),
+                        })"""))
+                        page.screenshot(
+                            path="scale-prediction-browser-failure.png", full_page=True,
+                        )
+                        raise
+                assert project.scale_comparisons(scale) == []
+
                 manual = page.locator(".scale-manual-pairs")
                 manual.locator("summary").click()
                 manual.get_by_role("button", name="Choose as First").click()
