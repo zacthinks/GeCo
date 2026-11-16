@@ -5011,12 +5011,42 @@ class GeometricCoder:
             recommendation_probabilities = {name: result["probabilities"]}
             recommendation_aggregation = "mean"
 
+        # Exceptional legacy paths (for example learned-committee disagreement
+        # or explicit programmatic auto_retrain) still resolve corpus-wide
+        # frozen vectors above. Bound acquisition scoring of these vectors too.
+        # The UI's ordinary indexed classifier/committee paths return earlier.
+        candidate_units = unit_ids
+        candidate_probabilities = recommendation_probabilities
+        finite_budget = self._code_candidate_budget()
+        if finite_budget and recommendation_strategy != "random":
+            from geometric_coder.explore import deterministic_page_permutation_parameters
+
+            total = len(unit_ids)
+            if total:
+                source_identity = (
+                    int(committee_id) if use_committee and committee_id is not None
+                    else int(active_classifier_spec_id or 0)
+                )
+                seed = (
+                    source_identity * 2654435761 + int(code_id) * 2246822519
+                    + (3 if use_committee else 1)
+                ) & 0xFFFFFFFF
+                multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+                positions = [
+                    (multiplier * rank + shift) % total
+                    for rank in range(min(total, finite_budget))
+                ]
+                candidate_units = [unit_ids[index] for index in positions]
+                candidate_probabilities = {
+                    name: np.asarray(values, dtype=float)[positions]
+                    for name, values in recommendation_probabilities.items()
+                }
         recommendation = recommend_focus_unit(
             strategy=recommendation_strategy,  # type: ignore[arg-type]
-            unit_ids=unit_ids,
+            unit_ids=candidate_units,
             seen_unit_ids=seen_ids,
             annotated_unit_ids=annotated_ids,
-            probabilities_by_geometry=recommendation_probabilities,
+            probabilities_by_geometry=candidate_probabilities,
             selected_geometry=selected_name,
             committee_aggregation=recommendation_aggregation,  # type: ignore[arg-type]
             random_seed=random_seed,
