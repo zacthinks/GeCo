@@ -1591,6 +1591,11 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .scale-saved-indicator { font-size: 0.8rem; color: var(--geco-text-muted); }
 .scale-acquisition-note { color: var(--geco-text-muted); font-size: 0.8rem; }
 .scale-context-controls { margin: 0.55rem 0; }
+.scale-teaching-disabled { opacity: 0.5; }
+.scale-teaching-disabled button { cursor: not-allowed; }
+.scale-bootstrap-action { width: 100%; margin-top: 0.8rem; }
+.scale-prediction-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; }
+.scale-prediction-header h4 { margin: 0; }
 .scale-prediction-panel { margin: 1rem 0; }
 .scale-prediction-preview { margin-top: 0.75rem; }
 .scale-prediction-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin: 0.65rem 0; }
