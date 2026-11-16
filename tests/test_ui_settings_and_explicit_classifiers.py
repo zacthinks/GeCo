@@ -125,3 +125,82 @@ def test_no_implicit_classifier_creation_paths_remain() -> None:
     assert "self.ensure_default_classifier_specs(code_id=code_id)" not in project
     assert "project.ensure_default_classifier_specs(" not in app
     assert "coder.ensure_default_classifier_specs(" not in representations
+
+
+def test_finite_code_budget_limits_indexed_classifier_acquisition(tmp_path: Path) -> None:
+    from geometric_coder.explore import deterministic_page_permutation_parameters
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "finite-code-budget.geco",
+        data=pd.DataFrame({
+            "id": list(range(30)),
+            "text": [f"helpful example {i}" if i % 2 else f"poor example {i}" for i in range(30)],
+        }),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code = project.create_code("Judgment")
+    geometry_id = int(project.geometries(public_only=True)[0]["geometry_id"])
+    spec = project.create_classifier_spec(
+        code_id=code, name="budgeted", geometry_id=geometry_id,
+    )
+    units = project.units()
+    project.annotate(int(units[0]["observation_id"]), code, "positive")
+    project.annotate(int(units[1]["observation_id"]), code, "negative")
+    project.train_classifier(code_id=code, classifier_spec_id=spec)
+    fit_id = int(project.database.latest_classifier_fit(
+        code_id=code, classifier_spec_id=spec,
+    )["classifier_fit_id"])
+    session = project.create_session("Budget test")
+    budget = 6
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=budget)
+
+    total = len(units)
+    seed = (fit_id * 2654435761 + code * 2246822519 + 1) & 0xFFFFFFFF
+    multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+    sample_positions = {
+        (multiplier * rank + shift) % total for rank in range(budget)
+    }
+    position_by_unit = {int(unit["unit_id"]): i for i, unit in enumerate(units)}
+
+    def choose():
+        return project.focus_recommendation(
+            code_id=code, session_id=session,
+            strategy="likely_positive", active_classifier_spec_id=spec,
+        )
+
+    first = choose()
+    assert first is not None
+    assert position_by_unit[first["unit_id"]] in sample_positions
+    assert choose()["unit_id"] == first["unit_id"]
+    project.record_visit(session, first["unit_id"], method="test")
+    second = choose()
+    if second is not None:
+        assert second["unit_id"] != first["unit_id"]
+        assert position_by_unit[second["unit_id"]] in sample_positions
+
+    # The sampled window never widens after visits or labels. With every
+    # candidate in the window unavailable, the bounded recommendation ends.
+    for position in sample_positions:
+        project.record_visit(session, int(units[position]["unit_id"]), method="test")
+    assert choose() is None
+
+    # Explicit exhaustive mode restores the ordinary indexed full-fit ranking.
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=0)
+    unrestricted = choose()
+    assert unrestricted is not None
+    assert position_by_unit[unrestricted["unit_id"]] not in sample_positions
+
+
+def test_code_budgeted_source_validates_strategy_and_budget(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    with pytest.raises(ValueError, match="positive integer"):
+        project.database.ranked_budgeted_code_recommendation(
+            source="classifier", source_id=1, code_id=1,
+            session_id=1, strategy="likely_positive", budget=0,
+        )
+    with pytest.raises(ValueError, match="prepared fixed"):
+        project.database.ranked_budgeted_code_recommendation(
+            source="classifier", source_id=1, code_id=1,
+            session_id=1, strategy="classifier_disagreement", budget=2,
+        )
