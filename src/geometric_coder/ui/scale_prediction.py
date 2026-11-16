@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 
 
 MAX_SCALE_PLOT_PAGE_SIZE = 5000
-DEFAULT_SCALE_PLOT_PAGE_SIZE = 128
+DEFAULT_SCALE_PLOT_PAGE_SIZE = 1000
 
 
 def scale_prediction_page(
