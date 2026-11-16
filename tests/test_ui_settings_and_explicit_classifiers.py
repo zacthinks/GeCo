@@ -191,6 +191,35 @@ def test_finite_code_budget_limits_indexed_classifier_acquisition(tmp_path: Path
     assert unrestricted is not None
     assert position_by_unit[unrestricted["unit_id"]] not in sample_positions
 
+    # Prepared fixed committees use the same finite candidate contract,
+    # including disagreement (which is not a single-classifier strategy).
+    second_spec = project.create_classifier_spec(
+        code_id=code, name="budgeted second", geometry_id=geometry_id,
+    )
+    project.train_classifier(code_id=code, classifier_spec_id=second_spec)
+    committee = project.create_classifier_committee(
+        code_id=code, name="bounded mean",
+        classifier_spec_ids=[spec, second_spec], aggregation="mean",
+    )
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=budget)
+    fixed_seed = (
+        committee * 2654435761 + code * 2246822519 + 3
+    ) & 0xFFFFFFFF
+    a, b = deterministic_page_permutation_parameters(total, fixed_seed)
+    fixed_window = {(a * rank + b) % total for rank in range(budget)}
+    for strategy in ("likely_positive", "classifier_disagreement"):
+        selected = project.focus_recommendation(
+            code_id=code, session_id=session,
+            strategy=strategy, committee_id=committee,
+            recommendation_source="committee",
+        )
+        if selected is not None:
+            assert position_by_unit[selected["unit_id"]] in fixed_window
+
+    # The default remains the same full indexed ranking as explicit Exhaustive.
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=-1)
+    assert choose()["unit_id"] == unrestricted["unit_id"]
+
 
 def test_code_budgeted_source_validates_strategy_and_budget(tmp_path: Path) -> None:
     project = _project(tmp_path)
