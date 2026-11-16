@@ -97,6 +97,24 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                     elif tab == "Apply and Review":
                         page.locator("#apply-threshold").fill("0.61")
                         page.locator("#apply-threshold").press("Tab")
+                # Stress workspace navigation beyond the short happy-path sequence.
+                # No server-side Scale rescoring should accompany these transitions.
+                for _ in range(6):
+                    for tab in ("Constructs", "Develop", "Memos", "Develop", "Explore", "Develop"):
+                        page.get_by_text(tab, exact=True).first.click()
+                        try:
+                            page.wait_for_function("""wanted => {
+                                const selected = document.querySelector(
+                                    '#workspace-tabs .workflow-tab-selected');
+                                return selected && selected.innerText.trim() === wanted;
+                            }""", arg=tab, timeout=15000)
+                        except Exception:
+                            print("Navigation failed while selecting:", tab)
+                            print("Current tabs:", page.locator("#workspace-tabs").inner_text())
+                            page.screenshot(path="scale-prediction-browser-failure.png", full_page=True)
+                            raise
+                        if tab == "Develop":
+                            assert page.locator("#focus-scale-state").is_visible()
                 page.wait_for_timeout(500)
                 assert page.locator("#focus-scale-state").is_visible()
                 assert not page.locator("#focus-disabled-message").is_visible()
