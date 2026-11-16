@@ -298,8 +298,9 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
 
     figure, _, page_state, _ = render(scale, 1, 0, "", "", None)
     assert figure.data[0].x == (-1.0, 0.0)
-    observation_id, unit_id = figure.data[0].customdata[0]
-    clicked = {"points": [{"customdata": [observation_id, unit_id]}]}
+    observation_id, unit_id, render_token = figure.data[0].customdata[0]
+    clicked = {"points": [{"customdata": [observation_id, unit_id, render_token]}]}
+    assert render_token == page_state["render_token"]
     no_side_effects = (
         len(project.scale_comparisons(scale)),
         len(project.scale_comparisons(other)),
@@ -317,7 +318,7 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
         "scale-prediction-map.clickData", clicked, page_state, scale, None,
     )
     assert selected == {
-        "scale_id": scale, "fit_id": 13, "page": 1,
+        "scale_id": scale, "fit_id": 13, "page": 1, "page_size": 128,
         "observation_id": observation_id, "unit_id": unit_id,
     }
     first_preview = preview(selected, page_state, scale, 0, "1")
@@ -329,7 +330,8 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
         "scale-prediction-map.clickData", None, page_state, scale, selected,
     ) is no_update
     _, _, rerendered, _ = render(scale, 1, 1, "", "", None)
-    assert rerendered == page_state
+    assert rerendered["render_token"] != page_state["render_token"]
+    assert rerendered["observation_ids"] == page_state["observation_ids"]
     assert call_selection(
         "scale-prediction-page-state.data", None, rerendered, scale, selected,
     ) is no_update
@@ -343,10 +345,25 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
     assert preview(selected, None, scale, 0, "1") is no_update
 
     # Stale/fabricated click identities never change the saved inspector.
-    fake_click = {"points": [{"customdata": [999999, unit_id]}]}
+    fake_click = {"points": [{"customdata": [999999, unit_id, render_token]}]}
     assert call_selection(
-        "scale-prediction-map.clickData", fake_click, page_state, scale, selected,
+        "scale-prediction-map.clickData", fake_click, rerendered, scale, selected,
     ) is no_update
+    # A stale old-figure click must not become the first selected point after
+    # refreshing, even if the same observation remains on the new page.
+    assert call_selection(
+        "scale-prediction-map.clickData", clicked, rerendered, scale, selected,
+    ) is no_update
+    new_point = list(figure.data[0].customdata[1])
+    new_point[2] = rerendered["render_token"]
+    chosen_second = call_selection(
+        "scale-prediction-map.clickData",
+        {"points": [{"customdata": new_point}]}, rerendered, scale, selected,
+    )
+    assert chosen_second["observation_id"] != selected["observation_id"]
+    assert chosen_second["unit_id"] == new_point[1]
+    # The previous selection is still the observation in the preview until
+    # the new valid click explicitly replaces it.
     assert (
         len(project.scale_comparisons(scale)),
         len(project.scale_comparisons(other)),
@@ -386,3 +403,46 @@ def test_scale_selected_judgments_are_green_without_binary_outcome_colors():
     assert ".scale-judgment-button.judgment-selected:focus-visible" in css
     assert ".scale-next-pair-wrap" in css
     assert "align-items: stretch" in css
+
+
+def test_scale_prediction_page_size_is_adjustable_and_bounded():
+    from geometric_coder.ui.scale_prediction import MAX_SCALE_PLOT_PAGE_SIZE
+    assert MAX_SCALE_PLOT_PAGE_SIZE == 5000
+    project = _Project(ids=range(1, 251))
+    page = scale_prediction_page(project, 7, page_number=3, page_size=100)
+    assert page["page"] == 3
+    assert page["pages"] == 3
+    assert len(page["records"]) == 50
+    assert project.scored == [list(range(201, 251))]
+    with pytest.raises(ValueError, match="page size"):
+        scale_prediction_page(project, 7, page_size=5001)
+
+
+def test_scale_prediction_toolbar_matches_code_pagination_pattern():
+    from dash import dcc, html, dash_table
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+
+    def find(node, identifier):
+        if getattr(node, "id", None) == identifier:
+            return node
+        for child in (getattr(node, "children", None) or []):
+            if isinstance(child, (list, tuple)):
+                for nested in child:
+                    found = find(nested, identifier)
+                    if found is not None:
+                        return found
+            else:
+                found = find(child, identifier)
+                if found is not None:
+                    return found
+        return None
+
+    layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
+    size = find(layout, "scale-prediction-page-size")
+    assert size.value == "128" and size.debounce is True
+    assert find(layout, "scale-prediction-previous") is not None
+    assert find(layout, "scale-prediction-next") is not None
+    assert find(layout, "scale-prediction-page") is not None
+    assert find(layout, "scale-prediction-refresh") is not None
+    assert find(layout, "scale-bootstrap-open") is not None
+    assert find(layout, "scale-bootstrap-modal").style == {"display": "none"}
