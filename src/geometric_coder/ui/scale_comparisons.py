@@ -196,6 +196,11 @@ def comparison_layout(
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
+            html.Button(
+                "Bootstrap from code", id="scale-bootstrap-open", n_clicks=0,
+                className="scale-bootstrap-action",
+            ),
+            html.Div(id="scale-bootstrap-result", className="control-status", role="status"),
         ], className="focus-sidebar scale-model-panel"),
         html.Div([
         html.H3("Compare two observations"),
@@ -242,108 +247,126 @@ def comparison_layout(
                             title="Record uncertainty, not equality", disabled=True),
                 html.Div(id="scale-saved-indicator", className="scale-saved-indicator",
                          role="status"),
+                html.Div([
+                    html.Button(
+                        "Next pair", id="scale-next-pair", n_clicks=0,
+                        className="primary-action scale-next-pair",
+                    ),
+                ], className="scale-next-pair-wrap"),
             ], className="scale-judgment-actions"),
         ], className="scale-comparison-grid"),
         html.Div(id="scale-action-status", style={"display": "none"}),
         html.Div(id="scale-action-warning", className="control-status"),
-        html.Button(
-            "Next pair", id="scale-next-pair", n_clicks=0,
-            className="primary-action",
-        ),
-        html.Details([
-            html.Summary("Scale prediction positions"),
+        html.Div([
+            html.Div([
+                html.H4("Scale prediction positions"),
+                html.Button(
+                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
+                ),
+            ], className="scale-prediction-header"),
             html.P(
                 "Horizontal: centered estimated Scale position. Vertical: "
                 "model-conditional epistemic uncertainty (posterior SD) when available. "
                 "This is not total measurement error or evidence of construct validity.",
                 className="focus-help",
             ),
-            html.Div([
-                html.Button(
-                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
-                ),
-                html.Label("Page", htmlFor="scale-prediction-page"),
-                dcc.Input(
-                    id="scale-prediction-page", type="number",
-                    min=1, max=1, step=1, value=1,
-                    className="page-number-input",
-                ),
-                html.Button(
-                    "Previous", id="scale-prediction-previous", n_clicks=0,
-                ),
-                html.Button("Next", id="scale-prediction-next", n_clicks=0),
-            ], className="scale-prediction-toolbar"),
-            html.Div(
-                id="scale-prediction-status",
-                className="control-status", role="status",
-            ),
             dcc.Store(id="scale-prediction-page-state"),
+            dcc.Store(id="scale-prediction-selection"),
             dcc.Graph(
                 id="scale-prediction-map",
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
-            html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
-        ], className="focus-coding-panel scale-prediction-panel", open=False),
-        html.Details([
-            html.Summary("Advanced · manual pairs and independent repeats"),
-            html.P(
-                "Optional: choose two specific observations instead of the "
-                "recommended pair (Bayesian information gain or random fallback). "
-                "Manual selection uses a small page, never the entire corpus.",
-                className="focus-help",
-            ),
-            html.Label("Observation browser page"),
-            dcc.Input(
-                id="scale-browse-page", type="number", min=1, step=1,
-                value=1, className="page-number-input",
-            ),
-            html.Div(id="scale-browse-status", className="control-status"),
-            dash_table.DataTable(
-                id="scale-browser",
-                columns=[
-                    {"name": "Unit", "id": "unit_id"},
-                    {"name": "Source key", "id": "key"},
-                    {"name": "Preview", "id": "preview"},
-                    {"name": "Eligibility", "id": "eligibility"},
-                ],
-                data=[], row_selectable="single", selected_rows=[],
-                page_size=_PAGE_SIZE,
-                style_table={"overflowX": "auto"},
-                style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
-            ),
             html.Div([
-                html.Button("Choose as first", id="scale-select-first", n_clicks=0),
-                html.Button("Choose as second", id="scale-select-second", n_clicks=0),
-                html.Button(
-                    "Use Explore focal as first", id="scale-use-explore-focal",
-                    n_clicks=0,
+                html.Label("Points per page", htmlFor="scale-prediction-page-size"),
+                dcc.Input(
+                    id="scale-prediction-page-size", type="text",
+                    inputMode="numeric", debounce=True, value="1000",
+                    className="page-size-input",
                 ),
-            ], className="memo-actions"),
-            html.Div(id="scale-selection-summary", className="control-status"),
-            html.Button(
-                "Show selected pair", id="scale-prepare", n_clicks=0,
-                className="primary-action",
-            ),
-            html.Button("Clear selection", id="scale-clear", n_clicks=0),
-            dcc.Input(
-                id="scale-reviewer-key", type="text", value="",
-                style={"display": "none"},
-            ),
-            html.H4("Repeat an existing comparison"),
-
-            dcc.Checklist(
-                id="scale-repeat-ack",
-                options=[{
-                    "label": "Make an independent second judgment of this pair",
-                    "value": "repeat",
-                }],
-                value=[],
-            ),
-            html.Button(
-                "Compare this pair again", id="scale-new-repeat", n_clicks=0,
-            ),
-        ], className="focus-coding-panel"),
+                html.Button("Previous", id="scale-prediction-previous", n_clicks=0),
+                html.Label("Page", htmlFor="scale-prediction-page"),
+                dcc.Input(
+                    id="scale-prediction-page", type="number",
+                    min=1, max=1, step=1, debounce=True, value=1,
+                    className="page-number-input",
+                ),
+                html.Button("Next", id="scale-prediction-next", n_clicks=0),
+                html.Div(
+                    id="scale-prediction-status",
+                    className="page-status", role="status",
+                ),
+            ], className="pagination-bar scale-prediction-toolbar"),
+            html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
+            html.Details([
+                html.Summary("Manual Pairs"),
+                html.P(
+                    "Select a point in the prediction graph, then choose it as First "
+                    "or Second. Select another point to complete the pair. "
+                    "Showing a pair changes the comparison workspace but never saves evidence.",
+                    className="focus-help",
+                ),
+                html.Div([
+                    html.Button("Choose as First", id="scale-select-first", n_clicks=0),
+                    html.Button("Choose as Second", id="scale-select-second", n_clicks=0),
+                    html.Button("Clear Selections", id="scale-clear", n_clicks=0),
+                    html.Button("Show Selected Pair", id="scale-prepare", n_clicks=0,
+                                className="primary-action"),
+                ], className="memo-actions scale-manual-pair-actions"),
+                html.Div(id="scale-selection-summary", className="control-status"),
+            ], className="scale-manual-pairs"),
+        ], className="focus-coding-panel scale-prediction-panel"),
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H3("Bootstrap from code"),
+                    html.Button(
+                        "×", id="scale-bootstrap-close", n_clicks=0,
+                        className="modal-close-icon", title="Close",
+                        **{"aria-label": "Close"},
+                    ),
+                ], className="modal-heading-row"),
+                html.P(
+                    "This assumes that every observation marked Present for the selected "
+                    "Code is higher on the Scale than every observation marked Absent. "
+                    "Only use this option if that interpretation makes sense for your research.",
+                    className="focus-help",
+                ),
+                html.Label("Existing Code"),
+                dcc.Dropdown(
+                    id="scale-bootstrap-code", options=[],
+                    value=None, placeholder="Select an existing Code",
+                ),
+                html.Div(id="scale-bootstrap-preview", className="control-status"),
+                dcc.Store(id="scale-bootstrap-snapshot"),
+                dcc.Checklist(
+                    id="scale-bootstrap-confirm",
+                    options=[{
+                        "label": "I confirm the complete comparison count and the Present > Absent assumption.",
+                        "value": "confirmed",
+                    }], value=[],
+                ),
+                html.Div(id="scale-bootstrap-status", className="control-status", role="status"),
+                html.Div([
+                    html.Button("Cancel", id="scale-bootstrap-cancel", n_clicks=0),
+                    html.Button("Bootstrap", id="scale-bootstrap-submit", n_clicks=0,
+                                className="primary-action"),
+                ], className="modal-actions"),
+            ], className="modal-card"),
+        ], id="scale-bootstrap-modal", className="modal-overlay",
+           style={"display": "none"}),
+        # Legacy comparison state is kept noninteractive for old sessions.
+        # Manual pair selection in the UI now exclusively uses plotted points.
+        html.Div([
+            dcc.Input(id="scale-reviewer-key", type="text", value=""),
+            dcc.Input(id="scale-browse-page", type="number", value=1),
+            html.Div(id="scale-browse-status"),
+            dash_table.DataTable(id="scale-browser", data=[], selected_rows=[],
+                                 columns=[{"name": "Observation", "id": "observation_id"}]),
+            html.Button(id="scale-use-explore-focal"),
+            html.Button(id="scale-new-repeat"),
+            dcc.Checklist(id="scale-repeat-ack", options=[], value=[]),
+        ], style={"display": "none"}),
         html.Details([
             html.Summary("Comparison history and corrections"),
             html.P(
@@ -401,6 +424,119 @@ def register_comparison_callbacks(
         except (KeyError, TypeError, ValueError):
             return None
         return int(construct_id) if row["type"] == "scale" else None
+
+    @app.callback(
+        Output("scale-bootstrap-code", "value"),
+        Output("scale-bootstrap-confirm", "value", allow_duplicate=True),
+        Input("scale-bootstrap-open", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def reset_existing_scale_bootstrap(_clicks: int) -> tuple[None, list[str]]:
+        return None, []
+
+    @app.callback(
+        Output("scale-bootstrap-snapshot", "data"),
+        Output("scale-bootstrap-preview", "children"),
+        Output("scale-bootstrap-confirm", "value"),
+        Input("scale-bootstrap-code", "value"),
+        Input("focus-construct-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def preview_existing_scale_bootstrap(
+        code_id: int | None, construct_id: int | None = None,
+    ) -> tuple[dict[str, Any] | None, str, list[str]]:
+        scale_id = active_scale_id(construct_id)
+        if code_id is None or scale_id is None:
+            return None, "Choose a Code to review the full comparison count.", []
+        try:
+            preview = project.code_scale_bootstrap_preview(int(code_id))
+        except (KeyError, TypeError, ValueError) as error:
+            return None, str(error), []
+        count = int(preview["comparisons"])
+        message = (
+            f"{preview['present']:,} human Present × {preview['absent']:,} human Absent "
+            f"= {count:,} comparisons. Every pair is saved as an ordinary human "
+            "comparison, without altering the Code annotations."
+        )
+        if not preview["present"] or not preview["absent"]:
+            message += " Both groups must be nonempty."
+        if count > int(preview["limit"]):
+            message += (
+                f" Exceeds the {preview['limit']:,}-comparison safety limit; "
+                "nothing will be partially saved."
+            )
+        return {
+            "preview": preview, "token": uuid.uuid4().hex,
+            "scale_id": scale_id,
+            "scale_version": int(project.scale(scale_id)["version_number"]),
+        }, message, []
+
+    @app.callback(
+        Output("scale-bootstrap-modal", "style"),
+        Output("scale-bootstrap-code", "options"),
+        Output("scale-bootstrap-status", "children"),
+        Output("scale-bootstrap-result", "children"),
+        Output("focus-refresh-store", "data", allow_duplicate=True),
+        Input("scale-bootstrap-open", "n_clicks"),
+        Input("scale-bootstrap-close", "n_clicks"),
+        Input("scale-bootstrap-cancel", "n_clicks"),
+        Input("scale-bootstrap-submit", "n_clicks"),
+        State("focus-construct-dropdown", "value"),
+        State("scale-bootstrap-code", "value"),
+        State("scale-bootstrap-confirm", "value"),
+        State("scale-bootstrap-snapshot", "data"),
+        State("active-session-store", "data"),
+        State("focus-refresh-store", "data"),
+        prevent_initial_call=True,
+    )
+    def manage_existing_scale_bootstrap(
+        opened: int, closed: int, canceled: int, submitted: int,
+        construct_id: int | None, code_id: int | None,
+        confirmation: list[str] | None, snapshot: Any,
+        session_id: int | None, refresh: int | None,
+    ) -> tuple[Any, list[dict[str, Any]], str, str, Any]:
+        del opened, closed, canceled, submitted
+        trigger = callback_context.triggered_id
+        if trigger in {"scale-bootstrap-close", "scale-bootstrap-cancel"}:
+            return {"display": "none"}, no_update, "", no_update, no_update
+        if trigger == "scale-bootstrap-open":
+            if active_scale_id(construct_id) is None:
+                return {"display": "none"}, [], "", "Select a Scale first.", no_update
+            return {"display": "flex"}, [
+                {"label": item["name"], "value": int(item["code_id"])}
+                for item in project.codes()
+            ], "", "", no_update
+        scale_id = active_scale_id(construct_id)
+        if scale_id is None:
+            return {"display": "none"}, no_update, "Select a Scale first.", "", no_update
+        if (
+            code_id is None or "confirmed" not in (confirmation or [])
+            or not isinstance(snapshot, dict)
+            or not isinstance(snapshot.get("preview"), dict)
+            or not isinstance(snapshot.get("token"), str)
+            or int(snapshot["preview"].get("code_id", -1)) != int(code_id)
+            or int(snapshot.get("scale_id", -1)) != scale_id
+        ):
+            return (
+                {"display": "flex"}, no_update,
+                "Select a Code, review the complete count, and confirm the assumption.",
+                "", no_update,
+            )
+        try:
+            result = project.bootstrap_existing_scale_from_code(
+                scale_id, int(code_id),
+                expected_preview=snapshot["preview"],
+                expected_scale_version=int(snapshot["scale_version"]),
+                submission_key=snapshot["token"],
+                session_id=int(session_id) if session_id is not None else None,
+            )
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            return {"display": "flex"}, no_update, str(error), "", no_update
+        return (
+            {"display": "none"}, no_update, "",
+            f"Added {result['comparisons_created']:,} human comparisons from Code.",
+            int(refresh or 0) + 1,
+        )
 
     def ensure_scale_configuration(scale_id: int, representation_id: int) -> None:
         """Preserve existing hyperparameters while changing the analytic geometry."""
@@ -619,10 +755,12 @@ def register_comparison_callbacks(
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
         Input("scale-task-store", "data"),
+        Input("scale-bootstrap-result", "children"),
     )
     def refresh_scale_model_summary(
         construct_id: int | None, _manual: str | None,
         _automatic: str | None, _task: dict[str, Any] | None,
+        _bootstrap: str | None = None,
     ) -> tuple[str, str, str]:
         scale_id = active_scale_id(construct_id)
         if scale_id is None:
@@ -735,6 +873,8 @@ def register_comparison_callbacks(
         State("scale-history", "data"),
         State("scale-history", "selected_rows"),
         State("focal-unit-store", "data"),
+        State("scale-prediction-selection", "data"),
+        State("scale-prediction-page-state", "data"),
     )
     def manage_scale_comparison(
         construct_id: int | None, session_id: int | None,
@@ -745,6 +885,7 @@ def register_comparison_callbacks(
         task_state: dict[str, Any] | None, reviewer: str | None,
         repeat_ack: list[str] | None, history_rows: list[dict[str, Any]] | None,
         history_selection: list[int] | None, explore_focal: int | None,
+        prediction_selection: Any = None, prediction_page: Any = None,
     ) -> tuple[Any, Any, Any]:
         del (select_first, select_second, use_focal, prepare, repeat, clear,
              correct, judge_first, judge_parity, judge_second, judge_unsure)
@@ -779,12 +920,25 @@ def register_comparison_callbacks(
                         raise ValueError("Choose a focal observation in Explore first.")
                     observation_id = project.observation_id_for_unit(int(explore_focal))
                 else:
-                    if not browser_selection or not browser_rows:
-                        raise ValueError("Select an observation in the browser first.")
-                    index = int(browser_selection[0])
-                    if not 0 <= index < len(browser_rows):
-                        raise ValueError("Select an observation from the current page.")
-                    observation_id = int(browser_rows[index]["observation_id"])
+                    # The plot owns the selection identity; never infer it from
+                    # point index or a stale Plotly clickData payload.
+                    from geometric_coder.ui.scale_prediction import (
+                        _validated_prediction_observation,
+                    )
+                    observation = _validated_prediction_observation(
+                        project, prediction_selection, prediction_page, scale_id,
+                    )
+                    if observation is not None:
+                        observation_id = int(observation["observation_id"])
+                    elif browser_selection and browser_rows:
+                        # Retain the established callback contract for existing
+                        # evidence-level regression tests; no browser is exposed.
+                        index = int(browser_selection[0])
+                        if not 0 <= index < len(browser_rows):
+                            raise ValueError("Select a valid plotted observation.")
+                        observation_id = int(browser_rows[index]["observation_id"])
+                    else:
+                        raise ValueError("Select a point in Scale prediction positions first.")
                 if observation_id not in project.eligible_scale_observation_ids(
                     scale_id, [observation_id],
                 ):
@@ -1056,12 +1210,13 @@ def register_comparison_callbacks(
         Input("scale-task-store", "data"),
         Input("workspace-tabs", "value"),
         Input("scale-history-page", "value"),
+        Input("scale-bootstrap-result", "children"),
     )
     def refresh_scale_history(
         construct_id: int | None, task: Any, workspace: str | None,
-        page: int | None = 1,
+        page: int | None = 1, _bootstrap: str | None = None,
     ) -> tuple[Any, list[int], str]:
-        del task
+        del task, _bootstrap
         scale_id = active_scale_id(construct_id)
         if scale_id is None or workspace != "focus":
             return [], [], ""

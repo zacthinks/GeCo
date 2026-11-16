@@ -3695,6 +3695,101 @@ class ProjectDatabase:
             preview, _, _ = self._human_code_bootstrap_snapshot(connection, int(code_id))
         return preview
 
+    def bootstrap_existing_scale_from_code(
+        self, scale_id: int, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None, expected_scale_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically add an entire Code-derived Cartesian batch to an existing Scale.
+
+        This uses normal human comparison events and the same snapshot/cap policy
+        as creation-time bootstrapping. No independent evidence category is added.
+        """
+        if (not isinstance(submission_key, str) or len(submission_key) != 32
+                or any(letter not in "0123456789abcdef" for letter in submission_key)):
+            raise ValueError("A valid bootstrap submission key is required.")
+        if not isinstance(expected_preview, Mapping):
+            raise ValueError("Review the Code comparison counts before confirming.")
+        scale_id, code_id = int(scale_id), int(code_id)
+        prefix = f"scale-bootstrap-{submission_key}-{scale_id}-{code_id}-"
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            version = connection.execute(
+                "SELECT scale_version_id, version_number FROM scale_versions WHERE scale_id = ? "
+                "ORDER BY version_number DESC LIMIT 1", (scale_id,),
+            ).fetchone()
+            if version is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            version_id = int(version["scale_version_id"])
+            previous = connection.execute(
+                "SELECT v.scale_id, e.scale_version_id, e.session_id, e.submission_key "
+                "FROM scale_comparison_events AS e "
+                "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                "WHERE e.submission_key LIKE ? LIMIT 1",
+                (f"scale-bootstrap-{submission_key}-%",),
+            ).fetchone()
+            if previous is not None:
+                if (not str(previous["submission_key"]).startswith(prefix)
+                        or int(previous["scale_id"]) != scale_id
+                        or previous["session_id"] != session_id):
+                    raise ValueError("Bootstrap submission key was reused with different details.")
+                total = int(connection.execute(
+                    "SELECT COUNT(*) FROM scale_comparison_events "
+                    "WHERE submission_key LIKE ?", (f"{prefix}%",),
+                ).fetchone()[0])
+                if total != int(expected_preview.get("comparisons", -1)):
+                    raise ValueError("Bootstrap retry count differs from the original batch.")
+                return {"scale_id": scale_id, "comparisons_created": total, "retried": True}
+            if (expected_scale_version is not None
+                    and int(version["version_number"]) != int(expected_scale_version)):
+                raise ValueError(
+                    "The Scale definition changed after preview. Review the bootstrap again."
+                )
+            snapshot, present, absent = self._human_code_bootstrap_snapshot(
+                connection, code_id,
+            )
+            if snapshot != dict(expected_preview):
+                raise ValueError(
+                    "The Code's human annotations changed after preview. "
+                    "Review the counts again before bootstrapping."
+                )
+            if not present or not absent:
+                raise ValueError("Bootstrapping requires human Present and Absent observations.")
+            total = int(snapshot["comparisons"])
+            if total > self._MAX_CODE_BOOTSTRAP_COMPARISONS:
+                raise ValueError(
+                    f"Bootstrapping would create {total:,} comparisons, above the "
+                    f"{self._MAX_CODE_BOOTSTRAP_COMPARISONS:,} safety limit."
+                )
+            if session_id is not None and connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (int(session_id),),
+            ).fetchone() is None:
+                raise ValueError("The active session is no longer available.")
+            now = utc_now()
+            connection.executemany(
+                """INSERT INTO scale_comparison_events (
+                    scale_version_id, observation_low_id, observation_high_id,
+                    presented_first_id, presented_second_id, outcome, origin,
+                    reviewer_key, session_id, selection_provenance_json,
+                    supersedes_event_id, submission_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (version_id, min(first, second), max(first, second),
+                     first, second, "first_higher", "human_direct",
+                     None, session_id, "{}", None, f"{prefix}{index}", now)
+                    for index, (first, second) in enumerate(
+                        (first, second) for first in present for second in absent
+                    )
+                ),
+            )
+            written = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events "
+                "WHERE submission_key LIKE ?", (f"{prefix}%",),
+            ).fetchone()[0])
+            if written != total:
+                raise RuntimeError("Incomplete bootstrap batch; rolling back.")
+            return {"scale_id": scale_id, "comparisons_created": written, "retried": False}
+
     def create_scale_from_code(
         self, name: str, description: str, code_id: int, *,
         expected_preview: Mapping[str, Any], submission_key: str,

@@ -57,9 +57,10 @@ def component_color(component: str) -> str:
 
 
 def _gradient(value: float) -> str:
-    """Light blue to dark indigo, normalized over the selected page's values."""
-    left = (222, 235, 252)
-    right = (36, 65, 155)
+    """Pale-to-deep GeCo green, normalized over the selected page's weights."""
+    # Match geco.css green-100 and green-800 (and the Scale score ramp).
+    left = (231, 241, 234)
+    right = (29, 73, 48)
     bounded = float(np.clip(value, 0.0, 1.0))
     rgb = tuple(round(a + (b - a) * bounded) for a, b in zip(left, right, strict=True))
     return "#{:02x}{:02x}{:02x}".format(*rgb)
@@ -131,8 +132,8 @@ def topic_point_colors(
         else:
             scale_label = "No assigned topic memberships on this page."
         legend = (
-            ("#deeafc", "Low selected-topic weight"),
-            ("#24419b", "High selected-topic weight"),
+            (_gradient(0.0), "Low selected-topic weight"),
+            (_gradient(1.0), "High selected-topic weight"),
             (UNASSIGNED_COLOR, "Covered, unassigned/noise"),
             (UNCOVERED_COLOR, "Outside Topic Model coverage"),
         )

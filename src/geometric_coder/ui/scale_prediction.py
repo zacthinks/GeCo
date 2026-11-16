@@ -11,8 +11,8 @@ from typing import Any
 import plotly.graph_objects as go
 
 
-MAX_SCALE_PLOT_PAGE_SIZE = 500
-DEFAULT_SCALE_PLOT_PAGE_SIZE = 128
+MAX_SCALE_PLOT_PAGE_SIZE = 5000
+DEFAULT_SCALE_PLOT_PAGE_SIZE = 1000
 
 
 def scale_prediction_page(
@@ -22,7 +22,7 @@ def scale_prediction_page(
 ) -> dict[str, Any]:
     """Score one stable-ID page without materializing a corpus-wide geometry."""
     if not 1 <= int(page_size) <= MAX_SCALE_PLOT_PAGE_SIZE:
-        raise ValueError("Scale prediction page size must be between 1 and 500.")
+        raise ValueError("Scale prediction page size must be between 1 and 5000.")
     size = int(page_size)
     status = project.scale_model_status(int(scale_id))
     state = str(status["status"])
@@ -96,7 +96,9 @@ def scale_prediction_page(
     }
 
 
-def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
+def scale_prediction_figure(
+    page: dict[str, Any], *, render_token: str | None = None,
+) -> go.Figure:
     """Plot fitted positions against epistemic SD, or an honest 1D histogram."""
     rows = page.get("records") or []
     figure = go.Figure()
@@ -106,7 +108,9 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
             x=[row["score"] for row in rows],
             y=[row["epistemic_sd"] for row in rows],
             customdata=[
-                [row["observation_id"], row["unit_id"]] for row in rows
+                [row["observation_id"], row["unit_id"]] + (
+                    [render_token] if render_token is not None else []
+                ) for row in rows
             ],
             text=[row["label"] for row in rows],
             mode="markers",
@@ -123,7 +127,9 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
             x=[row["score"] for row in rows],
             y=list(range(1, len(rows) + 1)),
             customdata=[
-                [row["observation_id"], row["unit_id"]] for row in rows
+                [row["observation_id"], row["unit_id"]] + (
+                    [render_token] if render_token is not None else []
+                ) for row in rows
             ],
             text=[row["label"] for row in rows],
             mode="markers",
@@ -157,12 +163,58 @@ def scale_prediction_figure(page: dict[str, Any]) -> go.Figure:
     return figure
 
 
+def _validated_prediction_observation(
+    project: Any, selection: Any, page_state: Any, construct_id: Any,
+) -> dict[str, Any] | None:
+    """Revalidate a stored, page-scoped identity against the live Scale and fit.
+
+    Plotly clickData is deliberately not part of the durable selection contract.
+    """
+    if not isinstance(selection, dict) or not isinstance(page_state, dict):
+        return None
+    try:
+        scale_id = int(construct_id)
+        observation_id = int(selection["observation_id"])
+        unit_id = int(selection["unit_id"])
+        if any(int(item["scale_id"]) != scale_id for item in (selection, page_state)):
+            return None
+        if int(selection["fit_id"]) != int(page_state["fit_id"]):
+            return None
+        if int(selection["page"]) != int(page_state["page"]):
+            return None
+        if int(selection.get("page_size", DEFAULT_SCALE_PLOT_PAGE_SIZE)) != int(
+            page_state.get("page_size", DEFAULT_SCALE_PLOT_PAGE_SIZE)
+        ):
+            return None
+        if observation_id not in page_state["observation_ids"]:
+            return None
+        if project.construct(scale_id)["type"] != "scale":
+            return None
+        state = project.scale_model_status(scale_id)
+        fit = state.get("fit")
+        if state["status"] not in {"current", "stale"} or fit is None:
+            return None
+        if int(fit["scaler_fit_id"]) != int(selection["fit_id"]):
+            return None
+        observation = project.observation(observation_id)
+        if observation["kind"] != "atomic" or int(observation["unit_id"]) != unit_id:
+            return None
+        if observation_id not in project.eligible_scale_observation_ids(
+            scale_id, [observation_id],
+        ):
+            return None
+        return observation
+    except (KeyError, IndexError, TypeError, ValueError, OSError):
+        return None
+
+
 def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     """Wire bounded Scale scoring and point inspection into the Develop tab."""
     from dash import Input, Output, State, callback_context, no_update
     from geometric_coder.ui.app import _metadata_table, _render_context_units
     from dash import html, dcc
     import plotly.graph_objects as go
+    import uuid
 
     @app.callback(
         Output("scale-prediction-page", "value", allow_duplicate=True),
@@ -194,24 +246,33 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         Input("scale-model-train-status", "children"),
         Input("scale-model-auto-status", "children"),
         Input("scale-model-geometry", "value"),
+        Input("scale-prediction-page-size", "value"),
     )
     def render_scale_predictions(
         construct_id: int | None, page: int | None, refresh: int | None,
         train_message: Any, automatic_message: Any, geometry_id: Any,
+        page_size: Any = None,
     ) -> tuple[Any, str, Any, int]:
         del refresh, train_message, automatic_message, geometry_id
+        # Tab navigation must not score the corpus or replace a valid plot.
+        # A client-side resize reconciles WebGL dimensions when Develop returns.
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
             if construct is None or construct["type"] != "scale":
                 return go.Figure(), "", None, 1
+            size = int(page_size or DEFAULT_SCALE_PLOT_PAGE_SIZE)
             result = scale_prediction_page(
                 project, int(construct_id), page_number=int(page or 1),
+                page_size=size,
             )
-            figure = scale_prediction_figure(result)
+            token = uuid.uuid4().hex
+            figure = scale_prediction_figure(result, render_token=token)
             page_state = {
                 "scale_id": int(construct_id),
                 "fit_id": result.get("fit_id"),
                 "page": result["page"],
+                "page_size": size,
+                "render_token": token,
                 "observation_ids": [
                     record["observation_id"] for record in result["records"]
                 ],
@@ -221,8 +282,73 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
             return go.Figure(), f"Scale prediction unavailable: {error}", None, 1
 
     @app.callback(
-        Output("scale-prediction-preview", "children"),
+        Output("scale-prediction-selection", "data"),
         Input("scale-prediction-map", "clickData"),
+        Input("scale-prediction-page-state", "data"),
+        Input("focus-construct-dropdown", "value"),
+        State("scale-prediction-selection", "data"),
+        prevent_initial_call=True,
+    )
+    def select_scale_prediction_point(
+        click_data: Any, page_state: Any, construct_id: Any, previous: Any,
+    ) -> Any:
+        # A figure replacement may emit clickData=None; that is NOT a deselection.
+        # Page, construct, eligibility and fit changes can invalidate the selection.
+        # The figure callback can briefly publish a null page snapshot during a
+        # redraw. A missing snapshot is not a page change: retain the last
+        # selection while the same Scale and fitted model remain active.
+        if page_state is None and isinstance(previous, dict):
+            try:
+                scale_id = int(construct_id)
+                status = project.scale_model_status(scale_id)
+                fit = status.get("fit")
+                if (
+                    int(previous["scale_id"]) == scale_id
+                    and project.construct(scale_id)["type"] == "scale"
+                    and status["status"] in {"current", "stale"}
+                    and fit is not None
+                    and int(fit["scaler_fit_id"]) == int(previous["fit_id"])
+                ):
+                    return no_update
+            except (KeyError, ValueError, TypeError, OSError):
+                pass
+        valid_previous = _validated_prediction_observation(
+            project, previous, page_state, construct_id,
+        ) is not None
+        if "scale-prediction-map.clickData" in callback_context.triggered_prop_ids and click_data:
+            try:
+                clicked = click_data["points"][0]["customdata"]
+                # Plotly can replay clickData from the previous figure after
+                # a refresh. Require an identity from the exact rendered page.
+                if not (
+                    isinstance(page_state, dict)
+                    and isinstance(clicked, (list, tuple))
+                    and len(clicked) == 3
+                    and clicked[2] == page_state.get("render_token")
+                ):
+                    return no_update
+                observation_id, unit_id = int(clicked[0]), int(clicked[1])
+                candidate = {
+                    "scale_id": int(construct_id),
+                    "fit_id": int(page_state["fit_id"]),
+                    "page": int(page_state["page"]),
+                    "page_size": int(page_state["page_size"]),
+                    "observation_id": observation_id,
+                    "unit_id": unit_id,
+                }
+            except (KeyError, IndexError, TypeError, ValueError):
+                candidate = None
+            if _validated_prediction_observation(
+                project, candidate, page_state, construct_id,
+            ) is not None:
+                return no_update if candidate == previous else candidate
+        if previous is not None and not valid_previous:
+            return None
+        return no_update
+
+    @app.callback(
+        Output("scale-prediction-preview", "children"),
+        Input("scale-prediction-selection", "data"),
         Input("scale-prediction-page-state", "data"),
         Input("focus-construct-dropdown", "value"),
         Input("scale-context-level", "value"),
@@ -230,35 +356,35 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         prevent_initial_call=True,
     )
     def inspect_scale_prediction_point(
-        click_data: Any, page_state: Any, construct_id: Any,
+        selection: Any, page_state: Any, construct_id: Any,
         level: Any, window: Any,
     ) -> Any:
         empty = html.P("Select a plotted observation to inspect it.")
-        if not isinstance(page_state, dict) or not click_data:
+        if page_state is None and isinstance(selection, dict):
+            # Preserve the currently displayed inspector through a temporary
+            # figure/page-state gap. Genuine fit or Construct loss clears it.
+            try:
+                scale_id = int(construct_id)
+                state = project.scale_model_status(scale_id)
+                fit = state.get("fit")
+                if (
+                    int(selection["scale_id"]) == scale_id
+                    and project.construct(scale_id)["type"] == "scale"
+                    and state["status"] in {"current", "stale"}
+                    and fit is not None
+                    and int(fit["scaler_fit_id"]) == int(selection["fit_id"])
+                ):
+                    return no_update
+            except (KeyError, TypeError, ValueError, OSError):
+                pass
+        observation = _validated_prediction_observation(
+            project, selection, page_state, construct_id,
+        )
+        if observation is None:
             return empty
         try:
-            scale_id = int(construct_id)
-            if page_state.get("scale_id") != scale_id:
-                return empty
-            if project.construct(scale_id)["type"] != "scale":
-                return empty
-            state = project.scale_model_status(scale_id)
-            fit = state.get("fit")
-            if state["status"] not in {"current", "stale"} or fit is None:
-                return empty
-            if int(fit["scaler_fit_id"]) != int(page_state["fit_id"]):
-                return empty
-            selected = click_data["points"][0]["customdata"]
-            observation_id, unit_id = int(selected[0]), int(selected[1])
-            if observation_id not in page_state["observation_ids"]:
-                return empty
-            observation = project.observation(observation_id)
-            if observation["kind"] != "atomic" or int(observation["unit_id"]) != unit_id:
-                return empty
-            if observation_id not in project.eligible_scale_observation_ids(
-                scale_id, [observation_id],
-            ):
-                return empty
+            observation_id = int(selection["observation_id"])
+            unit_id = int(selection["unit_id"])
             context = project.context(
                 unit_id,
                 level=int(level if level is not None else 0),
@@ -271,13 +397,12 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 span_selection_enabled=False,
             )
             label = " › ".join(f"{key}: {value}" for key, value in observation["user_key"].items())
-            preview = html.Div([
+            return html.Div([
                 html.H4("Selected observation"),
                 html.Strong(label or f"Observation {observation_id}"),
                 html.P(str(observation["text"])),
-                html.Details([html.Summary("Context"), reading]),
+                html.Details([html.Summary("Context"), html.Div(reading)]),
                 html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
             ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
             return empty
-        return preview

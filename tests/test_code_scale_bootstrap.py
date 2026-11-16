@@ -322,3 +322,127 @@ def test_shared_dialog_bootstrap_preview_and_explicit_confirmation(tmp_path: Pat
         assert project.scale_comparisons(regular) == []
     finally:
         context_value.reset(token)
+
+
+def test_bootstrap_existing_scale_adds_ordinary_human_evidence_atomically(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    code = project.create_code("Binary")
+    present, absent = _labels(project, code)
+    scale = project.create_scale("Existing Scale", "An existing definition")
+    original_constructs = project.constructs()
+    original_versions = project.scale_versions(scale)
+    preview = project.code_scale_bootstrap_preview(code)
+    result = project.bootstrap_existing_scale_from_code(
+        scale, code, expected_preview=preview, submission_key="a" * 32,
+    )
+    assert result == {
+        "scale_id": scale, "comparisons_created": 9, "retried": False,
+    }
+    records = project.scale_comparisons(scale)
+    assert len(records) == 9
+    assert {(row["presented_first_id"], row["presented_second_id"]) for row in records} == {
+        (first, second) for first in present for second in absent
+    }
+    assert all(row["outcome"] == "first_higher" and row["origin"] == "human_direct"
+               and row["selection_provenance"] == {} for row in records)
+    assert project.constructs() == original_constructs
+    assert project.scale_versions(scale) == original_versions
+    assert len(project.scale_training_comparisons(scale)) == 9
+    repeated = project.bootstrap_existing_scale_from_code(
+        scale, code, expected_preview=preview, submission_key="a" * 32,
+    )
+    assert repeated["retried"] is True and repeated["comparisons_created"] == 9
+    assert len(project.scale_comparisons(scale)) == 9
+
+
+def test_existing_scale_bootstrap_checks_stale_preview_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    code = project.create_code("Binary")
+    _labels(project, code)
+    scale = project.create_scale("Existing")
+    preview = project.code_scale_bootstrap_preview(code)
+    project.annotate(project.observation_id_for_unit(7), code, "positive")
+    with pytest.raises(ValueError, match="changed after preview"):
+        project.bootstrap_existing_scale_from_code(
+            scale, code, expected_preview=preview, submission_key="b" * 32,
+        )
+    assert project.scale_comparisons(scale) == []
+
+    fresh = project.code_scale_bootstrap_preview(code)
+    with project.database.connect() as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_existing_bootstrap
+               BEFORE INSERT ON scale_comparison_events
+               WHEN (SELECT COUNT(*) FROM scale_comparison_events) >= 2
+               BEGIN SELECT RAISE(ABORT, 'forced rollback'); END"""
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="forced rollback"):
+        project.bootstrap_existing_scale_from_code(
+            scale, code, expected_preview=fresh, submission_key="c" * 32,
+        )
+    assert project.scale_comparisons(scale) == []
+    with project.database.connect() as connection:
+        connection.execute("DROP TRIGGER reject_existing_bootstrap")
+    success = project.bootstrap_existing_scale_from_code(
+        scale, code, expected_preview=fresh, submission_key="c" * 32,
+    )
+    assert success["comparisons_created"] == fresh["comparisons"]
+
+    # A pending confirmation tied to a prior Scale definition must never
+    # silently write human evidence under the new definition version.
+    stale_version = project.scale(scale)["version_number"]
+    project.update_scale(scale, "Revised Existing", "Changed definition")
+    with pytest.raises(ValueError, match="Scale definition changed after preview"):
+        project.bootstrap_existing_scale_from_code(
+            scale, code, expected_preview=fresh, submission_key="d" * 32,
+            expected_scale_version=stale_version,
+        )
+    assert len(project.scale_comparisons(scale)) == success["comparisons_created"]
+
+
+def test_existing_scale_bootstrap_modal_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("dash")
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    code = project.create_code("Binary")
+    _labels(project, code)
+    scale = project.create_scale("Existing Scale")
+    app = create_app(project)
+    preview = _callback(app, "preview_existing_scale_bootstrap")
+    manage = _callback(app, "manage_existing_scale_bootstrap")
+    snapshot, message, confirmed = preview(code, scale)
+    assert snapshot["scale_id"] == scale
+    assert snapshot["scale_version"] == 1
+    assert "3 human Present" in message
+    assert "3 human Absent" in message
+    assert "9 comparisons" in message
+    assert confirmed == []
+    session = int(project.sessions()[0]["session_id"])
+    args = [0, 0, 0, 1, scale, code, [], snapshot, session, 0]
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "scale-bootstrap-submit.n_clicks", "value": 1}]
+    ))
+    try:
+        rejected = manage(*args)
+        assert rejected[0] == {"display": "flex"}
+        assert "confirm" in rejected[2].lower()
+        assert project.scale_comparisons(scale) == []
+        created = manage(*[0, 0, 0, 1, scale, code, ["confirmed"], snapshot, session, 0])
+        assert created[0] == {"display": "none"}
+        assert created[4] == 1
+        assert "Added 9 human comparisons" in created[3]
+        assert len(project.scale_comparisons(scale)) == 9
+        retried = manage(*[0, 0, 0, 2, scale, code, ["confirmed"], snapshot, session, 1])
+        assert retried[0] == {"display": "none"}
+        assert len(project.scale_comparisons(scale)) == 9
+    finally:
+        context_value.reset(token)

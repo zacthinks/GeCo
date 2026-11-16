@@ -22,6 +22,17 @@ jobs:
       - name: Install GeCo and all dependencies
         run: uv sync --all-extras
 
+      - name: Browser-level Scale prediction preview regression
+        run: uv run --with playwright pytest -q -rs tests/test_scale_prediction_browser.py
+
+      - name: Upload browser verification screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-prediction-browser-screenshots
+          path: scale-prediction-browser-*.png
+          if-no-files-found: ignore
+
       - name: Run pytest
         run: uv run pytest -q -rs
 

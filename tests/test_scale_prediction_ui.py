@@ -150,9 +150,21 @@ def test_scale_comparison_controls_are_right_aligned_without_replacing_judgment_
         "scale-judge-first", "scale-judge-second", "scale-judge-parity",
         "scale-judge-unsure", "scale-next-pair",
         "scale-prediction-map", "scale-prediction-page-state",
+        "scale-prediction-selection",
         "scale-context-level", "scale-context-window", "scale-prediction-preview",
     ]:
         assert find(layout, name) is not None
+    actions = grid.children[2]
+    assert actions.className == "scale-judgment-actions"
+    assert find(actions, "scale-next-pair") is not None
+    assert find(layout, "scale-next-pair").className == "primary-action scale-next-pair"
+    assert getattr(find(layout, "scale-next-pair"), "disabled", False) is False
+    main_children = main.children
+    panel = next(child for child in main_children
+                 if getattr(child, "className", None) == "focus-coding-panel scale-prediction-panel")
+    assert panel.__class__.__name__ == "Div"
+    assert panel.children[0].className == "scale-prediction-header"
+    assert panel.children[0].children[0].children == "Scale prediction positions"
 
 
 def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path):
@@ -178,9 +190,16 @@ def test_real_dash_callbacks_are_registered_and_untrained_plot_is_safe(tmp_path)
     }
     assert "render_scale_predictions" in by_name
     assert "inspect_scale_prediction_point" in by_name
+    assert "select_scale_prediction_point" in by_name
     assert "step_scale_prediction_page" in by_name
 
     render = by_name["render_scale_predictions"]
+    assert not any(
+        input_spec["id"] == "workspace-tabs"
+        for entry in app.callback_map.values()
+        if "scale-prediction-map.figure" in entry
+        for input_spec in entry["inputs"]
+    )
     plot, message, page, pages = render(scale, 1, 0, "", "", None)
     assert plot.data == ()
     assert "train" in message.lower()
@@ -221,8 +240,11 @@ def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
         if "callback" in entry
         and inspect.unwrap(entry["callback"]).__name__ == "inspect_scale_prediction_point"
     )
-    stale_click = {"points": [{"customdata": [1, 1]}]}
-    cleared = preview(stale_click, None, scale, 0, "1")
+    stale_selection = {
+        "scale_id": scale, "fit_id": 999, "page": 1,
+        "observation_id": 1, "unit_id": 1,
+    }
+    cleared = preview(stale_selection, None, scale, 0, "1")
     assert isinstance(cleared, html.P)
     assert cleared.children == "Select a plotted observation to inspect it."
 
@@ -232,6 +254,287 @@ def test_prediction_preview_resets_when_page_state_is_cleared(tmp_path):
     )
     names = [item["id"] for item in output["inputs"]]
     assert "scale-prediction-page-state" in names
+    assert "scale-prediction-selection" in names
+    assert "scale-prediction-map" not in names
     assert "focus-construct-dropdown" in names
     assert "scale-context-level" in names
     assert "scale-context-window" in names
+
+
+def test_prediction_selection_lives_across_clickdata_clearing_and_context_changes(
+    tmp_path, monkeypatch,
+):
+    """Exercise actual registered Dash callbacks, not merely the pure validator."""
+    pytest.importorskip("dash")
+    import inspect
+    import pandas as pd
+    from dash import html, no_update
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "preview-persistence.geco",
+        data=pd.DataFrame({"key": [1, 2], "text": ["First text", "Second text"]}),
+        keys=["key"], text="text", geometries=None,
+    )
+    scale = project.create_scale("Clarity")
+    other = project.create_scale("Other")
+    app = create_app(project)
+
+    monkeypatch.setattr(
+        project, "scale_model_status",
+        lambda scale_id: {"status": "current", "fit": {"scaler_fit_id": 13}},
+    )
+    monkeypatch.setattr(
+        project, "scale_scores",
+        lambda scale_id, ids, **kwargs: [
+            {"observation_id": identity, "score": float(index - 1),
+             "epistemic_sd": 0.1 * (index + 1), "scaler_fit_id": 13}
+            for index, identity in enumerate(ids)
+        ],
+    )
+    by_name = {
+        inspect.unwrap(entry["callback"]).__name__: inspect.unwrap(entry["callback"])
+        for entry in app.callback_map.values() if "callback" in entry
+    }
+    render = by_name["render_scale_predictions"]
+    select = by_name["select_scale_prediction_point"]
+    preview = by_name["inspect_scale_prediction_point"]
+
+    figure, _, page_state, _ = render(scale, 1, 0, "", "", None)
+    assert figure.data[0].x == (-1.0, 0.0)
+    observation_id, unit_id, render_token = figure.data[0].customdata[0]
+    clicked = {"points": [{"customdata": [observation_id, unit_id, render_token]}]}
+    assert render_token == page_state["render_token"]
+    no_side_effects = (
+        len(project.scale_comparisons(scale)),
+        len(project.scale_comparisons(other)),
+    )
+    def call_selection(trigger, click_data, page, construct, previous):
+        token = context_value.set(AttributeDict(
+            triggered_inputs=[{"prop_id": trigger, "value": click_data}]
+        ))
+        try:
+            return select(click_data, page, construct, previous)
+        finally:
+            context_value.reset(token)
+
+    selected = call_selection(
+        "scale-prediction-map.clickData", clicked, page_state, scale, None,
+    )
+    assert selected == {
+        "scale_id": scale, "fit_id": 13, "page": 1, "page_size": 1000,
+        "observation_id": observation_id, "unit_id": unit_id,
+    }
+    first_preview = preview(selected, page_state, scale, 0, "1")
+    assert isinstance(first_preview, html.Div)
+    assert first_preview.children[2].children == "First text"
+    # Nested lists of Dash components can be interpreted as raw React children
+    # when a tab remounts, crashing React after returning to Develop.
+    context_details = first_preview.children[3]
+    assert isinstance(context_details, html.Details)
+    assert isinstance(context_details.children[1], html.Div)
+    assert all(
+        hasattr(child, "to_plotly_json")
+        for child in context_details.children[1].children
+    )
+
+    # Plotly clears clickData while rebuilding; the selected store must survive.
+    assert call_selection(
+        "scale-prediction-map.clickData", None, page_state, scale, selected,
+    ) is no_update
+    _, _, rerendered, _ = render(scale, 1, 1, "", "", None)
+    assert rerendered["render_token"] != page_state["render_token"]
+    assert rerendered["observation_ids"] == page_state["observation_ids"]
+    assert call_selection(
+        "scale-prediction-page-state.data", None, rerendered, scale, selected,
+    ) is no_update
+    assert isinstance(preview(selected, rerendered, scale, 0, "3"), html.Div)
+    assert isinstance(preview(selected, rerendered, scale, 0, "1"), html.Div)
+    # The server can temporarily clear page-state while replacing a figure.
+    # This is not a valid reason to erase the current selection/inspector.
+    assert call_selection(
+        "scale-prediction-page-state.data", None, None, scale, selected,
+    ) is no_update
+    assert preview(selected, None, scale, 0, "1") is no_update
+
+    # Stale/fabricated click identities never change the saved inspector.
+    fake_click = {"points": [{"customdata": [999999, unit_id, render_token]}]}
+    assert call_selection(
+        "scale-prediction-map.clickData", fake_click, rerendered, scale, selected,
+    ) is no_update
+    # A stale old-figure click must not become the first selected point after
+    # refreshing, even if the same observation remains on the new page.
+    assert call_selection(
+        "scale-prediction-map.clickData", clicked, rerendered, scale, selected,
+    ) is no_update
+    new_point = list(figure.data[0].customdata[1])
+    new_point[2] = rerendered["render_token"]
+    chosen_second = call_selection(
+        "scale-prediction-map.clickData",
+        {"points": [{"customdata": new_point}]}, rerendered, scale, selected,
+    )
+    assert chosen_second["observation_id"] != selected["observation_id"]
+    assert chosen_second["unit_id"] == new_point[1]
+    # The previous selection is still the observation in the preview until
+    # the new valid click explicitly replaces it.
+    assert (
+        len(project.scale_comparisons(scale)),
+        len(project.scale_comparisons(other)),
+    ) == no_side_effects
+
+    # Departing the page, switching constructs, or replacing the fit clears it.
+    departed = {**page_state, "page": 2, "observation_ids": []}
+    assert call_selection(
+        "scale-prediction-page-state.data", None, departed, scale, selected,
+    ) is None
+    assert isinstance(preview(selected, departed, scale, 0, "1"), html.P)
+    assert call_selection(
+        "focus-construct-dropdown.value", None, page_state, other, selected,
+    ) is None
+    assert isinstance(preview(selected, page_state, other, 0, "1"), html.P)
+    monkeypatch.setattr(
+        project, "scale_model_status",
+        lambda scale_id: {"status": "current", "fit": {"scaler_fit_id": 14}},
+    )
+    assert call_selection(
+        "scale-prediction-page-state.data", None, page_state, scale, selected,
+    ) is None
+    assert isinstance(preview(selected, page_state, scale, 0, "1"), html.P)
+
+
+def test_scale_selected_judgments_are_green_without_binary_outcome_colors():
+    from pathlib import Path
+    css = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "assets" / "geco.css"
+    ).read_text()
+    selected = css.split(".scale-judgment-button.judgment-selected {", 1)[1].split("}", 1)[0]
+    assert "var(--geco-green-600)" in selected
+    assert "var(--geco-green-700)" in selected
+    assert "#425e70" not in css
+    assert "#344c5b" not in css
+    assert ".scale-judgment-button.judgment-selected:focus-visible" in css
+    assert ".scale-next-pair-wrap" in css
+    assert "align-items: stretch" in css
+
+
+def test_scale_prediction_page_size_is_adjustable_and_bounded():
+    from geometric_coder.ui.scale_prediction import MAX_SCALE_PLOT_PAGE_SIZE
+    assert MAX_SCALE_PLOT_PAGE_SIZE == 5000
+    project = _Project(ids=range(1, 251))
+    page = scale_prediction_page(project, 7, page_number=3, page_size=100)
+    assert page["page"] == 3
+    assert page["pages"] == 3
+    assert len(page["records"]) == 50
+    assert project.scored == [list(range(201, 251))]
+    with pytest.raises(ValueError, match="page size"):
+        scale_prediction_page(project, 7, page_size=5001)
+
+
+def test_scale_prediction_toolbar_matches_code_pagination_pattern():
+    from dash import dcc, html, dash_table
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+
+    def find(node, identifier):
+        if getattr(node, "id", None) == identifier:
+            return node
+        children = getattr(node, "children", None)
+        if children is None:
+            return None
+        for child in children if isinstance(children, (list, tuple)) else [children]:
+            if isinstance(child, str):
+                continue
+            found = find(child, identifier)
+            if found is not None:
+                return found
+        return None
+
+    layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
+    size = find(layout, "scale-prediction-page-size")
+    assert size.value == "1000" and size.debounce is True
+    assert find(layout, "scale-prediction-previous") is not None
+    assert find(layout, "scale-prediction-next") is not None
+    assert find(layout, "scale-prediction-page") is not None
+    assert find(layout, "scale-prediction-refresh") is not None
+    assert find(layout, "scale-bootstrap-open") is not None
+    assert find(layout, "scale-bootstrap-modal").style == {"display": "none"}
+
+
+def test_manual_pair_controls_use_only_validated_prediction_identity(tmp_path, monkeypatch):
+    import inspect
+    import pandas as pd
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "manual-points.geco",
+        data=pd.DataFrame({"key": [1, 2, 3], "text": ["One", "Two", "Three"]}),
+        keys=["key"], text="text", geometries=None,
+    )
+    scale = project.create_scale("Scale")
+    session = int(project.sessions()[0]["session_id"])
+    monkeypatch.setattr(project, "scale_model_status", lambda _: {
+        "status": "current", "fit": {"scaler_fit_id": 71},
+    })
+    monkeypatch.setattr(project, "scale_scores", lambda _scale, ids, **kwargs: [
+        {"observation_id": obs, "score": float(index),
+         "epistemic_sd": 0.1 + index * 0.1, "scaler_fit_id": 71}
+        for index, obs in enumerate(ids)
+    ])
+    app = create_app(project)
+    callbacks = {
+        inspect.unwrap(spec["callback"]).__name__: inspect.unwrap(spec["callback"])
+        for spec in app.callback_map.values() if "callback" in spec
+    }
+    _, _, page_state, _ = callbacks["render_scale_predictions"](
+        scale, 1, 0, "", "", None,
+    )
+    ids = page_state["observation_ids"]
+    manage = callbacks["manage_scale_comparison"]
+
+    def choose(trigger, selected, task=None):
+        token = context_value.set(AttributeDict(
+            triggered_inputs=[{"prop_id": trigger + ".n_clicks", "value": 1}]
+        ))
+        try:
+            return manage(
+                scale, session, *([0] * 11),
+                [], [], task, None, [], [], [], None, selected, page_state,
+            )
+        finally:
+            context_value.reset(token)
+
+    def identity(obs):
+        return {
+            "scale_id": scale, "fit_id": 71, "page": 1, "page_size": 1000,
+            "observation_id": obs, "unit_id": project.observation(obs)["unit_id"],
+        }
+
+    first, message, _ = choose("scale-select-first", identity(ids[0]))
+    assert first["picked_a"] == ids[0]
+    assert first["picked_b"] is None
+    second, message, _ = choose(
+        "scale-select-second", identity(ids[1]), first,
+    )
+    assert {second["picked_a"], second["picked_b"]} == set(ids[:2])
+    assert project.scale_comparisons(scale) == []
+    prepared, _, _ = choose("scale-prepare", identity(ids[1]), second)
+    assert prepared["status"] == "ready"
+    assert {prepared["first"], prepared["second"]} == set(ids[:2])
+    assert project.scale_comparisons(scale) == []
+
+    # Stale/forged page selection cannot alter the active comparison.
+    invalid = {**identity(ids[2]), "fit_id": 999}
+    rejected, warning, _ = choose("scale-select-first", invalid, prepared)
+    from dash import no_update
+    assert rejected is no_update
+    assert "Select a point" in warning
+    assert project.scale_comparisons(scale) == []
+    cleared, _, _ = choose("scale-clear", None, prepared)
+    assert cleared["picked_a"] is None and cleared["picked_b"] is None
+    assert project.scale_comparisons(scale) == []
