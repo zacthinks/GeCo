@@ -331,6 +331,15 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
     first_preview = preview(selected, page_state, scale, 0, "1")
     assert isinstance(first_preview, html.Div)
     assert first_preview.children[2].children == "First text"
+    # Nested lists of Dash components can be interpreted as raw React children
+    # when a tab remounts, crashing React after returning to Develop.
+    context_details = first_preview.children[3]
+    assert isinstance(context_details, html.Details)
+    assert isinstance(context_details.children[1], html.Div)
+    assert all(
+        hasattr(child, "to_plotly_json")
+        for child in context_details.children[1].children
+    )
 
     # Plotly clears clickData while rebuilding; the selected store must survive.
     assert call_selection(
