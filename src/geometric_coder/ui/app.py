@@ -251,26 +251,13 @@ def _selected_focus_construct_id(
     return value if value in by_id else None
 
 
-def _scale_develop_content(
-    html: Any, scale: dict[str, Any], comparison_count: int,
-) -> tuple[Any, Any, Any, Any, str]:
-    """Use the same readable Scale header on initial load and later refreshes."""
-    eligibility = scale.get("eligibility") or {"kind": "all"}
-    detail = (
-        "All observations eligible" if eligibility.get("kind") == "all"
-        else "Eligibility restricted by Scale definition"
-    )
-    definition = f"Definition version {scale['version_number']} · {detail}"
-    description = scale["description"] or "No description has been written yet."
-    summary = html.Div([
+def _scale_develop_content(html: Any, scale: dict[str, Any]) -> Any:
+    """Show the Scale definition once, alongside the Construct selector."""
+    return html.Div([
         html.Strong(scale["name"]),
         html.Div(scale["description"] or "No description yet."),
-        html.Small(definition),
+        html.Small(f"Definition version {scale['version_number']}"),
     ], className="code-definition")
-    return (
-        f"Scale: {scale['name']}", description, definition, summary,
-        f"{comparison_count:,} usable comparisons · Scale development",
-    )
 
 
 def _construct_options(constructs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3985,15 +3972,11 @@ def create_app(
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-teaching-select", "style"),
         Output("focus-scale-state", "style"),
-        Output("focus-scale-heading", "children"),
-        Output("focus-scale-description", "children"),
-        Output("focus-scale-eligibility", "children"),
         Output("focus-code-summary", "style"),
         Output("focus-new-code-button", "style"),
         Output("focus-active-area", "style"),
         Output("focus-scale-top-summary", "children"),
         Output("focus-scale-top-summary", "style"),
-        Output("focus-scale-count-summary", "children"),
         Output("focus-scale-count-summary", "style"),
         Input("focus-construct-dropdown", "value"),
         Input("focus-refresh-store", "data"),
@@ -4002,37 +3985,37 @@ def create_app(
     def route_focus_construct(
         construct_id: int | None, refresh: int | None = None,
     ) -> tuple[Any, ...]:
-        # A saved definition revision refreshes Scale text only. Do not
-        # reselect the Code or reset its classifier state on evidence refresh.
-        refresh_only = False
-        if refresh is not None:
-            changed = callback_context.triggered_prop_ids
-            refresh_only = (
-                "focus-refresh-store.data" in changed
-                and "focus-construct-dropdown.value" not in changed
-            )
+        # Keep the Code workspace independent of Scale selection. Even when a
+        # revision refresh arrives alongside the new Scale selection, publish
+        # the Scale/Code visibility state rather than leaving a stale Code gate.
+        changed = callback_context.triggered_prop_ids if refresh is not None else {}
+        refresh_only = (
+            "focus-refresh-store.data" in changed
+            and "focus-construct-dropdown.value" not in changed
+        )
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
         except (KeyError, ValueError, TypeError):
             construct = None
         if refresh_only and (construct is None or construct["type"] == "code"):
-            return (no_update,) * 13
+            return (no_update,) * 9
         if construct is not None and construct["type"] == "code":
-            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}, "", {"display": "none"}, "", {"display": "none"}
+            return (
+                int(construct["construct_id"]), {}, {"display": "none"},
+                {}, {}, {}, "", {"display": "none"}, {"display": "none"},
+            )
         if construct is None:
-            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}, "", {"display": "none"}, "", {"display": "none"}
+            return (
+                None, {"display": "none"}, {"display": "none"},
+                {"display": "none"}, {}, {}, "", {"display": "none"},
+                {"display": "none"},
+            )
         scale = project.scale(int(construct["construct_id"]))
-        count = int(project.scale_model_status(int(construct["construct_id"])).get("comparison_count") or 0)
-        heading, description, eligibility, summary, count_summary = _scale_develop_content(
-            html, scale, count,
-        )
-        definition = (heading, description, eligibility)
-        if refresh_only:
-            return (no_update,) * 3 + definition + (no_update,) * 3 + (summary, {}, count_summary, {})
         return (
-            None, {"display": "none"}, {}, *definition,
+            no_update if refresh_only else None,
+            {"display": "none"}, {},
             {"display": "none"}, {}, {"display": "none"},
-            summary, {}, count_summary, {},
+            _scale_develop_content(html, scale), {}, {},
         )
 
     @app.callback(
@@ -4139,22 +4122,8 @@ def create_app(
         if construct["type"] == "code":
             return "Binary Code", "", "Code label", {}, ""
         scale = project.scale(int(construct_id))
-        eligibility = scale.get("eligibility", {"kind": "all"})
-        readable = (
-            "All observations eligible" if eligibility.get("kind") == "all"
-            else "Eligibility restricted by the Scale definition"
-        )
-        status = project.scale_model_status(int(construct_id))
-        count = int(status.get("comparison_count") or 0)
-        summary = [
-            html.Div(f"Definition version {scale['version_number']} · {readable}"),
-            html.Div(f"{count:,} usable comparisons · Model: {status['status'].replace('_', ' ').title()}"),
-            html.Details([
-                html.Summary("Advanced eligibility details"),
-                html.Pre(json.dumps(eligibility, sort_keys=True, indent=2)),
-            ]),
-        ]
-        return "Continuous Scale", summary, "Scale name", {}, "scale-center-mode"
+        # Version navigation and model panels already report this information.
+        return "Continuous Scale", "", "Scale name", {}, "scale-center-mode"
 
     @app.callback(
         Output("code-center-view-tabs", "value"),
@@ -10206,14 +10175,9 @@ def _focus_layout(
         if initial_construct_id is not None and initial_code_id is None else None
     )
     if initial_scale is None:
-        scale_heading, scale_description, scale_eligibility = "", "", ""
-        scale_summary, scale_count_summary = "", ""
+        scale_summary = ""
     else:
-        count = int(project.scale_model_status(int(initial_construct_id)).get("comparison_count") or 0)
-        (scale_heading, scale_description, scale_eligibility,
-         scale_summary, scale_count_summary) = _scale_develop_content(
-            html, initial_scale, count,
-        )
+        scale_summary = _scale_develop_content(html, initial_scale)
 
     classifier_specs = [
         row
@@ -10280,11 +10244,15 @@ def _focus_layout(
                         ],
                         className="focus-code-select",
                     ),
-                    html.Div(
-                        id="focus-scale-count-summary", children=scale_count_summary,
-                        className="focus-teaching-select",
-                        style=({} if initial_scale is not None else {"display": "none"}),
-                    ),
+                    html.Div([
+                        html.Label("Teaching examples"),
+                        html.Button(
+                            "Manage teaching examples", disabled=True,
+                            title="Teaching examples for Scales are not yet available.",
+                        ),
+                    ], id="focus-scale-count-summary",
+                       className="focus-teaching-select scale-teaching-disabled",
+                       style=({} if initial_scale is not None else {"display": "none"})),
                     html.Div(
                         [
                             html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
@@ -10309,20 +10277,6 @@ def _focus_layout(
             ),
             html.Section(
                 [
-                    html.H3(
-                        id="focus-scale-heading",
-                        children=scale_heading,
-                    ),
-                    html.Div(
-                        id="focus-scale-description",
-                        children=scale_description,
-                        className="code-definition",
-                    ),
-                    html.Div(
-                        id="focus-scale-eligibility",
-                        children=scale_eligibility,
-                        className="focus-counts",
-                    ),
                     comparison_layout(dcc=dcc, html=html, dash_table=dash_table,
                                       hierarchy=hierarchy,
                                       auto_train=bool(initial_state.get("scale_auto_train", False)),
@@ -10335,7 +10289,7 @@ def _focus_layout(
             html.Div(
                 [
                     html.Div(
-                        "Select a code to begin developing it.",
+                        "Select a Code or Scale to begin developing it.",
                         id="focus-disabled-message",
                         className="focus-disabled-message",
                     ),
