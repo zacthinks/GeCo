@@ -177,7 +177,7 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
     replayed = restore(session_id, session_id)
     assert len(replayed) == len(restored) == 40
     assert all(item is no_update for item in replayed)
-    assert restored[21] == "focus"
+    assert restored[20] == "focus"
     assert restored[24] is None
 
     project.patch_session_state(
