@@ -253,6 +253,13 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                 )
                 assert "Browser observation 40" in preview.inner_text()
                 manual.get_by_role("button", name="Choose as Second").click()
+                # Wait for the asynchronous state write before preparing the pair.
+                # Otherwise the next click can use the prior auto-selected task.
+                page.wait_for_function(
+                    "() => document.querySelector('#scale-selection-summary')"
+                    "?.innerText.includes('Second selection: key: 40')",
+                    timeout=15000,
+                )
                 manual.get_by_role("button", name="Show Selected Pair").click()
                 page.wait_for_function(
                     "() => document.querySelector('#scale-reading-first')"
