@@ -4424,6 +4424,43 @@ class GeometricCoder:
         )
         return {"prepared": True, "unit_count": len(scores)}
 
+    def _code_candidate_budget(self) -> int:
+        """Positive finite acquisition budget; 0 means legacy exhaustive."""
+        try:
+            settings = json.loads(
+                (self.project_dir / "ui_settings.json").read_text(encoding="utf-8")
+            )
+            value = settings.get("candidate_evaluation_budget", -1)
+            return value if type(value) is int and value > 0 else 0
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
+
+    def _rank_code_recommendation(
+        self, *, source: str, source_id: int, code_id: int,
+        session_id: int, strategy: str,
+    ) -> dict[str, Any] | None:
+        """Use a stable bounded subset only when a finite budget is set."""
+        budget = self._code_candidate_budget()
+        if budget:
+            return self.database.ranked_budgeted_code_recommendation(
+                source=source, source_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy, budget=budget,
+            )
+        if source == "classifier":
+            return self.database.ranked_classifier_recommendation(
+                classifier_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        if source == "learned_committee":
+            return self.database.ranked_classifier_committee_recommendation(
+                committee_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        return self.database.ranked_prepared_committee_recommendation(
+            committee_id=source_id, code_id=code_id,
+            session_id=session_id, strategy=strategy,
+        )
+
     def focus_recommendation(
         self,
         *,
@@ -4519,10 +4556,9 @@ class GeometricCoder:
                     if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                     else strategy
                 )
-                ranked = self.database.ranked_classifier_recommendation(
-                    classifier_fit_id=fit_id,
-                    code_id=int(code_id),
-                    session_id=int(session_id),
+                ranked = self._rank_code_recommendation(
+                    source="classifier", source_id=fit_id,
+                    code_id=int(code_id), session_id=int(session_id),
                     strategy=ranked_strategy,
                 )
                 if ranked is None:
@@ -4609,8 +4645,8 @@ class GeometricCoder:
                             "This committee is missing predictions for newly added units. "
                             "Train the selected committee to extend its frozen scores."
                         )
-                    ranked_committee = self.database.ranked_classifier_committee_recommendation(
-                        committee_fit_id=learned_fit_id,
+                    ranked_committee = self._rank_code_recommendation(
+                        source="learned_committee", source_id=learned_fit_id,
                         code_id=int(code_id), session_id=int(session_id),
                         strategy=committee_strategy,
                     )
@@ -4707,9 +4743,10 @@ class GeometricCoder:
                     ranked_strategy = ("classifier_disagreement" if strategy in {
                         "classifier_disagreement", "geometry_disagreement"
                     } else strategy)
-                    selection = self.database.ranked_prepared_committee_recommendation(
-                        committee_id=int(committee_id), code_id=int(code_id),
-                        session_id=int(session_id), strategy=ranked_strategy,
+                    selection = self._rank_code_recommendation(
+                        source="fixed_committee", source_id=int(committee_id),
+                        code_id=int(code_id), session_id=int(session_id),
+                        strategy=ranked_strategy,
                     )
                     if selection is None:
                         return None
@@ -4913,10 +4950,9 @@ class GeometricCoder:
                         if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                         else strategy
                     )
-                    ranked = self.database.ranked_classifier_recommendation(
-                        classifier_fit_id=int(fit["classifier_fit_id"]),
-                        code_id=int(code_id),
-                        session_id=int(session_id),
+                    ranked = self._rank_code_recommendation(
+                        source="classifier", source_id=int(fit["classifier_fit_id"]),
+                        code_id=int(code_id), session_id=int(session_id),
                         strategy=ranked_strategy,
                     )
                     if ranked is None:
