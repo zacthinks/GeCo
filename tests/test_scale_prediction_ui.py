@@ -319,7 +319,7 @@ def test_prediction_selection_lives_across_clickdata_clearing_and_context_change
         "scale-prediction-map.clickData", clicked, page_state, scale, None,
     )
     assert selected == {
-        "scale_id": scale, "fit_id": 13, "page": 1, "page_size": 128,
+        "scale_id": scale, "fit_id": 13, "page": 1, "page_size": 1000,
         "observation_id": observation_id, "unit_id": unit_id,
     }
     first_preview = preview(selected, page_state, scale, 0, "1")
@@ -439,7 +439,7 @@ def test_scale_prediction_toolbar_matches_code_pagination_pattern():
 
     layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
     size = find(layout, "scale-prediction-page-size")
-    assert size.value == "128" and size.debounce is True
+    assert size.value == "1000" and size.debounce is True
     assert find(layout, "scale-prediction-previous") is not None
     assert find(layout, "scale-prediction-next") is not None
     assert find(layout, "scale-prediction-page") is not None
