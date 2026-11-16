@@ -3698,7 +3698,7 @@ class ProjectDatabase:
     def bootstrap_existing_scale_from_code(
         self, scale_id: int, code_id: int, *,
         expected_preview: Mapping[str, Any], submission_key: str,
-        session_id: int | None = None,
+        session_id: int | None = None, expected_scale_version: int | None = None,
     ) -> dict[str, Any]:
         """Atomically add an entire Code-derived Cartesian batch to an existing Scale.
 
@@ -3715,7 +3715,7 @@ class ProjectDatabase:
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             version = connection.execute(
-                "SELECT scale_version_id FROM scale_versions WHERE scale_id = ? "
+                "SELECT scale_version_id, version_number FROM scale_versions WHERE scale_id = ? "
                 "ORDER BY version_number DESC LIMIT 1", (scale_id,),
             ).fetchone()
             if version is None:
@@ -3740,6 +3740,11 @@ class ProjectDatabase:
                 if total != int(expected_preview.get("comparisons", -1)):
                     raise ValueError("Bootstrap retry count differs from the original batch.")
                 return {"scale_id": scale_id, "comparisons_created": total, "retried": True}
+            if (expected_scale_version is not None
+                    and int(version["version_number"]) != int(expected_scale_version)):
+                raise ValueError(
+                    "The Scale definition changed after preview. Review the bootstrap again."
+                )
             snapshot, present, absent = self._human_code_bootstrap_snapshot(
                 connection, code_id,
             )
