@@ -917,6 +917,7 @@ def create_app(
                 ),
                 dcc.Store(id="saved-filter-refresh-store", data=0),
                 dcc.Store(id="active-session-store", data=int(initial_session["session_id"])),
+                dcc.Store(id="workspace-plot-resize-store", data=0),
                 dcc.Store(id="navigation-history-store", data=initial_history),
                 dcc.Store(id="desired-view-store", data=initial_view_id),
                 dcc.Store(id="view-refresh-store", data=0),
@@ -1644,6 +1645,38 @@ def create_app(
         app, project, html=html, Input=Input, Output=Output,
         State=State, callback_context=callback_context,
         no_update=no_update, units=units,
+    )
+
+    # Resize visible Develop Plotly canvases without expensive server-side rescoring.
+    # Two animation frames let dcc.Tabs reveal its child before sizing WebGL.
+    app.clientside_callback(
+        """
+        function(workspace) {
+            if (workspace !== "focus") {
+                return window.dash_clientside.no_update;
+            }
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const plots = window.Plotly && window.Plotly.Plots;
+                if (!plots || !plots.resize) {
+                    window.dispatchEvent(new Event("resize"));
+                    return;
+                }
+                for (const id of ["scale-prediction-map", "focus-prediction-map"]) {
+                    const graph = document.querySelector("#" + id + " .js-plotly-plot");
+                    if (graph && graph.offsetWidth > 0) {
+                        try {
+                            Promise.resolve(plots.resize(graph)).catch(() => {});
+                        } catch (_error) {
+                            // An unavailable graph is not a navigation failure.
+                        }
+                    }
+                }
+            }));
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("workspace-plot-resize-store", "data"),
+        Input("workspace-tabs", "value"),
     )
 
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
