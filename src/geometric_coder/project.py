@@ -2148,12 +2148,13 @@ class GeometricCoder:
     def bootstrap_existing_scale_from_code(
         self, scale_id: int, code_id: int, *,
         expected_preview: Mapping[str, Any], submission_key: str,
-        session_id: int | None = None,
+        session_id: int | None = None, expected_scale_version: int | None = None,
     ) -> dict[str, Any]:
         """Append complete Code-derived ordinary human comparisons to a Scale."""
         return self.database.bootstrap_existing_scale_from_code(
             int(scale_id), int(code_id), expected_preview=expected_preview,
             submission_key=submission_key, session_id=session_id,
+            expected_scale_version=expected_scale_version,
         )
 
     def create_scale_from_code(
