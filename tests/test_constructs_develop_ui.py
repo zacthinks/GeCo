@@ -171,6 +171,13 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
     assert saved["focus_committee_id"] is None
     restored = restore(session_id)
     assert restored[23] == scale
+    # Echoes of the already-active session must never restore the saved
+    # workspace over a user's newly selected Develop tab.
+    from dash import no_update
+    replayed = restore(session_id, session_id)
+    assert len(replayed) == len(restored) == 40
+    assert all(item is no_update for item in replayed)
+    assert restored[21] == "focus"
     assert restored[24] is None
 
     project.patch_session_state(
