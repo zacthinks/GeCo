@@ -392,6 +392,17 @@ def test_existing_scale_bootstrap_checks_stale_preview_and_rolls_back(
     )
     assert success["comparisons_created"] == fresh["comparisons"]
 
+    # A pending confirmation tied to a prior Scale definition must never
+    # silently write human evidence under the new definition version.
+    stale_version = project.scale(scale)["version_number"]
+    project.update_scale(scale, "Revised Existing", "Changed definition")
+    with pytest.raises(ValueError, match="Scale definition changed after preview"):
+        project.bootstrap_existing_scale_from_code(
+            scale, code, expected_preview=fresh, submission_key="d" * 32,
+            expected_scale_version=stale_version,
+        )
+    assert len(project.scale_comparisons(scale)) == success["comparisons_created"]
+
 
 def test_existing_scale_bootstrap_modal_requires_confirmation(
     tmp_path: Path,
@@ -408,7 +419,9 @@ def test_existing_scale_bootstrap_modal_requires_confirmation(
     app = create_app(project)
     preview = _callback(app, "preview_existing_scale_bootstrap")
     manage = _callback(app, "manage_existing_scale_bootstrap")
-    snapshot, message, confirmed = preview(code)
+    snapshot, message, confirmed = preview(code, scale)
+    assert snapshot["scale_id"] == scale
+    assert snapshot["scale_version"] == 1
     assert "3 human Present" in message
     assert "3 human Absent" in message
     assert "9 comparisons" in message
