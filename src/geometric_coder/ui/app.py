@@ -6648,6 +6648,13 @@ def create_app(
         if result is None:
             if strategy == "review_unsure":
                 return no_update, no_update, "This code has no unsure units to revisit.", {}
+            if strategy != "random" and _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0:
+                return (
+                    no_update, no_update,
+                    "No eligible units remain in this finite candidate window. "
+                    "Increase the candidate evaluation budget or select Exhaustive.",
+                    {},
+                )
             return no_update, no_update, "No unseen, unreviewed units remain in this session.", {}
 
         fit_ids = list(result.get("classifier_fit_ids", {}).values())
