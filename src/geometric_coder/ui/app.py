@@ -1750,9 +1750,18 @@ def create_app(
         Output("semantic-search-status", "children", allow_duplicate=True),
         Output("topic-restore-snapshot", "data"),
         Input("session-dropdown", "value"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
-    def restore_session(session_id: int) -> tuple[Any, ...]:
+    def restore_session(
+        session_id: int, active_session_id: int | None = None,
+    ) -> tuple[Any, ...]:
+        # Session-dropdown can replay its current value after unrelated updates.
+        # Reapplying the persisted workspace in that case races a user's tab
+        # click and visibly snaps Develop back to Explore/Apply.
+        if (active_session_id is not None and session_id is not None
+                and int(session_id) == int(active_session_id)):
+            return (no_update,) * 40
         session = project.database.get_session(int(session_id))
         state = _resumable_session_state(dict(session["state"]))
         geometry_id = _valid_geometry_id(state.get("geometry_id"), geometries)
