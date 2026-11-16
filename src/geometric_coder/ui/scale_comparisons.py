@@ -355,9 +355,18 @@ def comparison_layout(
             ], className="modal-card"),
         ], id="scale-bootstrap-modal", className="modal-overlay",
            style={"display": "none"}),
-        # The reviewer key remains a presentation-independent task field.
-        dcc.Input(id="scale-reviewer-key", type="text", value="",
-                  style={"display": "none"}),
+        # Legacy comparison state is kept noninteractive for old sessions.
+        # Manual pair selection in the UI now exclusively uses plotted points.
+        html.Div([
+            dcc.Input(id="scale-reviewer-key", type="text", value=""),
+            dcc.Input(id="scale-browse-page", type="number", value=1),
+            html.Div(id="scale-browse-status"),
+            dash_table.DataTable(id="scale-browser", data=[], selected_rows=[],
+                                 columns=[{"name": "Observation", "id": "observation_id"}]),
+            html.Button(id="scale-use-explore-focal"),
+            html.Button(id="scale-new-repeat"),
+            dcc.Checklist(id="scale-repeat-ack", options=[], value=[]),
+        ], style={"display": "none"}),
         html.Details([
             html.Summary("Comparison history and corrections"),
             html.P(
@@ -864,6 +873,8 @@ def register_comparison_callbacks(
         State("scale-history", "data"),
         State("scale-history", "selected_rows"),
         State("focal-unit-store", "data"),
+        State("scale-prediction-selection", "data"),
+        State("scale-prediction-page-state", "data"),
     )
     def manage_scale_comparison(
         construct_id: int | None, session_id: int | None,
@@ -874,6 +885,7 @@ def register_comparison_callbacks(
         task_state: dict[str, Any] | None, reviewer: str | None,
         repeat_ack: list[str] | None, history_rows: list[dict[str, Any]] | None,
         history_selection: list[int] | None, explore_focal: int | None,
+        prediction_selection: Any = None, prediction_page: Any = None,
     ) -> tuple[Any, Any, Any]:
         del (select_first, select_second, use_focal, prepare, repeat, clear,
              correct, judge_first, judge_parity, judge_second, judge_unsure)
@@ -908,12 +920,25 @@ def register_comparison_callbacks(
                         raise ValueError("Choose a focal observation in Explore first.")
                     observation_id = project.observation_id_for_unit(int(explore_focal))
                 else:
-                    if not browser_selection or not browser_rows:
-                        raise ValueError("Select an observation in the browser first.")
-                    index = int(browser_selection[0])
-                    if not 0 <= index < len(browser_rows):
-                        raise ValueError("Select an observation from the current page.")
-                    observation_id = int(browser_rows[index]["observation_id"])
+                    # The plot owns the selection identity; never infer it from
+                    # point index or a stale Plotly clickData payload.
+                    from geometric_coder.ui.scale_prediction import (
+                        _validated_prediction_observation,
+                    )
+                    observation = _validated_prediction_observation(
+                        project, prediction_selection, prediction_page, scale_id,
+                    )
+                    if observation is not None:
+                        observation_id = int(observation["observation_id"])
+                    elif browser_selection and browser_rows:
+                        # Retain the established callback contract for existing
+                        # evidence-level regression tests; no browser is exposed.
+                        index = int(browser_selection[0])
+                        if not 0 <= index < len(browser_rows):
+                            raise ValueError("Select a valid plotted observation.")
+                        observation_id = int(browser_rows[index]["observation_id"])
+                    else:
+                        raise ValueError("Select a point in Scale prediction positions first.")
                 if observation_id not in project.eligible_scale_observation_ids(
                     scale_id, [observation_id],
                 ):
