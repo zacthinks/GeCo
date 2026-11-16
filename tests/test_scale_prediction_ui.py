@@ -425,16 +425,15 @@ def test_scale_prediction_toolbar_matches_code_pagination_pattern():
     def find(node, identifier):
         if getattr(node, "id", None) == identifier:
             return node
-        for child in (getattr(node, "children", None) or []):
-            if isinstance(child, (list, tuple)):
-                for nested in child:
-                    found = find(nested, identifier)
-                    if found is not None:
-                        return found
-            else:
-                found = find(child, identifier)
-                if found is not None:
-                    return found
+        children = getattr(node, "children", None)
+        if children is None:
+            return None
+        for child in children if isinstance(children, (list, tuple)) else [children]:
+            if isinstance(child, str):
+                continue
+            found = find(child, identifier)
+            if found is not None:
+                return found
         return None
 
     layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
