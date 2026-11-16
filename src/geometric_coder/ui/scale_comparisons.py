@@ -196,6 +196,11 @@ def comparison_layout(
             html.Div(id="scale-model-summary", className="focus-model-detail"),
             html.Div(id="scale-model-train-status", className="control-status"),
             html.Div(id="scale-model-auto-status", className="control-status"),
+            html.Button(
+                "Bootstrap from code", id="scale-bootstrap-open", n_clicks=0,
+                className="scale-bootstrap-action",
+            ),
+            html.Div(id="scale-bootstrap-result", className="control-status", role="status"),
         ], className="focus-sidebar scale-model-panel"),
         html.Div([
         html.H3("Compare two observations"),
@@ -253,31 +258,17 @@ def comparison_layout(
         html.Div(id="scale-action-status", style={"display": "none"}),
         html.Div(id="scale-action-warning", className="control-status"),
         html.Div([
-            html.H4("Scale prediction positions"),
+            html.Div([
+                html.H4("Scale prediction positions"),
+                html.Button(
+                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
+                ),
+            ], className="scale-prediction-header"),
             html.P(
                 "Horizontal: centered estimated Scale position. Vertical: "
                 "model-conditional epistemic uncertainty (posterior SD) when available. "
                 "This is not total measurement error or evidence of construct validity.",
                 className="focus-help",
-            ),
-            html.Div([
-                html.Button(
-                    "Refresh scores", id="scale-prediction-refresh", n_clicks=0,
-                ),
-                html.Label("Page", htmlFor="scale-prediction-page"),
-                dcc.Input(
-                    id="scale-prediction-page", type="number",
-                    min=1, max=1, step=1, value=1,
-                    className="page-number-input",
-                ),
-                html.Button(
-                    "Previous", id="scale-prediction-previous", n_clicks=0,
-                ),
-                html.Button("Next", id="scale-prediction-next", n_clicks=0),
-            ], className="scale-prediction-toolbar"),
-            html.Div(
-                id="scale-prediction-status",
-                className="control-status", role="status",
             ),
             dcc.Store(id="scale-prediction-page-state"),
             dcc.Store(id="scale-prediction-selection"),
@@ -286,8 +277,67 @@ def comparison_layout(
                 figure={"data": [], "layout": {}},
                 config={"displayModeBar": True, "scrollZoom": True},
             ),
+            html.Div([
+                html.Label("Points per page", htmlFor="scale-prediction-page-size"),
+                dcc.Input(
+                    id="scale-prediction-page-size", type="text",
+                    inputMode="numeric", debounce=True, value="128",
+                    className="page-size-input",
+                ),
+                html.Button("Previous", id="scale-prediction-previous", n_clicks=0),
+                html.Label("Page", htmlFor="scale-prediction-page"),
+                dcc.Input(
+                    id="scale-prediction-page", type="number",
+                    min=1, max=1, step=1, debounce=True, value=1,
+                    className="page-number-input",
+                ),
+                html.Button("Next", id="scale-prediction-next", n_clicks=0),
+                html.Div(
+                    id="scale-prediction-status",
+                    className="page-status", role="status",
+                ),
+            ], className="pagination-bar scale-prediction-toolbar"),
             html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
         ], className="focus-coding-panel scale-prediction-panel"),
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H3("Bootstrap from code"),
+                    html.Button(
+                        "×", id="scale-bootstrap-close", n_clicks=0,
+                        className="modal-close-icon", title="Close",
+                        **{"aria-label": "Close"},
+                    ),
+                ], className="modal-heading-row"),
+                html.P(
+                    "This assumes that every observation marked Present for the selected "
+                    "Code is higher on the Scale than every observation marked Absent. "
+                    "Only use this option if that interpretation makes sense for your research.",
+                    className="focus-help",
+                ),
+                html.Label("Existing Code"),
+                dcc.Dropdown(
+                    id="scale-bootstrap-code", options=[],
+                    value=None, placeholder="Select an existing Code",
+                ),
+                html.Div(id="scale-bootstrap-preview", className="control-status"),
+                dcc.Store(id="scale-bootstrap-snapshot"),
+                dcc.Checklist(
+                    id="scale-bootstrap-confirm",
+                    options=[{
+                        "label": "I confirm the complete comparison count and the Present > Absent assumption.",
+                        "value": "confirmed",
+                    }], value=[],
+                ),
+                html.Div(id="scale-bootstrap-status", className="control-status", role="status"),
+                html.Div([
+                    html.Button("Cancel", id="scale-bootstrap-cancel", n_clicks=0),
+                    html.Button("Bootstrap", id="scale-bootstrap-submit", n_clicks=0,
+                                className="primary-action"),
+                ], className="modal-actions"),
+            ], className="modal-card"),
+        ], id="scale-bootstrap-modal", className="modal-overlay",
+           style={"display": "none"}),
         html.Details([
             html.Summary("Advanced · manual pairs and independent repeats"),
             html.P(
