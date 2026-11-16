@@ -469,12 +469,14 @@ def register_comparison_callbacks(
         Output("scale-bootstrap-preview", "children"),
         Output("scale-bootstrap-confirm", "value"),
         Input("scale-bootstrap-code", "value"),
+        Input("focus-construct-dropdown", "value"),
         prevent_initial_call=True,
     )
     def preview_existing_scale_bootstrap(
-        code_id: int | None,
+        code_id: int | None, construct_id: int | None = None,
     ) -> tuple[dict[str, Any] | None, str, list[str]]:
-        if code_id is None:
+        scale_id = active_scale_id(construct_id)
+        if code_id is None or scale_id is None:
             return None, "Choose a Code to review the full comparison count.", []
         try:
             preview = project.code_scale_bootstrap_preview(int(code_id))
@@ -493,7 +495,11 @@ def register_comparison_callbacks(
                 f" Exceeds the {preview['limit']:,}-comparison safety limit; "
                 "nothing will be partially saved."
             )
-        return {"preview": preview, "token": uuid.uuid4().hex}, message, []
+        return {
+            "preview": preview, "token": uuid.uuid4().hex,
+            "scale_id": scale_id,
+            "scale_version": int(project.scale(scale_id)["version_number"]),
+        }, message, []
 
     @app.callback(
         Output("scale-bootstrap-modal", "style"),
@@ -539,6 +545,7 @@ def register_comparison_callbacks(
             or not isinstance(snapshot.get("preview"), dict)
             or not isinstance(snapshot.get("token"), str)
             or int(snapshot["preview"].get("code_id", -1)) != int(code_id)
+            or int(snapshot.get("scale_id", -1)) != scale_id
         ):
             return (
                 {"display": "flex"}, no_update,
@@ -549,6 +556,7 @@ def register_comparison_callbacks(
             result = project.bootstrap_existing_scale_from_code(
                 scale_id, int(code_id),
                 expected_preview=snapshot["preview"],
+                expected_scale_version=int(snapshot["scale_version"]),
                 submission_key=snapshot["token"],
                 session_id=int(session_id) if session_id is not None else None,
             )
