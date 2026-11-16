@@ -446,3 +446,80 @@ def test_scale_prediction_toolbar_matches_code_pagination_pattern():
     assert find(layout, "scale-prediction-refresh") is not None
     assert find(layout, "scale-bootstrap-open") is not None
     assert find(layout, "scale-bootstrap-modal").style == {"display": "none"}
+
+
+def test_manual_pair_controls_use_only_validated_prediction_identity(tmp_path, monkeypatch):
+    import inspect
+    import pandas as pd
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "manual-points.geco",
+        data=pd.DataFrame({"key": [1, 2, 3], "text": ["One", "Two", "Three"]}),
+        keys=["key"], text="text", geometries=None,
+    )
+    scale = project.create_scale("Scale")
+    session = int(project.sessions()[0]["session_id"])
+    monkeypatch.setattr(project, "scale_model_status", lambda _: {
+        "status": "current", "fit": {"scaler_fit_id": 71},
+    })
+    monkeypatch.setattr(project, "scale_scores", lambda _scale, ids, **kwargs: [
+        {"observation_id": obs, "score": float(index),
+         "epistemic_sd": 0.1 + index * 0.1, "scaler_fit_id": 71}
+        for index, obs in enumerate(ids)
+    ])
+    app = create_app(project)
+    callbacks = {
+        inspect.unwrap(spec["callback"]).__name__: inspect.unwrap(spec["callback"])
+        for spec in app.callback_map.values() if "callback" in spec
+    }
+    _, _, page_state, _ = callbacks["render_scale_predictions"](
+        scale, 1, 0, "", "", None,
+    )
+    ids = page_state["observation_ids"]
+    manage = callbacks["manage_scale_comparison"]
+
+    def choose(trigger, selected, task=None):
+        token = context_value.set(AttributeDict(
+            triggered_inputs=[{"prop_id": trigger + ".n_clicks", "value": 1}]
+        ))
+        try:
+            return manage(
+                scale, session, *([0] * 11),
+                [], [], task, None, [], [], [], None, selected, page_state,
+            )
+        finally:
+            context_value.reset(token)
+
+    def identity(obs):
+        return {
+            "scale_id": scale, "fit_id": 71, "page": 1, "page_size": 1000,
+            "observation_id": obs, "unit_id": project.observation(obs)["unit_id"],
+        }
+
+    first, message, _ = choose("scale-select-first", identity(ids[0]))
+    assert first["picked_a"] == ids[0]
+    assert first["picked_b"] is None
+    second, message, _ = choose(
+        "scale-select-second", identity(ids[1]), first,
+    )
+    assert {second["picked_a"], second["picked_b"]} == set(ids[:2])
+    assert project.scale_comparisons(scale) == []
+    prepared, _, _ = choose("scale-prepare", identity(ids[1]), second)
+    assert prepared["status"] == "ready"
+    assert {prepared["first"], prepared["second"]} == set(ids[:2])
+    assert project.scale_comparisons(scale) == []
+
+    # Stale/forged page selection cannot alter the active comparison.
+    invalid = {**identity(ids[2]), "fit_id": 999}
+    rejected, warning, _ = choose("scale-select-first", invalid, prepared)
+    from dash import no_update
+    assert rejected is no_update
+    assert "Select a point" in warning
+    assert project.scale_comparisons(scale) == []
+    cleared, _, _ = choose("scale-clear", None, prepared)
+    assert cleared["picked_a"] is None and cleared["picked_b"] is None
+    assert project.scale_comparisons(scale) == []
