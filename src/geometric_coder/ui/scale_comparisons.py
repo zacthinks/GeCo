@@ -298,6 +298,23 @@ def comparison_layout(
                 ),
             ], className="pagination-bar scale-prediction-toolbar"),
             html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
+            html.Details([
+                html.Summary("Manual Pairs"),
+                html.P(
+                    "Select a point in the prediction graph, then choose it as First "
+                    "or Second. Select another point to complete the pair. "
+                    "Showing a pair changes the comparison workspace but never saves evidence.",
+                    className="focus-help",
+                ),
+                html.Div([
+                    html.Button("Choose as First", id="scale-select-first", n_clicks=0),
+                    html.Button("Choose as Second", id="scale-select-second", n_clicks=0),
+                    html.Button("Clear Selections", id="scale-clear", n_clicks=0),
+                    html.Button("Show Selected Pair", id="scale-prepare", n_clicks=0,
+                                className="primary-action"),
+                ], className="memo-actions scale-manual-pair-actions"),
+                html.Div(id="scale-selection-summary", className="control-status"),
+            ], className="scale-manual-pairs"),
         ], className="focus-coding-panel scale-prediction-panel"),
         html.Div([
             html.Div([
@@ -338,65 +355,9 @@ def comparison_layout(
             ], className="modal-card"),
         ], id="scale-bootstrap-modal", className="modal-overlay",
            style={"display": "none"}),
-        html.Details([
-            html.Summary("Advanced · manual pairs and independent repeats"),
-            html.P(
-                "Optional: choose two specific observations instead of the "
-                "recommended pair (Bayesian information gain or random fallback). "
-                "Manual selection uses a small page, never the entire corpus.",
-                className="focus-help",
-            ),
-            html.Label("Observation browser page"),
-            dcc.Input(
-                id="scale-browse-page", type="number", min=1, step=1,
-                value=1, className="page-number-input",
-            ),
-            html.Div(id="scale-browse-status", className="control-status"),
-            dash_table.DataTable(
-                id="scale-browser",
-                columns=[
-                    {"name": "Unit", "id": "unit_id"},
-                    {"name": "Source key", "id": "key"},
-                    {"name": "Preview", "id": "preview"},
-                    {"name": "Eligibility", "id": "eligibility"},
-                ],
-                data=[], row_selectable="single", selected_rows=[],
-                page_size=_PAGE_SIZE,
-                style_table={"overflowX": "auto"},
-                style_cell={"whiteSpace": "normal", "height": "auto", "textAlign": "left"},
-            ),
-            html.Div([
-                html.Button("Choose as first", id="scale-select-first", n_clicks=0),
-                html.Button("Choose as second", id="scale-select-second", n_clicks=0),
-                html.Button(
-                    "Use Explore focal as first", id="scale-use-explore-focal",
-                    n_clicks=0,
-                ),
-            ], className="memo-actions"),
-            html.Div(id="scale-selection-summary", className="control-status"),
-            html.Button(
-                "Show selected pair", id="scale-prepare", n_clicks=0,
-                className="primary-action",
-            ),
-            html.Button("Clear selection", id="scale-clear", n_clicks=0),
-            dcc.Input(
-                id="scale-reviewer-key", type="text", value="",
-                style={"display": "none"},
-            ),
-            html.H4("Repeat an existing comparison"),
-
-            dcc.Checklist(
-                id="scale-repeat-ack",
-                options=[{
-                    "label": "Make an independent second judgment of this pair",
-                    "value": "repeat",
-                }],
-                value=[],
-            ),
-            html.Button(
-                "Compare this pair again", id="scale-new-repeat", n_clicks=0,
-            ),
-        ], className="focus-coding-panel"),
+        # The reviewer key remains a presentation-independent task field.
+        dcc.Input(id="scale-reviewer-key", type="text", value="",
+                  style={"display": "none"}),
         html.Details([
             html.Summary("Comparison history and corrections"),
             html.P(
