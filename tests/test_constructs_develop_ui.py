@@ -64,7 +64,7 @@ def test_construct_selector_callback_hides_binary_develop_for_scales(tmp_path: P
     code = project.create_code("Code", "binary definition")
     scale = project.create_scale("Scale", "continuous definition")
     app = create_app(project)
-    callback = _callback(app, "focus-scale-heading.children")
+    callback = _callback(app, "focus-scale-top-summary.children")
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("Scale route called a Code-only classifier API")
@@ -73,18 +73,21 @@ def test_construct_selector_callback_hides_binary_develop_for_scales(tmp_path: P
     monkeypatch.setattr(project, "classifier_status", forbidden)
     selected_scale = callback(scale)
     assert selected_scale[0] is None
+    assert selected_scale[1] == {"display": "none"}
     assert selected_scale[2] == {}
-    assert selected_scale[3] == "Scale: Scale"
-    assert "continuous definition" in selected_scale[4]
-    assert selected_scale[8] == {"display": "none"}
-    assert selected_scale[-1] == {}
-    assert "All observations eligible" in selected_scale[5]
+    assert selected_scale[5] == {"display": "none"}
+    assert "continuous definition" in str(selected_scale[6])
+    assert "Definition version 1" in str(selected_scale[6])
+    assert "All observations eligible" not in str(selected_scale[6])
+    assert selected_scale[7] == {}
+    assert selected_scale[8] == {}
 
     selected_code = callback(code)
     assert selected_code[0] == code
     assert selected_code[1] == {}
     assert selected_code[2] == {"display": "none"}
-    assert selected_code[-1] == {"display": "none"}
+    assert selected_code[7] == {"display": "none"}
+    assert selected_code[8] == {"display": "none"}
 
     cleared = callback(None)
     assert cleared[0] is None
@@ -229,7 +232,7 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
     code = project.create_code("Binary", "code definition")
     scale = project.create_scale("Argument quality", "definition v1")
     app = create_app(project)
-    route = _callback(app, "focus-scale-heading.children")
+    route = _callback(app, "focus-scale-top-summary.children")
     save = next(
         inspect.unwrap(entry["callback"])
         for entry in app.callback_map.values()
@@ -238,9 +241,9 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
     )
 
     selected = route(scale)
-    assert selected[3] == "Scale: Argument quality"
-    assert selected[4] == "definition v1"
-    assert "Definition version 1" in selected[5]
+    assert "Argument quality" in str(selected[6])
+    assert "definition v1" in str(selected[6])
+    assert "Definition version 1" in str(selected[6])
 
     # The real save path increments focus-refresh-store. The Construct selection
     # remains unchanged while Dash fires the refresh input.
@@ -257,14 +260,13 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
         context_value.reset(token)
 
     assert revised[0] is no_update
-    assert revised[1] is no_update
-    assert revised[2] is no_update
-    assert revised[3] == "Scale: Argument quality revised"
-    assert revised[4] == "definition v2"
-    assert "Definition version 2" in revised[5]
-    assert all(value is no_update for value in revised[6:9])
-    assert "Argument quality revised" in str(revised[9])
-    assert revised[10] == {}
+    assert revised[1] == {"display": "none"}
+    assert revised[2] == {}
+    assert revised[5] == {"display": "none"}
+    assert "Argument quality revised" in str(revised[6])
+    assert "definition v2" in str(revised[6])
+    assert "Definition version 2" in str(revised[6])
+    assert revised[7] == {}
     assert all(value is no_update for value in unchanged_code)
 
     # Explicit selection changes still switch the Code-only controls normally.
@@ -326,20 +328,19 @@ def test_restored_scale_develop_layout_starts_with_readable_summary(tmp_path: Pa
     app = create_app(project)
     layout = app.layout
 
-    eligibility = _component_with_id(layout, "focus-scale-eligibility")
-    assert eligibility is not None
-    assert "Definition version 1" in eligibility.children
-    assert "All observations eligible" in eligibility.children
-    assert "Eligibility:" not in eligibility.children
-    assert "{" not in eligibility.children
-
     top = _component_with_id(layout, "focus-scale-top-summary")
-    count = _component_with_id(layout, "focus-scale-count-summary")
+    teaching = _component_with_id(layout, "focus-scale-count-summary")
     assert top.style == {}
-    assert top.children is not None
-    assert count.style == {}
-    assert "usable comparisons" in count.children
+    assert "Definition version 1" in str(top.children)
+    assert "All observations eligible" not in str(top.children)
+    assert teaching.style == {}
+    assert teaching.children[1].disabled is True
+    assert "Teaching examples" in str(teaching.children[0])
     assert _component_with_id(layout, "focus-scale-state").style == {}
+    assert _component_with_id(layout, "focus-active-area").style == {"display": "none"}
+    assert _component_with_id(layout, "focus-disabled-message").children == (
+        "Select a Code or Scale to begin developing it."
+    )
 
 
 def test_scale_color_overlay_reuses_displayed_1d_coordinates() -> None:
