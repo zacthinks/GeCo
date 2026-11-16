@@ -203,20 +203,21 @@ def test_finite_code_budget_limits_indexed_classifier_acquisition(tmp_path: Path
         code_id=code, name="bounded mean",
         classifier_spec_ids=[spec, second_spec], aggregation="mean",
     )
-    _save_ui_settings(project.project_dir, candidate_evaluation_budget=budget)
+    fixed_budget = 12
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=fixed_budget)
     fixed_seed = (
         committee * 2654435761 + code * 2246822519 + 3
     ) & 0xFFFFFFFF
     a, b = deterministic_page_permutation_parameters(total, fixed_seed)
-    fixed_window = {(a * rank + b) % total for rank in range(budget)}
+    fixed_window = {(a * rank + b) % total for rank in range(fixed_budget)}
     for strategy in ("likely_positive", "classifier_disagreement"):
         selected = project.focus_recommendation(
             code_id=code, session_id=session,
             strategy=strategy, committee_id=committee,
             recommendation_source="committee",
         )
-        if selected is not None:
-            assert position_by_unit[selected["unit_id"]] in fixed_window
+        assert selected is not None
+        assert position_by_unit[selected["unit_id"]] in fixed_window
 
     # The default remains the same full indexed ranking as explicit Exhaustive.
     _save_ui_settings(project.project_dir, candidate_evaluation_budget=-1)
