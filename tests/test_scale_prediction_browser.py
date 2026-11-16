@@ -107,9 +107,12 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                     page.wait_for_function("""() => {
                     const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
                     return gd && gd.data && gd.data[0] &&
-                        gd.data[0].customdata && gd.data[0].customdata.length > 20 &&
-                        gd._fullLayout && gd._fullLayout.xaxis;
+                        gd.data[0].customdata && gd.data[0].customdata.length === 64 &&
+                        gd._fullLayout && gd._fullLayout.xaxis &&
+                        document.querySelector('#scale-prediction-status')
+                            ?.innerText.includes('64 of 130');
                 }""", timeout=30000)
+                    page.wait_for_timeout(350)
                 except Exception:
                     print("Browser debug:", page.evaluate("""() => ({
                         workspace: document.querySelector('#workspace-tabs')?.innerText?.slice(0,400),
