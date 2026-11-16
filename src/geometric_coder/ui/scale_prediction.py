@@ -247,13 +247,18 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         Input("scale-model-auto-status", "children"),
         Input("scale-model-geometry", "value"),
         Input("scale-prediction-page-size", "value"),
+        Input("workspace-tabs", "value"),
     )
     def render_scale_predictions(
         construct_id: int | None, page: int | None, refresh: int | None,
         train_message: Any, automatic_message: Any, geometry_id: Any,
-        page_size: Any = None,
+        page_size: Any = None, workspace: str | None = "focus",
     ) -> tuple[Any, str, Any, int]:
         del refresh, train_message, automatic_message, geometry_id
+        # Plotly's WebGL canvas can retain hidden-tab dimensions. Draw afresh
+        # only when Develop becomes active; never clear selection on departure.
+        if workspace != "focus":
+            return no_update, no_update, no_update, no_update
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
             if construct is None or construct["type"] != "scale":
