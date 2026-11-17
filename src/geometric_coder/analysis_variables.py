@@ -21,7 +21,7 @@ from typing import Any
 
 from geometric_coder.analyses import _code_join
 from geometric_coder.apply import aggregate_probabilities
-from geometric_coder.project import FIXED_COMMITTEE_AGGREGATIONS
+from geometric_coder.storage.database import FIXED_COMMITTEE_AGGREGATIONS
 from geometric_coder.exceptions import ConfigurationError
 
 MAX_RESOLUTION_OBSERVATIONS = 2048
