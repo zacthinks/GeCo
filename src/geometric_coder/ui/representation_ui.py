@@ -18,6 +18,7 @@ from geometric_coder.ui.representation_manager import (
 from geometric_coder.ui.topic_creation import teal_linked_project
 from geometric_coder.ui.text_geometry import (
     TOKEN_FLAGS, TOKEN_FIELDS, available_spacy_token_artifacts, create_text_geometry,
+    parse_sentence_transformer_model,
 )
 
 
@@ -59,7 +60,7 @@ def selected_sentence_transformer_model(
 
 def suggest_representation_name(
     source_name: str, method: str, dimensions: int | None,
-    existing_names: list[str],
+    existing_names: list[str], *, model_name: str | None = None,
 ) -> str:
     """Offer a SQL-safe name without renaming or modifying existing artifacts."""
     def slug(value: str) -> str:
@@ -68,6 +69,8 @@ def suggest_representation_name(
         return f"representation_{clean}" if clean[0].isdigit() else clean
 
     stem = f"{slug(source_name)}_{slug(method)}"
+    if method == "sentence_transformer" and model_name:
+        stem += f"_{slug(model_name)}"
     if isinstance(dimensions, int) and not isinstance(dimensions, bool) and dimensions > 0:
         stem += f"_{dimensions}d"
     occupied = {str(name).casefold() for name in existing_names}
@@ -815,6 +818,8 @@ def register_representation_callbacks(
         Input("representation-wizard-origin", "value"),
         Input("representation-wizard-source", "value"),
         Input("representation-wizard-recipe", "value"),
+        Input("representation-text-model", "value"),
+        Input("representation-text-model-custom", "value"),
         Input("representation-wizard-view-dimensions", "value"),
         Input({"type": "representation-param", "name": ALL}, "value"),
         Input("representation-inventory-store", "data"),
@@ -825,7 +830,9 @@ def register_representation_callbacks(
     )
     def suggest_wizard_name(
         modal_style: dict[str, str] | None, mode: str | None, origin: str | None,
-        source_id: int | None, recipe: str | None, view_dimensions: int | None,
+        source_id: int | None, recipe: str | None,
+        transformer_model: str | None, custom_transformer_model: str | None,
+        view_dimensions: int | None,
         param_values: list[Any], inventory: list[dict[str, Any]] | None,
         param_ids: list[dict[str, str]], current_name: str | None,
         previous_suggestion: str | None,
@@ -869,10 +876,25 @@ def register_representation_callbacks(
             else:
                 dimensions = _positive_dimensions(source.get("dimensions"))
 
+        model_name = None
+        if mode == "geometry" and origin == "text" and recipe == "sentence_transformer":
+            try:
+                model_id = parse_sentence_transformer_model(
+                    selected_sentence_transformer_model(
+                        transformer_model, custom_transformer_model,
+                    )
+                )
+                model_name = model_id.rsplit("/", 1)[-1]
+            except ValueError:
+                # Incomplete custom entries should not break live suggestions.
+                pass
+
         existing = [str(row["name"]) for row in rows]
         # Also include registrations hidden from the public inventory.
         existing.extend(str(row["name"]) for row in project.database.list_representations())
-        proposed = suggest_representation_name(source_name, recipe, dimensions, existing)
+        proposed = suggest_representation_name(
+            source_name, recipe, dimensions, existing, model_name=model_name,
+        )
         autofilled = autofill_representation_name(
             current_name, previous_suggestion, proposed,
         )
@@ -1236,11 +1258,46 @@ def register_representation_callbacks(
     @app.callback(
         Output("geometry-dropdown", "options"),
         Output("topic-create-geometry", "options"),
+        Output("code-center-geometry", "options"),
+        Output("classifier-spec-geometry", "options"),
         Input("representation-refresh-store", "data"),
     )
-    def geometry_options(_revision: int) -> tuple[Any, Any]:
+    def geometry_options(_revision: int) -> tuple[Any, Any, Any, Any]:
+        # All analytic-geometry selectors share a live catalog. The Code Center
+        # and classifier dialog otherwise keep their launch-time options until
+        # GeCo restarts, even though creation has already committed to the DB.
         options = [
             {"label": row["name"], "value": int(row["geometry_id"])}
             for row in project.geometries(public_only=True)
         ]
-        return options, options
+        return options, options, options, options
+
+    @app.callback(
+        Output("topic-create-geometry", "value", allow_duplicate=True),
+        Output("code-center-geometry", "value"),
+        Output("classifier-spec-geometry", "value"),
+        Input("code-center-geometry", "options"),
+        State("topic-create-geometry", "value"),
+        State("code-center-geometry", "value"),
+        State("classifier-spec-geometry", "value"),
+        prevent_initial_call=True,
+    )
+    def reconcile_analytic_geometry_selections(
+        options: list[dict[str, Any]] | None,
+        topic_id: int | None, code_center_id: int | None,
+        classifier_id: int | None,
+    ) -> tuple[Any, Any, Any]:
+        # Registry updates replace the options, but Dash may still hold a value
+        # for a removed or demoted geometry. Keep valid choices unchanged.
+        valid_ids = [int(option["value"]) for option in (options or [])]
+
+        def reconcile(selected: int | None) -> Any:
+            if selected in valid_ids:
+                return no_update
+            return valid_ids[0] if valid_ids else None
+
+        return (
+            reconcile(topic_id),
+            reconcile(code_center_id),
+            reconcile(classifier_id),
+        )

@@ -1570,6 +1570,18 @@ def create_app(
         return {"display": "flex"} if callback_context.triggered_id == "topic-create-open" else {"display": "none"}
 
     @app.callback(
+        Output("topic-create-submit", "disabled", allow_duplicate=True),
+        Input("topic-create-geometry", "options"),
+        prevent_initial_call=True,
+    )
+    def refresh_topic_create_availability(
+        options: list[dict[str, Any]] | None,
+    ) -> bool:
+        # The dropdown options refresh when representations are added, removed,
+        # or made analytic/view-only; the startup disabled flag alone goes stale.
+        return teal_linked_project(project) is None or not bool(options)
+
+    @app.callback(
         Output("topic-create-parameters", "children"),
         Output("topic-create-advanced", "children"),
         Output("topic-create-advanced-wrap", "style"),
@@ -4659,9 +4671,14 @@ def create_app(
         geometry_id: int | None, _revision: int | None,
         _view_revision: int | None, current_view_id: int | None,
     ) -> tuple[list[dict[str, Any]], int | None]:
-        if geometry_id is None:
+        if geometry_id is None or int(geometry_id) not in geometry_by_id:
             return [], None
-        records = _display_view_records(project, int(geometry_id))
+        # The registry revision can arrive before the dropdown's corrected
+        # value. Treat an already-removed geometry as an empty selection.
+        try:
+            records = _display_view_records(project, int(geometry_id))
+        except (KeyError, ValueError):
+            return [], None
         options = [{"label": row["name"], "value": int(row["view_id"])} for row in records]
         valid_ids = {int(row["view_id"]) for row in records}
         selected = (
@@ -4708,6 +4725,8 @@ def create_app(
             return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
+        if int(geometry_id) not in geometry_by_id:
+            return _empty_figure("This geometry is no longer available."), ""
         construct = project.construct(int(code_id)) if code_id is not None else None
         is_scale = construct is not None and construct["type"] == "scale"
         positive_observations = (

@@ -220,6 +220,15 @@ def test_representation_name_suggestions_are_sql_safe_and_collision_free():
     assert suggest("Original text", "Sentence Transformer", None, []) == (
         "original_text_sentence_transformer"
     )
+    assert suggest(
+        "Original text", "sentence_transformer", None, [],
+        model_name="all-MiniLM-L12-v2",
+    ) == "original_text_sentence_transformer_all_minilm_l12_v2"
+    assert suggest(
+        "Original text", "sentence_transformer", None,
+        ["original_text_sentence_transformer_all_minilm_l12_v2"],
+        model_name="all-MiniLM-L12-v2",
+    ) == "original_text_sentence_transformer_all_minilm_l12_v2_2"
     assert suggest("TF-IDF Base", "UMAP", 2, [
         "tf_idf_base_umap_2d", "TF_IDF_BASE_UMAP_2D_2",
     ]) == "tf_idf_base_umap_2d_3"
@@ -251,6 +260,9 @@ def test_representation_wizard_wires_live_suggested_names():
     assert 'Output("representation-wizard-name", "value", allow_duplicate=True)' in source
     assert 'Input("representation-wizard-view-dimensions", "value")' in source
     assert 'Input("representation-wizard-recipe", "value")' in source
+    assert 'Input("representation-text-model", "value")' in source
+    assert 'Input("representation-text-model-custom", "value")' in source
+    assert "parse_sentence_transformer_model(" in source
     assert 'existing.extend(' in source
 
 

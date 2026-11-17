@@ -365,3 +365,134 @@ def test_created_geometry_receives_preferred_teal_alias(fake_link):
     project.catalog.validate_artifact_alias.assert_called_once_with("tfidf_l2")
     derived.add_alias.assert_called_once_with("tfidf_l2")
     linked.add_geometry.assert_called_once_with("tfidf_l2", derived)
+
+
+def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch):
+    """A newly registered geometry becomes selectable without rebuilding the app."""
+    import inspect
+    import pandas as pd
+    dash = pytest.importorskip("dash")
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    coder = GeometricCoder.create(
+        project_dir=tmp_path / "refresh.geco",
+        data=pd.DataFrame({"key": [1, 2], "text": ["alpha", "beta"]}),
+        keys=["key"], text="text", metadata=[], geometries=None,
+    )
+    scale_id = coder.create_scale("Quality")
+    # Change only TeAL availability; the same running app and its geometry
+    # options must react without a restart.
+    from geometric_coder.ui import topic_creation
+    linked = {"available": False}
+    monkeypatch.setattr(
+        topic_creation, "teal_linked_project",
+        lambda _coder: tmp_path if linked["available"] else None,
+    )
+    app = create_app(coder)
+
+    def callback(name):
+        return next(
+            inspect.unwrap(row["callback"])
+            for row in app.callback_map.values()
+            if "callback" in row
+            and inspect.unwrap(row["callback"]).__name__ == name
+        )
+
+    refresh = callback("geometry_options")
+    scale_refresh = callback("scale_model_geometry_options")
+    topic_availability = callback("refresh_topic_create_availability")
+    reconcile = callback("reconcile_analytic_geometry_selections")
+    center_views = callback("update_code_center_views")
+    center_map = callback("update_code_center_map")
+    assert refresh(0) == ([], [], [], [])
+    assert reconcile([], None, None, None) == (None, None, None)
+    assert scale_refresh(scale_id, 0) == ([], None)
+    assert topic_availability(refresh(0)[1]) is True
+    linked["available"] = True
+    assert topic_availability(refresh(0)[1]) is True
+    assert any(
+        item["id"] == "topic-create-geometry" and item["property"] == "options"
+        for row in app.callback_map.values()
+        if "callback" in row
+        and inspect.unwrap(row["callback"]).__name__
+        == "refresh_topic_create_availability"
+        for item in row["inputs"]
+    )
+
+    registered = [
+        {"geometry_id": 11, "name": "new_counts"},
+        {"geometry_id": 12, "name": "new_svd"},
+    ]
+    representations = [
+        {"representation_id": 101, "name": "new_counts",
+         "legacy_kind": "geometry", "analytic_enabled": True},
+        {"representation_id": 102, "name": "new_svd",
+         "legacy_kind": "geometry", "analytic_enabled": True},
+        {"representation_id": 103, "name": "view_only",
+         "legacy_kind": "geometry", "analytic_enabled": False},
+    ]
+    monkeypatch.setattr(coder, "geometries", lambda **_: registered)
+    monkeypatch.setattr(coder, "representations", lambda: representations)
+    expected = [
+        {"label": "new_counts", "value": 11},
+        {"label": "new_svd", "value": 12},
+    ]
+    assert refresh(1) == (expected, expected, expected, expected)
+    assert reconcile(expected, None, None, None) == (11, 11, 11)
+    assert all(value is dash.no_update for value in reconcile(expected, 12, 12, 12))
+    assert topic_availability(refresh(1)[1]) is False
+    assert scale_refresh(scale_id, 1) == (
+        [{"label": "new_counts", "value": 101},
+         {"label": "new_svd", "value": 102}], None,
+    )
+
+    registered[1]["name"] = "renamed_svd"
+    representations[1]["name"] = "renamed_svd"
+    assert refresh(2)[1][-1]["label"] == "renamed_svd"
+    assert all(value is dash.no_update for value in reconcile(refresh(2)[2], 12, 12, 12))
+    assert scale_refresh(scale_id, 2)[0][-1]["label"] == "renamed_svd"
+
+    registered.pop()
+    representations.pop(1)
+    assert [item["value"] for item in refresh(3)[2]] == [11]
+    # A removed or demoted selected geometry must move every selector to a
+    # surviving analytic geometry; a surviving selection must not be reset.
+    assert reconcile(refresh(3)[2], 12, 12, 12) == (11, 11, 11)
+    assert all(value is dash.no_update for value in reconcile(refresh(3)[2], 11, 11, 11))
+    # A registry revision can hit Code Center's view/map callbacks before
+    # dropdown values have been corrected. No deleted-geometry lookup may run.
+    assert center_views(12, 3, 3, None) == ([], None)
+    figure, status = center_map(
+        None, 12, -102, "5000", 1, [], "codes", "geometry",
+        0, 0, 0, None, None,
+    )
+    assert status == ""
+    assert "no longer available" in str(figure)
+    assert topic_availability(refresh(3)[1]) is False
+    assert [item["value"] for item in scale_refresh(scale_id, 3)[0]] == [101]
+
+    # Removing the final analytic geometry disables Create again.
+    registered.clear()
+    assert reconcile(refresh(4)[2], 11, 11, 11) == (None, None, None)
+    assert topic_availability(refresh(4)[1]) is True
+    # Standalone projects must remain unable to fit TeAL Topic Models.
+    linked["available"] = False
+    assert topic_availability(expected) is True
+
+
+def test_representation_revision_is_wired_to_all_geometry_selectors():
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    representation_ui = (root / "representation_ui.py").read_text()
+    scales_ui = (root / "scale_comparisons.py").read_text()
+    block = representation_ui.split("    def geometry_options(", 1)[0].rsplit(
+        "    @app.callback(", 1
+    )[1]
+    for name in ("geometry-dropdown", "topic-create-geometry",
+                 "code-center-geometry", "classifier-spec-geometry"):
+        assert f'Output("{name}", "options")' in block
+    scale_block = scales_ui.split("    def scale_model_geometry_options(", 1)[0].rsplit(
+        "    @app.callback(", 1
+    )[1]
+    assert 'Input("representation-refresh-store", "data")' in block
+    assert 'Input("representation-refresh-store", "data")' in scale_block
