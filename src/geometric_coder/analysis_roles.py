@@ -247,7 +247,7 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
     ]
     warnings: set[str] = set()
     if kind == "bar":
-        groups: dict[str, list[list[int]]] = defaultdict(
+        groups: dict[tuple[bool, str], list[list[int]]] = defaultdict(
             lambda: [[0, 0] for _ in range(code_count)]
         )
     elif kind == "distribution":
@@ -262,9 +262,9 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
             values = [col["values"][i] for col in columns[:code_count]]
             if kind == "bar":
                 category = (
-                    "(Missing)" if group and columns[-1]["values"][i] is None
-                    else str(columns[-1]["values"][i]) if group
-                    else "All observations"
+                    (True, "") if group and columns[-1]["values"][i] is None
+                    else (False, str(columns[-1]["values"][i])) if group
+                    else (False, "All observations")
                 )
                 if category not in groups and len(groups) >= 100:
                     raise ValueError("Metadata has more than 100 categories.")
@@ -298,7 +298,12 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
         if len(groups) > 100:
             raise ValueError("Metadata has more than 100 categories.")
         categories = sorted(groups)
-        return {"kind": "bar", "names": names, "categories": categories,
+        labels = [
+            "(Missing)" if missing else
+            "“(Missing)” (category)" if label == "(Missing)" else label
+            for missing, label in categories
+        ]
+        return {"kind": "bar", "names": names, "categories": labels,
                 "counts": [[groups[g][j][0] for g in categories] for j in range(code_count)],
                 "denominators": [[groups[g][j][1] for g in categories] for j in range(code_count)],
                 "warnings": sorted(warnings)}
