@@ -171,7 +171,27 @@ def test_fixed_committee_binary_is_executable_without_retraining(tmp_path, monke
     ids = [row["observation_id"] for row in p.database.list_units()]
     p.annotate(ids[0], code_id, "positive")
     p.annotate(ids[3], code_id, "negative")
+    untrained_ref = {
+        "type": "code", "code_id": code_id, "source": "predictions",
+        "value": "binary", "predictor_id": classifier,
+    }
+    untrained_spec = {
+        "schema_version": 2, "kind": "bar", "measure": "count",
+        "roles": {"values": [entry(untrained_ref)]},
+    }
+    # A new recipe must not persist before its selected fit exists. Legacy
+    # v1 creation remains allowed (and the definition remains viewable).
+    with pytest.raises(ValueError, match="no trained prediction fit"):
+        p.save_analysis("Not ready", untrained_spec)
+    assert p.analyses() == []
+    legacy = p.save_analysis(
+        "Legacy pending", {"kind": "bar", "variables": [untrained_ref]}
+    )
+    assert p.analysis(legacy)["spec"]["schema_version"] == 1
+    with pytest.raises(ValueError, match="No trained prediction source"):
+        p.run_analysis(legacy)
     p.train_classifier(code_id=code_id, classifier_spec_id=classifier)
+    assert p.save_analysis("Now ready", untrained_spec) > 0
     committee = p.create_classifier_committee(
         code_id=code_id, name="Only member",
         classifier_spec_ids=[classifier], aggregation="mean",
