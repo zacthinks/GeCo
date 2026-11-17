@@ -50,6 +50,9 @@ def validate_role_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, A
         raise ValueError("Role-based analyses require schema_version 2.")
     kind = spec.get("kind")
     if kind not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, validate_continuous_analysis
+        if kind in CONTINUOUS_KINDS:
+            return validate_continuous_analysis(project, spec)
         raise ValueError("This visualization is not implemented.")
     if not isinstance(spec.get("roles"), Mapping):
         raise ValueError("Assign variables to the visualization's roles.")
@@ -128,7 +131,10 @@ def ensure_role_sources_ready(project: Any, spec: Mapping[str, Any]) -> None:
     retained fit remains usable with the existing warning semantics.
     """
     roles = spec["roles"]
-    entries = roles.get("values", roles.get("indicators", []))
+    if spec["kind"] not in ROLE_CONTRACT:
+        entries = [item for value in roles.values() for item in (value if isinstance(value, list) else [value])]
+    else:
+        entries = roles.get("values", roles.get("indicators", []))
     checked: set[tuple[int, str, int]] = set()
     for item in entries:
         variable = item["variable"]
@@ -173,6 +179,11 @@ def ensure_role_chart_executable(project: Any, spec: Mapping[str, Any]) -> None:
     data-dependent dimension or bin limits.
     """
     roles = spec["roles"]
+    if spec["kind"] not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import compute_continuous_analysis
+        # All new numerical charts must be demonstrably executable on save.
+        compute_continuous_analysis(project, spec)
+        return
     entries = roles.get("values", roles.get("indicators", []))
     variables = [item["variable"] for item in entries]
     if "group" in roles:
@@ -325,6 +336,9 @@ def compute_role_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, An
     """Validate before any data read; adapt stable legacy SQL whenever possible."""
     from geometric_coder.analyses import compute_analysis
     normalized = validate_role_analysis(project, spec)
+    if normalized["kind"] not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import compute_continuous_analysis
+        return compute_continuous_analysis(project, normalized)
     refs = [item["variable"] for item in
             normalized["roles"].get("values", normalized["roles"].get("indicators", []))]
     if any(v.get("predictor_kind") == "committee" for v in refs):
