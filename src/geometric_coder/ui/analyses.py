@@ -86,6 +86,25 @@ def _ref(raw: str, settings: dict[str, Any]) -> dict[str, Any]:
     return ref
 
 
+def compatible_aggregation_method(kind: str, measure: str, method: str | None) -> str:
+    """Reset incompatible Code reductions without discarding valid settings."""
+    selected = method or "any"
+    if selected in {"count", "mean", "log_count"} and not (
+        kind == "distribution" or (kind == "heatmap" and measure == "correlation")
+    ):
+        return "any"
+    return selected
+
+
+_AGGREGATION_OPTIONS = [
+    {"label": "Any observed positive (0 or 1)", "value": "any"},
+    {"label": "Number of positive units per group", "value": "count"},
+    {"label": "Positive count at least threshold", "value": "minimum"},
+    {"label": "Proportion positive among observed units", "value": "mean"},
+    {"label": "Natural log(1 + positive count)", "value": "log_count"},
+]
+
+
 def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   configs: dict[str, Any], aggregate_level: str | None,
                   aggregate_method: str, aggregate_threshold: float | None,
@@ -115,7 +134,8 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
     }
     if aggregate_level and aggregate_level != "none":
         recipe["aggregation"] = {
-            "level": aggregate_level, "method": aggregate_method,
+            "level": aggregate_level,
+            "method": compatible_aggregation_method(kind, measure, aggregate_method),
             "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
         }
     if legacy:
@@ -196,13 +216,8 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                          ], value="none"),
             html.Div([
                 html.Label("Aggregate Code values"),
-                dcc.Dropdown(id="analysis-aggregate-method", value="any", clearable=False, options=[
-                    {"label": "Any observed positive (0 or 1)", "value": "any"},
-                    {"label": "Number of positive units per group", "value": "count"},
-                    {"label": "Positive count at least threshold", "value": "minimum"},
-                    {"label": "Proportion positive among observed units", "value": "mean"},
-                    {"label": "Natural log(1 + positive count)", "value": "log_count"},
-                ]),
+                dcc.Dropdown(id="analysis-aggregate-method", value="any",
+                             clearable=False, options=_AGGREGATION_OPTIONS),
                 html.Label("Positive count threshold (threshold method only)"),
                 dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
                           step=1, value=1),
@@ -350,6 +365,34 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                   Input("analysis-aggregate-level", "value"))
     def show_aggregation(level: str | None) -> dict[str, str]:
         return {"display": "block"} if level and level != "none" else {"display": "none"}
+
+    @app.callback(
+        Output("analysis-aggregate-method", "options"),
+        Input("analysis-kind", "value"),
+        Input("analysis-measure", "value"),
+    )
+    def aggregation_method_choices(kind: str, measure: str) -> list[dict[str, str]]:
+        """Offer only reductions that the current chart/statistic can execute."""
+        return [
+            option for option in _AGGREGATION_OPTIONS
+            if compatible_aggregation_method(kind, measure, option["value"]) == option["value"]
+        ]
+
+    @app.callback(
+        Output("analysis-aggregate-method", "value", allow_duplicate=True),
+        Input("analysis-kind", "value"),
+        Input("analysis-measure", "value"),
+        State("analysis-aggregate-method", "value"),
+        State("analysis-editing", "data"),
+        prevent_initial_call=True,
+    )
+    def reset_incompatible_aggregation(
+        kind: str, measure: str, method: str | None, editing: Any,
+    ) -> Any:
+        if editing is None:
+            return no_update
+        compatible = compatible_aggregation_method(kind, measure, method)
+        return compatible if compatible != method else no_update
 
     @app.callback(Output("analysis-save", "children"),
                   Input("analysis-editing", "data"))
