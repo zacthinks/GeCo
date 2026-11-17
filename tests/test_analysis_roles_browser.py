@@ -230,7 +230,7 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                     'button[id*="analysis-role-value"][id*="group:metadata:date"]'
                 )
                 date_interpretation.wait_for(state="visible", timeout=15000)
-                choose(date_interpretation, "Temporal / ISO date (Phase 3 grouping)")
+                choose(date_interpretation, "Temporal / ISO date (calendar grouping)")
                 page.locator("#analysis-preview").click()
                 page.locator("#analysis-status").get_by_text(
                     "Phase 3", exact=False
