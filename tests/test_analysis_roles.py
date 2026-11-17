@@ -156,8 +156,23 @@ def test_chart_aggregation_method_compatibility(kind, measure, method, expected)
     assert compatible_aggregation_method(kind, measure, method) == expected
 
 
-def test_chart_switch_normalizes_only_incompatible_aggregations(project):
-    p, a, b, _ = project
+def test_chart_switch_normalizes_only_incompatible_aggregations(tmp_path):
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "chart-switch.geco",
+        data=pd.DataFrame({
+            "group": ["A", "A", "B", "B"],
+            "id": [1, 2, 1, 2],
+            "text": ["one", "two", "three", "four"],
+        }),
+        keys=["group", "id"], text="text", geometries=None,
+    )
+    a = p.create_code("First")
+    b = p.create_code("Second")
+    ids = [row["observation_id"] for row in p.database.list_units()]
+    p.annotate(ids[0], a, "positive")
+    p.annotate(ids[1], a, "negative")
+    p.annotate(ids[2], b, "positive")
+    p.annotate(ids[3], b, "negative")
     codes = [f"code:{a}", f"code:{b}"]
     for kind, measure, slots, expected in (
         ("distribution", "count", {"values": codes}, "count"),
@@ -165,20 +180,21 @@ def test_chart_switch_normalizes_only_incompatible_aggregations(project):
         ("heatmap", "correlation", {"indicators": codes}, "count"),
         ("heatmap", "jaccard", {"indicators": codes}, "any"),
     ):
-        recipe = editor_recipe(kind, measure, slots, {}, "id", "count", 1)
+        recipe = editor_recipe(kind, measure, slots, {}, "group", "count", 1)
         assert recipe["aggregation"]["method"] == expected
         result = compute_analysis(p, recipe)
         assert result["kind"] == kind
+
     # A saved bar threshold reduction is valid and must survive editing.
     existing = {
         "kind": "bar", "measure": "count",
         "variables": [code(a)],
-        "aggregation": {"level": "id", "method": "minimum", "threshold": 2},
+        "aggregation": {"level": "group", "method": "minimum", "threshold": 2},
     }
     slots = _slots(existing)
     configs = _initial_config(existing)
     edited = editor_recipe(
-        "bar", "count", slots, configs, "id", "minimum", 2, legacy=True,
+        "bar", "count", slots, configs, "group", "minimum", 2, legacy=True,
     )
     assert compute_analysis(p, edited) == compute_analysis(p, existing)
     assert edited["aggregation"]["method"] == "minimum"
