@@ -236,3 +236,194 @@ def test_code_budgeted_source_validates_strategy_and_budget(tmp_path: Path) -> N
             source="classifier", source_id=1, code_id=1,
             session_id=1, strategy="classifier_disagreement", budget=2,
         )
+
+
+def _budgeted_committee_fixture(tmp_path: Path):
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "committee-code-budget.geco",
+        data=pd.DataFrame({
+            "id": list(range(30)),
+            "text": [
+                f"helpful clear excellent example {i}" if i % 2
+                else f"poor confusing weak example {i}"
+                for i in range(30)
+            ],
+        }),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code = project.create_code("Quality")
+    geometry_id = int(project.geometries(public_only=True)[0]["geometry_id"])
+    first = project.create_classifier_spec(
+        code_id=code, name="committee logistic", geometry_id=geometry_id,
+    )
+    second = project.create_classifier_spec(
+        code_id=code, name="committee NB", geometry_id=geometry_id,
+        algorithm="complement_nb",
+    )
+    units = project.units()
+    for i in (1, 3, 5):
+        project.annotate(int(units[i]["observation_id"]), code, "positive")
+    for i in (0, 2, 4):
+        project.annotate(int(units[i]["observation_id"]), code, "negative")
+    project.train_classifier(code_id=code, classifier_spec_id=first)
+    project.train_classifier(code_id=code, classifier_spec_id=second)
+    learned = project.create_classifier_committee(
+        code_id=code, name="budgeted stack",
+        classifier_spec_ids=[first, second], aggregation="logistic_stack",
+    )
+    learned_fit = project.train_classifier_committee(
+        code_id=code, committee_id=learned,
+    )
+    fixed = project.create_classifier_committee(
+        code_id=code, name="budgeted fixed",
+        classifier_spec_ids=[first, second], aggregation="mean",
+    )
+    project.prepare_selected_committee(code_id=code, committee_id=fixed)
+    classifier_fit_id = int(project.database.latest_classifier_fit(
+        code_id=code, classifier_spec_id=first,
+    )["classifier_fit_id"])
+    return (project, code, units, first, classifier_fit_id,
+            learned, int(learned_fit["committee_fit_id"]), fixed)
+
+
+def test_finite_code_budget_learned_committee_stays_in_frozen_window(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.explore import deterministic_page_permutation_parameters
+
+    project, code, units, _, _, committee, fit_id, _ = (
+        _budgeted_committee_fixture(tmp_path)
+    )
+    session = project.create_session("Learned budget")
+    budget = 12
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=budget)
+    seed = (fit_id * 2654435761 + code * 2246822519 + 2) & 0xFFFFFFFF
+    multiplier, shift = deterministic_page_permutation_parameters(len(units), seed)
+    window = {
+        (multiplier * rank + shift) % len(units) for rank in range(budget)
+    }
+    by_unit = {int(row["unit_id"]): i for i, row in enumerate(units)}
+
+    def choose(strategy="committee_uncertainty"):
+        return project.focus_recommendation(
+            code_id=code, session_id=session, strategy=strategy,
+            committee_id=committee, recommendation_source="committee",
+            auto_retrain=False,
+        )
+
+    first = choose()
+    assert first is not None
+    assert by_unit[first["unit_id"]] in window
+    assert first["committee_probability"] is not None
+    assert choose()["unit_id"] == first["unit_id"]
+
+    project.record_visit(session, int(first["unit_id"]), method="test")
+    second = choose()
+    assert second is not None and second["unit_id"] != first["unit_id"]
+    assert by_unit[second["unit_id"]] in window
+    project.annotate(
+        int(units[by_unit[second["unit_id"]]]["observation_id"]), code, "positive",
+    )
+    assert choose()["unit_id"] != second["unit_id"]
+
+    # Mark every sampled candidate visited: the finite window cannot expand.
+    for position in window:
+        project.record_visit(session, int(units[position]["unit_id"]), method="test")
+    assert choose() is None
+    assert choose("likely_positive") is None
+
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=0)
+    exhaustive = choose()
+    assert exhaustive is not None
+    assert by_unit[exhaustive["unit_id"]] not in window
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=-1)
+    assert choose()["unit_id"] == exhaustive["unit_id"]
+
+
+@pytest.mark.parametrize("budget_extra", [0, 7])
+def test_full_corpus_code_budget_reuses_indexed_rankings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, budget_extra: int,
+) -> None:
+    import geometric_coder.explore as explore
+
+    project, code, units, classifier_spec, classifier_fit, learned, learned_fit, fixed = (
+        _budgeted_committee_fixture(tmp_path)
+    )
+    session = project.create_session("Full-budget equivalence")
+    database = project.database
+    sources = [
+        ("classifier", classifier_fit, ["likely_positive", "likely_negative",
+                                        "classifier_uncertainty"]),
+        ("learned_committee", learned_fit,
+         ["likely_positive", "likely_negative", "committee_uncertainty"]),
+        ("fixed_committee", fixed,
+         ["likely_positive", "likely_negative", "committee_uncertainty",
+          "classifier_disagreement"]),
+    ]
+
+    def exhaustive(source, source_id, strategy):
+        if source == "classifier":
+            return database.ranked_classifier_recommendation(
+                classifier_fit_id=source_id, code_id=code,
+                session_id=session, strategy=strategy,
+            )
+        if source == "learned_committee":
+            return database.ranked_classifier_committee_recommendation(
+                committee_fit_id=source_id, code_id=code,
+                session_id=session, strategy=strategy,
+            )
+        return database.ranked_prepared_committee_recommendation(
+            committee_id=source_id, code_id=code,
+            session_id=session, strategy=strategy,
+        )
+
+    # Verify both tie-breaking/ranking equivalence and that the expensive
+    # candidate permutation never runs when the budget covers the corpus.
+    def forbid_permutation(*args, **kwargs):
+        raise AssertionError("full-corpus budget must use existing indexes")
+
+    monkeypatch.setattr(
+        explore, "deterministic_page_permutation_parameters", forbid_permutation,
+    )
+    budget = len(units) + budget_extra
+    _save_ui_settings(project.project_dir, candidate_evaluation_budget=budget)
+    for source, source_id, strategies in sources:
+        for strategy in strategies:
+            expected = exhaustive(source, source_id, strategy)
+            actual = database.ranked_budgeted_code_recommendation(
+                source=source, source_id=source_id, code_id=code,
+                session_id=session, strategy=strategy, budget=budget,
+            )
+            assert actual == expected
+            if source == "classifier":
+                recommendation = project.focus_recommendation(
+                    code_id=code, session_id=session, strategy=strategy,
+                    active_classifier_spec_id=classifier_spec,
+                )
+            else:
+                recommendation = project.focus_recommendation(
+                    code_id=code, session_id=session, strategy=strategy,
+                    committee_id=learned if source == "learned_committee" else fixed,
+                    recommendation_source="committee",
+                )
+            assert recommendation is not None
+            assert recommendation["unit_id"] == expected["unit_id"]
+
+    # Human labels and visits are still live eligibility filters.
+    first = exhaustive("classifier", classifier_fit, "likely_positive")
+    assert first is not None
+    project.record_visit(session, first["unit_id"], method="test")
+    after_visit = exhaustive("classifier", classifier_fit, "likely_positive")
+    assert after_visit is not None and after_visit != first
+    assert database.ranked_budgeted_code_recommendation(
+        source="classifier", source_id=classifier_fit, code_id=code,
+        session_id=session, strategy="likely_positive", budget=budget,
+    ) == after_visit
+    project.annotate(after_visit["observation_id"], code, "negative")
+    after_label = exhaustive("classifier", classifier_fit, "likely_positive")
+    assert after_label is not None and after_label != after_visit
+    assert database.ranked_budgeted_code_recommendation(
+        source="classifier", source_id=classifier_fit, code_id=code,
+        session_id=session, strategy="likely_positive", budget=budget,
+    ) == after_label
