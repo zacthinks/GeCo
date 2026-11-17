@@ -381,6 +381,14 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
         keys=["key"], text="text", metadata=[], geometries=None,
     )
     scale_id = coder.create_scale("Quality")
+    # Change only TeAL availability; the same running app and its geometry
+    # options must react without a restart.
+    from geometric_coder.ui import topic_creation
+    linked = {"available": False}
+    monkeypatch.setattr(
+        topic_creation, "teal_linked_project",
+        lambda _coder: tmp_path if linked["available"] else None,
+    )
     app = create_app(coder)
 
     def callback(name):
@@ -393,8 +401,20 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
 
     refresh = callback("geometry_options")
     scale_refresh = callback("scale_model_geometry_options")
+    topic_availability = callback("refresh_topic_create_availability")
     assert refresh(0) == ([], [], [], [])
     assert scale_refresh(scale_id, 0) == ([], None)
+    assert topic_availability(refresh(0)[1]) is True
+    linked["available"] = True
+    assert topic_availability(refresh(0)[1]) is True
+    assert any(
+        item["id"] == "topic-create-geometry" and item["property"] == "options"
+        for row in app.callback_map.values()
+        if "callback" in row
+        and inspect.unwrap(row["callback"]).__name__
+        == "refresh_topic_create_availability"
+        for item in row["inputs"]
+    )
 
     registered = [
         {"geometry_id": 11, "name": "new_counts"},
@@ -415,6 +435,7 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
         {"label": "new_svd", "value": 12},
     ]
     assert refresh(1) == (expected, expected, expected, expected)
+    assert topic_availability(refresh(1)[1]) is False
     assert scale_refresh(scale_id, 1) == (
         [{"label": "new_counts", "value": 101},
          {"label": "new_svd", "value": 102}], None,
@@ -428,7 +449,15 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
     registered.pop()
     representations.pop(1)
     assert [item["value"] for item in refresh(3)[2]] == [11]
+    assert topic_availability(refresh(3)[1]) is False
     assert [item["value"] for item in scale_refresh(scale_id, 3)[0]] == [101]
+
+    # Removing the final analytic geometry disables Create again.
+    registered.clear()
+    assert topic_availability(refresh(4)[1]) is True
+    # Standalone projects must remain unable to fit TeAL Topic Models.
+    linked["available"] = False
+    assert topic_availability(expected) is True
 
 
 def test_representation_revision_is_wired_to_all_geometry_selectors():
