@@ -51,7 +51,10 @@ def _slots(spec: dict[str, Any]) -> dict[str, Any]:
 def _initial_config(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if spec.get("schema_version", 1) == 2:
         return {
-            f"{role}:{_identity(item['variable'])}": dict(item["variable"])
+            f"{role}:{_identity(item['variable'])}": {
+                **dict(item["variable"]),
+                **({"transform": dict(item["transform"])} if "transform" in item else {}),
+            }
             for role, entries in spec["roles"].items()
             for item in (entries if isinstance(entries, list) else [entries])
         }
