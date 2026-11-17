@@ -194,3 +194,110 @@ def test_fixed_committee_binary_is_executable_without_retraining(tmp_path, monke
     bad = {**spec, "aggregation": {"level": "id", "method": "any"}}
     with pytest.raises(ValueError):
         validate_analysis(p, bad)
+
+
+@pytest.mark.parametrize("missing_prediction", [False, True])
+def test_committee_jaccard_matches_single_member_classifier_for_zero_union(
+    tmp_path, missing_prediction,
+):
+    """Observed all-negative pairs are zero; unobserved pairs remain undefined."""
+    from geometric_coder import CountGeometry
+
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "zero-union.geco",
+        data=pd.DataFrame({
+            "id": list(range(6)),
+            "text": ["good clear", "great useful", "nice clear",
+                     "bad confusing", "poor unclear", "weak bad"],
+        }),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    ids = [row["observation_id"] for row in p.database.list_units()]
+    pairs = []
+    for name in ("Theme A", "Theme B"):
+        cid = p.create_code(name)
+        p.annotate(ids[0], cid, "positive")
+        p.annotate(ids[3], cid, "negative")
+        p.ensure_default_classifier_specs(code_id=cid)
+        spec_id = int(p.classifier_specs(code_id=cid)[0]["classifier_spec_id"])
+        p.train_classifier(code_id=cid, classifier_spec_id=spec_id)
+        fit_id = int(p.database.latest_classifier_fit(
+            code_id=cid, classifier_spec_id=spec_id
+        )["classifier_fit_id"])
+        committee = p.create_classifier_committee(
+            code_id=cid, name=f"{name} single-member committee",
+            classifier_spec_ids=[spec_id], aggregation="mean",
+        )
+        pairs.append((cid, spec_id, fit_id, committee))
+
+    # Force identical fully observed negative model predictions without changing
+    # human evidence or fitting any new model.
+    with p.database.connect() as conn:
+        for _, _, fit_id, _ in pairs:
+            conn.execute(
+                "UPDATE classifier_predictions SET predicted_label = 'negative', "
+                "probability = 0.1 WHERE classifier_fit_id = ?", (fit_id,),
+            )
+        if missing_prediction:
+            # No pairwise-complete observations: remove predictions from the
+            # second model, while the first remains fully observed.
+            conn.execute(
+                "DELETE FROM classifier_predictions WHERE classifier_fit_id = ?",
+                (pairs[1][2],),
+            )
+
+    classifier_refs = [
+        {**code(cid), "source": "predictions", "predictor_id": spec_id}
+        for cid, spec_id, _, _ in pairs
+    ]
+    committee_refs = [
+        {**code(cid), "source": "predictions", "predictor_kind": "committee",
+         "predictor_id": committee}
+        for cid, _, _, committee in pairs
+    ]
+    old = compute_analysis(p, {
+        "kind": "heatmap", "measure": "jaccard", "variables": classifier_refs,
+    })
+    new = compute_analysis(p, {
+        "schema_version": 2, "kind": "heatmap", "measure": "jaccard",
+        "roles": {"indicators": [entry(ref) for ref in committee_refs]},
+    })
+    assert new["samples"] == old["samples"]
+    assert new["values"] == old["values"]
+    assert new["samples"][0][1] == (0 if missing_prediction else 6)
+    if missing_prediction:
+        assert new["values"][0][1] is None
+    else:
+        assert new["values"][0][1] == 0.0
+
+
+def test_committee_bar_rejects_category_101_before_next_page(monkeypatch):
+    from geometric_coder import analysis_roles
+
+    class FakeProject:
+        def code(self, cid):
+            return {"name": "Theme"}
+
+    def pages(_project, _descriptors):
+        yield {
+            "row_count": 101,
+            "columns": [
+                {"values": [0.0] * 101},
+                {"values": [f"category-{i:03d}" for i in range(101)]},
+            ],
+            "warnings": [],
+        }
+        raise AssertionError("Must stop before reading subsequent pages")
+
+    monkeypatch.setattr(analysis_roles, "_pages", pages)
+    spec = {
+        "kind": "bar", "measure": "count",
+        "roles": {
+            "values": [entry(code(1))],
+            "group": entry({"type": "metadata", "field": "category",
+                            "value": "categorical"}),
+        },
+    }
+    with pytest.raises(ValueError, match="more than 100 categories"):
+        analysis_roles._committee_analysis(FakeProject(), spec)
