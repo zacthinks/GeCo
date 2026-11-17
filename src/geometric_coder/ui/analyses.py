@@ -108,8 +108,49 @@ _AGGREGATION_OPTIONS = [
 def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   configs: dict[str, Any], aggregate_level: str | None,
                   aggregate_method: str, aggregate_threshold: float | None,
-                  *, legacy: bool = False) -> dict[str, Any]:
+                  *, legacy: bool = False,
+                  extra_slots: dict[str, Any] | None = None,
+                  continuous_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct one recipe from role identities and role-scoped source choices."""
+    from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, ROLE_LAYOUT
+    if kind in CONTINUOUS_KINDS:
+        if legacy:
+            raise ValueError("A legacy analysis cannot be silently converted to a numerical chart; create a new analysis.")
+        selections = {**slots, **(extra_slots or {})}
+        roles = {}
+        for role in ROLE_LAYOUT[kind]:
+            selected = selections.get(role)
+            if role in ("group", "color") and not selected:
+                continue
+            if role == "values" and kind == "correlation_heatmap":
+                roles[role] = [
+                    {"variable": _ref(raw, configs.get(f"{role}:{raw}", {}))}
+                    for raw in (selected or [])
+                ]
+                continue
+            if not selected:
+                continue
+            conf = configs.get(f"{role}:{selected}", {})
+            item = {"variable": _ref(selected, conf)}
+            if role in ("group", "color", "rows", "columns") and conf.get("transform"):
+                item["transform"] = conf["transform"]
+            roles[role] = item
+        options = continuous_options or {}
+        recipe = {"schema_version": 2, "kind": kind, "roles": roles}
+        if kind == "histogram":
+            recipe["binning"] = options.get("binning", {
+                "kind": "histogram_bins", "method": "equal_width", "bins": 20})
+        if kind in ("summary_bar", "value_heatmap"):
+            recipe["statistic"] = options.get("statistic", "mean")
+        if kind == "scatter":
+            recipe["max_points"] = 2000
+        if aggregate_level and aggregate_level != "none":
+            recipe["aggregation"] = {
+                "level": aggregate_level, "method": aggregate_method,
+                "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
+                "numeric_method": options.get("numeric_method", "mean"),
+            }
+        return recipe
     raw_roles = {
         "bar": ("values", "group"),
         "heatmap": ("indicators",),
