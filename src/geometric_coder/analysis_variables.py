@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 from typing import Any
 
 from geometric_coder.analyses import _code_join
@@ -26,6 +28,23 @@ from geometric_coder.exceptions import ConfigurationError
 
 MAX_RESOLUTION_OBSERVATIONS = 2048
 _SQL_BATCH_SIZE = 800
+
+# Only unambiguous calendar dates and ISO-style timestamps are interpreted.
+# Pandas Timestamp.__str__ uses a space rather than T, and can retain
+# nanoseconds and an explicit UTC offset, so both separators are accepted.
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z", re.ASCII)
+_ISO_DATETIME = re.compile(
+    r"(?P<day>\d{4}-\d{2}-\d{2})[Tt ]"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2})"
+    r"(?::(?P<second>\d{2})(?:\.(?P<fraction>\d{1,9}))?)?"
+    r"(?P<offset>[Zz]|[+-]\d{2}:\d{2})?\Z",
+    re.ASCII,
+)
+_AMBIGUOUS_LOCAL_DATE = re.compile(
+    r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}(?:[ Tt].*)?\Z",
+    re.ASCII,
+)
+
 
 
 def _positive_id(value: Any, label: str) -> int:
@@ -41,8 +60,9 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
     labels have no probability representation; hybrid probability uses 1/0
     for human Present/Absent and predictor probabilities for unreviewed units.
     Scale: selected scale_id, value=position only (trained model predictions).
-    Metadata: field and value=categorical/numeric, optionally an explicit
-    numeric_strings opt-in; strings are never coerced by default.
+    Metadata: field and value=categorical/numeric/temporal. Numeric string
+    coercion is opt-in; temporal parsing accepts unambiguous ISO dates and
+    timestamps, including pandas' space-separated serialization.
     """
     if not isinstance(reference, Mapping):
         raise ValueError("Analytical variable must be an object.")
@@ -97,8 +117,8 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
         if not isinstance(field, str) or field not in project.metadata.get("metadata_columns", []):
             raise ValueError("Unknown metadata field.")
         value = reference.get("value", "categorical")
-        if value not in ("categorical", "numeric"):
-            raise ValueError("Metadata must be categorical or numeric.")
+        if value not in ("categorical", "numeric", "temporal"):
+            raise ValueError("Metadata must be categorical, numeric, or temporal.")
         numeric_strings = reference.get("numeric_strings", False)
         if not isinstance(numeric_strings, bool) or (numeric_strings and value != "numeric"):
             raise ValueError("numeric_strings is only valid for numeric metadata.")
@@ -107,10 +127,69 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
     raise ValueError("Unknown analytical variable family.")
 
 
+
+def _temporal_value(raw: Any) -> tuple[dict[str, str] | None, str | None]:
+    """Parse stored ISO calendar strings, retaining date/time and zone semantics.
+
+    Output is JSON-safe: dates are {"kind": "date", "iso": "YYYY-MM-DD"};
+    timestamps are {"kind": "datetime", "iso": "...T...±HH:MM",
+    "timezone": "naive"|"offset"}. An offset never implies a named zone.
+    No timezone is invented for naive timestamps, and date-only metadata
+    never becomes midnight UTC. Nanosecond fractions (up to nine digits)
+    are checked and retained instead of truncated to Python microseconds.
+    """
+    if raw is None:
+        return None, "missing_metadata"
+    if not isinstance(raw, str):
+        return None, "invalid_temporal"
+    value = raw.strip()
+    if not value:
+        return None, "missing_metadata"
+    if _ISO_DATE.fullmatch(value):
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return None, "invalid_temporal"
+        return {"kind": "date", "iso": value}, None
+
+    parsed = _ISO_DATETIME.fullmatch(value)
+    if parsed is not None:
+        offset = parsed["offset"]
+        # RFC 3339's -00:00 denotes an *unknown* local offset, not UTC.
+        if offset == "-00:00":
+            return None, "ambiguous_temporal"
+        if offset in ("Z", "z"):
+            offset = "+00:00"
+        seconds = parsed["second"] or "00"
+        fraction = parsed["fraction"]
+        canonical = (
+            f"{parsed['day']}T{parsed['hour']}:{parsed['minute']}:{seconds}"
+            + (f".{fraction}" if fraction is not None else "")
+            + (offset or "")
+        )
+        try:
+            # Validate the complete calendar, clock and explicit offset.
+            # Python discards fractional precision past microseconds; we
+            # preserve the validated original fraction in the output.
+            datetime.fromisoformat(canonical)
+        except ValueError:
+            return None, "invalid_temporal"
+        return {
+            "kind": "datetime", "iso": canonical,
+            "timezone": "offset" if offset is not None else "naive",
+        }, None
+
+    if _AMBIGUOUS_LOCAL_DATE.fullmatch(value):
+        return None, "ambiguous_temporal"
+    return None, "invalid_temporal"
+
+
 def _metadata_value(raw: Any, descriptor: Mapping[str, Any]) -> tuple[Any, str | None]:
     """Interpret a single original JSON metadata value without guessing its type."""
     if raw is None:
         return None, "missing_metadata"
+    if descriptor["value"] == "temporal":
+        return _temporal_value(raw)
     if descriptor["value"] == "categorical":
         if isinstance(raw, (str, int, float, bool)):
             if isinstance(raw, float) and not math.isfinite(raw):
@@ -484,6 +563,25 @@ def resolve_analytical_variables(
                 value, reason = _metadata_value(raw, descriptor)
                 values.append(value)
                 missing_reasons.append(reason)
+            if kind == "temporal":
+                provenance["format"] = "iso8601_tagged"
+                temporal_kinds = {
+                    entry["kind"] for entry in values if entry is not None
+                }
+                if len(temporal_kinds) > 1:
+                    warnings.append(
+                        f"{name}: temporal values mix dates and timestamps; "
+                        "a future chart must choose explicit calendar semantics."
+                    )
+                timezones = {
+                    entry["timezone"] for entry in values
+                    if entry is not None and entry["kind"] == "datetime"
+                }
+                if len(timezones) > 1:
+                    warnings.append(
+                        f"{name}: temporal timestamps mix naive and offset-aware "
+                        "values; no implicit timezone conversion was performed."
+                    )
         else:
             kind = "numeric"
             scale_id = descriptor["scale_id"]
