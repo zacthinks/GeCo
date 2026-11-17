@@ -510,11 +510,20 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-role-group", "value"),
         Input("analysis-role-distribution", "value"),
         Input("analysis-role-indicators", "value"),
+        Input("analysis-role-x", "value"),
+        Input("analysis-role-y", "value"),
+        Input("analysis-role-color", "value"),
+        Input("analysis-role-continuous-values", "value"),
+        Input("analysis-role-rows", "value"),
+        Input("analysis-role-columns", "value"),
         Input("analysis-editing", "data"),
         State("analysis-role-config", "data"),
     )
     def role_settings(kind: str, values: list[str] | None, group: str | None,
                       distribution: list[str] | None, indicators: list[str] | None,
+                      x: str | None, y: str | None, color: str | None,
+                      continuous_values: list[str] | None, rows: str | None,
+                      columns: str | None,
                       editing: Any, configs: dict[str, Any] | None) -> Any:
         if editing is None:
             return []
@@ -522,8 +531,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots = {"values": values or [], "group": [group] if group else []}
         elif kind == "distribution":
             slots = {"values": distribution or []}
-        else:
+        elif kind == "heatmap":
             slots = {"indicators": indicators or []}
+        elif kind == "scatter":
+            slots = {"x": [x] if x else [], "y": [y] if y else [],
+                     "color": [color] if color else []}
+        else:
+            slots = {"values": continuous_values or [] if kind == "correlation_heatmap" else (continuous_values or [])[:1],
+                     "group": [group] if kind in ("histogram", "summary_bar") and group else [],
+                     "rows": [rows] if kind == "value_heatmap" and rows else [],
+                     "columns": [columns] if kind == "value_heatmap" and columns else []}
         nodes = []
         for role, selected in slots.items():
             for raw in selected:
@@ -547,7 +564,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         dcc.Dropdown(id={"type": "analysis-role-value", "index": key},
                                      options=[
                                          {"label": "Binary (0/1) — supported", "value": "binary"},
-                                         {"label": "Probability (Phase 3)", "value": "probability"},
+                                         {"label": "Probability (numerical charts)", "value": "probability"},
                                      ], value=config.get("value", "binary"), clearable=False),
                         html.Label("Prediction model (required for prediction/hybrid)"),
                         dcc.Dropdown(id={"type": "analysis-role-predictor", "index": key},
@@ -568,22 +585,47 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                             id={"type": "analysis-role-value", "index": key},
                             options=[
                                 {"label": "Categorical (supported)", "value": "categorical"},
-                                {"label": "Numeric (Phase 3)", "value": "numeric"},
-                                {"label": "Temporal / ISO date (Phase 3 grouping)", "value": "temporal"},
+                                {"label": "Numeric (continuous charts)", "value": "numeric"},
+                                {"label": "Temporal / ISO date (calendar grouping)", "value": "temporal"},
                             ], value=config.get("value", "categorical"),
                             clearable=False,
                         ),
-                        html.P("Numerical bins and day/week/month/quarter/year grouping "
-                               "require Phase 3. Temporal metadata is never silently "
-                               "treated as a categorical date string."),
+                        html.P("Temporal values retain date-only, naive, and offset-aware distinctions. "
+                               "Aware timestamps group by UTC calendar; ISO weeks start Monday."),
+
                     ])
                 else:
                     status = project.scale_model_status(int(identity))
                     controls.extend([
-                        html.P("Predicted continuous position only (Phase 3 chart required)."),
+                        html.P("Predicted continuous position; no human-assigned values."),
                         html.P(f"Scale fit status: {status['status']}. "
                                "Untrained, stale, or ineligible positions cannot be "
                                "silently replaced by human ratings or categorical bins."),
+                    ])
+                if role in ("group", "color", "rows", "columns") and kind in (
+                    "scatter", "histogram", "summary_bar", "value_heatmap",
+                ):
+                    transform = config.get("transform", {})
+                    controls.extend([
+                        html.Label("Grouping transformation"),
+                        dcc.Dropdown(id={"type":"analysis-role-transform","index":key},
+                                     options=[{"label":"No transformation (categorical / binary)","value":"none"},
+                                              {"label":"Calendar day","value":"day"},
+                                              {"label":"Calendar week","value":"week"},
+                                              {"label":"Calendar month","value":"month"},
+                                              {"label":"Calendar quarter","value":"quarter"},
+                                              {"label":"Calendar year","value":"year"},
+                                              {"label":"Equal-width numeric bins","value":"equal_width"},
+                                              {"label":"Quantile numeric bins","value":"quantile"},
+                                              {"label":"Fixed-width numeric bins","value":"fixed_width"}],
+                                     value=(transform.get("unit") if transform.get("kind") == "calendar"
+                                            else transform.get("method", "none")),clearable=False),
+                        html.Label("Numeric bin count"),
+                        dcc.Input(id={"type":"analysis-role-bins","index":key},
+                                  type="number",min=1,max=100,step=1,value=transform.get("bins",10)),
+                        html.Label("Fixed bin width"),
+                        dcc.Input(id={"type":"analysis-role-width","index":key},
+                                  type="number",min=0,step="any",value=transform.get("width",1)),
                     ])
                 nodes.append(html.Div(controls, className="analysis-variable-settings"))
         return nodes
@@ -593,16 +635,24 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input({"type": "analysis-role-source", "index": ALL}, "value"),
         Input({"type": "analysis-role-value", "index": ALL}, "value"),
         Input({"type": "analysis-role-predictor", "index": ALL}, "value"),
+        Input({"type": "analysis-role-transform", "index": ALL}, "value"),
+        Input({"type": "analysis-role-bins", "index": ALL}, "value"),
+        Input({"type": "analysis-role-width", "index": ALL}, "value"),
         State({"type": "analysis-role-source", "index": ALL}, "id"),
         State({"type": "analysis-role-value", "index": ALL}, "id"),
         State({"type": "analysis-role-predictor", "index": ALL}, "id"),
+        State({"type": "analysis-role-transform", "index": ALL}, "id"),
+        State({"type": "analysis-role-bins", "index": ALL}, "id"),
+        State({"type": "analysis-role-width", "index": ALL}, "id"),
         State("analysis-role-config", "data"),
         prevent_initial_call=True,
     )
     def preserve_role_configs(
         sources: list[str], values: list[str],
-        predictors: list[str | None], source_ids: list[Any], value_ids: list[Any],
-        predictor_ids: list[Any],
+        predictors: list[str | None], transforms: list[str], bins: list[int],
+        widths: list[float], source_ids: list[Any], value_ids: list[Any],
+        predictor_ids: list[Any], transform_ids: list[Any], bin_ids: list[Any],
+        width_ids: list[Any],
         existing: dict[str, Any] | None,
     ) -> Any:
         result = {key: dict(val) for key, val in (existing or {}).items()}
@@ -619,6 +669,26 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 config["predictor_id"] = int(predictor)
             else:
                 config.pop("predictor_id", None)
+        by_key = {item["index"]: {"method": mode} for item, mode in zip(transform_ids, transforms)}
+        for item, value in zip(bin_ids, bins):
+            by_key.setdefault(item["index"], {})["bins"] = value
+        for item, value in zip(width_ids, widths):
+            by_key.setdefault(item["index"], {})["width"] = value
+        for key, choice in by_key.items():
+            mode = choice.get("method", "none")
+            if mode in ("day", "week", "month", "quarter", "year"):
+                transform = {"kind": "calendar", "unit": mode}
+            elif mode in ("equal_width", "quantile"):
+                transform = {"kind": "numeric_bins", "method": mode, "bins": choice.get("bins", 10)}
+            elif mode == "fixed_width":
+                transform = {"kind": "numeric_bins", "method": mode, "width": choice.get("width", 1), "origin": 0}
+            else:
+                transform = None
+            conf = result.setdefault(key, {})
+            if transform is None:
+                conf.pop("transform", None)
+            else:
+                conf["transform"] = transform
         return result if result != (existing or {}) else no_update
 
     def current_slots(kind: str, values: Any, group: Any,
