@@ -262,10 +262,18 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             html.Div([
                 html.Label("Values — numerical variables"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
-                html.Label("Group — categorical metadata / binned numeric / calendar period"),
-                dcc.Dropdown(id="analysis-continuous-group", options=[]),
-                html.Label("Rows — categorical variable"), dcc.Dropdown(id="analysis-role-rows", options=[]),
-                html.Label("Columns — categorical variable"), dcc.Dropdown(id="analysis-role-columns", options=[]),
+                html.Div([
+                    html.Label("Group — categorical metadata / binned numeric / calendar period"),
+                    dcc.Dropdown(id="analysis-continuous-group", options=[]),
+                ], id="analysis-continuous-group-box"),
+                html.Div([
+                    html.Label("Rows — categorical variable"),
+                    dcc.Dropdown(id="analysis-role-rows", options=[]),
+                ], id="analysis-continuous-row-box", style={"display":"none"}),
+                html.Div([
+                    html.Label("Columns — categorical variable"),
+                    dcc.Dropdown(id="analysis-role-columns", options=[]),
+                ], id="analysis-continuous-column-box", style={"display":"none"}),
             ], id="analysis-continuous-roles", style={"display": "none"}),
             html.Div([
                 html.Label("Numerical statistic"), dcc.Dropdown(
@@ -444,6 +452,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-continuous-roles", "style"),
         Output("analysis-statistic-options", "style"),
         Output("analysis-hist-options", "style"),
+        Output("analysis-continuous-group-box", "style"),
+        Output("analysis-continuous-row-box", "style"),
+        Output("analysis-continuous-column-box", "style"),
         Input("analysis-kind", "value"),
         Input("analysis-aggregate-level", "value"),
         Input("analysis-aggregate-method", "value"),
@@ -476,6 +487,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else hidden,
             visible if kind in ("summary_bar", "value_heatmap") else hidden,
             visible if kind == "histogram" else hidden,
+            visible if kind in ("histogram", "summary_bar") else hidden,
+            visible if kind == "value_heatmap" else hidden,
+            visible if kind == "value_heatmap" else hidden,
         )
 
     @app.callback(Output("analysis-aggregation-options", "style"),
