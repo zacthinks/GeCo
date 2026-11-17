@@ -113,7 +113,7 @@ def test_calendar_grouping_saved_live_and_no_model_training(workspace, monkeypat
                   group={**meta("day", "temporal"),
                          "transform": {"kind": "calendar", "unit": "month"}})
     with monkeypatch.context() as patch:
-        patch.setattr(p, "fit_classifier", lambda *a, **k: pytest.fail("retraining"))
+        patch.setattr(p, "train_classifier", lambda *a, **k: pytest.fail("retraining"))
         saved = p.save_analysis("Monthly means", spec)
         assert p.analysis(saved)["spec"]["roles"]["group"]["transform"]["unit"] == "month"
         result = p.run_analysis(saved)
