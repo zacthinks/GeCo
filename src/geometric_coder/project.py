@@ -4424,6 +4424,43 @@ class GeometricCoder:
         )
         return {"prepared": True, "unit_count": len(scores)}
 
+    def _code_candidate_budget(self) -> int:
+        """Positive finite acquisition budget; 0 means legacy exhaustive."""
+        try:
+            settings = json.loads(
+                (self.project_dir / "ui_settings.json").read_text(encoding="utf-8")
+            )
+            value = settings.get("candidate_evaluation_budget", -1)
+            return value if type(value) is int and value > 0 else 0
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
+
+    def _rank_code_recommendation(
+        self, *, source: str, source_id: int, code_id: int,
+        session_id: int, strategy: str,
+    ) -> dict[str, Any] | None:
+        """Use a stable bounded subset only when a finite budget is set."""
+        budget = self._code_candidate_budget()
+        if budget:
+            return self.database.ranked_budgeted_code_recommendation(
+                source=source, source_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy, budget=budget,
+            )
+        if source == "classifier":
+            return self.database.ranked_classifier_recommendation(
+                classifier_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        if source == "learned_committee":
+            return self.database.ranked_classifier_committee_recommendation(
+                committee_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        return self.database.ranked_prepared_committee_recommendation(
+            committee_id=source_id, code_id=code_id,
+            session_id=session_id, strategy=strategy,
+        )
+
     def focus_recommendation(
         self,
         *,
@@ -4519,10 +4556,9 @@ class GeometricCoder:
                     if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                     else strategy
                 )
-                ranked = self.database.ranked_classifier_recommendation(
-                    classifier_fit_id=fit_id,
-                    code_id=int(code_id),
-                    session_id=int(session_id),
+                ranked = self._rank_code_recommendation(
+                    source="classifier", source_id=fit_id,
+                    code_id=int(code_id), session_id=int(session_id),
                     strategy=ranked_strategy,
                 )
                 if ranked is None:
@@ -4609,8 +4645,8 @@ class GeometricCoder:
                             "This committee is missing predictions for newly added units. "
                             "Train the selected committee to extend its frozen scores."
                         )
-                    ranked_committee = self.database.ranked_classifier_committee_recommendation(
-                        committee_fit_id=learned_fit_id,
+                    ranked_committee = self._rank_code_recommendation(
+                        source="learned_committee", source_id=learned_fit_id,
                         code_id=int(code_id), session_id=int(session_id),
                         strategy=committee_strategy,
                     )
@@ -4707,9 +4743,10 @@ class GeometricCoder:
                     ranked_strategy = ("classifier_disagreement" if strategy in {
                         "classifier_disagreement", "geometry_disagreement"
                     } else strategy)
-                    selection = self.database.ranked_prepared_committee_recommendation(
-                        committee_id=int(committee_id), code_id=int(code_id),
-                        session_id=int(session_id), strategy=ranked_strategy,
+                    selection = self._rank_code_recommendation(
+                        source="fixed_committee", source_id=int(committee_id),
+                        code_id=int(code_id), session_id=int(session_id),
+                        strategy=ranked_strategy,
                     )
                     if selection is None:
                         return None
@@ -4913,10 +4950,9 @@ class GeometricCoder:
                         if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                         else strategy
                     )
-                    ranked = self.database.ranked_classifier_recommendation(
-                        classifier_fit_id=int(fit["classifier_fit_id"]),
-                        code_id=int(code_id),
-                        session_id=int(session_id),
+                    ranked = self._rank_code_recommendation(
+                        source="classifier", source_id=int(fit["classifier_fit_id"]),
+                        code_id=int(code_id), session_id=int(session_id),
                         strategy=ranked_strategy,
                     )
                     if ranked is None:
@@ -4975,12 +5011,42 @@ class GeometricCoder:
             recommendation_probabilities = {name: result["probabilities"]}
             recommendation_aggregation = "mean"
 
+        # Exceptional legacy paths (for example learned-committee disagreement
+        # or explicit programmatic auto_retrain) still resolve corpus-wide
+        # frozen vectors above. Bound acquisition scoring of these vectors too.
+        # The UI's ordinary indexed classifier/committee paths return earlier.
+        candidate_units = unit_ids
+        candidate_probabilities = recommendation_probabilities
+        finite_budget = self._code_candidate_budget()
+        if finite_budget and recommendation_strategy != "random":
+            from geometric_coder.explore import deterministic_page_permutation_parameters
+
+            total = len(unit_ids)
+            if total:
+                source_identity = (
+                    int(committee_id) if use_committee and committee_id is not None
+                    else int(active_classifier_spec_id or 0)
+                )
+                seed = (
+                    source_identity * 2654435761 + int(code_id) * 2246822519
+                    + (3 if use_committee else 1)
+                ) & 0xFFFFFFFF
+                multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+                positions = [
+                    (multiplier * rank + shift) % total
+                    for rank in range(min(total, finite_budget))
+                ]
+                candidate_units = [unit_ids[index] for index in positions]
+                candidate_probabilities = {
+                    name: np.asarray(values, dtype=float)[positions]
+                    for name, values in recommendation_probabilities.items()
+                }
         recommendation = recommend_focus_unit(
             strategy=recommendation_strategy,  # type: ignore[arg-type]
-            unit_ids=unit_ids,
+            unit_ids=candidate_units,
             seen_unit_ids=seen_ids,
             annotated_unit_ids=annotated_ids,
-            probabilities_by_geometry=recommendation_probabilities,
+            probabilities_by_geometry=candidate_probabilities,
             selected_geometry=selected_name,
             committee_aggregation=recommendation_aggregation,  # type: ignore[arg-type]
             random_seed=random_seed,

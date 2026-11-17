@@ -4971,6 +4971,128 @@ class ProjectDatabase:
                 result[int(row["classifier_fit_id"])][int(row["unit_id"])] = float(score)
         return result
 
+    def ranked_budgeted_code_recommendation(
+        self, *, source: str, source_id: int, code_id: int,
+        session_id: int, strategy: str, budget: int,
+    ) -> dict[str, Any] | None:
+        """Rank a stable bounded sample of frozen Code prediction rows.
+
+        Sample identities depend only on the fit/prepared source and budget,
+        not on navigation or subsequent annotations. The live SQL predicates
+        exclude judged/visited cases without resampling or widening the scored
+        candidate set. Default/Exhaustive retain the original indexed queries.
+        """
+        from geometric_coder.explore import deterministic_page_permutation_parameters
+
+        sources = {
+            "classifier": ("classifier_predictions", "classifier_fit_id",
+                           "probability", "uncertainty"),
+            "learned_committee": ("classifier_committee_predictions", "committee_fit_id",
+                                  "probability", "uncertainty"),
+            "fixed_committee": ("prepared_committee_scores", "committee_id",
+                                "probability", "uncertainty"),
+        }
+        if source not in sources:
+            raise ValueError("Unknown Code recommendation source.")
+        if type(budget) is not int or budget < 1:
+            raise ValueError("Finite candidate budget must be a positive integer.")
+        if strategy not in {"likely_positive", "likely_negative",
+                            "classifier_uncertainty", "committee_uncertainty",
+                            "classifier_disagreement"}:
+            raise ValueError("Unsupported Code recommendation strategy.")
+        if strategy == "classifier_disagreement" and source != "fixed_committee":
+            raise ValueError("Disagreement requires prepared fixed committee scores.")
+        table, id_column, _, _ = sources[source]
+        score_column = (
+            "disagreement" if strategy == "classifier_disagreement"
+            else "uncertainty" if strategy in {"classifier_uncertainty", "committee_uncertainty"}
+            else "probability"
+        )
+        ascending = strategy == "likely_negative"
+        with self.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
+            if total == 0:
+                return None
+            # A budget covering every atomic unit is equivalent to Exhaustive.
+            # Use the existing frozen-score indexes instead of scanning the
+            # entire corpus in 128-position batches on every Next click.
+            if budget >= total:
+                if source == "classifier":
+                    return self.ranked_classifier_recommendation(
+                        classifier_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                if source == "learned_committee":
+                    return self.ranked_classifier_committee_recommendation(
+                        committee_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                return self.ranked_prepared_committee_recommendation(
+                    committee_id=source_id, code_id=code_id,
+                    session_id=session_id, strategy=strategy,
+                )
+            # Freeze this sampling order for a particular fit/configuration.
+            seed = (int(source_id) * 2654435761 + int(code_id) * 2246822519
+                    + {"classifier": 1, "learned_committee": 2,
+                       "fixed_committee": 3}[source]) & 0xFFFFFFFF
+            multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+            best: dict[str, Any] | None = None
+            best_key: tuple[float, int] | None = None
+            # A fixed sample of at most 'budget' frozen prediction rows is
+            # reused on subsequent clicks. Live exclusions may reduce the
+            # number actually scored; they never cause the window to grow.
+            evaluated = 0
+            inspected = 0
+            fixed_window = min(total, budget)
+            batch_size = 128
+            while inspected < fixed_window:
+                count = min(batch_size, fixed_window - inspected)
+                positions = [
+                    (multiplier * rank + shift) % total
+                    for rank in range(inspected, inspected + count)
+                ]
+                inspected += count
+                values = ", ".join("(?)" for _ in positions)
+                rows = connection.execute(
+                    f"""WITH positions(row_position) AS (VALUES {values})
+                        SELECT u.unit_id, p.observation_id, p.probability,
+                               p.uncertainty,
+                               {("p.disagreement" if source == "fixed_committee" else "NULL")} AS disagreement
+                        FROM positions AS selected
+                        JOIN units AS u ON u.row_position = selected.row_position
+                        JOIN {table} AS p ON p.observation_id = u.observation_id
+                        WHERE p.{id_column} = ? AND p.probability IS NOT NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM navigation_events AS nav
+                              WHERE nav.session_id = ? AND nav.unit_id = u.unit_id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM annotation_events AS ae
+                              WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM annotation_event_retractions AS aer
+                                    WHERE aer.annotation_event_id = ae.annotation_event_id
+                                )
+                          )""",
+                    (*positions, int(source_id), int(session_id), int(code_id)),
+                ).fetchall()
+                for row in rows:
+                    evaluated += 1
+                    score = float(row[score_column])
+                    identity = int(row["observation_id"])
+                    key = (score if ascending else -score, identity)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best = {
+                            "unit_id": int(row["unit_id"]),
+                            "observation_id": identity,
+                            "probability": float(row["probability"]),
+                            "uncertainty": float(row["uncertainty"]),
+                        }
+                        if source == "fixed_committee":
+                            best["disagreement"] = float(row["disagreement"])
+            return best
+
     def ranked_classifier_recommendation(
         self,
         *,
