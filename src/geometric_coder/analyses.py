@@ -147,8 +147,11 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
         raise ValueError("Analysis name must contain 1–160 characters.")
     normalized = validate_analysis(project, spec)
     if normalized["schema_version"] == 2:
-        from geometric_coder.analysis_roles import ensure_role_sources_ready
+        from geometric_coder.analysis_roles import (
+            ensure_role_chart_executable, ensure_role_sources_ready,
+        )
         ensure_role_sources_ready(project, normalized)
+        ensure_role_chart_executable(project, normalized)
     payload = json.dumps(normalized, sort_keys=True)
     try:
         with project.database.connect() as conn:

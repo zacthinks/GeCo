@@ -162,6 +162,30 @@ def ensure_role_sources_ready(project: Any, spec: Mapping[str, Any]) -> None:
             )
 
 
+def ensure_role_chart_executable(project: Any, spec: Mapping[str, Any]) -> None:
+    """Check data-dependent chart bounds before persisting a new v2 recipe.
+
+    The schema cannot know metadata cardinality, expanded heatmap dimensions,
+    parent-level bin counts, or metadata consistency. The existing chart engine
+    already enforces all of these with bounded SQL aggregates (or bounded
+    committee resolver pages), and returns only compact statistics.
+    Avoid recomputing ordinary ungrouped Code-only charts, which have no
+    data-dependent dimension or bin limits.
+    """
+    roles = spec["roles"]
+    entries = roles.get("values", roles.get("indicators", []))
+    variables = [item["variable"] for item in entries]
+    if "group" in roles:
+        variables.append(roles["group"]["variable"])
+    needs_data_check = (
+        any(variable["type"] == "metadata" for variable in variables)
+        or (spec["kind"] == "distribution" and "aggregation" in spec)
+    )
+    if needs_data_check:
+        # This read-only computation is not stored and never fits predictors.
+        compute_role_analysis(project, spec)
+
+
 def to_legacy_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Convert a validated *non-committee* v2 recipe without semantic loss."""
     variables = [dict(item["variable"])

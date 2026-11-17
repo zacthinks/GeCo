@@ -216,6 +216,71 @@ def test_v1_id_rename_duplicate_and_outputs_remain_unchanged(project):
     assert p.analysis(identity)["name"] == "Renamed"
 
 
+def test_v2_save_rejects_data_dependent_chart_limits_before_writing(tmp_path):
+    # A valid role schema can expand past the live chart engine's limits.
+    # Exercise the real save boundary without training models or changing v1.
+    row_count = 101
+    meta = [f"flag_{i}" for i in range(13)]
+    data = {
+        "id": list(range(row_count)),
+        "text": ["observation"] * row_count,
+        "category": [f"group_{i:03d}" for i in range(row_count)],
+    }
+    for field in meta:
+        data[field] = ["A" if i % 2 else "B" for i in range(row_count)]
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "role-limits.geco",
+        data=pd.DataFrame(data),
+        keys=["id"], text="text",
+        metadata=["category", *meta], geometries=None,
+    )
+    theme = p.create_code("Theme")
+    group_entry = entry({"type": "metadata", "field": "category",
+                         "value": "categorical"})
+    bar = {
+        "schema_version": 2, "kind": "bar", "measure": "count",
+        "roles": {"values": [entry(code(theme))], "group": group_entry},
+    }
+    with pytest.raises(ValueError, match=r"(maximum 100|more than 100 categories)"):
+        p.save_analysis("Too many groups", bar)
+    assert p.analyses() == []
+
+    heatmap = {
+        "schema_version": 2, "kind": "heatmap", "measure": "jaccard",
+        "roles": {"indicators": [
+            entry({"type": "metadata", "field": field, "value": "categorical"})
+            for field in meta
+        ]},
+    }
+    # Thirteen two-category fields produce 26 indicators (> 24).
+    with pytest.raises(ValueError, match="Too many encoded variables"):
+        p.save_analysis("Oversized heatmap", heatmap)
+    assert p.analyses() == []
+
+    # An individual field can also exceed the 24-category heatmap bound.
+    heatmap["roles"]["indicators"] = [
+        group_entry,
+        entry({"type": "metadata", "field": meta[0], "value": "categorical"}),
+    ]
+    with pytest.raises(ValueError, match="too many categories"):
+        p.save_analysis("Oversized indicator", heatmap)
+    assert p.analyses() == []
+
+    # Supported metadata configurations remain saveable; a failing update
+    # must not replace an existing valid definition.
+    bar["roles"]["group"] = entry({
+        "type": "metadata", "field": meta[0], "value": "categorical",
+    })
+    analysis_id = p.save_analysis("Valid role analysis", bar)
+    saved = p.analysis(analysis_id)["spec"]
+    assert p.run_analysis(analysis_id)["categories"] == ["A", "B"]
+    bar["roles"]["group"] = group_entry
+    with pytest.raises(ValueError, match=r"(maximum 100|more than 100 categories)"):
+        p.save_analysis("Overwrite rejected", bar, analysis_id=analysis_id)
+    assert p.analysis(analysis_id)["name"] == "Valid role analysis"
+    assert p.analysis(analysis_id)["spec"] == saved
+
+
 def test_fixed_committee_binary_is_executable_without_retraining(tmp_path, monkeypatch):
     from geometric_coder import CountGeometry
 

@@ -82,6 +82,16 @@ Regression tests: `tests/test_saved_analyses.py`,
 
 ## Save-time source readiness
 
+Before saving a new v2 chart (or updating one), GeCo also runs the existing
+read-only chart feasibility checks whenever metadata expansion or parent-level
+Code-value binning can make a valid role specification unrenderable. This
+rejects grouped bars with over 100 categories, categorical heatmaps exceeding
+24 expanded indicators or 24 categories per metadata field, inconsistent
+parent-level metadata, and aggregated distributions exceeding 100 bins. The
+chart engine returns only compact aggregates, which are discarded by this
+preflight; no models are trained. Legacy v1 saves and the live recomputation
+of existing recipes are unchanged.
+
 New schema-v2 analyses are checked for a retained trained predictor **at save time**. A classifier must have a saved fit; fixed committees must have fitted members and learned committees must have their own saved fit. Selecting an unfitted source produces an actionable validation error without creating a saved analysis, training a predictor, or mutating evidence. This check does not alter v1 validation or execution. A previously saved v2 definition remains live: model status may change after saving, at which point ordinary execution reports unavailable or stale sources according to existing behavior.
 
 The browser regression scenarios reuse a single project, fitted classifier, committee and app. CI runs the browser tests once in a Playwright-enabled step, while redundant same-branch push/PR test jobs are canceled when a newer head arrives.
