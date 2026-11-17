@@ -1249,3 +1249,33 @@ def register_representation_callbacks(
             for row in project.geometries(public_only=True)
         ]
         return options, options, options, options
+
+    @app.callback(
+        Output("topic-create-geometry", "value", allow_duplicate=True),
+        Output("code-center-geometry", "value"),
+        Output("classifier-spec-geometry", "value"),
+        Input("code-center-geometry", "options"),
+        State("topic-create-geometry", "value"),
+        State("code-center-geometry", "value"),
+        State("classifier-spec-geometry", "value"),
+        prevent_initial_call=True,
+    )
+    def reconcile_analytic_geometry_selections(
+        options: list[dict[str, Any]] | None,
+        topic_id: int | None, code_center_id: int | None,
+        classifier_id: int | None,
+    ) -> tuple[Any, Any, Any]:
+        # Registry updates replace the options, but Dash may still hold a value
+        # for a removed or demoted geometry. Keep valid choices unchanged.
+        valid_ids = [int(option["value"]) for option in (options or [])]
+
+        def reconcile(selected: int | None) -> Any:
+            if selected in valid_ids:
+                return no_update
+            return valid_ids[0] if valid_ids else None
+
+        return (
+            reconcile(topic_id),
+            reconcile(code_center_id),
+            reconcile(classifier_id),
+        )

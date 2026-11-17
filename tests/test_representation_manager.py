@@ -371,7 +371,7 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
     """A newly registered geometry becomes selectable without rebuilding the app."""
     import inspect
     import pandas as pd
-    pytest.importorskip("dash")
+    dash = pytest.importorskip("dash")
     from geometric_coder import GeometricCoder
     from geometric_coder.ui.app import create_app
 
@@ -402,7 +402,11 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
     refresh = callback("geometry_options")
     scale_refresh = callback("scale_model_geometry_options")
     topic_availability = callback("refresh_topic_create_availability")
+    reconcile = callback("reconcile_analytic_geometry_selections")
+    center_views = callback("update_code_center_views")
+    center_map = callback("update_code_center_map")
     assert refresh(0) == ([], [], [], [])
+    assert reconcile([], None, None, None) == (None, None, None)
     assert scale_refresh(scale_id, 0) == ([], None)
     assert topic_availability(refresh(0)[1]) is True
     linked["available"] = True
@@ -435,6 +439,8 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
         {"label": "new_svd", "value": 12},
     ]
     assert refresh(1) == (expected, expected, expected, expected)
+    assert reconcile(expected, None, None, None) == (11, 11, 11)
+    assert all(value is dash.no_update for value in reconcile(expected, 12, 12, 12))
     assert topic_availability(refresh(1)[1]) is False
     assert scale_refresh(scale_id, 1) == (
         [{"label": "new_counts", "value": 101},
@@ -444,16 +450,31 @@ def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch
     registered[1]["name"] = "renamed_svd"
     representations[1]["name"] = "renamed_svd"
     assert refresh(2)[1][-1]["label"] == "renamed_svd"
+    assert all(value is dash.no_update for value in reconcile(refresh(2)[2], 12, 12, 12))
     assert scale_refresh(scale_id, 2)[0][-1]["label"] == "renamed_svd"
 
     registered.pop()
     representations.pop(1)
     assert [item["value"] for item in refresh(3)[2]] == [11]
+    # A removed or demoted selected geometry must move every selector to a
+    # surviving analytic geometry; a surviving selection must not be reset.
+    assert reconcile(refresh(3)[2], 12, 12, 12) == (11, 11, 11)
+    assert all(value is dash.no_update for value in reconcile(refresh(3)[2], 11, 11, 11))
+    # A registry revision can hit Code Center's view/map callbacks before
+    # dropdown values have been corrected. No deleted-geometry lookup may run.
+    assert center_views(12, 3, 3, None) == ([], None)
+    figure, status = center_map(
+        None, 12, -102, "5000", 1, [], "codes", "geometry",
+        0, 0, 0, None, None,
+    )
+    assert status == ""
+    assert "no longer available" in str(figure)
     assert topic_availability(refresh(3)[1]) is False
     assert [item["value"] for item in scale_refresh(scale_id, 3)[0]] == [101]
 
     # Removing the final analytic geometry disables Create again.
     registered.clear()
+    assert reconcile(refresh(4)[2], 11, 11, 11) == (None, None, None)
     assert topic_availability(refresh(4)[1]) is True
     # Standalone projects must remain unable to fit TeAL Topic Models.
     linked["available"] = False
