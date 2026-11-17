@@ -11,8 +11,17 @@ future Analyses chart roles without changing the saved Analysis v1 engine.
   The source is `labels`, `predictions`, or `hybrid`; the representation
   is `binary` or `probability`. Predicted and hybrid sources require
   `predictor_id`, a code-owned classifier *specification* ID. The retained
-  classifier fit is resolved and reported at each call. Human-only labels
-  cannot be described as model probabilities.
+  classifier fit is resolved and reported at each call. A committee can
+  instead be selected by `"predictor_kind":"committee"` and its stable
+  `predictor_id` (committee ID); the default kind is `"classifier"` for
+  compatibility. Fixed committees use the selected members' retained fit
+  probabilities with the existing aggregation rule (and a 0.5 threshold for
+  binary predictions). Learned committees read their retained committee-fit
+  predictions. Both return fit/member provenance, current/stale status,
+  and explicit missing coverage; incomplete member coverage is never replaced
+  by a partial aggregation. Neither committee type is trained or prepared
+  merely by analytical resolution. Human-only labels cannot be described as
+  model probabilities.
 - Scale: `{"type":"scale","scale_id":16,"value":"position"}`.
   Positions are continuous model predictions from the Scale's retained
   Davidson fit, never direct human numerical judgments. The selected
