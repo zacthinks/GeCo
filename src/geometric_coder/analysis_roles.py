@@ -118,6 +118,50 @@ def validate_role_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, A
     return result
 
 
+
+def ensure_role_sources_ready(project: Any, spec: Mapping[str, Any]) -> None:
+    """Gate v2 saves on retained prediction fits, without training or scoring.
+
+    This is a save-time check, not a validation rule for stored live recipes:
+    a model can later be removed or become stale, and the original recipe
+    must remain readable and report its current execution state. A stale
+    retained fit remains usable with the existing warning semantics.
+    """
+    roles = spec["roles"]
+    entries = roles.get("values", roles.get("indicators", []))
+    checked: set[tuple[int, str, int]] = set()
+    for item in entries:
+        variable = item["variable"]
+        if variable["type"] != "code" or variable["source"] == "labels":
+            continue
+        code_id = variable["code_id"]
+        kind = variable.get("predictor_kind", "classifier")
+        predictor_id = variable["predictor_id"]
+        key = (code_id, kind, predictor_id)
+        if key in checked:
+            continue
+        checked.add(key)
+        name = project.code(code_id)["name"]
+        if kind == "classifier":
+            statuses = project.classifier_status(
+                code_id=code_id, classifier_spec_ids=[predictor_id]
+            )["classifiers"]
+            ready = bool(statuses and statuses[0].get("classifier_fit_id") is not None)
+        else:
+            state = project.classifier_committee_status(
+                code_id=code_id, committee_id=predictor_id
+            )
+            # Fixed committees require retained fits for all members; learned
+            # committees require their own trained snapshot. Both report
+            # "not_trained" when no executable fitted prediction source exists.
+            ready = state["status"] != "not_trained"
+        if not ready:
+            raise ValueError(
+                f"{name}: selected {kind} has no trained prediction fit. "
+                "Train the selected predictor before saving this analysis."
+            )
+
+
 def to_legacy_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Convert a validated *non-committee* v2 recipe without semantic loss."""
     variables = [dict(item["variable"])
