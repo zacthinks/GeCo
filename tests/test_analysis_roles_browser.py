@@ -184,6 +184,35 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert duplicate["analysis_id"] != legacy_id
                 assert project.run_analysis(duplicate["analysis_id"]) == before
 
+                # A distribution supports parent-level counts. Switching to a
+                # bar must reset that incompatible reduction, not reject a
+                # chart that is otherwise valid. A correlation heatmap may
+                # retain the count reduction; Jaccard may not.
+                page.locator("#analysis-new").click()
+                page.locator("#analysis-name").fill("Switching aggregation")
+                choose(page.locator("#analysis-kind"), "Code-value distribution")
+                choose(page.locator("#analysis-role-distribution"), "Code: Theme")
+                choose(page.locator("#analysis-aggregate-level"), "Group by interview (and preceding keys)")
+                choose(page.locator("#analysis-aggregate-method"), "Number of positive units per group")
+                choose(page.locator("#analysis-kind"), "Bar plot — positive Code counts")
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-aggregate-method')"
+                    "?.innerText?.includes('Any observed positive')", timeout=15000,
+                )
+                choose(page.locator("#analysis-role-values"), "Code: Theme")
+                page.locator("#analysis-preview").click()
+                page.locator("#analysis-status").get_by_text(
+                    "Preview unavailable:", exact=False
+                ).wait_for(state="hidden", timeout=15000)
+                page.locator("#analysis-save").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                switched = next(row for row in project.analyses()
+                                if row["name"] == "Switching aggregation")
+                assert switched["spec"]["aggregation"]["method"] == "any"
+
                 # An explicitly temporal role is visible but cannot execute
                 # calendar bucketing in this phase, even if the raw data look
                 # like valid dates.
