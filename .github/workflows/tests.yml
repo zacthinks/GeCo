@@ -1,15 +1,14 @@
 name: Tests
 
 on:
+  # Test proposed changes once through the PR. Restrict push builds to the
+  # integration/release branches so feature-branch pushes do not run duplicate CI.
   push:
+    branches:
+      - main
+      - analyses
   pull_request:
   workflow_dispatch:
-
-# Push and PR triggers on the same feature branch otherwise duplicate expensive
-# setup/browser/full-suite work. A newer head supersedes older test runs.
-concurrency:
-  group: tests-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
 
 jobs:
   pytest:
