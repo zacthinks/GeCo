@@ -396,7 +396,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                  "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
-                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1)
+                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
         if trigger == "analysis-new":
             return empty
         if selected is None:
@@ -419,7 +419,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             _initial_config(spec), aggregate.get("level", "none"),
             aggregate.get("method", "any"), aggregate.get("threshold", 1), "",
             slots.get("x"), slots.get("y"), slots.get("color"),
-            slots.get("values", []) if spec["kind"] in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else [],
+            (slots.get("values", []) if isinstance(slots.get("values", []), list) else [slots["values"]]) if spec["kind"] in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else [],
             slots.get("rows"), slots.get("columns"),
             spec.get("statistic", "mean"), spec.get("binning", {}).get("method", "equal_width"),
             spec.get("binning", {}).get("bins", 20), spec.get("binning", {}).get("width", 1),
