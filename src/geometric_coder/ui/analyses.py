@@ -346,14 +346,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             help_text,
         )
 
-    @app.callback(Output("analysis-measure", "value", allow_duplicate=True),
-                  Input("analysis-kind", "value"),
-                  State("analysis-measure", "value"),
-                  prevent_initial_call=True)
-    def reset_measure(kind: str, current: str) -> Any:
-        return "count" if kind != "heatmap" else (current if current in
-            ("count", "jaccard", "correlation") else "count")
-
     @app.callback(Output("analysis-aggregation-options", "style"),
                   Input("analysis-aggregate-level", "value"))
     def show_aggregation(level: str | None) -> dict[str, str]:
@@ -507,7 +499,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    editing: dict[str, Any]) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
         recipe = editor_recipe(
-            kind, measure, current_slots(kind, values, group, distribution, indicators),
+            kind, measure if kind == "heatmap" else "count",
+            current_slots(kind, values, group, distribution, indicators),
             configs or {}, level, method, threshold, legacy=legacy,
         )
         if legacy:
