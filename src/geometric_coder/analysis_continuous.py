@@ -260,7 +260,7 @@ def _bin(value: float | None, edges: list[float]) -> int | None:
 
 
 def _bin_labels(edges: list[float]) -> list[str]:
-    return [f"[{a:.6g}, {b:.6g}{']' if i == len(edges) - 2 else ')'}"
+    return [f"[{a:.17g}, {b:.17g}{']' if i == len(edges) - 2 else ')'}"
             for i, (a, b) in enumerate(zip(edges, edges[1:]))]
 
 
@@ -516,6 +516,12 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             return calendar_period(value, transform["unit"])
         return str(value)
 
+    def ordered_categories(role: str, used: Any) -> list[str]:
+        known = set(used)
+        if role in edges:
+            return [label for label in _bin_labels(edges[role]) if label in known]
+        return sorted(known)
+
     result = {
         "kind": kind, "warnings": sorted(warnings),
         "coverage": {"total": coverage["total"], "complete": coverage["complete"],
@@ -561,7 +567,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
                     raise ValueError("More than 100 histogram groups.")
                 counts[group] = [0] * len(bins)
             counts[group][index] += 1
-        result.update(edges=hist_edges, bins=bins, groups=sorted(counts),
+        result.update(edges=hist_edges, bins=bins, groups=(ordered_categories("group", counts) if "group" in roles else sorted(counts)),
                       counts=counts, excluded_range=excluded,
                       missing_group=missing_group,
                       denominators={g: sum(counts[g]) for g in counts})
@@ -593,7 +599,8 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             if spec["statistic"] == "mean":
                 return sums[key] / counts[key]
             return median(item[1] for item in medians[key])
-        row_labels = sorted({key[0] for key in counts})
+        row_role = "group" if kind == "summary_bar" else "rows"
+        row_labels = ordered_categories(row_role, (key[0] for key in counts))
         if len(row_labels) > MAX_CATEGORIES:
             raise ValueError("More than 100 summary categories.")
         if kind == "summary_bar":
@@ -602,7 +609,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
                           denominators=[counts[(row, None)] for row in row_labels],
                           statistic=spec["statistic"])
         else:
-            column_labels = sorted({key[1] for key in counts if key[1] is not None})
+            column_labels = ordered_categories("columns", (key[1] for key in counts if key[1] is not None))
             if len(column_labels) > MAX_CATEGORIES:
                 raise ValueError("More than 100 summary columns.")
             result.update(rows=row_labels, columns=column_labels,
