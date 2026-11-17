@@ -295,7 +295,13 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("Positive count threshold (threshold method only)"),
                 dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
                           step=1, value=1),
-                html.P("Only Codes are reduced. Selected metadata must be constant within a group."),
+                html.Label("Parent-grain reduction for numerical values"),
+                dcc.Dropdown(id="analysis-parent-numeric-method",
+                    options=[{"label":"Mean","value":"mean"},{"label":"Median","value":"median"}],
+                    value="mean", clearable=False),
+                html.P("Binary Codes use the selected count/proportion reduction; numerical values "
+                       "use the numerical reduction. Grouping metadata must be constant in each parent."),
+
             ], id="analysis-aggregation-options", style={"display": "none"}),
             html.Div(id="analysis-status", className="analysis-validation", role="alert"),
             html.Div([
@@ -381,6 +387,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-hist-bins", "value"),
         Output("analysis-hist-width", "value"),
         Output("analysis-continuous-group", "value"),
+        Output("analysis-parent-numeric-method", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -393,14 +400,14 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         trigger = callback_context.triggered_id
         empty = ({"display": "block"}, {"id": None, "schema_version": 2},
                  "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean")
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
                     None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 26
+            return (no_update,) * 27
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -424,6 +431,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec.get("statistic", "mean"), spec.get("binning", {}).get("method", "equal_width"),
             spec.get("binning", {}).get("bins", 20), spec.get("binning", {}).get("width", 1),
             slots.get("group") if spec["kind"] in ("histogram", "summary_bar") else None,
+            aggregate.get("numeric_method", "mean"),
         )
 
     @app.callback(
@@ -724,8 +732,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    editing: dict[str, Any], x: Any, y: Any, color: Any,
                    continuous_values: Any, rows: Any, columns: Any,
                    continuous_group: Any, statistic: Any,
-                   hist_method: Any, hist_bins: Any, hist_width: Any) -> dict[str, Any]:
+                   hist_method: Any, hist_bins: Any, hist_width: Any,
+                   parent_numeric_method: Any) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
+        if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
+            raise ValueError("Choose exactly one numeric Values variable for this visualization.")
         from geometric_coder.analysis_continuous import CONTINUOUS_KINDS
         if kind in CONTINUOUS_KINDS and legacy:
             raise ValueError("Legacy analyses cannot switch to a numerical chart; create a new analysis.")
@@ -740,7 +751,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             kind, measure if kind == "heatmap" else "count",
             all_slots, configs or {}, level, method, threshold, legacy=legacy,
             extra_slots=all_slots,
-            continuous_options={"statistic": statistic or "mean", "binning": bins},
+            continuous_options={"statistic": statistic or "mean", "binning": bins,
+                                "numeric_method": parent_numeric_method or "mean"},
         )
         if legacy:
             for var in recipe["variables"]:
@@ -779,6 +791,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-method", "value"),
         State("analysis-hist-bins", "value"),
         State("analysis-hist-width", "value"),
+        State("analysis-parent-numeric-method", "value"),
     ]
 
     @app.callback(
@@ -798,6 +811,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              x: Any, y: Any, color: Any, continuous_values: Any,
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
+             parent_numeric_method: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 5
@@ -805,7 +819,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
-                              hist_method, hist_bins, hist_width)
+                              hist_method, hist_bins, hist_width, parent_numeric_method)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
             return no_update, no_update, no_update, str(exc), no_update
@@ -825,14 +839,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 configs: Any, level: Any, method: str, threshold: Any,
                 x: Any, y: Any, color: Any, continuous_values: Any,
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
-                hist_method: Any, hist_bins: Any, hist_width: Any) -> tuple[Any, str]:
+                hist_method: Any, hist_bins: Any, hist_width: Any,
+                parent_numeric_method: Any) -> tuple[Any, str]:
         if editing is None:
             return no_update, ""
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
-                              hist_method, hist_bins, hist_width)
+                              hist_method, hist_bins, hist_width, parent_numeric_method)
             result = compute_analysis(project, spec)
             fig = analysis_figure(result)
             if result.get("warnings"):
