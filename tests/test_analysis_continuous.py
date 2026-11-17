@@ -120,6 +120,9 @@ def test_calendar_grouping_saved_live_and_no_model_training(workspace, monkeypat
     assert "2025-12" in result["categories"]
     assert "2026-01" in result["categories"]
     assert p.analysis(saved)["spec"]["schema_version"] == 2
+    from geometric_coder.ui.analyses import _initial_config
+    restored = _initial_config(p.analysis(saved)["spec"])
+    assert restored["group:metadata:day"]["transform"] == {"kind": "calendar", "unit": "month"}
 
 
 def test_invalid_settings_dont_save(workspace):
