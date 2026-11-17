@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Push and PR triggers on the same feature branch otherwise duplicate expensive
+# setup/browser/full-suite work. A newer head supersedes older test runs.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
