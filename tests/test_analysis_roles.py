@@ -6,7 +6,9 @@ import pytest
 
 from geometric_coder import GeometricCoder
 from geometric_coder.analyses import compute_analysis, validate_analysis
-from geometric_coder.ui.analyses import _initial_config, _slots, editor_recipe
+from geometric_coder.ui.analyses import (
+    _initial_config, _slots, compatible_aggregation_method, editor_recipe,
+)
 
 
 @pytest.fixture
@@ -135,6 +137,52 @@ def test_legacy_restoration_and_role_config_isolation(project):
     recipe = editor_recipe("bar", "count", {"values": [f"code:{b}"]},
                            configs, None, "any", 1)
     assert recipe["roles"]["values"][0]["variable"]["predictor_id"] == 17
+
+
+@pytest.mark.parametrize(
+    ("kind", "measure", "method", "expected"),
+    [
+        ("distribution", "count", "count", "count"),
+        ("distribution", "count", "mean", "mean"),
+        ("heatmap", "correlation", "mean", "mean"),
+        ("heatmap", "jaccard", "mean", "any"),
+        ("heatmap", "count", "log_count", "any"),
+        ("bar", "count", "count", "any"),
+        ("bar", "count", "minimum", "minimum"),
+        ("bar", "count", "any", "any"),
+    ],
+)
+def test_chart_aggregation_method_compatibility(kind, measure, method, expected):
+    assert compatible_aggregation_method(kind, measure, method) == expected
+
+
+def test_chart_switch_normalizes_only_incompatible_aggregations(project):
+    p, a, b, _ = project
+    codes = [f"code:{a}", f"code:{b}"]
+    for kind, measure, slots, expected in (
+        ("distribution", "count", {"values": codes}, "count"),
+        ("bar", "count", {"values": codes}, "any"),
+        ("heatmap", "correlation", {"indicators": codes}, "count"),
+        ("heatmap", "jaccard", {"indicators": codes}, "any"),
+    ):
+        recipe = editor_recipe(kind, measure, slots, {}, "id", "count", 1)
+        assert recipe["aggregation"]["method"] == expected
+        result = compute_analysis(p, recipe)
+        assert result["kind"] == kind
+    # A saved bar threshold reduction is valid and must survive editing.
+    existing = {
+        "kind": "bar", "measure": "count",
+        "variables": [code(a)],
+        "aggregation": {"level": "id", "method": "minimum", "threshold": 2},
+    }
+    slots = _slots(existing)
+    configs = _initial_config(existing)
+    edited = editor_recipe(
+        "bar", "count", slots, configs, "id", "minimum", 2, legacy=True,
+    )
+    assert compute_analysis(p, edited) == compute_analysis(p, existing)
+    assert edited["aggregation"]["method"] == "minimum"
+    assert edited["aggregation"]["threshold"] == 2
 
 
 def test_v1_id_rename_duplicate_and_outputs_remain_unchanged(project):
