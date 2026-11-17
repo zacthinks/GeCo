@@ -79,3 +79,9 @@ the bounded typed resolver; the legacy engine remains SQL-aggregated.
 
 Regression tests: `tests/test_saved_analyses.py`,
 `tests/test_analysis_roles.py`, and browser interaction tests.
+
+## Save-time source readiness
+
+New schema-v2 analyses are checked for a retained trained predictor **at save time**. A classifier must have a saved fit; fixed committees must have fitted members and learned committees must have their own saved fit. Selecting an unfitted source produces an actionable validation error without creating a saved analysis, training a predictor, or mutating evidence. This check does not alter v1 validation or execution. A previously saved v2 definition remains live: model status may change after saving, at which point ordinary execution reports unavailable or stale sources according to existing behavior.
+
+The browser regression scenarios reuse a single project, fitted classifier, committee and app. CI runs the browser tests once in a Playwright-enabled step, while redundant same-branch push/PR test jobs are canceled when a newer head arrives.
