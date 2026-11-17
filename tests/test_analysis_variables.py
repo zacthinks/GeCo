@@ -138,11 +138,12 @@ def test_code_predictions_binary_probability_and_hybrid_unsure(sample):
 
 def test_untrained_code_predictor_is_missing_but_human_hybrid_remains(sample):
     project, code, _predictor, _scale, ids = sample
-    # A second configured classifier exists but has never been trained.
-    specs = project.classifier_specs(code_id=code)
-    if len(specs) < 2:
-        pytest.skip("No second default classifier specification is available.")
-    other = next(int(s["classifier_spec_id"]) for s in specs[1:])
+    # Create an explicitly untrained specification so this contract is never skipped.
+    geometry_id = int(project.geometries(public_only=True)[0]["geometry_id"])
+    other = project.create_classifier_spec(
+        code_id=code, name="Untrained analysis classifier", geometry_id=geometry_id,
+        algorithm="complement_nb",
+    )
     columns = resolve_analytical_variables(project, [
         _code(code, "predictions", "binary", other),
         _code(code, "hybrid", "binary", other),
@@ -322,3 +323,149 @@ def test_linked_geometry_scores_are_key_aligned_and_bounded(tmp_path, monkeypatc
         project, [{"type": "scale", "scale_id": scale}], requested
     )
     assert result["columns"][0]["values"] == [201.0, 501.0, 201.0]
+
+
+def _committee(code, committee_id, source="predictions", value="probability"):
+    return {
+        "type": "code", "code_id": code, "source": source, "value": value,
+        "predictor_kind": "committee", "predictor_id": committee_id,
+    }
+
+
+def _committee_members(sample):
+    project, code, predictor, _scale, ids = sample
+    geometry_id = int(project.geometries(public_only=True)[0]["geometry_id"])
+    second = project.create_classifier_spec(
+        code_id=code, name="Second analysis classifier", geometry_id=geometry_id,
+        algorithm="complement_nb",
+    )
+    project.train_classifier(code_id=code, classifier_spec_id=second)
+    return project, code, predictor, second, ids
+
+
+def test_fixed_committee_probabilities_binary_hybrid_alignment_and_provenance(sample):
+    from geometric_coder.apply import aggregate_probabilities
+    project, code, first, second, ids = _committee_members(sample)
+    committee = project.create_classifier_committee(
+        code_id=code, name="Analysis fixed committee",
+        classifier_spec_ids=[first, second], aggregation="harmonic_mean",
+    )
+    requested = [ids[5], ids[0], ids[1], ids[3], ids[5], ids[2]]
+    original = resolve_analytical_variables(project, [
+        _code(code, "predictions", "probability", first),
+        _code(code, "predictions", "probability", second),
+    ], requested)["columns"]
+    combined = aggregate_probabilities(
+        {"first": original[0]["values"], "second": original[1]["values"]},
+        aggregation="harmonic_mean",
+    )
+    probability, binary, hybrid = resolve_analytical_variables(project, [
+        _committee(code, committee),
+        _committee(code, committee, value="binary"),
+        _committee(code, committee, source="hybrid"),
+    ], requested)["columns"]
+    assert probability["values"] == pytest.approx(combined.tolist())
+    assert binary["values"] == [float(value >= 0.5) for value in combined]
+    assert hybrid["values"][1] == 1.0
+    assert hybrid["values"][2] is None
+    assert hybrid["missing_reasons"][2] == "unsure"
+    assert hybrid["values"][3] == 0.0
+    assert hybrid["values"][0] == pytest.approx(combined[0])
+    assert probability["values"][0] == probability["values"][4]
+    assert probability["provenance"]["committee_id"] == committee
+    assert probability["provenance"]["committee_aggregation"] == "harmonic_mean"
+    assert len(probability["provenance"]["member_classifier_fit_ids"]) == 2
+    assert probability["coverage"]["missing"] == 0
+    assert project.database.prepared_committee_ranking(committee) is None
+
+
+def test_fixed_committee_untrained_member_and_cross_code_validation(sample):
+    project, code, trained, _scale, ids = sample
+    geometry_id = int(project.geometries(public_only=True)[0]["geometry_id"])
+    untrained = project.create_classifier_spec(
+        code_id=code, name="Untrained committee member",
+        geometry_id=geometry_id, algorithm="complement_nb",
+    )
+    committee = project.create_classifier_committee(
+        code_id=code, name="Untrained analysis committee",
+        classifier_spec_ids=[trained, untrained],
+    )
+    predicted, hybrid = resolve_analytical_variables(project, [
+        _committee(code, committee), _committee(code, committee, source="hybrid"),
+    ], ids)["columns"]
+    assert predicted["values"] == [None] * len(ids)
+    assert predicted["coverage"]["by_reason"] == {"not_trained": len(ids)}
+    assert hybrid["values"][0] == 1.0 and hybrid["values"][3] == 0.0
+    assert hybrid["missing_reasons"][1] == "unsure"
+    assert hybrid["missing_reasons"][2] == "not_trained"
+    assert predicted["provenance"]["fit_status"] == "not_trained"
+    other_code = project.create_code("Different construct")
+    for ref in (
+        _committee(other_code, committee),
+        _committee(code, 9999999),
+        {**_committee(code, committee), "predictor_kind": "unknown"},
+    ):
+        with pytest.raises(ValueError):
+            validate_variable(project, ref)
+
+
+def test_fixed_committee_missing_member_probability_is_not_partial_average(sample):
+    project, code, first, second, ids = _committee_members(sample)
+    committee = project.create_classifier_committee(
+        code_id=code, name="Missing member committee",
+        classifier_spec_ids=[first, second],
+    )
+    second_fit = project.classifier_status(
+        code_id=code, classifier_spec_ids=[second]
+    )["classifiers"][0]["classifier_fit_id"]
+    with project.database.connect() as connection:
+        connection.execute(
+            "DELETE FROM classifier_predictions WHERE classifier_fit_id = ? "
+            "AND observation_id = ?", (second_fit, ids[2]),
+        )
+    result = resolve_analytical_variables(
+        project, [_committee(code, committee)], [ids[2], ids[0]]
+    )["columns"][0]
+    assert result["values"][0] is None
+    assert result["missing_reasons"][0] == "missing_prediction"
+    assert result["values"][1] is not None
+    assert result["provenance"]["fit_status"] == "stale"
+
+
+def test_learned_committee_frozen_scores_and_human_first_hybrid(sample):
+    project, code, first, second, ids = _committee_members(sample)
+    committee = project.create_classifier_committee(
+        code_id=code, name="Analysis learned committee",
+        classifier_spec_ids=[first, second], aggregation="logistic_stack",
+    )
+    # The learned stacker requires enough examples of both classes to fit its
+    # out-of-fold training data; create an independent human-review fixture.
+    project.annotate(ids[2], code, "positive")
+    project.annotate(ids[4], code, "negative")
+    project.train_classifier(code_id=code, classifier_spec_id=first)
+    project.train_classifier(code_id=code, classifier_spec_id=second)
+    project.train_classifier_committee(code_id=code, committee_id=committee)
+    requested = [ids[5], ids[0], ids[1], ids[3], ids[5]]
+    result = resolve_analytical_variables(project, [
+        _committee(code, committee),
+        _committee(code, committee, source="hybrid"),
+    ], requested)["columns"]
+    predicted, hybrid = result
+    stored = project.database.latest_classifier_committee_fit(
+        committee_id=committee, code_id=code
+    )
+    assert predicted["provenance"]["committee_fit_id"] == stored["committee_fit_id"]
+    assert predicted["provenance"]["fit_status"] == "current"
+    assert all(value is not None and 0 <= value <= 1 for value in predicted["values"])
+    assert predicted["values"][0] == predicted["values"][4]
+    assert hybrid["values"][1] == 1.0
+    assert hybrid["values"][2] is None
+    assert hybrid["missing_reasons"][2] == "unsure"
+    assert hybrid["values"][3] == 0.0
+    project.annotate(ids[5], code, "positive")
+    stale = resolve_analytical_variables(
+        project, [_committee(code, committee)], [ids[5]]
+    )["columns"][0]
+    assert stale["provenance"]["committee_fit_id"] == stored["committee_fit_id"]
+    assert stale["provenance"]["fit_status"] == "stale"
+    assert any("stale" in message for message in stale["warnings"])
