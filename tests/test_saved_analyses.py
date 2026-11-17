@@ -207,7 +207,8 @@ def test_analyses_is_top_level_and_code_center_has_no_analysis_tab():
     assert 'label="Analysis", value="analysis"' not in code_center
     assert 'children=analysis_tab(dcc=dcc, html=html, project=project)' in source
     callback_source = Path(analyses_module.__file__).read_text(encoding="utf-8")
-    assert 'Output("analysis-vars", "options")' in callback_source
+    assert 'Output("analysis-role-values", "options")' in callback_source
+    assert 'Output("analysis-role-indicators", "options")' in callback_source
     assert 'Input("explore-code-refresh-store", "data")' in callback_source
     assert 'Input("focus-refresh-store", "data")' in callback_source
     assert 'if workspace != "analyses":' in callback_source
@@ -380,7 +381,7 @@ def test_histogram_preview_is_explicit_and_uses_unsaved_editor_settings():
     assert 'Input("analysis-preview", "n_clicks")' in source
     assert "compute_analysis(project, spec)" in source
     assert 'id="analysis-visualization-help"' in source
-    assert '{"label": "Histogram", "value": "distribution"}' in source
+    assert '{"label": "Code-value distribution", "value": "distribution"}' in source
     assert '{"label": "Number of positive units per group", "value": "count"}' in source
 
 

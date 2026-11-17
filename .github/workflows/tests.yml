@@ -1,7 +1,12 @@
 name: Tests
 
 on:
+  # Test proposed changes once through the PR. Restrict push builds to the
+  # integration/release branches so feature-branch pushes do not run duplicate CI.
   push:
+    branches:
+      - main
+      - analyses
   pull_request:
   workflow_dispatch:
 
@@ -29,8 +34,10 @@ jobs:
       - name: Install GeCo and all dependencies
         run: uv sync --all-extras
 
-      - name: Browser-level Scale prediction preview regression
-        run: uv run --with playwright pytest -q -rs tests/test_scale_prediction_browser.py
+      - name: Browser-level Scale and Analyses editor regressions
+        run: |
+          uv run --with playwright python -c "import shutil; import playwright.sync_api; assert any(shutil.which(name) for name in ('google-chrome', 'chromium', 'chromium-browser')), 'Chrome/Chromium is required for browser regression tests'"
+          uv run --with playwright pytest -q -rs tests/test_scale_prediction_browser.py tests/test_analysis_roles_browser.py
 
       - name: Upload browser verification screenshots
         if: always()

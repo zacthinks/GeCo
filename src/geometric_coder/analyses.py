@@ -22,6 +22,11 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize and validate an analysis definition; reject dangling references."""
     if not isinstance(spec, Mapping):
         raise ValueError("Analysis settings must be an object.")
+    if spec.get("schema_version", 1) == 2:
+        from geometric_coder.analysis_roles import validate_role_analysis
+        return validate_role_analysis(project, spec)
+    if spec.get("schema_version", 1) != 1:
+        raise ValueError("Unsupported saved-analysis schema version.")
     kind = str(spec.get("kind", ""))
     if kind not in _ALLOWED_KINDS:
         raise ValueError("Unsupported analysis visualization.")
@@ -141,6 +146,12 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
     if not clean or len(clean) > 160:
         raise ValueError("Analysis name must contain 1–160 characters.")
     normalized = validate_analysis(project, spec)
+    if normalized["schema_version"] == 2:
+        from geometric_coder.analysis_roles import (
+            ensure_role_chart_executable, ensure_role_sources_ready,
+        )
+        ensure_role_sources_ready(project, normalized)
+        ensure_role_chart_executable(project, normalized)
     payload = json.dumps(normalized, sort_keys=True)
     try:
         with project.database.connect() as conn:
@@ -240,6 +251,9 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
 def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
+    if normalized["schema_version"] == 2:
+        from geometric_coder.analysis_roles import compute_role_analysis
+        return compute_role_analysis(project, normalized)
     variables, warnings = _resolve_variables(project, normalized)
     # All Jaccard heatmaps use the same pairwise-complete calculations,
     # regardless of whether categorical metadata are also selected.
