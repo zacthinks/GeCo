@@ -219,6 +219,7 @@ def to_legacy_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 def _pages(project: Any, descriptors: list[dict[str, Any]]):
     """Read only IDs and bounded typed columns, never unit texts or full arrays."""
     offset = 0
+    status_cache: dict[tuple[Any, ...], Any] = {}
     while True:
         with project.database.connect() as conn:
             rows = conn.execute(
@@ -228,7 +229,7 @@ def _pages(project: Any, descriptors: list[dict[str, Any]]):
         if not rows:
             break
         ids = [int(row[0]) for row in rows]
-        yield resolve_analytical_variables(project, descriptors, ids)
+        yield resolve_analytical_variables(project, descriptors, ids, status_cache=status_cache)
         offset += len(ids)
 
 
