@@ -20,6 +20,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from geometric_coder.analyses import _code_join
+from geometric_coder.apply import aggregate_probabilities
+from geometric_coder.project import FIXED_COMMITTEE_AGGREGATIONS
 from geometric_coder.exceptions import ConfigurationError
 
 MAX_RESOLUTION_OBSERVATIONS = 2048
@@ -61,11 +63,25 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
             raise ValueError("Human Code judgments are binary, not probabilities.")
         result = {"type": "code", "code_id": code_id, "source": source, "value": value}
         if source != "labels":
+            predictor_kind = reference.get("predictor_kind", "classifier")
+            if predictor_kind not in ("classifier", "committee"):
+                raise ValueError("Unknown Code predictor kind.")
             predictor_id = _positive_id(reference.get("predictor_id"), "predictor_id")
-            if not any(int(row["classifier_spec_id"]) == predictor_id
-                       for row in project.classifier_specs(code_id)):
-                raise ValueError("Selected classifier is unavailable for this Code.")
-            result["predictor_id"] = predictor_id
+            if predictor_kind == "classifier":
+                available = any(
+                    int(row["classifier_spec_id"]) == predictor_id
+                    for row in project.classifier_specs(code_id)
+                )
+            else:
+                available = any(
+                    int(row["committee_id"]) == predictor_id
+                    for row in project.classifier_committees(code_id)
+                )
+            if not available:
+                raise ValueError("Selected predictor is unavailable for this Code.")
+            result.update(predictor_kind=predictor_kind, predictor_id=predictor_id)
+        elif "predictor_kind" in reference or "predictor_id" in reference:
+            raise ValueError("Human-only Code labels cannot select a predictor.")
         return result
     if family == "scale":
         scale_id = _positive_id(reference.get("scale_id"), "scale_id")
@@ -118,6 +134,85 @@ def _metadata_value(raw: Any, descriptor: Mapping[str, Any]) -> tuple[Any, str |
     if not math.isfinite(number):
         return None, "invalid_numeric"
     return number, None
+
+
+def _committee_join(
+    code_id: int, index: int, fit_id: int | None, value: str, source: str,
+) -> tuple[str, str, list[Any]]:
+    """Read frozen learned-committee predictions; never train or materialize them."""
+    a, p = f"a{index}", f"p{index}"
+    joins = [
+        f"LEFT JOIN current_annotations {a} "
+        f"ON {a}.observation_id = u.observation_id AND {a}.code_id = ?",
+        f"LEFT JOIN classifier_committee_predictions {p} "
+        f"ON {p}.observation_id = u.observation_id AND {p}.committee_fit_id = ?",
+    ]
+    prediction = (
+        f"{p}.probability" if value == "probability" else
+        f"CASE {p}.predicted_label WHEN 'positive' THEN 1.0 "
+        "WHEN 'negative' THEN 0.0 ELSE NULL END"
+    )
+    if source == "hybrid":
+        human = f"CASE {a}.value WHEN 'positive' THEN 1.0 WHEN 'negative' THEN 0.0 ELSE NULL END"
+        prediction = f"CASE WHEN {a}.observation_id IS NOT NULL THEN {human} ELSE {prediction} END"
+    return " ".join(joins), prediction, [code_id, -1 if fit_id is None else fit_id]
+
+
+def _fixed_committee_scores(
+    project: Any, observation_ids: list[int], member_fit_ids: list[int],
+    aggregation: str,
+) -> tuple[dict[int, float], dict[int, str]]:
+    """Aggregate only selected frozen member predictions without preparing rankings.
+
+    The standard Apply aggregation function supplies all six fixed-committee
+    operations. Missing member coverage must not be replaced by a partial mean.
+    """
+    if not member_fit_ids:
+        return {}, {obs: "not_trained" for obs in observation_ids}
+    by_observation: dict[int, dict[int, Any]] = {}
+    with project.database.connect() as conn:
+        for start in range(0, len(observation_ids), _SQL_BATCH_SIZE):
+            obs_batch = observation_ids[start:start + _SQL_BATCH_SIZE]
+            for offset in range(0, len(member_fit_ids), 100):
+                fit_batch = member_fit_ids[offset:offset + 100]
+                rows = conn.execute(
+                    "SELECT observation_id, classifier_fit_id, probability "
+                    "FROM classifier_predictions WHERE observation_id IN ("
+                    + ",".join("?" for _ in obs_batch)
+                    + ") AND classifier_fit_id IN ("
+                    + ",".join("?" for _ in fit_batch) + ")",
+                    [*obs_batch, *fit_batch],
+                ).fetchall()
+                for row in rows:
+                    by_observation.setdefault(int(row["observation_id"]), {})[
+                        int(row["classifier_fit_id"])
+                    ] = row["probability"]
+    valid: list[int] = []
+    arrays: dict[str, list[float]] = {str(fit_id): [] for fit_id in member_fit_ids}
+    missing: dict[int, str] = {}
+    for observation_id in observation_ids:
+        entries = by_observation.get(observation_id, {})
+        if any(fit_id not in entries for fit_id in member_fit_ids):
+            missing[observation_id] = "missing_prediction"
+            continue
+        if any(entries[fit_id] is None for fit_id in member_fit_ids):
+            missing[observation_id] = "missing_probability"
+            continue
+        try:
+            probabilities = [float(entries[fit_id]) for fit_id in member_fit_ids]
+        except (ValueError, TypeError, OverflowError):
+            missing[observation_id] = "invalid_probability_or_score"
+            continue
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in probabilities):
+            missing[observation_id] = "invalid_probability_or_score"
+            continue
+        valid.append(observation_id)
+        for fit_id, probability in zip(member_fit_ids, probabilities, strict=True):
+            arrays[str(fit_id)].append(probability)
+    if not valid:
+        return {}, missing
+    combined = aggregate_probabilities(arrays, aggregation=aggregation)
+    return dict(zip(valid, map(float, combined), strict=True)), missing
 
 
 def _code_missing(row: Any, index: int, descriptor: Mapping[str, Any],
@@ -192,23 +287,61 @@ def resolve_analytical_variables(
         fit_id = None
         status = "human_only"
         warnings: list[str] = []
+        predictor_kind = descriptor.get("predictor_kind", "classifier")
+        committee: dict[str, Any] | None = None
+        member_fit_ids: list[int | None] = []
         if descriptor["source"] != "labels":
-            state = project.classifier_status(
-                code_id=code_id, classifier_spec_ids=[descriptor["predictor_id"]]
-            )["classifiers"][0]
-            fit_id = state["classifier_fit_id"]
-            status = state["status"]
-            if fit_id is None:
-                warnings.append(f"{name}: selected classifier is not trained.")
+            if predictor_kind == "committee":
+                state = project.classifier_committee_status(
+                    code_id=code_id, committee_id=descriptor["predictor_id"]
+                )
+                committee = state["committee"]
+                status = state["status"]
+                if committee["aggregation"] in FIXED_COMMITTEE_AGGREGATIONS:
+                    for member in committee["members"]:
+                        latest = project.database.latest_classifier_fit(
+                            code_id=code_id,
+                            classifier_spec_id=int(member["classifier_spec_id"]),
+                        )
+                        member_fit_ids.append(
+                            None if latest is None else int(latest["classifier_fit_id"])
+                        )
+                else:
+                    fit = state["latest_fit"]
+                    fit_id = None if fit is None else int(fit["committee_fit_id"])
+                    if fit is not None:
+                        member_fit_ids = [int(i) for i in fit["member_fit_ids"]]
+            else:
+                state = project.classifier_status(
+                    code_id=code_id, classifier_spec_ids=[descriptor["predictor_id"]]
+                )["classifiers"][0]
+                fit_id = state["classifier_fit_id"]
+                status = state["status"]
+            if status == "not_trained":
+                warnings.append(f"{name}: selected predictor is not trained.")
             elif status != "current":
-                warnings.append(f"{name}: selected classifier is stale.")
-        variable = {**descriptor, "fit_id": fit_id if fit_id is not None else -1}
-        join, expression, args = _code_join(variable, index)
+                warnings.append(f"{name}: selected predictor is stale.")
+        if committee is not None and committee["aggregation"] in FIXED_COMMITTEE_AGGREGATIONS:
+            a = f"a{index}"
+            join = (
+                f"LEFT JOIN current_annotations {a} "
+                f"ON {a}.observation_id = u.observation_id AND {a}.code_id = ?"
+            )
+            expression, args = "NULL", [code_id]
+        elif committee is not None:
+            join, expression, args = _committee_join(
+                code_id, index, fit_id, descriptor["value"], descriptor["source"]
+            )
+        else:
+            variable = {**descriptor, "fit_id": fit_id if fit_id is not None else -1}
+            join, expression, args = _code_join(variable, index)
         joins.append(join)
         expressions.append(f"({expression}) AS c{index}")
         params.extend(args)
         code_info.append({
             "name": name, "status": status, "fit_id": fit_id, "warnings": warnings,
+            "predictor_kind": predictor_kind, "committee": committee,
+            "member_fit_ids": member_fit_ids,
         })
 
     # One bounded SQL projection for all requested Code sources and metadata.
@@ -218,7 +351,10 @@ def resolve_analytical_variables(
     for index, descriptor in enumerate(codes):
         fields += [f"a{index}.observation_id AS a{index}_id",
                    f"a{index}.value AS a{index}_value"]
-        if descriptor["source"] != "labels":
+        if descriptor["source"] != "labels" and not (
+            code_info[index]["committee"] is not None
+            and code_info[index]["committee"]["aggregation"] in FIXED_COMMITTEE_AGGREGATIONS
+        ):
             fields.append(f"p{index}.observation_id AS p{index}_id")
     rows_by_id: dict[int, Any] = {}
     if selected:
@@ -250,18 +386,80 @@ def resolve_analytical_variables(
             code_index += 1
             info = code_info[index]
             kind = "binary" if descriptor["value"] == "binary" else "numeric"
+            is_committee = (
+                descriptor["source"] != "labels"
+                and info["predictor_kind"] == "committee"
+            )
+            committee = info["committee"]
+            fixed = (
+                is_committee and committee is not None
+                and committee["aggregation"] in FIXED_COMMITTEE_AGGREGATIONS
+            )
             provenance = {
                 "code_id": descriptor["code_id"], "source": descriptor["source"],
                 "representation": descriptor["value"],
-                "classifier_spec_id": descriptor.get("predictor_id"),
-                "classifier_fit_id": info["fit_id"], "fit_status": info["status"],
+                "predictor_kind": info["predictor_kind"] if is_committee else (
+                    "classifier" if descriptor["source"] != "labels" else None
+                ),
+                "classifier_spec_id": (
+                    descriptor.get("predictor_id") if not is_committee else None
+                ),
+                "classifier_fit_id": (
+                    info["fit_id"] if not is_committee else None
+                ),
+                "committee_id": descriptor.get("predictor_id") if is_committee else None,
+                "committee_fit_id": (
+                    info["fit_id"] if is_committee and not fixed else None
+                ),
+                "committee_aggregation": committee["aggregation"] if is_committee else None,
+                "committee_updated_at": committee["updated_at"] if is_committee else None,
+                "member_classifier_fit_ids": info["member_fit_ids"] if is_committee else None,
+                "fit_status": info["status"],
             }
             warnings.extend(info["warnings"])
+            fixed_values: dict[int, float] = {}
+            fixed_missing: dict[int, str] = {}
+            if fixed:
+                member_fits = info["member_fit_ids"]
+                if all(fit is not None for fit in member_fits):
+                    fixed_values, fixed_missing = _fixed_committee_scores(
+                        project, selected, [int(fit) for fit in member_fits],
+                        committee["aggregation"],
+                    )
             for observation_id in requested:
                 row = rows_by_id[observation_id]
+                if fixed:
+                    if descriptor["source"] == "hybrid" and row[f"a{index}_id"] is not None:
+                        human = row[f"a{index}_value"]
+                        if human in ("positive", "negative"):
+                            values.append(1.0 if human == "positive" else 0.0)
+                            missing_reasons.append(None)
+                        else:
+                            values.append(None)
+                            missing_reasons.append(
+                                "unsure" if human == "unsure" else "invalid_human_label"
+                            )
+                        continue
+                    if observation_id in fixed_values:
+                        probability = fixed_values[observation_id]
+                        values.append(
+                            probability if descriptor["value"] == "probability"
+                            else float(probability >= 0.5)
+                        )
+                        missing_reasons.append(None)
+                    else:
+                        values.append(None)
+                        missing_reasons.append(
+                            "not_trained" if info["status"] == "not_trained"
+                            else fixed_missing.get(observation_id, "missing_prediction")
+                        )
+                    continue
                 raw = row[f"c{index}"]
                 if raw is not None:
-                    numeric = float(raw)
+                    try:
+                        numeric = float(raw)
+                    except (ValueError, TypeError, OverflowError):
+                        numeric = math.nan
                     if (math.isfinite(numeric)
                             and (descriptor["value"] != "probability" or 0 <= numeric <= 1)):
                         values.append(numeric)
