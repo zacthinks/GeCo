@@ -5013,6 +5013,24 @@ class ProjectDatabase:
             total = int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
             if total == 0:
                 return None
+            # A budget covering every atomic unit is equivalent to Exhaustive.
+            # Use the existing frozen-score indexes instead of scanning the
+            # entire corpus in 128-position batches on every Next click.
+            if budget >= total:
+                if source == "classifier":
+                    return self.ranked_classifier_recommendation(
+                        classifier_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                if source == "learned_committee":
+                    return self.ranked_classifier_committee_recommendation(
+                        committee_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                return self.ranked_prepared_committee_recommendation(
+                    committee_id=source_id, code_id=code_id,
+                    session_id=session_id, strategy=strategy,
+                )
             # Freeze this sampling order for a particular fit/configuration.
             seed = (int(source_id) * 2654435761 + int(code_id) * 2246822519
                     + {"classifier": 1, "learned_committee": 2,
