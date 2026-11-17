@@ -191,8 +191,14 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 page.locator("#analysis-name").fill("Temporal unavailable")
                 choose(page.locator("#analysis-role-values"), "Code: Theme")
                 choose(page.locator("#analysis-role-group"), "Metadata: date")
-                choose(page.locator('[id*="analysis-role-value"]').last,
-                       "Temporal / ISO date (Phase 3 grouping)")
+                # The metadata settings arrive through a separate Dash callback.
+                # Do not select the last generic role-value dropdown: before
+                # that callback finishes, it can still be the Code's control.
+                date_interpretation = page.locator(
+                    '[id*="analysis-role-value"][id*="group:metadata:date"]'
+                )
+                date_interpretation.wait_for(state="visible", timeout=15000)
+                choose(date_interpretation, "Temporal / ISO date (Phase 3 grouping)")
                 page.locator("#analysis-preview").click()
                 page.locator("#analysis-status").get_by_text(
                     "Phase 3", exact=False
