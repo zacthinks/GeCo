@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 
 from geometric_coder.analyses import analysis_figure
-from geometric_coder.analysis_roles import ROLE_CONTRACT
 
 
 def variable_options(project: Any) -> list[dict[str, str]]:
@@ -122,10 +121,6 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
     if legacy:
         # Existing v1 definitions remain v1 when edited; an unsupported
         # representation is rejected rather than changing their meaning.
-        from geometric_coder.analysis_roles import to_legacy_spec
-        from geometric_coder.analyses import validate_analysis
-        from geometric_coder.analysis_roles import validate_role_analysis
-        normalized = validate_role_analysis_placeholder = None
         # The v2 contract first checks all role settings, including no implicit
         # numeric or temporal interpretation; then faithfully maps to v1.
         return {"kind": kind, "measure": measure,
