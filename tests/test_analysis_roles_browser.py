@@ -195,7 +195,7 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 # Do not select the last generic role-value dropdown: before
                 # that callback finishes, it can still be the Code's control.
                 date_interpretation = page.locator(
-                    '[id*="analysis-role-value"][id*="group:metadata:date"]'
+                    'button[id*="analysis-role-value"][id*="group:metadata:date"]'
                 )
                 date_interpretation.wait_for(state="visible", timeout=15000)
                 choose(date_interpretation, "Temporal / ISO date (Phase 3 grouping)")
