@@ -218,19 +218,20 @@ def to_legacy_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 def _pages(project: Any, descriptors: list[dict[str, Any]]):
     """Read only IDs and bounded typed columns, never unit texts or full arrays."""
-    offset = 0
+    after = -1
     status_cache: dict[tuple[Any, ...], Any] = {}
     while True:
         with project.database.connect() as conn:
             rows = conn.execute(
-                "SELECT observation_id FROM units ORDER BY row_position LIMIT ? OFFSET ?",
-                (MAX_RESOLUTION_OBSERVATIONS, offset),
+                "SELECT observation_id, row_position FROM units "
+                "WHERE row_position > ? ORDER BY row_position LIMIT ?",
+                (after, MAX_RESOLUTION_OBSERVATIONS),
             ).fetchall()
         if not rows:
             break
         ids = [int(row[0]) for row in rows]
+        after = int(rows[-1][1])
         yield resolve_analytical_variables(project, descriptors, ids, status_cache=status_cache)
-        offset += len(ids)
 
 
 def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
