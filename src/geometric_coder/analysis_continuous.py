@@ -368,153 +368,257 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
         yield (parent, tuple(reduced), sorted(warnings))
 
 
+def _rank(identity: Any) -> int:
+    import hashlib
+    return int.from_bytes(
+        hashlib.blake2b(repr(identity).encode("utf-8"), digest_size=8).digest(), "big"
+    )
+
+
+def _reservoir(heap: list[tuple[int, Any]], limit: int, rank: int, value: Any) -> None:
+    item = (-rank, value)
+    if len(heap) < limit:
+        heapq.heappush(heap, item)
+    elif item[0] > heap[0][0]:
+        heapq.heapreplace(heap, item)
+
+
+def _group_positions(roles: Mapping[str, Any]) -> dict[str, int]:
+    positions = {}
+    i = 0
+    for role, value in roles.items():
+        if role in GROUP_ROLES:
+            positions[role] = i
+        i += len(value) if isinstance(value, list) else 1
+    return positions
+
+
 def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Compute bounded scatter samples, grouped summaries, and pairwise moments.
+
+    Histograms scan the corpus twice: once for exact range and a deterministic
+    bounded quantile-edge sample, then for exact cell frequencies. Median is
+    exact for cells with at most 5,000 observations and uses a deterministic
+    bounded observation sample for larger cells (reported as approximate).
+    """
     spec = validate_continuous_analysis(project, spec)
-    kind = spec["kind"]
-    roles = spec["roles"]
-    role_names = list(roles)
-    entries = [item for role in role_names
-               for item in (roles[role] if isinstance(roles[role], list) else [roles[role]])]
+    kind, roles = spec["kind"], spec["roles"]
+    entries = [item for value in roles.values()
+               for item in (value if isinstance(value, list) else [value])]
     descriptors = [item["variable"] for item in entries]
     names = [_label(v, project) for v in descriptors]
-    rows = []
+    position = _group_positions(roles)
     warnings: set[str] = set()
     coverage = Counter()
+    observed = [0] * len(descriptors)
+    MAX_SAMPLE = 5000
+
+    # A first, bounded scan is needed to determine numerical bin edges before
+    # accumulating exact histogram counts and transformed grouped summaries.
+    bin_specs = {role: item["transform"]
+                 for role, item in roles.items()
+                 if role in GROUP_ROLES and item.get("transform", {}).get("kind") == "numeric_bins"}
+    if kind == "histogram":
+        bin_specs["__histogram__"] = spec["binning"]
+    limits = {}
+    samples = {role: [] for role, settings in bin_specs.items()
+               if settings["method"] == "quantile"}
+    for role in bin_specs:
+        limits[role] = [math.inf, -math.inf, 0]
+    timezone_kinds = {role: set() for role, item in roles.items()
+                      if role in GROUP_ROLES and item.get("transform", {}).get("kind") == "calendar"}
     for identity, values, issues in _parent_rows(project, descriptors, spec):
         warnings.update(issues)
         coverage["total"] += 1
         coverage["complete"] += int(all(v is not None for v in values))
-        for j, value in enumerate(values):
-            coverage[f"observed_{j}"] += int(value is not None)
-        rows.append((identity, *values))
-    data = [row[1:] for row in rows]
-    base = {
-        "kind": kind, "warnings": sorted(warnings),
-        "coverage": {"total": coverage["total"], "complete": coverage["complete"],
-                     "observed": [coverage[f"observed_{i}"] for i in range(len(descriptors))]},
-        "names": names,
-    }
-    group_indices = {role: sum(len(roles[prev]) if isinstance(roles[prev], list) else 1
-                               for prev in role_names[:role_names.index(role)])
-                     for role in role_names if role in GROUP_ROLES}
-    transformed = {}
-    transformations = {}
-    for role, i in group_indices.items():
-        entry = roles[role]
-        transform = entry.get("transform")
-        raw = [row[i] for row in data]
-        if transform and transform["kind"] == "numeric_bins":
-            edges = _edges([float(x) for x in raw if x is not None], transform)
-            labels = _bin_labels(edges)
-            mapped = [labels[j] if (j := _bin(v, edges)) is not None else None for v in raw]
-            transformations[role] = {"edges": edges,
-                                     "excluded_range": sum(v is not None and _bin(v, edges) is None for v in raw)}
-        elif transform and transform["kind"] == "calendar":
-            zones = {x["timezone"] for x in raw if x is not None and x["kind"] == "datetime"}
-            if len(zones) > 1:
-                raise ValueError("Mixed naive and offset-aware timestamps cannot be grouped together without an explicit timezone policy.")
-            mapped = [calendar_period(v, transform["unit"]) if v is not None else None for v in raw]
-        else:
-            mapped = [str(v) if v is not None else None for v in raw]
-        transformed[role] = mapped
-    base["transformations"] = transformations
-
-    if kind == "scatter":
-        max_points = spec["max_points"]
-        heap = []
-        eligible = 0
-        for idx, row in enumerate(data):
-            x, y = row[:2]
-            if x is None or y is None:
-                continue
-            category = transformed.get("color", [None] * len(data))[idx]
-            if "color" in roles and category is None:
-                continue
-            eligible += 1
-            # Stable hash of the atomic ID avoids first-N or order bias.
-            import hashlib
-            rank = int.from_bytes(hashlib.blake2b(repr(rows[idx][0]).encode(), digest_size=8).digest(), "big")
-            item = (-rank, idx, float(x), float(y), category)
-            if len(heap) < max_points:
-                heapq.heappush(heap, item)
-            elif rank < -heap[0][0]:
-                heapq.heapreplace(heap, item)
-        ordered = sorted(heap, key=lambda entry: -entry[0])
-        base.update(points=[{"id": rows[j][0], "x": x, "y": y, "color": cat}
-                            for _, j, x, y, cat in ordered],
-                    eligible=eligible, sampled=len(ordered),
-                    sampling="stable hash of observation identity; no extrapolation")
-        return base
-
-    if kind == "histogram":
-        values = [r[0] for r in data]
-        edges = _edges([float(x) for x in values if x is not None], spec["binning"])
-        labels = _bin_labels(edges)
-        groups = transformed.get("group", ["All observations"] * len(data))
-        category_order = sorted({g for g in groups if g is not None})
-        if len(category_order) > MAX_CATEGORIES:
-            raise ValueError("More than 100 histogram groups.")
-        counts = {g: [0] * len(labels) for g in category_order}
-        excluded = 0
-        missing_group = 0
-        for value, group in zip(values, groups):
+        for i, value in enumerate(values):
+            observed[i] += int(value is not None)
+        for role, settings in bin_specs.items():
+            index = 0 if role == "__histogram__" else position[role]
+            value = values[index]
             if value is None:
                 continue
+            value = float(value)
+            bounds = limits[role]
+            bounds[0] = min(bounds[0], value)
+            bounds[1] = max(bounds[1], value)
+            bounds[2] += 1
+            if role in samples:
+                _reservoir(samples[role], MAX_SAMPLE, _rank((identity, role)), value)
+        for role in timezone_kinds:
+            value = values[position[role]]
+            if value is not None and value["kind"] == "datetime":
+                timezone_kinds[role].add(value["timezone"])
+    if any(len(zones) > 1 for zones in timezone_kinds.values()):
+        raise ValueError(
+            "Mixed naive and offset-aware timestamps cannot share calendar grouping; "
+            "use a consistent source or separate the analyses."
+        )
+
+    edges = {}
+    transform_info = {}
+    for role, settings in bin_specs.items():
+        bounds = limits[role]
+        if not bounds[2]:
+            edges[role] = _edges([], settings)
+        elif settings["method"] == "quantile":
+            values = [item[1] for item in samples[role]]
+            edges[role] = _edges(values, settings)
+            if bounds[2] > MAX_SAMPLE:
+                warnings.add(
+                    f"{role}: quantile boundaries estimated from a deterministic "
+                    f"{MAX_SAMPLE:,}-observation sample of {bounds[2]:,} observed values."
+                )
+        else:
+            # Equal-width/fixed-width need only exact extrema, not raw rows.
+            edges[role] = _edges([bounds[0], bounds[1]], settings)
+        transform_info[role] = {"edges": edges[role], "excluded_range": 0}
+
+    def category(role: str, value: Any) -> str | None:
+        if value is None:
+            return None
+        item = roles[role]
+        transform = item.get("transform")
+        if transform and transform["kind"] == "numeric_bins":
+            index = _bin(float(value), edges[role])
+            if index is None:
+                transform_info[role]["excluded_range"] += 1
+                return None
+            return _bin_labels(edges[role])[index]
+        if transform and transform["kind"] == "calendar":
+            return calendar_period(value, transform["unit"])
+        return str(value)
+
+    result = {
+        "kind": kind, "warnings": sorted(warnings),
+        "coverage": {"total": coverage["total"], "complete": coverage["complete"],
+                     "observed": observed},
+        "names": names, "transformations": transform_info,
+    }
+    if kind == "scatter":
+        heap: list[tuple[int, Any]] = []
+        eligible = 0
+        for identity, values, _ in _parent_rows(project, descriptors, spec):
+            x, y = values[:2]
+            color = category("color", values[position["color"]]) if "color" in roles else None
+            if x is None or y is None or ("color" in roles and color is None):
+                continue
+            eligible += 1
+            _reservoir(heap, spec["max_points"], _rank(identity),
+                       (identity, float(x), float(y), color))
+        result.update(
+            points=[{"id": id_, "x": x, "y": y, "color": color}
+                    for _, (id_, x, y, color) in sorted(heap, reverse=True)],
+            eligible=eligible, sampled=len(heap),
+            sampling="deterministic identity-hash sample; raw corpus not sent to browser",
+        )
+    elif kind == "histogram":
+        hist_edges = edges["__histogram__"]
+        bins = _bin_labels(hist_edges)
+        counts: dict[str, list[int]] = {}
+        excluded = missing_group = 0
+        for _, values, _ in _parent_rows(project, descriptors, spec):
+            value = values[0]
+            if value is None:
+                continue
+            group = category("group", values[position["group"]]) if "group" in roles else "All observations"
             if group is None:
                 missing_group += 1
                 continue
-            j = _bin(value, edges)
-            if j is None:
+            index = _bin(float(value), hist_edges)
+            if index is None:
                 excluded += 1
-            else:
-                counts[group][j] += 1
-        base.update(edges=edges, bins=labels, groups=category_order, counts=counts,
-                    excluded_range=excluded, missing_group=missing_group,
-                    denominators={group: sum(counts[group]) for group in category_order})
-        return base
-
-    if kind in ("summary_bar", "value_heatmap"):
-        groups = transformed["group"] if kind == "summary_bar" else transformed["rows"]
-        columns = ([None] * len(data) if kind == "summary_bar" else transformed["columns"])
-        buckets: dict[tuple[str, str | None], list[float]] = defaultdict(list)
-        for row, group, col in zip(data, groups, columns):
-            if group is not None and (kind == "summary_bar" or col is not None) and row[0] is not None:
-                buckets[(group, col)].append(float(row[0]))
-        labels = sorted({key[0] for key in buckets})
-        cols = sorted({key[1] for key in buckets if key[1] is not None})
-        if len(labels) > MAX_CATEGORIES or len(cols) > MAX_CATEGORIES or len(labels) * max(1, len(cols)) > 2500:
-            raise ValueError("Numerical summary has too many category cells.")
-        statistic = spec["statistic"]
-        summary = lambda vals: (median(vals) if statistic == "median" else sum(vals) / len(vals)) if vals else None
+                continue
+            if group not in counts:
+                if len(counts) >= MAX_CATEGORIES:
+                    raise ValueError("More than 100 histogram groups.")
+                counts[group] = [0] * len(bins)
+            counts[group][index] += 1
+        result.update(edges=hist_edges, bins=bins, groups=sorted(counts),
+                      counts=counts, excluded_range=excluded,
+                      missing_group=missing_group,
+                      denominators={g: sum(counts[g]) for g in counts})
+    elif kind in ("summary_bar", "value_heatmap"):
+        # Sums and counts are exact at every corpus size. Cell medians use
+        # bounded stable samples only if more than 5,000 observations contribute.
+        sums: dict[tuple[str, str | None], float] = defaultdict(float)
+        counts: dict[tuple[str, str | None], int] = defaultdict(int)
+        medians: dict[tuple[str, str | None], list[tuple[int, float]]] = defaultdict(list)
+        for identity, values, _ in _parent_rows(project, descriptors, spec):
+            if values[0] is None:
+                continue
+            row = category("group", values[position["group"]]) if kind == "summary_bar" else category("rows", values[position["rows"]])
+            col = None if kind == "summary_bar" else category("columns", values[position["columns"]])
+            if row is None or (kind == "value_heatmap" and col is None):
+                continue
+            key = row, col
+            if key not in counts and len(counts) >= 2500:
+                raise ValueError("Numerical summary has more than 2,500 cells.")
+            counts[key] += 1
+            sums[key] += float(values[0])
+            if spec["statistic"] == "median":
+                _reservoir(medians[key], MAX_SAMPLE, _rank((identity, row, col)), float(values[0]))
+        if spec["statistic"] == "median" and any(n > MAX_SAMPLE for n in counts.values()):
+            warnings.add("Median uses a deterministic sample of at most 5,000 values per group where needed.")
+        def value(key: tuple[str, str | None]) -> float | None:
+            if not counts.get(key):
+                return None
+            if spec["statistic"] == "mean":
+                return sums[key] / counts[key]
+            return median(item[1] for item in medians[key])
+        row_labels = sorted({key[0] for key in counts})
+        if len(row_labels) > MAX_CATEGORIES:
+            raise ValueError("More than 100 summary categories.")
         if kind == "summary_bar":
-            base.update(categories=labels, values=[summary(buckets[(g, None)]) for g in labels],
-                        denominators=[len(buckets[(g, None)]) for g in labels],
-                        statistic=statistic)
+            result.update(categories=row_labels,
+                          values=[value((row, None)) for row in row_labels],
+                          denominators=[counts[(row, None)] for row in row_labels],
+                          statistic=spec["statistic"])
         else:
-            base.update(rows=labels, columns=cols,
-                        values=[[summary(buckets.get((g, c), [])) for c in cols] for g in labels],
-                        samples=[[len(buckets.get((g, c), [])) for c in cols] for g in labels],
-                        statistic=statistic)
-        return base
-
-    # Pairwise-complete Pearson correlation. A constant variable has no r.
-    size = len(descriptors)
-    samples = [[0] * size for _ in range(size)]
-    matrix = [[None] * size for _ in range(size)]
-    for i in range(size):
-        for j in range(i, size):
-            paired = [(float(row[i]), float(row[j])) for row in data
-                      if row[i] is not None and row[j] is not None]
-            n = len(paired)
-            samples[i][j] = samples[j][i] = n
-            if n >= 2:
-                sx = sum(x for x, _ in paired)
-                sy = sum(y for _, y in paired)
-                xx = sum(x * x for x, _ in paired)
-                yy = sum(y * y for _, y in paired)
-                xy = sum(x * y for x, y in paired)
-                vx, vy = n * xx - sx * sx, n * yy - sy * sy
-                if vx > 1e-12 and vy > 1e-12:
-                    matrix[i][j] = matrix[j][i] = max(-1., min(1., (n * xy - sx * sy) / math.sqrt(vx * vy)))
-    base.update(values=matrix, samples=samples, measure="correlation")
-    return base
+            column_labels = sorted({key[1] for key in counts if key[1] is not None})
+            if len(column_labels) > MAX_CATEGORIES:
+                raise ValueError("More than 100 summary columns.")
+            result.update(rows=row_labels, columns=column_labels,
+                          values=[[value((row, col)) for col in column_labels]
+                                  for row in row_labels],
+                          samples=[[counts.get((row, col), 0) for col in column_labels]
+                                   for row in row_labels],
+                          statistic=spec["statistic"])
+    else:
+        size = len(descriptors)
+        # Stable online covariance avoids subtracting two very large sums.
+        n = [[0] * size for _ in range(size)]
+        means_x = [[0.0] * size for _ in range(size)]
+        means_y = [[0.0] * size for _ in range(size)]
+        ss_x = [[0.0] * size for _ in range(size)]
+        ss_y = [[0.0] * size for _ in range(size)]
+        cross = [[0.0] * size for _ in range(size)]
+        for _, values, _ in _parent_rows(project, descriptors, spec):
+            for i, x in enumerate(values):
+                if x is None:
+                    continue
+                for j in range(i, size):
+                    y = values[j]
+                    if y is None:
+                        continue
+                    x, y = float(x), float(y)
+                    k = n[i][j] + 1
+                    dx = x - means_x[i][j]
+                    dy = y - means_y[i][j]
+                    means_x[i][j] += dx / k
+                    means_y[i][j] += dy / k
+                    ss_x[i][j] += dx * (x - means_x[i][j])
+                    ss_y[i][j] += dy * (y - means_y[i][j])
+                    cross[i][j] += dx * (y - means_y[i][j])
+                    n[i][j] = k
+        matrix = [[None] * size for _ in range(size)]
+        pair_counts = [[0] * size for _ in range(size)]
+        for i in range(size):
+            for j in range(i, size):
+                pair_counts[i][j] = pair_counts[j][i] = n[i][j]
+                if n[i][j] >= 2 and ss_x[i][j] > 0 and ss_y[i][j] > 0:
+                    r = max(-1., min(1., cross[i][j] / math.sqrt(ss_x[i][j] * ss_y[i][j])))
+                    matrix[i][j] = matrix[j][i] = r
+        result.update(values=matrix, samples=pair_counts, measure="correlation")
+    result["warnings"] = sorted(warnings)
+    return result
