@@ -81,8 +81,11 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 page.get_by_text("Analyses", exact=True).first.click()
 
                 def choose(dropdown, label):
+                    dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    page.get_by_text(label, exact=True).last.click()
+                    # Other visualization roles stay mounted but hidden. Restrict
+                    # the option match to visible text in the open dropdown.
+                    page.get_by_text(label, exact=True).filter(visible=True).last.click()
 
                 def selected_model():
                     # Read the visible dropdown, not an implementation-specific
