@@ -187,6 +187,8 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
                     else str(columns[-1]["values"][i]) if group
                     else "All observations"
                 )
+                if category not in groups and len(groups) >= 100:
+                    raise ValueError("Metadata has more than 100 categories.")
                 counts = groups[category]
                 for j, value in enumerate(values):
                     if value is not None:
@@ -239,7 +241,7 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
             if spec["measure"] == "count":
                 value = xy
             elif spec["measure"] == "jaccard":
-                value = xy / union if union else None
+                value = (xy / union if union else 0.0) if count else None
             else:
                 vx, vy = count*xx-sx*sx, count*yy-sy*sy
                 value = ((count*xy-sx*sy) / math.sqrt(vx*vy)
