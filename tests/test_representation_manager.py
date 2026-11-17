@@ -365,3 +365,84 @@ def test_created_geometry_receives_preferred_teal_alias(fake_link):
     project.catalog.validate_artifact_alias.assert_called_once_with("tfidf_l2")
     derived.add_alias.assert_called_once_with("tfidf_l2")
     linked.add_geometry.assert_called_once_with("tfidf_l2", derived)
+
+
+def test_analytic_geometry_catalog_refreshes_all_consumers(tmp_path, monkeypatch):
+    """A newly registered geometry becomes selectable without rebuilding the app."""
+    import inspect
+    import pandas as pd
+    pytest.importorskip("dash")
+    from geometric_coder import GeometricCoder
+    from geometric_coder.ui.app import create_app
+
+    coder = GeometricCoder.create(
+        project_dir=tmp_path / "refresh.geco",
+        data=pd.DataFrame({"key": [1, 2], "text": ["alpha", "beta"]}),
+        keys=["key"], text="text", metadata=[], geometries=None,
+    )
+    scale_id = coder.create_scale("Quality")
+    app = create_app(coder)
+
+    def callback(name):
+        return next(
+            inspect.unwrap(row["callback"])
+            for row in app.callback_map.values()
+            if "callback" in row
+            and inspect.unwrap(row["callback"]).__name__ == name
+        )
+
+    refresh = callback("geometry_options")
+    scale_refresh = callback("scale_model_geometry_options")
+    assert refresh(0) == ([], [], [], [])
+    assert scale_refresh(scale_id, 0) == ([], None)
+
+    registered = [
+        {"geometry_id": 11, "name": "new_counts"},
+        {"geometry_id": 12, "name": "new_svd"},
+    ]
+    representations = [
+        {"representation_id": 101, "name": "new_counts",
+         "legacy_kind": "geometry", "analytic_enabled": True},
+        {"representation_id": 102, "name": "new_svd",
+         "legacy_kind": "geometry", "analytic_enabled": True},
+        {"representation_id": 103, "name": "view_only",
+         "legacy_kind": "geometry", "analytic_enabled": False},
+    ]
+    monkeypatch.setattr(coder, "geometries", lambda **_: registered)
+    monkeypatch.setattr(coder, "representations", lambda: representations)
+    expected = [
+        {"label": "new_counts", "value": 11},
+        {"label": "new_svd", "value": 12},
+    ]
+    assert refresh(1) == (expected, expected, expected, expected)
+    assert scale_refresh(scale_id, 1) == (
+        [{"label": "new_counts", "value": 101},
+         {"label": "new_svd", "value": 102}], None,
+    )
+
+    registered[1]["name"] = "renamed_svd"
+    representations[1]["name"] = "renamed_svd"
+    assert refresh(2)[1][-1]["label"] == "renamed_svd"
+    assert scale_refresh(scale_id, 2)[0][-1]["label"] == "renamed_svd"
+
+    registered.pop()
+    representations.pop(1)
+    assert [item["value"] for item in refresh(3)[2]] == [11]
+    assert [item["value"] for item in scale_refresh(scale_id, 3)[0]] == [101]
+
+
+def test_representation_revision_is_wired_to_all_geometry_selectors():
+    root = Path(__file__).resolve().parents[1] / "src/geometric_coder/ui"
+    representation_ui = (root / "representation_ui.py").read_text()
+    scales_ui = (root / "scale_comparisons.py").read_text()
+    block = representation_ui.split("    def geometry_options(", 1)[0].rsplit(
+        "    @app.callback(", 1
+    )[1]
+    for name in ("geometry-dropdown", "topic-create-geometry",
+                 "code-center-geometry", "classifier-spec-geometry"):
+        assert f'Output("{name}", "options")' in block
+    scale_block = scales_ui.split("    def scale_model_geometry_options(", 1)[0].rsplit(
+        "    @app.callback(", 1
+    )[1]
+    assert 'Input("representation-refresh-store", "data")' in block
+    assert 'Input("representation-refresh-store", "data")' in scale_block
