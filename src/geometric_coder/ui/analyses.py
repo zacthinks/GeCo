@@ -285,9 +285,12 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 dcc.Dropdown(id="analysis-hist-method", options=[
                     {"label":"Equal width","value":"equal_width"},
                     {"label":"Quantiles","value":"quantile"},
-                    {"label":"Fixed width","value":"fixed_width"}], value="equal_width", clearable=False),
+                    {"label":"Fixed width","value":"fixed_width"},
+                    {"label":"Explicit edges","value":"explicit"}], value="equal_width", clearable=False),
                 html.Label("Bin count"), dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
                 html.Label("Fixed bin width"), dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
+                html.Label("Explicit bin edges (comma-separated, ascending)"),
+                dcc.Input(id="analysis-hist-edges", type="text", placeholder="0, 10, 20, 30"),
             ], id="analysis-hist-options", style={"display":"none"}),
             html.Div(id="analysis-role-settings"),
             html.Label("Aggregate observations (optional)"),
@@ -396,6 +399,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-hist-width", "value"),
         Output("analysis-continuous-group", "value"),
         Output("analysis-parent-numeric-method", "value"),
+        Output("analysis-hist-edges", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -408,14 +412,14 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         trigger = callback_context.triggered_id
         empty = ({"display": "block"}, {"id": None, "schema_version": 2},
                  "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean")
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "")
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
                     None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 27
+            return (no_update,) * 28
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -440,6 +444,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec.get("binning", {}).get("bins", 20), spec.get("binning", {}).get("width", 1),
             slots.get("group") if spec["kind"] in ("histogram", "summary_bar") else None,
             aggregate.get("numeric_method", "mean"),
+            ", ".join(str(v) for v in spec.get("binning", {}).get("edges", [])),
         )
 
     @app.callback(
@@ -645,7 +650,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                               {"label":"Calendar year","value":"year"},
                                               {"label":"Equal-width numeric bins","value":"equal_width"},
                                               {"label":"Quantile numeric bins","value":"quantile"},
-                                              {"label":"Fixed-width numeric bins","value":"fixed_width"}],
+                                              {"label":"Fixed-width numeric bins","value":"fixed_width"},
+                                              {"label":"Explicit numerical intervals","value":"explicit"}],
                                      value=(transform.get("unit") if transform.get("kind") == "calendar"
                                             else transform.get("method", "none")),clearable=False),
                         html.Label("Numeric bin count"),
@@ -654,6 +660,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         html.Label("Fixed bin width"),
                         dcc.Input(id={"type":"analysis-role-width","index":key},
                                   type="number",min=0,step="any",value=transform.get("width",1)),
+                        html.Label("Explicit bin edges (comma-separated)"),
+                        dcc.Input(id={"type":"analysis-role-edges","index":key},
+                                  type="text",value=", ".join(str(v) for v in transform.get("edges", []))),
                     ])
                 nodes.append(html.Div(controls, className="analysis-variable-settings"))
         return nodes
@@ -666,21 +675,23 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input({"type": "analysis-role-transform", "index": ALL}, "value"),
         Input({"type": "analysis-role-bins", "index": ALL}, "value"),
         Input({"type": "analysis-role-width", "index": ALL}, "value"),
+        Input({"type": "analysis-role-edges", "index": ALL}, "value"),
         State({"type": "analysis-role-source", "index": ALL}, "id"),
         State({"type": "analysis-role-value", "index": ALL}, "id"),
         State({"type": "analysis-role-predictor", "index": ALL}, "id"),
         State({"type": "analysis-role-transform", "index": ALL}, "id"),
         State({"type": "analysis-role-bins", "index": ALL}, "id"),
         State({"type": "analysis-role-width", "index": ALL}, "id"),
+        State({"type": "analysis-role-edges", "index": ALL}, "id"),
         State("analysis-role-config", "data"),
         prevent_initial_call=True,
     )
     def preserve_role_configs(
         sources: list[str], values: list[str],
         predictors: list[str | None], transforms: list[str], bins: list[int],
-        widths: list[float], source_ids: list[Any], value_ids: list[Any],
+        widths: list[float], edges: list[str], source_ids: list[Any], value_ids: list[Any],
         predictor_ids: list[Any], transform_ids: list[Any], bin_ids: list[Any],
-        width_ids: list[Any],
+        width_ids: list[Any], edge_ids: list[Any],
         existing: dict[str, Any] | None,
     ) -> Any:
         result = {key: dict(val) for key, val in (existing or {}).items()}
@@ -702,6 +713,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             by_key.setdefault(item["index"], {})["bins"] = value
         for item, value in zip(width_ids, widths):
             by_key.setdefault(item["index"], {})["width"] = value
+        for item, value in zip(edge_ids, edges):
+            by_key.setdefault(item["index"], {})["edges"] = value
         for key, choice in by_key.items():
             mode = choice.get("method", "none")
             if mode in ("day", "week", "month", "quarter", "year"):
@@ -710,6 +723,14 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 transform = {"kind": "numeric_bins", "method": mode, "bins": choice.get("bins", 10)}
             elif mode == "fixed_width":
                 transform = {"kind": "numeric_bins", "method": mode, "width": choice.get("width", 1), "origin": 0}
+            elif mode == "explicit":
+                raw = (choice.get("edges") or "").strip()
+                try:
+                    numbers = [float(v.strip()) for v in raw.split(",") if v.strip()]
+                except ValueError:
+                    # Let the recipe validation issue a targeted invalid-bin message.
+                    numbers = []
+                transform = {"kind": "numeric_bins", "method": "explicit", "edges": numbers}
             else:
                 transform = None
             conf = result.setdefault(key, {})
@@ -747,7 +768,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    continuous_values: Any, rows: Any, columns: Any,
                    continuous_group: Any, statistic: Any,
                    hist_method: Any, hist_bins: Any, hist_width: Any,
-                   parent_numeric_method: Any) -> dict[str, Any]:
+                   parent_numeric_method: Any, hist_edges: Any) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
         if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
             raise ValueError("Choose exactly one numeric Values variable for this visualization.")
@@ -757,8 +778,13 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         bins = {"kind": "histogram_bins", "method": hist_method}
         if hist_method == "fixed_width":
             bins.update(width=hist_width, origin=0)
+        elif hist_method == "explicit":
+            try:
+                bins["edges"] = [float(v.strip()) for v in (hist_edges or "").split(",") if v.strip()]
+            except ValueError:
+                raise ValueError("Explicit histogram bin edges must be comma-separated numbers.")
         else:
-            bins["bins"] = int(hist_bins or 20)
+            bins["bins"] = hist_bins
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
                                   color, continuous_values, rows, columns, continuous_group)
         recipe = editor_recipe(
@@ -806,6 +832,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-bins", "value"),
         State("analysis-hist-width", "value"),
         State("analysis-parent-numeric-method", "value"),
+        State("analysis-hist-edges", "value"),
     ]
 
     @app.callback(
@@ -825,7 +852,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              x: Any, y: Any, color: Any, continuous_values: Any,
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
-             parent_numeric_method: Any,
+             parent_numeric_method: Any, hist_edges: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 5
@@ -833,7 +860,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
-                              hist_method, hist_bins, hist_width, parent_numeric_method)
+                              hist_method, hist_bins, hist_width, parent_numeric_method,
+                              hist_edges)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
             return no_update, no_update, no_update, str(exc), no_update
@@ -854,14 +882,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 x: Any, y: Any, color: Any, continuous_values: Any,
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
                 hist_method: Any, hist_bins: Any, hist_width: Any,
-                parent_numeric_method: Any) -> tuple[Any, str]:
+                parent_numeric_method: Any, hist_edges: Any) -> tuple[Any, str]:
         if editing is None:
             return no_update, ""
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
-                              hist_method, hist_bins, hist_width, parent_numeric_method)
+                              hist_method, hist_bins, hist_width, parent_numeric_method,
+                              hist_edges)
             result = compute_analysis(project, spec)
             fig = analysis_figure(result)
             if result.get("warnings"):
