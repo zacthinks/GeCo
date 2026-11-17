@@ -486,6 +486,11 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         elif settings["method"] == "quantile":
             values = [item[1] for item in samples[role]]
             edges[role] = _edges(values, settings)
+            # Quantile ranks may be sampled, but counts must never discard
+            # corpus extrema merely because the sample missed them.
+            if edges[role]:
+                edges[role][0] = min(edges[role][0], bounds[0])
+                edges[role][-1] = max(edges[role][-1], bounds[1])
             if bounds[2] > MAX_SAMPLE:
                 warnings.add(
                     f"{role}: quantile boundaries estimated from a deterministic "
