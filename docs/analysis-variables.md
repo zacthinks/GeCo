@@ -27,10 +27,13 @@ future Analyses chart roles without changing the saved Analysis v1 engine.
   Davidson fit, never direct human numerical judgments. The selected
   `scale_id`, current definition version, eligibility revision, retained
   fit ID and freshness status are returned as provenance.
-- Metadata: `{"type":"metadata","field":"year","value":"numeric"}`, or
-  `"categorical"` (default). Numeric conversion accepts original finite JSON
-  numbers, not strings, identifiers, booleans or nonfinite values. An
-  explicit `"numeric_strings":true` opts into parsing numeric text.
+- Metadata: `{"type":"metadata","field":"year","value":"numeric"}`,
+  `"categorical"` (default), or `"temporal"`. Numeric conversion accepts
+  original finite JSON numbers, not strings, identifiers, booleans or nonfinite
+  values. An explicit `"numeric_strings":true` opts into parsing numeric text,
+  but cannot be combined with temporal interpretation. Temporal interpretation
+  is chosen explicitly; categorical metadata continue to preserve their original
+  strings, including date-looking strings.
 
 Source selection does **not** specify chart roles or operations. A future
 schema-v2 spec can assign independent references to roles, for example:
@@ -53,6 +56,47 @@ schema-v2 spec can assign independent references to roles, for example:
 **Illustrative only.** Schema v2 is not currently accepted or persisted by
 `save_analysis`; its kinds, roles, transformations, bins and validations
 belong to Phases 2 and 3. Role transforms are distinct from source descriptors.
+
+## Temporal metadata interpretation
+
+A temporal descriptor is `{"type":"metadata","field":"date","value":"temporal"}`.
+The resolver accepts **only unambiguous ISO-style calendar dates and datetimes**
+from string-valued source metadata:
+
+- Date: `YYYY-MM-DD`, validated as a Gregorian calendar date (including
+  leap-year rules). It resolves to a JSON-safe tagged value:
+  `{"kind":"date","iso":"2026-11-17"}`.
+- Timestamp: `YYYY-MM-DDTHH:MM[:SS[.fraction]][Z|±HH:MM]`. An ASCII
+  space or lowercase `t` is also accepted in place of `T` to accommodate
+  GeCo's existing pandas `Timestamp` serialization. `fraction` is one to
+  nine decimal digits and is preserved without truncating nanoseconds.
+  Seconds omitted from input are canonicalized to `:00`. A UTC `Z`/ `z`
+  suffix becomes `+00:00`. For example,
+  `2026-11-17 08:30:15.123456789+05:30` yields:
+  `{"kind":"datetime","iso":"2026-11-17T08:30:15.123456789+05:30","timezone":"offset"}`.
+  A timestamp without a zone suffix yields `"timezone":"naive"`, preserving
+  its wall-clock meaning without interpreting it as UTC or local machine time.
+
+**Dates and instants are not interchangeable.** A date-only value never
+becomes midnight UTC, and naive timestamps are never silently localized. Offset
+timestamps retain the supplied numeric offset rather than being normalized to
+UTC or assigned an invented named zone. Mixed date/timestamp and mixed
+naive/offset-aware timestamp columns are **accepted** as explicitly tagged,
+per-row values, with warnings to future chart consumers to choose a consistent
+calendar/timezone operation before grouping or plotting. No calendar binning
+or temporal grouping is implemented here.
+
+`None` and blank strings yield `missing_metadata`. Impossible dates,
+malformed timestamps, unsupported types, and arbitrary locale/word-based formats
+yield `invalid_temporal`. Local day/month formats such as `01/02/2026`, and
+RFC-3339 `-00:00` (which denotes an unknown offset), yield
+`ambiguous_temporal`. They are returned as `None` with a counted missing
+reason; **no locale interpretation or timezone guessing** occurs.
+
+GeCo's existing import storage converts Python `date` and pandas
+`Timestamp` values to text via `storage.database._json_value`;
+the temporal resolver interprets the stored JSON strings and does not mutate
+project metadata or change import serialization.
 
 ## Bounded resolution and alignment
 
@@ -82,8 +126,8 @@ Return shape:
         {
             "descriptor": {...},
             "name": str,
-            "kind": "binary" | "numeric" | "categorical",
-            "values": [float | str | bool | int | None, ...],
+            "kind": "binary" | "numeric" | "categorical" | "temporal",
+            "values": [float | str | bool | int | dict | None, ...],
             "missing_reasons": [str | None, ...],
             "coverage": {
                 "observed": int, "missing": int,
