@@ -223,6 +223,11 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 {"label": "Bar plot — positive Code counts", "value": "bar"},
                 {"label": "Association heatmap", "value": "heatmap"},
                 {"label": "Code-value distribution", "value": "distribution"},
+                {"label": "Scatterplot — two numerical axes", "value": "scatter"},
+                {"label": "Continuous histogram", "value": "histogram"},
+                {"label": "Grouped numerical mean / median", "value": "summary_bar"},
+                {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
+                {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
             ], value="bar", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
@@ -248,6 +253,32 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                     {"label": "Pearson correlation", "value": "correlation"},
                 ]),
             ], id="analysis-measure-options", style={"display": "none"}),
+            html.Div([
+                html.Label("X — numeric variable"), dcc.Dropdown(id="analysis-role-x", options=[]),
+                html.Label("Y — numeric variable"), dcc.Dropdown(id="analysis-role-y", options=[]),
+                html.Label("Color — categorical variable or transformed numeric/date (optional)"),
+                dcc.Dropdown(id="analysis-role-color", options=[]),
+            ], id="analysis-scatter-roles", style={"display": "none"}),
+            html.Div([
+                html.Label("Values — numerical variables"),
+                dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
+                html.Label("Rows — categorical variable"), dcc.Dropdown(id="analysis-role-rows", options=[]),
+                html.Label("Columns — categorical variable"), dcc.Dropdown(id="analysis-role-columns", options=[]),
+            ], id="analysis-continuous-roles", style={"display": "none"}),
+            html.Div([
+                html.Label("Numerical statistic"), dcc.Dropdown(
+                    id="analysis-statistic", options=[{"label":"Mean","value":"mean"},
+                    {"label":"Median","value":"median"}], value="mean", clearable=False),
+            ], id="analysis-statistic-options", style={"display":"none"}),
+            html.Div([
+                html.Label("Histogram bin method"),
+                dcc.Dropdown(id="analysis-hist-method", options=[
+                    {"label":"Equal width","value":"equal_width"},
+                    {"label":"Quantiles","value":"quantile"},
+                    {"label":"Fixed width","value":"fixed_width"}], value="equal_width", clearable=False),
+                html.Label("Bin count"), dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
+                html.Label("Fixed bin width"), dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
+            ], id="analysis-hist-options", style={"display":"none"}),
             html.Div(id="analysis-role-settings"),
             html.Label("Aggregate observations (optional)"),
             dcc.Dropdown(id="analysis-aggregate-level", clearable=False,
@@ -300,6 +331,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-role-distribution", "options"),
         Output("analysis-role-indicators", "options"),
         Output("analysis-role-group", "options"),
+        Output("analysis-role-x", "options"),
+        Output("analysis-role-y", "options"),
+        Output("analysis-role-color", "options"),
+        Output("analysis-role-continuous-values", "options"),
+        Output("analysis-role-rows", "options"),
+        Output("analysis-role-columns", "options"),
         Input("workspace-tabs", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
@@ -308,11 +345,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def refresh_variables(workspace: str, _code_refresh: Any, _focus_refresh: Any,
                           _editor_style: Any) -> Any:
         if workspace != "analyses":
-            return (no_update,) * 4
+            return (no_update,) * 10
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
         metadata = [c for c in choices if c["value"].startswith("metadata:")]
-        return codes, codes, choices, metadata
+        return codes, codes, choices, metadata, choices, choices, choices, choices, choices, choices
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -330,6 +367,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-aggregate-method", "value"),
         Output("analysis-aggregate-threshold", "value"),
         Output("analysis-status", "children", allow_duplicate=True),
+        Output("analysis-role-x", "value"),
+        Output("analysis-role-y", "value"),
+        Output("analysis-role-color", "value"),
+        Output("analysis-role-continuous-values", "value"),
+        Output("analysis-role-rows", "value"),
+        Output("analysis-role-columns", "value"),
+        Output("analysis-statistic", "value"),
+        Output("analysis-hist-method", "value"),
+        Output("analysis-hist-bins", "value"),
+        Output("analysis-hist-width", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -342,14 +389,14 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         trigger = callback_context.triggered_id
         empty = ({"display": "block"}, {"id": None, "schema_version": 2},
                  "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "")
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1)
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
-                    None, [], [], {}, "none", "any", 1, "")
+                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1)
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 15
+            return (no_update,) * 25
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -367,6 +414,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("indicators", []) if spec["kind"] == "heatmap" else [],
             _initial_config(spec), aggregate.get("level", "none"),
             aggregate.get("method", "any"), aggregate.get("threshold", 1), "",
+            slots.get("x"), slots.get("y"), slots.get("color"),
+            slots.get("values", []) if spec["kind"] in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else [],
+            slots.get("rows"), slots.get("columns"),
+            spec.get("statistic", "mean"), spec.get("binning", {}).get("method", "equal_width"),
+            spec.get("binning", {}).get("bins", 20), spec.get("binning", {}).get("width", 1),
         )
 
     @app.callback(
@@ -375,6 +427,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-heatmap-roles", "style"),
         Output("analysis-measure-options", "style"),
         Output("analysis-visualization-help", "children"),
+        Output("analysis-scatter-roles", "style"),
+        Output("analysis-continuous-roles", "style"),
+        Output("analysis-statistic-options", "style"),
+        Output("analysis-hist-options", "style"),
         Input("analysis-kind", "value"),
         Input("analysis-aggregate-level", "value"),
         Input("analysis-aggregate-method", "value"),
@@ -382,7 +438,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def chart_controls(kind: str, level: str | None, method: str | None) -> tuple[Any, ...]:
         visible = {"display": "block"}
         hidden = {"display": "none"}
-        if kind == "distribution":
+        if kind in ("scatter", "histogram", "summary_bar", "correlation_heatmap", "value_heatmap"):
+            help_text = ("Continuous and mixed exploratory values; missing sources remain missing. "
+                         "Numeric and calendar grouping require explicit role transformations.")
+        elif kind == "distribution":
             help_text = ("Atomic units contribute binary observed Code values (0/1). "
                          "Parent grouping distributes reduced Code values by group."
                          if level and level != "none" else
@@ -400,6 +459,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind == "heatmap" else hidden,
             visible if kind == "heatmap" else hidden,
             help_text,
+            visible if kind == "scatter" else hidden,
+            visible if kind in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else hidden,
+            visible if kind in ("summary_bar", "value_heatmap") else hidden,
+            visible if kind == "histogram" else hidden,
         )
 
     @app.callback(Output("analysis-aggregation-options", "style"),
