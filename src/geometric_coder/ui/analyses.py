@@ -402,13 +402,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                          {"label": "Binary (0/1) — supported", "value": "binary"},
                                          {"label": "Probability (Phase 3)", "value": "probability"},
                                      ], value=config.get("value", "binary"), clearable=False),
-                        html.Label("Predictor family"),
-                        dcc.Dropdown(id={"type": "analysis-role-family", "index": key},
-                                     options=[
-                                         {"label": "Classifier", "value": "classifier"},
-                                         {"label": "Committee", "value": "committee"},
-                                     ], value=config.get("predictor_kind", "classifier"),
-                                     clearable=False),
                         html.Label("Prediction model (required for prediction/hybrid)"),
                         dcc.Dropdown(id={"type": "analysis-role-predictor", "index": key},
                                      options=[
@@ -452,25 +445,22 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-role-config", "data", allow_duplicate=True),
         Input({"type": "analysis-role-source", "index": ALL}, "value"),
         Input({"type": "analysis-role-value", "index": ALL}, "value"),
-        Input({"type": "analysis-role-family", "index": ALL}, "value"),
         Input({"type": "analysis-role-predictor", "index": ALL}, "value"),
         State({"type": "analysis-role-source", "index": ALL}, "id"),
         State({"type": "analysis-role-value", "index": ALL}, "id"),
-        State({"type": "analysis-role-family", "index": ALL}, "id"),
         State({"type": "analysis-role-predictor", "index": ALL}, "id"),
         State("analysis-role-config", "data"),
         prevent_initial_call=True,
     )
     def preserve_role_configs(
-        sources: list[str], values: list[str], families: list[str],
+        sources: list[str], values: list[str],
         predictors: list[str | None], source_ids: list[Any], value_ids: list[Any],
-        family_ids: list[Any], predictor_ids: list[Any],
+        predictor_ids: list[Any],
         existing: dict[str, Any] | None,
     ) -> Any:
         result = {key: dict(val) for key, val in (existing or {}).items()}
         for component_ids, component_values, field in [
             (source_ids, sources, "source"), (value_ids, values, "value"),
-            (family_ids, families, "predictor_kind"),
         ]:
             for item, value in zip(component_ids, component_values):
                 result.setdefault(item["index"], {})[field] = value
