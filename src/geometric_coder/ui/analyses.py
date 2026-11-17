@@ -771,7 +771,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    continuous_values: Any, rows: Any, columns: Any,
                    continuous_group: Any, statistic: Any,
                    hist_method: Any, hist_bins: Any, hist_width: Any,
-                   parent_numeric_method: Any, hist_edges: Any) -> dict[str, Any]:
+                   parent_numeric_method: Any, hist_edges: Any,
+                   live_values: Any, live_value_ids: Any,
+                   live_transforms: Any, live_transform_ids: Any,
+                   live_bins: Any, live_bin_ids: Any,
+                   live_widths: Any, live_width_ids: Any,
+                   live_edges: Any, live_edge_ids: Any) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
         if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
             raise ValueError("Choose exactly one numeric Values variable for this visualization.")
@@ -788,11 +793,48 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 raise ValueError("Explicit histogram bin edges must be comma-separated numbers.")
         else:
             bins["bins"] = hist_bins
+        # The recipe consumes the current mounted role inputs directly. The
+        # Store callback may still be resolving a preceding UI change when
+        # Preview/Save is clicked; its snapshot alone is not authoritative.
+        resolved = {key: dict(item) for key, item in (configs or {}).items()}
+        for item, value in zip(live_value_ids or [], live_values or []):
+            resolved.setdefault(item["index"], {})["value"] = value
+        settings_by_key = {
+            item["index"]: {"method": mode}
+            for item, mode in zip(live_transform_ids or [], live_transforms or [])
+        }
+        for names, entries, field in (
+            (live_bin_ids, live_bins, "bins"),
+            (live_width_ids, live_widths, "width"),
+            (live_edge_ids, live_edges, "edges"),
+        ):
+            for item, value in zip(names or [], entries or []):
+                settings_by_key.setdefault(item["index"], {})[field] = value
+        for key, setting in settings_by_key.items():
+            mode = setting.get("method", "none")
+            if mode in ("day", "week", "month", "quarter", "year"):
+                transform = {"kind": "calendar", "unit": mode}
+            elif mode in ("equal_width", "quantile"):
+                transform = {"kind": "numeric_bins", "method": mode, "bins": setting.get("bins", 10)}
+            elif mode == "fixed_width":
+                transform = {"kind": "numeric_bins", "method": mode, "width": setting.get("width", 1), "origin": 0}
+            elif mode == "explicit":
+                try:
+                    edges = [float(v.strip()) for v in (setting.get("edges") or "").split(",") if v.strip()]
+                except ValueError:
+                    edges = []
+                transform = {"kind": "numeric_bins", "method": mode, "edges": edges}
+            else:
+                transform = None
+            if transform is None:
+                resolved.setdefault(key, {}).pop("transform", None)
+            else:
+                resolved.setdefault(key, {})["transform"] = transform
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
                                   color, continuous_values, rows, columns, continuous_group)
         recipe = editor_recipe(
             kind, measure if kind == "heatmap" else "count",
-            all_slots, configs or {}, level, method, threshold, legacy=legacy,
+            all_slots, resolved, level, method, threshold, legacy=legacy,
             extra_slots=all_slots,
             continuous_options={"statistic": statistic or "mean", "binning": bins,
                                 "numeric_method": parent_numeric_method or "mean"},
@@ -836,6 +878,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-width", "value"),
         State("analysis-parent-numeric-method", "value"),
         State("analysis-hist-edges", "value"),
+        State({"type":"analysis-role-value","index":ALL}, "value"),
+        State({"type":"analysis-role-value","index":ALL}, "id"),
+        State({"type":"analysis-role-transform","index":ALL}, "value"),
+        State({"type":"analysis-role-transform","index":ALL}, "id"),
+        State({"type":"analysis-role-bins","index":ALL}, "value"),
+        State({"type":"analysis-role-bins","index":ALL}, "id"),
+        State({"type":"analysis-role-width","index":ALL}, "value"),
+        State({"type":"analysis-role-width","index":ALL}, "id"),
+        State({"type":"analysis-role-edges","index":ALL}, "value"),
+        State({"type":"analysis-role-edges","index":ALL}, "id"),
     ]
 
     @app.callback(
@@ -856,6 +908,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
              parent_numeric_method: Any, hist_edges: Any,
+             live_values: Any, live_value_ids: Any, live_transforms: Any,
+             live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
+             live_widths: Any, live_width_ids: Any, live_edges: Any,
+             live_edge_ids: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 5
@@ -864,7 +920,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges)
+                              hist_edges, live_values, live_value_ids, live_transforms,
+                              live_transform_ids, live_bins, live_bin_ids, live_widths,
+                              live_width_ids, live_edges, live_edge_ids)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
             return no_update, no_update, no_update, str(exc), no_update
@@ -885,7 +943,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 x: Any, y: Any, color: Any, continuous_values: Any,
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
                 hist_method: Any, hist_bins: Any, hist_width: Any,
-                parent_numeric_method: Any, hist_edges: Any) -> tuple[Any, str]:
+                parent_numeric_method: Any, hist_edges: Any,
+                live_values: Any, live_value_ids: Any, live_transforms: Any,
+                live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
+                live_widths: Any, live_width_ids: Any, live_edges: Any,
+                live_edge_ids: Any) -> tuple[Any, str]:
         if editing is None:
             return no_update, ""
         try:
@@ -893,7 +955,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges)
+                              hist_edges, live_values, live_value_ids, live_transforms,
+                              live_transform_ids, live_bins, live_bin_ids, live_widths,
+                              live_width_ids, live_edges, live_edge_ids)
             result = compute_analysis(project, spec)
             fig = analysis_figure(result)
             if result.get("warnings"):
