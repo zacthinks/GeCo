@@ -308,11 +308,10 @@ def _categories(rows: list[tuple[Any, ...]], index: int, spec: Mapping[str, Any]
 
 
 def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[str, Any]):
-    """Yield aligned group rows at the requested parent grain.
+    """Yield atomic rows or bounded-memory parent-grain reductions by stable keys.
 
-    Numeric sources use mean/median, binary Codes use selected observed-only
-    reductions; constant categorical/temporal metadata is preserved. A parent
-    with no observed values remains missing. SQL reads only key JSON.
+    No raw observations are sent to the browser. Parent states retain only
+    numerical moments, counts, a bounded median sample, and grouping labels.
     """
     aggregation = spec.get("aggregation")
     if not aggregation:
@@ -323,6 +322,7 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
     keys = project.metadata["key_columns"]
     prefix = keys[:keys.index(aggregation["level"]) + 1]
     import json
+    # Each source stores [n, sum, positives, first categorical value, reservoir].
     parents: dict[tuple[Any, ...], list[list[Any]]] = {}
     warnings: set[str] = set()
     for page in _pages(project, descriptors):
@@ -337,34 +337,56 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
         parent_for_id = {int(row[0]): tuple(json.loads(row[1]).get(k) for k in prefix) for row in fetched}
         for i, observation_id in enumerate(ids):
             parent = parent_for_id[observation_id]
-            state = parents.setdefault(parent, [[] for _ in descriptors])
+            if parent not in parents and len(parents) >= 100000:
+                raise ValueError("More than 100,000 parent groups; choose a coarser observation level.")
+            state = parents.setdefault(parent, [[0, 0., 0, None, []] for _ in descriptors])
             for j, col in enumerate(page["columns"]):
                 value = col["values"][i]
-                if value is not None:
-                    state[j].append(value)
+                if value is None:
+                    continue
+                cell = state[j]
+                cell[0] += 1
+                variable = descriptors[j]
+                if variable["type"] == "code" and variable["value"] == "binary":
+                    cell[2] += int(value == 1)
+                elif _numeric(variable):
+                    cell[1] += float(value)
+                    if aggregation["numeric_method"] == "median":
+                        _reservoir(cell[4], 5000, _rank(observation_id), float(value))
+                else:
+                    if cell[0] > 1 and value != cell[3]:
+                        raise ValueError(
+                            "Selected grouping metadata varies within a parent group."
+                        )
+                    cell[3] = value
     for parent in sorted(parents, key=lambda p: tuple(str(v) for v in p)):
         state = parents[parent]
         reduced = []
-        for values, variable in zip(state, descriptors):
-            if not values:
+        for cell, variable in zip(state, descriptors):
+            count, total, positives, first, sample = cell
+            if not count:
                 reduced.append(None)
             elif variable["type"] == "code" and variable["value"] == "binary":
-                positives = sum(x == 1 for x in values)
                 method = aggregation["method"]
-                reduced.append({
-                    "any": lambda: float(positives > 0),
-                    "minimum": lambda: float(positives >= aggregation["threshold"]),
-                    "count": lambda: float(positives),
-                    "mean": lambda: float(positives / len(values)),
-                    "log_count": lambda: math.log1p(positives),
-                }[method]())
+                if method == "any":
+                    reduced.append(float(positives > 0))
+                elif method == "minimum":
+                    reduced.append(float(positives >= aggregation["threshold"]))
+                elif method == "count":
+                    reduced.append(float(positives))
+                elif method == "mean":
+                    reduced.append(positives / count)
+                else:
+                    reduced.append(math.log1p(positives))
             elif _numeric(variable):
-                reduced.append(median(values) if aggregation["numeric_method"] == "median"
-                               else sum(values) / len(values))
+                if aggregation["numeric_method"] == "median":
+                    reduced.append(median(item[1] for item in sample))
+                    if count > 5000:
+                        warnings.add("Parent-level median uses bounded deterministic 5,000-point samples.")
+                else:
+                    reduced.append(total / count)
             else:
-                if any(value != values[0] for value in values[1:]):
-                    raise ValueError("Selected grouping metadata varies within a parent group.")
-                reduced.append(values[0])
+                reduced.append(first)
         yield (parent, tuple(reduced), sorted(warnings))
 
 
