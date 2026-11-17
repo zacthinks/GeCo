@@ -1236,11 +1236,16 @@ def register_representation_callbacks(
     @app.callback(
         Output("geometry-dropdown", "options"),
         Output("topic-create-geometry", "options"),
+        Output("code-center-geometry", "options"),
+        Output("classifier-spec-geometry", "options"),
         Input("representation-refresh-store", "data"),
     )
-    def geometry_options(_revision: int) -> tuple[Any, Any]:
+    def geometry_options(_revision: int) -> tuple[Any, Any, Any, Any]:
+        # All analytic-geometry selectors share a live catalog. The Code Center
+        # and classifier dialog otherwise keep their launch-time options until
+        # GeCo restarts, even though creation has already committed to the DB.
         options = [
             {"label": row["name"], "value": int(row["geometry_id"])}
             for row in project.geometries(public_only=True)
         ]
-        return options, options
+        return options, options, options, options
