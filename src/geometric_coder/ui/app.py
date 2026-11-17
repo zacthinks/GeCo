@@ -8,6 +8,7 @@ from html import escape as html_escape
 from hashlib import blake2b
 import json
 import re
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import Iterator, Sequence
@@ -168,7 +169,7 @@ def _current_semantic_scores(
     return payload.get("scores") or {}
 
 
-_DEFAULT_UI_SETTINGS = {"cv_folds": 5}
+_DEFAULT_UI_SETTINGS = {"cv_folds": 5, "candidate_evaluation_budget": -1}
 
 
 def _read_ui_settings(project_dir: Path) -> dict[str, int]:
@@ -184,17 +185,35 @@ def _read_ui_settings(project_dir: Path) -> dict[str, int]:
         folds = int(raw.get("cv_folds", 5))
     except (TypeError, ValueError):
         folds = 5
-    return {"cv_folds": folds if 2 <= folds <= 10 else 5}
+    try:
+        budget = int(raw.get("candidate_evaluation_budget", -1))
+    except (ValueError, TypeError):
+        budget = -1
+    if budget not in {-1, 0} and not 1 <= budget <= 1_000_000:
+        budget = -1
+    return {"cv_folds": folds if 2 <= folds <= 10 else 5,
+            "candidate_evaluation_budget": budget}
 
 
-def _save_ui_settings(project_dir: Path, *, cv_folds: int) -> None:
+def _save_ui_settings(
+    project_dir: Path, *, cv_folds: int | None = None,
+    candidate_evaluation_budget: int | None = None,
+) -> None:
     """Save the project CV default atomically; no database/schema migration."""
-    folds = int(cv_folds)
-    if not 2 <= folds <= 10:
-        raise ValueError("Cross-validation folds must be between 2 and 10.")
+    settings = _read_ui_settings(project_dir)
+    if cv_folds is not None:
+        folds = int(cv_folds)
+        if not 2 <= folds <= 10:
+            raise ValueError("Cross-validation folds must be between 2 and 10.")
+        settings["cv_folds"] = folds
+    if candidate_evaluation_budget is not None:
+        budget = int(candidate_evaluation_budget)
+        if budget not in {-1, 0} and not 1 <= budget <= 1_000_000:
+            raise ValueError("Candidate evaluation budget must be Default, Exhaustive, or 1 to 1,000,000.")
+        settings["candidate_evaluation_budget"] = budget
     path = project_dir / "ui_settings.json"
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"cv_folds": folds}, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -230,6 +249,15 @@ def _selected_focus_construct_id(
     except (TypeError, ValueError):
         return None
     return value if value in by_id else None
+
+
+def _scale_develop_content(html: Any, scale: dict[str, Any]) -> Any:
+    """Show the Scale definition once, alongside the Construct selector."""
+    return html.Div([
+        html.Strong(scale["name"]),
+        html.Div(scale["description"] or "No description yet."),
+        html.Small(f"Definition version {scale['version_number']}"),
+    ], className="code-definition")
 
 
 def _construct_options(constructs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -640,6 +668,7 @@ def create_app(
             "default dependencies."
         ) from error
 
+    from geometric_coder.ui.scale_comparisons import register_comparison_callbacks
     from geometric_coder.ui.figures import one_dimensional_jitter_spread
     from geometric_coder.ui.representation_ui import representation_modal, register_representation_callbacks
     from geometric_coder.ui.topic_modeling import register_topic_details_callbacks
@@ -888,6 +917,7 @@ def create_app(
                 ),
                 dcc.Store(id="saved-filter-refresh-store", data=0),
                 dcc.Store(id="active-session-store", data=int(initial_session["session_id"])),
+                dcc.Store(id="workspace-plot-resize-store", data=0),
                 dcc.Store(id="navigation-history-store", data=initial_history),
                 dcc.Store(id="desired-view-store", data=initial_view_id),
                 dcc.Store(id="view-refresh-store", data=0),
@@ -896,6 +926,7 @@ def create_app(
                     data=None,
                 ),
                 dcc.Store(id="focus-recommendation-store", data={}),
+                dcc.Store(id="scale-task-store", data=None),
                 dcc.Store(id="focus-refresh-store", data=0),
                 dcc.Store(id="focus-model-refresh-store", data=0),
                 # A stored code/evidence event separates quick annotation writes
@@ -1035,12 +1066,14 @@ def create_app(
                         children=_focus_layout(
                             dcc=dcc,
                             html=html,
+                            dash_table=dash_table,
                             codes=codes,
                             constructs=constructs,
                             geometries=geometries,
                             classifier_specs=classifier_specs,
                             hierarchy=hierarchy,
                             initial_state=initial_state,
+                            project=project,
                         ),
                     ),
                     dcc.Tab(
@@ -1204,6 +1237,38 @@ def create_app(
                                 className="geco-settings-folds",
                             ),
                             html.Small("Maximum folds requested when tuning; fewer are used when labeled evidence is limited."),
+                            html.H3("Candidate acquisition"),
+                            html.Label("Candidate evaluation budget", htmlFor="geco-settings-candidate-budget"),
+                            dcc.Dropdown(
+                                id="geco-settings-candidate-budget",
+                                options=[
+                                    {"label": "Default (Codes: Exhaustive; Scales: 1,000)", "value": -1},
+                                    {"label": "Exhaustive (0)", "value": 0},
+                                    {"label": "Custom finite budget", "value": "custom"},
+                                ],
+                                value=(
+                                    "custom"
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                ),
+                                clearable=False, searchable=False,
+                            ),
+                            dcc.Input(
+                                id="geco-settings-candidate-custom",
+                                type="number", min=1, max=1_000_000, step=1,
+                                value=(
+                                    _read_ui_settings(project.project_dir)["candidate_evaluation_budget"]
+                                    if _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0
+                                    else None
+                                ),
+                                placeholder="Number of candidate tasks",
+                                className="text-input",
+                            ),
+                            html.Small(
+                                "Counts distinct scored observations for Codes or unordered pairs for Scales. "
+                                "Exhaustive Scale acquisition refuses infeasibly large pair spaces instead of sampling."
+                            ),
+                            html.Div(id="geco-settings-candidate-status", className="control-status", role="status"),
                             html.Div(id="geco-settings-status", className="control-status", role="status"),
                         ], className="modal-card geco-settings-card", role="dialog",
                            **{"aria-modal": "true", "aria-label": "GeCo Settings"}),
@@ -1259,6 +1324,47 @@ def create_app(
         enabled = not isinstance(prefs, dict) or prefs.get("enabled", True) is not False
         return (["enabled"] if enabled else []), (
             "app-shell" if enabled else "app-shell geco-tooltip-disabled"
+        )
+
+    @app.callback(
+        Output("geco-settings-candidate-custom", "style"),
+        Input("geco-settings-candidate-budget", "value"),
+    )
+    def show_custom_candidate_budget(mode: int | str | None) -> dict[str, str]:
+        return {} if mode == "custom" else {"display": "none"}
+
+    @app.callback(
+        Output("geco-settings-candidate-status", "children"),
+        Input("geco-settings-candidate-budget", "value"),
+        Input("geco-settings-candidate-custom", "value"),
+        prevent_initial_call=True,
+    )
+    def save_candidate_budget_setting(mode: int | str | None, custom: int | float | None) -> str:
+        if mode is None:
+            return ""
+        if mode == "custom":
+            if (custom is None or isinstance(custom, bool)
+                    or not isinstance(custom, (int, float))
+                    or not float(custom).is_integer()):
+                return "Enter a whole-number candidate budget between 1 and 1,000,000."
+            budget = int(custom)
+            if not 1 <= budget <= 1_000_000:
+                return "Enter a candidate budget between 1 and 1,000,000."
+        elif mode in (-1, 0):
+            budget = int(mode)
+        else:
+            return "Choose Default, Exhaustive, or Custom."
+        try:
+            _save_ui_settings(
+                project.project_dir, candidate_evaluation_budget=budget,
+            )
+        except (OSError, ValueError) as error:
+            return f"Unable to save candidate budget: {error}"
+        return (
+            "Default budget: Codes exhaustive; Scales 1,000 tasks."
+            if budget == -1
+            else ("Exhaustive candidate evaluation." if budget == 0
+                  else f"Evaluate up to {budget:,} distinct tasks.")
         )
 
     @app.callback(
@@ -1541,6 +1647,38 @@ def create_app(
         no_update=no_update, units=units,
     )
 
+    # Resize visible Develop Plotly canvases without expensive server-side rescoring.
+    # Two animation frames let dcc.Tabs reveal its child before sizing WebGL.
+    app.clientside_callback(
+        """
+        function(workspace) {
+            if (workspace !== "focus") {
+                return window.dash_clientside.no_update;
+            }
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const plots = window.Plotly && window.Plotly.Plots;
+                if (!plots || !plots.resize) {
+                    window.dispatchEvent(new Event("resize"));
+                    return;
+                }
+                for (const id of ["scale-prediction-map", "focus-prediction-map"]) {
+                    const graph = document.querySelector("#" + id + " .js-plotly-plot");
+                    if (graph && graph.offsetWidth > 0) {
+                        try {
+                            Promise.resolve(plots.resize(graph)).catch(() => {});
+                        } catch (_error) {
+                            // An unavailable graph is not a navigation failure.
+                        }
+                    }
+                }
+            }));
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("workspace-plot-resize-store", "data"),
+        Input("workspace-tabs", "value"),
+    )
+
     # Keep tab-specific focal mirrors on the client. Hidden workspaces should not
     # wake their server-side reading/model callbacks every time the global focal
     # unit changes in another workspace. Switching tabs copies the current focal
@@ -1634,6 +1772,8 @@ def create_app(
         Output("focus-train-scope", "value"),
         Output("focus-auto-retrain", "value"),
         Output("focus-tune-hyperparameters", "value"),
+        Output("scale-auto-train", "value"),
+        Output("scale-tune-hyperparameters", "value"),
         Output("focus-context-level", "value"),
         Output("focus-context-window", "value"),
         Output("topic-color-mode", "data"),
@@ -1643,9 +1783,18 @@ def create_app(
         Output("semantic-search-status", "children", allow_duplicate=True),
         Output("topic-restore-snapshot", "data"),
         Input("session-dropdown", "value"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
-    def restore_session(session_id: int) -> tuple[Any, ...]:
+    def restore_session(
+        session_id: int, active_session_id: int | None = None,
+    ) -> tuple[Any, ...]:
+        # Session-dropdown can replay its current value after unrelated updates.
+        # Reapplying the persisted workspace in that case races a user's tab
+        # click and visibly snaps Develop back to Explore/Apply.
+        if (active_session_id is not None and session_id is not None
+                and int(session_id) == int(active_session_id)):
+            return (no_update,) * 40
         session = project.database.get_session(int(session_id))
         state = _resumable_session_state(dict(session["state"]))
         geometry_id = _valid_geometry_id(state.get("geometry_id"), geometries)
@@ -1730,6 +1879,8 @@ def create_app(
             (["all"] if state.get("focus_train_all", False) else []),
             (["auto"] if state.get("focus_auto_retrain", True) else []),
             (["tune"] if state.get("focus_tune_hyperparameters", True) else []),
+            (["auto"] if state.get("scale_auto_train", False) else []),
+            (["tune"] if state.get("scale_tune_hyperparameters", False) else []),
             int(state.get("focus_context_level", hierarchy[-1]["level_index"])),
             max(1, int(state.get("focus_context_window", 1))),
             "plain",
@@ -3863,12 +4014,12 @@ def create_app(
         Output("focus-code-dropdown", "value", allow_duplicate=True),
         Output("focus-teaching-select", "style"),
         Output("focus-scale-state", "style"),
-        Output("focus-scale-heading", "children"),
-        Output("focus-scale-description", "children"),
-        Output("focus-scale-eligibility", "children"),
         Output("focus-code-summary", "style"),
         Output("focus-new-code-button", "style"),
         Output("focus-active-area", "style"),
+        Output("focus-scale-top-summary", "children"),
+        Output("focus-scale-top-summary", "style"),
+        Output("focus-scale-count-summary", "style"),
         Input("focus-construct-dropdown", "value"),
         Input("focus-refresh-store", "data"),
         prevent_initial_call=True,
@@ -3876,15 +4027,14 @@ def create_app(
     def route_focus_construct(
         construct_id: int | None, refresh: int | None = None,
     ) -> tuple[Any, ...]:
-        # A saved definition revision refreshes Scale text only. Do not
-        # reselect the Code or reset its classifier state on evidence refresh.
-        refresh_only = False
-        if refresh is not None:
-            changed = callback_context.triggered_prop_ids
-            refresh_only = (
-                "focus-refresh-store.data" in changed
-                and "focus-construct-dropdown.value" not in changed
-            )
+        # Keep the Code workspace independent of Scale selection. Even when a
+        # revision refresh arrives alongside the new Scale selection, publish
+        # the Scale/Code visibility state rather than leaving a stale Code gate.
+        changed = callback_context.triggered_prop_ids if refresh is not None else {}
+        refresh_only = (
+            "focus-refresh-store.data" in changed
+            and "focus-construct-dropdown.value" not in changed
+        )
         try:
             construct = project.construct(int(construct_id)) if construct_id is not None else None
         except (KeyError, ValueError, TypeError):
@@ -3892,21 +4042,22 @@ def create_app(
         if refresh_only and (construct is None or construct["type"] == "code"):
             return (no_update,) * 9
         if construct is not None and construct["type"] == "code":
-            return int(construct["construct_id"]), {}, {"display": "none"}, "", "", "", {}, {}, {}
+            return (
+                int(construct["construct_id"]), {}, {"display": "none"},
+                {}, {}, {}, "", {"display": "none"}, {"display": "none"},
+            )
         if construct is None:
-            return None, {"display": "none"}, {"display": "none"}, "", "", "", {"display": "none"}, {}, {}
+            return (
+                None, {"display": "none"}, {"display": "none"},
+                {"display": "none"}, {}, {}, "", {"display": "none"},
+                {"display": "none"},
+            )
         scale = project.scale(int(construct["construct_id"]))
-        eligibility = scale.get("eligibility", {"kind": "all"})
-        definition = (
-            f"Scale: {scale['name']}",
-            scale["description"] or "No description has been written yet.",
-            f"Definition version {scale['version_number']} · Eligibility: {json.dumps(eligibility, sort_keys=True)}",
-        )
-        if refresh_only:
-            return (no_update,) * 3 + definition + (no_update,) * 3
         return (
-            None, {"display": "none"}, {}, *definition,
-            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            no_update if refresh_only else None,
+            {"display": "none"}, {},
+            {"display": "none"}, {}, {"display": "none"},
+            _scale_develop_content(html, scale), {}, {},
         )
 
     @app.callback(
@@ -3917,8 +4068,14 @@ def create_app(
     def refresh_code_center_hashtags(
         explore_refresh: int | None, focus_refresh: int | None
     ) -> list[dict[str, str]]:
+        from geometric_coder.storage.database import _extract_hashtags
+
         del explore_refresh, focus_refresh
-        return [{"label": f"#{tag}", "value": tag} for tag in project.code_hashtags()]
+        tags = set(project.code_hashtags())
+        for row in project.constructs():
+            if row["type"] == "scale":
+                tags.update(_extract_hashtags(str(row.get("description", ""))))
+        return [{"label": f"#{tag}", "value": tag} for tag in sorted(tags, key=str.casefold)]
 
     @app.callback(
         Output("code-center-table", "data"),
@@ -3941,15 +4098,21 @@ def create_app(
         matches = project.search_codes(query=query or "", scope=str(scope or "full"), hashtags=hashtags or [])
         code_tags = {int(row["code_id"]): row.get("hashtags", []) for row in matches}
         code_ids = set(code_tags)
+        from geometric_coder.storage.database import _extract_hashtags
+
         term = (query or "").casefold().strip()
         rows = []
         for construct in project.constructs():
             kind = str(construct["type"])
             if kind == "code" and int(construct["construct_id"]) not in code_ids:
                 continue
+            scale_tags = (
+                _extract_hashtags(str(construct.get("description", "")))
+                if kind == "scale" else []
+            )
             if kind == "scale":
-                if hashtags:
-                    continue  # Hashtag filter retains its existing Code-specific semantics.
+                if hashtags and not set(hashtags).issubset(scale_tags):
+                    continue
                 searchable = str(construct["name"])
                 if str(scope or "full") != "label":
                     searchable += " " + str(construct.get("description", ""))
@@ -3961,7 +4124,10 @@ def create_app(
                 "type": "Scale" if kind == "scale" else "Code",
                 "name": str(construct["name"]),
                 "hashtags": " ".join(
-                    f"#{tag}" for tag in code_tags.get(int(construct["construct_id"]), [])
+                    f"#{tag}" for tag in (
+                        scale_tags if kind == "scale"
+                        else code_tags.get(int(construct["construct_id"]), [])
+                    )
                 ),
             })
         selected_rows = [
@@ -3988,21 +4154,29 @@ def create_app(
         Output("code-center-eligibility", "children"),
         Output("code-center-edit-name-label", "children"),
         Output("code-center-binary-content", "style"),
+        Output("code-center-binary-content", "className"),
         Input("construct-center-selected-store", "data"),
     )
-    def show_center_construct_type(construct_id: int | None) -> tuple[Any, Any, str, dict[str, str]]:
+    def show_center_construct_type(construct_id: int | None) -> tuple[Any, ...]:
         if construct_id is None:
-            return "", "", "Construct name", {"display": "none"}
+            return "", "", "Construct name", {"display": "none"}, ""
         construct = project.construct(int(construct_id))
         if construct["type"] == "code":
-            return "Binary Code", "", "Code label", {}
+            return "Binary Code", "", "Code label", {}, ""
         scale = project.scale(int(construct_id))
-        return (
-            "Continuous Scale",
-            "Eligibility: " + json.dumps(scale.get("eligibility", {"kind": "all"}), sort_keys=True),
-            "Scale name",
-            {"display": "none"},
-        )
+        # Version navigation and model panels already report this information.
+        return "Continuous Scale", "", "Scale name", {}, "scale-center-mode"
+
+    @app.callback(
+        Output("code-center-view-tabs", "value"),
+        Output("code-center-positive-tab", "disabled"),
+        Input("construct-center-selected-store", "data"),
+    )
+    def select_center_default_view(construct_id):
+        if construct_id is None:
+            return "list", False
+        is_scale = project.construct(int(construct_id))["type"] == "scale"
+        return ("geometry" if is_scale else "list"), is_scale
 
     @app.callback(
         Output("code-center-selected-store", "data"),
@@ -4146,30 +4320,6 @@ def create_app(
             f"Version {number} of {number}",
             number <= 1, True, False, {"display": "none"}, {}, f"Saved version {number}.",
         )
-
-    @app.callback(
-        Output("construct-refresh-store", "data", allow_duplicate=True),
-        Output("code-center-create-scale-status", "children"),
-        Output("code-center-new-scale-name", "value"),
-        Output("code-center-new-scale-description", "value"),
-        Input("code-center-create-scale", "n_clicks"),
-        State("code-center-new-scale-name", "value"),
-        State("code-center-new-scale-description", "value"),
-        State("construct-refresh-store", "data"),
-        prevent_initial_call=True,
-    )
-    def create_center_scale(
-        clicks: int | None, name: str | None, description: str | None, refresh: int | None
-    ) -> tuple[Any, str, str, str]:
-        if not clicks:
-            return no_update, "", no_update, no_update
-        if not (name or "").strip():
-            return no_update, "Enter a Scale name.", no_update, no_update
-        try:
-            scale_id = project.create_scale((name or "").strip(), description or "")
-        except ValueError as error:
-            return no_update, str(error), no_update, no_update
-        return int(refresh or 0) + 1, f"Created Scale {scale_id}.", "", ""
 
     @app.callback(
         Output("code-center-teaching-button", "disabled"),
@@ -4524,7 +4674,7 @@ def create_app(
     @app.callback(
         Output("code-center-map", "figure"),
         Output("code-center-page-status", "children"),
-        Input("code-center-selected-store", "data"),
+        Input("construct-center-selected-store", "data"),
         Input("code-center-geometry", "value"),
         Input("code-center-view", "value"),
         Input("code-center-page-size", "value"),
@@ -4558,9 +4708,11 @@ def create_app(
             return no_update, no_update
         if geometry_id is None or view_id is None:
             return {}, ""
+        construct = project.construct(int(code_id)) if code_id is not None else None
+        is_scale = construct is not None and construct["type"] == "scale"
         positive_observations = (
             project.positive_observations_for_code(int(code_id))
-            if code_id is not None else []
+            if construct is not None and not is_scale else []
         )
         positive = {
             int(observation["unit_id"])
@@ -4569,8 +4721,10 @@ def create_app(
         }
         positive_positions = set(project.database.unit_positions_for_ids(positive).values())
         size = _coerce_positive_int(page_size, default=5000)
+        if is_scale:
+            size = min(size, 500)  # Bound score calls and linked-provider reads.
         number = _coerce_positive_int(page_number, default=1)
-        include_all_positives = "include" in set(include_positive_values or [])
+        include_all_positives = not is_scale and "include" in set(include_positive_values or [])
         page = deterministic_page_with_inclusions(
             len(units),
             page_size=size,
@@ -4587,8 +4741,9 @@ def create_app(
         )
         if view_record is None:
             return _empty_figure("This view is no longer available."), ""
+        coordinates = project.view_coordinate_rows(int(view_id), positions)
         figure = build_geometry_figure(
-            coordinates=project.view_coordinate_rows(int(view_id), positions),
+            coordinates=coordinates,
             units=page_units,
             eligible=page_eligible,
             focal_unit_id=None,
@@ -4607,6 +4762,76 @@ def create_app(
             elif trace.name == "Filtered":
                 trace.name = "Other atomic observations"
                 trace.showlegend = True
+        if is_scale:
+            for trace in figure.data:
+                if trace.name == "Other atomic observations":
+                    trace.name = "Unscored observations"
+            # Build on the existing Construct Center geometry and stable unit IDs.
+            # Unscored points remain neutral; stale fits are never displayed as current.
+            model = project.scale_model_status(int(code_id))
+            if model["status"] == "current" and model.get("fit") is not None:
+                ids = [int(unit["observation_id"]) for unit in page_units]
+                eligible_ids = set(project.eligible_scale_observation_ids(int(code_id), ids))
+                selected_ids = [value for value in ids if value in eligible_ids]
+                if selected_ids:
+                    rows = project.scale_scores(
+                        int(code_id), selected_ids, include_uncertainty=False,
+                    )
+                    scored = {int(row["observation_id"]): float(row["score"]) for row in rows}
+                    # Reuse the actual displayed base coordinates. In a 1D view,
+                    # build_geometry_figure has already applied stable Y jitter.
+                    displayed = _base_geometry_display_points(figure)
+                    plotted = [
+                        (unit, displayed[int(unit["unit_id"])], scored[int(unit["observation_id"])])
+                        for unit in page_units
+                        if int(unit["observation_id"]) in scored
+                    ]
+                    if plotted:
+                        figure.add_trace(go.Scattergl(
+                            x=[float(point[0]) for _, point, _ in plotted],
+                            y=[float(point[1]) for _, point, _ in plotted],
+                            customdata=[int(unit["unit_id"]) for unit, _, _ in plotted],
+                            text=[_observation_display_key(project, project.observation(
+                                int(unit["observation_id"]))) for unit, _, _ in plotted],
+                            mode="markers", name="Fitted Scale position",
+                            marker={
+                                "size": 8, "opacity": 0.88,
+                                "color": [score for _, _, score in plotted],
+                                "colorscale": [[0.0, "#e7f1ea"], [1.0, "#1d4930"]], "showscale": True,
+                                "colorbar": {"title": "Scale position"},
+                            },
+                            hovertemplate="%{text}<br>Scale position: %{marker.color:.3g}<extra></extra>",
+                        ))
+            reason = (
+                "Current fitted scores shown from low to high."
+                if model["status"] == "current" else
+                "Scale scores unavailable or stale; neutral points do not represent low scores."
+            )
+            # Preserve the focal ring as trace 0: the existing lightweight
+            # selection callback patches this trace rather than rebuilding.
+            focal_x, focal_y, focal_ids, focal_hover = [], [], [], []
+            if focal_unit_id is not None:
+                try:
+                    focal_observation = project.observation(int(focal_unit_id))
+                    point = project.observation_view_coordinates(int(focal_unit_id), int(view_id))[0]
+                except (KeyError, ValueError):
+                    pass
+                else:
+                    focal_x, focal_y = [float(point[0])], [float(point[1])]
+                    focal_ids = [int(focal_unit_id)]
+                    focal_hover = [_observation_display_key(project, focal_observation)]
+            figure.add_trace(go.Scattergl(
+                x=focal_x, y=focal_y, mode="markers", name="Focal observation",
+                customdata=focal_ids, hovertext=focal_hover,
+                hovertemplate="%{hovertext}<extra></extra>",
+                marker={"size": 13, "color": "rgba(0, 0, 0, 0)",
+                        "line": {"color": "#178547", "width": 2.6}},
+                showlegend=False,
+            ))
+            figure.data = (figure.data[-1], *figure.data[:-1])
+            figure.update_layout(showlegend=True)
+            return figure, f"Page {page.page_index + 1} of {page.page_count} · {reason}"
+
         derived_positive = [
             observation for observation in positive_observations
             if observation["kind"] != "atomic"
@@ -4766,6 +4991,7 @@ def create_app(
         Input("code-center-page-previous", "n_clicks"),
         Input("code-center-page-next", "n_clicks"),
         Input("code-center-page-size", "value"),
+        Input("construct-center-selected-store", "data"),
         State("code-center-page-number", "value"),
         prevent_initial_call=True,
     )
@@ -4773,14 +4999,17 @@ def create_app(
         previous_clicks: int,
         next_clicks: int,
         page_size: Any,
+        construct_id: int | None,
         page_number: Any,
     ) -> tuple[int, int]:
         del previous_clicks, next_clicks
         size = _coerce_positive_int(page_size, default=5000)
+        if construct_id is not None and project.construct(int(construct_id))["type"] == "scale":
+            size = min(size, 500)
         page_count = deterministic_page_count(len(units), page_size=size)
         current = min(max(1, _coerce_positive_int(page_number, default=1)), page_count)
         triggered = callback_context.triggered_id
-        if triggered == "code-center-page-size":
+        if triggered in {"code-center-page-size", "construct-center-selected-store"}:
             current = 1
         elif triggered == "code-center-page-previous":
             current = max(1, current - 1)
@@ -4824,6 +5053,10 @@ def create_app(
             html.Strong(_observation_display_key(project, observation)),
             html.Small(str(observation["kind"]).replace("_", " ").title()),
             html.P(str(observation["text"])),
+            html.Details([
+                html.Summary("Metadata"),
+                _metadata_table(html, observation["metadata"]),
+            ]),
         ]
 
     @app.callback(
@@ -4966,6 +5199,73 @@ def create_app(
         return _code_options(project.codes())
 
     @app.callback(
+        Output("code-modal-bootstrap-toggle", "value"),
+        Output("code-modal-bootstrap-code", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def reset_code_bootstrap_on_modal_open(_target: str | None) -> tuple[list[str], None]:
+        # Opening another Construct starts with independent Scale creation.
+        return [], None
+
+    @app.callback(
+        Output("code-modal-bootstrap-wrapper", "style"),
+        Output("code-modal-bootstrap-code", "options"),
+        Output("code-modal-bootstrap-details", "style"),
+        Input("code-modal-target-store", "data"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("focus-refresh-store", "data"),
+        Input("explore-code-refresh-store", "data"),
+    )
+    def configure_code_bootstrap(
+        target: str | None, construct_type: str | None, enabled: list[str] | None,
+        *_refresh: Any,
+    ) -> tuple[dict[str, str], list[dict[str, Any]], dict[str, str]]:
+        visible = target in {"focus", "center"} and construct_type == "scale"
+        if not visible:
+            return {"display": "none"}, [], {"display": "none"}
+        options = _code_options(project.codes())
+        details = {} if "enabled" in (enabled or []) else {"display": "none"}
+        return {}, options, details
+
+    @app.callback(
+        Output("code-modal-bootstrap-snapshot", "data"),
+        Output("code-modal-bootstrap-preview", "children"),
+        Output("code-modal-bootstrap-confirm", "value"),
+        Input("code-modal-bootstrap-code", "value"),
+        Input("code-modal-bootstrap-toggle", "value"),
+        Input("code-modal-construct-type", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def preview_code_bootstrap(
+        code_id: int | None, enabled: list[str] | None,
+        construct_type: str | None, target: str | None,
+    ) -> tuple[dict[str, Any] | None, str, list[str]]:
+        if (target not in {"focus", "center"} or construct_type != "scale"
+                or "enabled" not in (enabled or [])):
+            return None, "", []
+        if code_id is None:
+            return None, "Choose a Code to preview eligible Present and Absent observations.", []
+        try:
+            preview = project.code_scale_bootstrap_preview(int(code_id))
+        except (KeyError, TypeError, ValueError) as error:
+            return None, str(error), []
+        count = int(preview["comparisons"])
+        explanation = (
+            f"{preview['present']:,} human Present × {preview['absent']:,} human Absent "
+            f"= {count:,} comparisons. Every ordered Present–Absent pair will be "
+            "recorded individually, and all existing Code annotations remain unchanged."
+        )
+        if not preview["present"] or not preview["absent"]:
+            explanation += " Both groups must be nonempty; you may create a Scale without bootstrapping."
+        if count > int(preview["limit"]):
+            explanation += (
+                f" This exceeds the {preview['limit']:,}-comparison safety limit. "
+                "No partial comparisons will be created."
+            )
+        return {"preview": preview, "token": uuid.uuid4().hex}, explanation, []
+
+    @app.callback(
         Output("code-modal", "style"),
         Output("code-modal-target-store", "data"),
         Output("explore-code-refresh-store", "data", allow_duplicate=True),
@@ -4990,6 +5290,12 @@ def create_app(
         State("explore-code-refresh-store", "data"),
         State("focus-refresh-store", "data"),
         State("explore-code-palette-store", "data"),
+        State("code-modal-construct-type", "value"),
+        State("code-modal-bootstrap-toggle", "value"),
+        State("code-modal-bootstrap-code", "value"),
+        State("code-modal-bootstrap-confirm", "value"),
+        State("code-modal-bootstrap-snapshot", "data"),
+        State("active-session-store", "data"),
         prevent_initial_call=True,
     )
     def manage_code_modal(
@@ -5005,6 +5311,12 @@ def create_app(
         explore_refresh: int | None,
         focus_refresh: int | None,
         explore_palette: list[int | None] | None,
+        construct_type: str | None = "code",
+        bootstrap_enabled: list[str] | None = None,
+        bootstrap_code_id: int | None = None,
+        bootstrap_confirmed: list[str] | None = None,
+        bootstrap_snapshot: dict[str, Any] | None = None,
+        session_id: int | None = None,
     ) -> tuple[Any, ...]:
         del explore_open, focus_open, center_open, cancel_header, cancel_footer, create_clicks
         triggered = callback_context.triggered_id
@@ -5034,7 +5346,54 @@ def create_app(
             return (
                 {"display": "flex"}, target, no_update, no_update,
                 no_update, no_update, no_update, no_update, no_update,
-                name or "", definition or "", "Enter a code label.",
+                name or "", definition or "", "Enter a Construct label.",
+            )
+        kind = "code" if target == "explore" else construct_type
+        if kind not in {"code", "scale"}:
+            return (
+                {"display": "flex"}, target, no_update, no_update,
+                no_update, no_update, no_update, no_update, no_update,
+                name or "", definition or "", "Choose Code or Scale.",
+            )
+        if kind == "scale":
+            try:
+                if "enabled" in (bootstrap_enabled or []):
+                    if (bootstrap_code_id is None or "confirmed" not in (bootstrap_confirmed or [])
+                            or not isinstance(bootstrap_snapshot, dict)
+                            or not isinstance(bootstrap_snapshot.get("preview"), dict)
+                            or not isinstance(bootstrap_snapshot.get("token"), str)
+                            or bootstrap_snapshot["preview"].get("code_id") != bootstrap_code_id):
+                        raise ValueError(
+                            "Select a Code, review the complete comparison count, "
+                            "and confirm the Present > Absent assumption."
+                        )
+                    created = project.create_scale_from_code(
+                        clean_name, definition or "", int(bootstrap_code_id),
+                        expected_preview=bootstrap_snapshot["preview"],
+                        submission_key=bootstrap_snapshot["token"],
+                        session_id=int(session_id) if session_id is not None else None,
+                    )
+                    construct_id = int(created["scale_id"])
+                else:
+                    construct_id = project.create_scale(clean_name, definition or "")
+            except (ValueError, KeyError, RuntimeError, sqlite3.DatabaseError) as error:
+                message = (
+                    "Database error: Scale creation and comparisons were rolled back. "
+                    f"Details: {error}"
+                    if isinstance(error, sqlite3.DatabaseError) else str(error)
+                )
+                return (
+                    {"display": "flex"}, target, no_update, no_update,
+                    no_update, no_update, no_update, no_update, no_update,
+                    name or "", definition or "", message,
+                )
+            focus_value = construct_id if target == "focus" else no_update
+            return (
+                {"display": "none"}, None,
+                int(explore_refresh or 0) + 1,
+                int(focus_refresh or 0) + 1,
+                no_update, no_update, focus_value, no_update, no_update,
+                "", "", "",
             )
         existing = {
             str(code["name"]).casefold(): int(code["code_id"])
@@ -5070,6 +5429,20 @@ def create_app(
             "",
             "",
         )
+
+    @app.callback(
+        Output("code-modal-type-wrapper", "style"),
+        Output("code-modal-heading", "children"),
+        Output("code-modal-create-button", "children"),
+        Output("code-modal-construct-type", "value"),
+        Input("code-modal-target-store", "data"),
+    )
+    def show_construct_type_for_modal(
+        target: str | None,
+    ) -> tuple[dict[str, str], str, str, str]:
+        if target == "explore":
+            return {"display": "none"}, "New Code", "Create Code", "code"
+        return {}, "New Construct", "Create Construct", "code"
 
     @app.callback(
         Output("explore-code-palette-store", "data", allow_duplicate=True),
@@ -6275,6 +6648,13 @@ def create_app(
         if result is None:
             if strategy == "review_unsure":
                 return no_update, no_update, "This code has no unsure units to revisit.", {}
+            if strategy != "random" and _read_ui_settings(project.project_dir)["candidate_evaluation_budget"] > 0:
+                return (
+                    no_update, no_update,
+                    "No eligible units remain in this finite candidate window. "
+                    "Increase the candidate evaluation budget or select Exhaustive.",
+                    {},
+                )
             return no_update, no_update, "No unseen, unreviewed units remain in this session.", {}
 
         fit_ids = list(result.get("classifier_fit_ids", {}).values())
@@ -7784,6 +8164,10 @@ def create_app(
 
     from geometric_coder.ui.analyses import register_analysis_callbacks
     register_analysis_callbacks(app, project)
+    register_comparison_callbacks(
+        app, project, total_units=len(units), hierarchy=hierarchy,
+        html=html, dcc=dcc,
+    )
     return app
 
 
@@ -8697,16 +9081,7 @@ def _code_center_layout(
             html.Aside(
                 [
                     html.H2("Constructs"),
-                    html.Button("New Code", id="code-center-new-code-button", n_clicks=0),
-                    html.Details([
-                        html.Summary("New Scale"),
-                        html.Label("Scale name"),
-                        dcc.Input(id="code-center-new-scale-name", type="text", className="text-input"),
-                        html.Label("Description"),
-                        dcc.Textarea(id="code-center-new-scale-description", className="memo-editor code-center-editor"),
-                        html.Button("Create Scale", id="code-center-create-scale", n_clicks=0, className="primary-action"),
-                        html.Div(id="code-center-create-scale-status", className="control-status"),
-                    ]),
+                    html.Button("New Construct", id="code-center-new-code-button", n_clicks=0),
                     html.Label("Search Constructs"),
                     dcc.Input(id="code-center-query", type="text", debounce=True, className="text-input", placeholder="Search labels or descriptions"),
                     dcc.RadioItems(
@@ -8789,6 +9164,7 @@ def _code_center_layout(
                         children=[
                             dcc.Tab(
                                 label="Positive units", value="list",
+                                id="code-center-positive-tab",
                                 children=dash_table.DataTable(
                                     id="code-center-units-table",
                                     columns=[
@@ -9460,25 +9836,42 @@ def _testing_center_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
     )
 
 def _code_modal(*, dcc: Any, html: Any) -> Any:
-    """Return the shared code-creation modal used by Explore and Develop."""
+    """Return one shared Code/Scale creation modal for Develop and Constructs."""
     return html.Div(
         [
             html.Div(
                 [
                     html.Div(
                         [
-                            html.H2("New Code"),
+                            html.H2("New Construct", id="code-modal-heading"),
                             html.Button("×", id="code-modal-cancel-button", n_clicks=0),
                         ],
                         className="modal-header",
                     ),
                     html.Div(
                         [
-                            html.Label("Code label"),
+                            html.Label("Construct type"),
+                            dcc.RadioItems(
+                                id="code-modal-construct-type",
+                                options=[
+                                    {"label": "Code", "value": "code"},
+                                    {"label": "Scale", "value": "scale"},
+                                ],
+                                value="code",
+                                inline=True,
+                                className="memo-center-scope",
+                            ),
+                        ],
+                        id="code-modal-type-wrapper",
+                        className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Construct label"),
                             dcc.Input(
                                 id="code-modal-name",
                                 type="text",
-                                placeholder="Enter a concise code label",
+                                placeholder="Enter a concise construct label",
                                 className="text-input code-name-input",
                             ),
                         ],
@@ -9489,18 +9882,61 @@ def _code_modal(*, dcc: Any, html: Any) -> Any:
                             html.Label("Description (optional)"),
                             dcc.Textarea(
                                 id="code-modal-definition",
-                                placeholder="Describe what the code captures. Markdown and #hashtags are supported.",
+                                placeholder="Describe what this construct measures or captures. Markdown and #hashtags are supported.",
                                 className="code-definition-editor code-modal-definition",
                             ),
                         ],
                         className="code-modal-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Bootstrap from existing Code (optional)"),
+                            dcc.Checklist(
+                                id="code-modal-bootstrap-toggle",
+                                options=[{"label": "Bootstrap from existing Code", "value": "enabled"}],
+                                value=[],
+                            ),
+                            html.Div(
+                                [
+                                    html.P(
+                                        "This assumes that every observation marked Present for the selected Code is higher on the new Scale than every observation marked Absent. Only use this option if that interpretation makes sense for your research.",
+                                        className="focus-help",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="code-modal-bootstrap-code",
+                                        options=[],
+                                        value=None,
+                                        placeholder="Select an existing Code",
+                                        clearable=True,
+                                    ),
+                                    html.Div(
+                                        id="code-modal-bootstrap-preview",
+                                        className="control-status",
+                                    ),
+                                    dcc.Checklist(
+                                        id="code-modal-bootstrap-confirm",
+                                        options=[{
+                                            "label": "I confirm the complete comparison count and the Present > Absent assumption.",
+                                            "value": "confirmed",
+                                        }],
+                                        value=[],
+                                    ),
+                                ],
+                                id="code-modal-bootstrap-details",
+                                style={"display": "none"},
+                            ),
+                            dcc.Store(id="code-modal-bootstrap-snapshot"),
+                        ],
+                        id="code-modal-bootstrap-wrapper",
+                        className="code-modal-field",
+                        style={"display": "none"},
                     ),
                     html.Div(id="code-modal-status", className="control-status modal-status"),
                     html.Div(
                         [
                             html.Button("Cancel", id="code-modal-cancel-footer", n_clicks=0),
                             html.Button(
-                                "Create Code",
+                                "Create Construct",
                                 id="code-modal-create-button",
                                 n_clicks=0,
                                 className="primary-action",
@@ -9765,20 +10201,32 @@ def _focus_layout(
     *,
     dcc: Any,
     html: Any,
+    dash_table: Any,
     codes: list[dict[str, Any]],
     constructs: list[dict[str, Any]],
     geometries: list[dict[str, Any]],
     classifier_specs: list[dict[str, Any]],
     hierarchy: list[dict[str, Any]],
     initial_state: dict[str, Any],
+    project: Any,
 ) -> Any:
     """Return a shared Construct selector with the existing binary Develop workspace."""
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+
     del geometries
     code_ids = {int(code["code_id"]) for code in codes}
     initial_construct_id = _selected_focus_construct_id(constructs, initial_state)
     initial_code_id = (
         initial_construct_id if initial_construct_id in code_ids else None
     )
+    initial_scale = (
+        project.scale(int(initial_construct_id))
+        if initial_construct_id is not None and initial_code_id is None else None
+    )
+    if initial_scale is None:
+        scale_summary = ""
+    else:
+        scale_summary = _scale_develop_content(html, initial_scale)
 
     classifier_specs = [
         row
@@ -9824,11 +10272,14 @@ def _focus_layout(
                                         style={"display": "none"},
                                     ),
                                     html.Button(
-                                        "New Code", id="focus-new-code-button", n_clicks=0,
-                                        style=({"display": "none"} if initial_construct_id is not None and initial_code_id is None else {}),
+                                        "New Construct", id="focus-new-code-button", n_clicks=0,
                                     ),
                                 ],
                                 className="code-selector-row",
+                            ),
+                            html.Div(
+                                id="focus-scale-top-summary", children=scale_summary,
+                                style=({} if initial_scale is not None else {"display": "none"}),
                             ),
                             html.Div(
                                 [
@@ -9842,6 +10293,15 @@ def _focus_layout(
                         ],
                         className="focus-code-select",
                     ),
+                    html.Div([
+                        html.Label("Teaching examples"),
+                        html.Button(
+                            "Manage teaching examples", disabled=True,
+                            title="Teaching examples for Scales are not yet available.",
+                        ),
+                    ], id="focus-scale-count-summary",
+                       className="focus-teaching-select scale-teaching-disabled",
+                       style=({} if initial_scale is not None else {"display": "none"})),
                     html.Div(
                         [
                             html.Label(_tooltip_label(html, "Teaching examples", "Add your own labeled text examples that can help train classifiers alongside coded units.")),
@@ -9866,39 +10326,19 @@ def _focus_layout(
             ),
             html.Section(
                 [
-                    html.H3(
-                        id="focus-scale-heading",
-                        children=(f"Scale: {next(row['name'] for row in constructs if row['construct_id'] == initial_construct_id)}"
-                                  if initial_construct_id is not None and initial_code_id is None else ""),
-                    ),
-                    html.Div(
-                        id="focus-scale-description",
-                        children=(next(row.get("description", "") for row in constructs if row['construct_id'] == initial_construct_id)
-                                  if initial_construct_id is not None and initial_code_id is None else ""),
-                        className="code-definition",
-                    ),
-                    html.Div(
-                        id="focus-scale-eligibility",
-                        children=(
-                            f"Definition version {next(row['version_number'] for row in constructs if row['construct_id'] == initial_construct_id)} · "
-                            f"Eligibility: {json.dumps(next(row['eligibility'] for row in constructs if row['construct_id'] == initial_construct_id), sort_keys=True)}"
-                            if initial_construct_id is not None and initial_code_id is None else ""
-                        ),
-                        className="focus-counts",
-                    ),
-                    html.P(
-                        "Comparative development for this Scale will be available in a subsequent phase.",
-                        className="focus-help",
-                    ),
+                    comparison_layout(dcc=dcc, html=html, dash_table=dash_table,
+                                      hierarchy=hierarchy,
+                                      auto_train=bool(initial_state.get("scale_auto_train", False)),
+                                      tune_hyperparameters=bool(initial_state.get("scale_tune_hyperparameters", False))),
                 ],
                 id="focus-scale-state",
                 style=({} if initial_construct_id is not None and initial_code_id is None else {"display": "none"}),
-                className="focus-disabled-message",
+                className="focus-scale-comparison",
             ),
             html.Div(
                 [
                     html.Div(
-                        "Select a code to begin developing it.",
+                        "Select a Code or Scale to begin developing it.",
                         id="focus-disabled-message",
                         className="focus-disabled-message",
                     ),
@@ -10987,6 +11427,15 @@ def _coerce_positive_int(value: Any, *, default: int) -> int:
     except (TypeError, ValueError):
         return int(default)
     return parsed if parsed >= 1 else int(default)
+
+
+def _base_geometry_display_points(figure: Any) -> dict[int, tuple[float, float]]:
+    """Map stable unit IDs to the coordinates plotted by the shared geometry view."""
+    return {
+        int(unit_id): (float(x), float(y))
+        for trace in figure.data[:2]  # Filtered and Eligible base-point traces.
+        for unit_id, x, y in zip(trace.customdata, trace.x, trace.y, strict=True)
+    }
 
 
 def _clicked_unit_id(click_data: dict[str, Any] | None) -> int | None:

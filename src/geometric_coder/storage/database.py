@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -12,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -123,6 +125,62 @@ _CONSTRUCT_SCHEMA_SQL = (
         ON scale_comparison_events(scale_version_id, comparison_event_id)""",
     """CREATE INDEX IF NOT EXISTS scale_comparison_events_supersedes_idx
         ON scale_comparison_events(supersedes_event_id)""",
+)
+
+_SCALER_SCHEMA_SQL = (
+    """CREATE TABLE IF NOT EXISTS scaler_specs (
+        scaler_spec_id INTEGER PRIMARY KEY,
+        scale_id INTEGER NOT NULL UNIQUE REFERENCES scales(scale_id),
+        representation_id INTEGER NOT NULL REFERENCES representations(representation_id),
+        estimator_family TEXT NOT NULL,
+        hyperparameters_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS scaler_fits (
+        scaler_fit_id INTEGER PRIMARY KEY,
+        scaler_spec_id INTEGER NOT NULL REFERENCES scaler_specs(scaler_spec_id),
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        snapshot_fingerprint TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        artifact_path TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(scaler_spec_id, snapshot_fingerprint)
+    )""",
+    """CREATE INDEX IF NOT EXISTS scaler_fits_scale_idx
+        ON scaler_fits(scale_id, scaler_fit_id DESC)""",
+)
+
+_SCALE_ACQUISITION_SQL = (
+    """CREATE TABLE IF NOT EXISTS scale_acquisition_runs (
+        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scale_id INTEGER NOT NULL REFERENCES scales(scale_id),
+        scaler_fit_id INTEGER NOT NULL REFERENCES scaler_fits(scaler_fit_id),
+        scale_version_id INTEGER NOT NULL REFERENCES scale_versions(scale_version_id),
+        scaler_spec_id INTEGER NOT NULL REFERENCES scaler_specs(scaler_spec_id),
+        selection_fingerprint TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        strategy TEXT NOT NULL CHECK (strategy IN ('eig', 'random')),
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(scale_id, scaler_fit_id, selection_fingerprint)
+    )""",
+    """CREATE TABLE IF NOT EXISTS scale_acquisition_pairs (
+        run_id INTEGER NOT NULL REFERENCES scale_acquisition_runs(run_id) ON DELETE CASCADE,
+        observation_low_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        observation_high_id INTEGER NOT NULL REFERENCES observations(observation_id),
+        acquisition_score REAL,
+        ranking_position INTEGER NOT NULL,
+        PRIMARY KEY(run_id, observation_low_id, observation_high_id),
+        UNIQUE(run_id, ranking_position),
+        CHECK(observation_low_id < observation_high_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS scale_acquisition_pairs_ranking_idx
+       ON scale_acquisition_pairs(run_id, ranking_position)""",
+    """CREATE INDEX IF NOT EXISTS scale_acquisition_runs_scale_idx
+       ON scale_acquisition_runs(scale_id, run_id DESC)""",
 )
 
 _SCHEMA = """
@@ -828,6 +886,18 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
 
 
 
+def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
+    """Install bounded Scale recommendation rankings transactionally."""
+    for statement in _SCALE_ACQUISITION_SQL:
+        connection.execute(statement)
+
+
+def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
+    """Add Scale model configuration and immutable fit records transactionally."""
+    for statement in _SCALER_SCHEMA_SQL:
+        connection.execute(statement)
+
+
 def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
     """Add typed Construct identities without rewriting any existing Code rows.
 
@@ -862,6 +932,8 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     16: _migrate_16_to_17,
     17: _migrate_17_to_18,
     18: _migrate_18_to_19,
+    19: _migrate_19_to_20,
+    20: _migrate_20_to_21,
 }
 
 
@@ -908,6 +980,10 @@ class ProjectDatabase:
             for statement in _QUERY_SEARCH_SQL:
                 connection.execute(statement)
             for statement in _CONSTRUCT_SCHEMA_SQL:
+                connection.execute(statement)
+            for statement in _SCALER_SCHEMA_SQL:
+                connection.execute(statement)
+            for statement in _SCALE_ACQUISITION_SQL:
                 connection.execute(statement)
             connection.execute(
                 """
@@ -3173,6 +3249,117 @@ class ProjectDatabase:
                 selected.update(int(row[0]) for row in rows)
         return [value for value in wanted if value in selected]
 
+    def acquisition_eligible_atomic_ids(
+        self, construct_type: str, construct_id: int, *,
+        eligibility_spec: Mapping[str, Any] | None = None,
+        session_id: int | None = None,
+    ) -> array:
+        """Stream stable atomic IDs into a compact array (no text or pair arrays).
+
+        Scale filtering uses the same predicates and human-positive Code
+        eligibility as eligible_scale_observation_ids. Code excludes effective
+        assignments, plus session visits if a session is supplied.
+        """
+        from array import array
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+
+        ids = array("q")
+        if construct_type not in {"code", "scale"}:
+            raise ValueError("Unknown acquisition construct type.")
+        if construct_type == "scale":
+            spec = dict(eligibility_spec or {"kind": "all"})
+            predicate, params = compile_filter_sql(
+                spec.get("metadata_clauses", []),
+                operator=spec.get("metadata_operator", "and"),
+            )
+            extra = ""
+            extra_params: list[Any] = []
+            for item in spec.get("code_filters", []):
+                extra += """ AND EXISTS (
+                    SELECT 1 FROM current_annotations AS ca
+                    WHERE ca.observation_id = u.observation_id
+                      AND ca.code_id = ? AND ca.value = 'positive'
+                      AND substr(ca.origin, 1, 6) = 'human_'
+                )"""
+                extra_params.append(int(item["code_id"]))
+            query = (
+                "SELECT u.observation_id FROM units AS u "
+                "JOIN observations AS o ON o.observation_id = u.observation_id "
+                "WHERE o.kind = 'atomic' AND (" + predicate + ")" + extra +
+                " ORDER BY u.observation_id"
+            )
+            query_params: tuple[Any, ...] = (*params, *extra_params)
+        else:
+            query = """
+                SELECT u.observation_id FROM units AS u
+                JOIN observations AS o ON o.observation_id = u.observation_id
+                WHERE o.kind = 'atomic'
+                AND NOT EXISTS (
+                    SELECT 1 FROM annotation_events AS ae
+                    WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM annotation_event_retractions AS aer
+                          WHERE aer.annotation_event_id = ae.annotation_event_id
+                      )
+                )
+            """
+            query_params = (int(construct_id),)
+            if session_id is not None:
+                query += """ AND NOT EXISTS (
+                    SELECT 1 FROM navigation_events AS nv
+                    WHERE nv.session_id = ? AND nv.unit_id = u.unit_id
+                )"""
+                query_params += (int(session_id),)
+            query += " ORDER BY u.observation_id"
+        with self.connect() as connection:
+            if construct_type == "scale":
+                register_filter_functions(connection)
+            for row in connection.execute(query, query_params):
+                ids.append(int(row[0]))
+        return ids
+
+    def scale_judgment_revision(self, scale_id: int) -> tuple[int, int]:
+        """Cheap append-only evidence revision across all definition versions."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*), COALESCE(MAX(e.comparison_event_id), 0)
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ?""",
+                (int(scale_id),),
+            ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def scale_judged_candidate_pairs(
+        self, scale_id: int, pairs: Sequence[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        """Indexed batched membership of exact canonical pairs, all versions."""
+        if not pairs:
+            return set()
+        if len(pairs) > 256:
+            raise ValueError("Candidate membership checks require at most 256 pairs.")
+        if any(low >= high for low, high in pairs):
+            raise ValueError("Candidate pair identities must be canonical.")
+        values = ", ".join("(?, ?)" for _ in pairs)
+        parameters = [part for pair in pairs for part in pair]
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""WITH candidates(low, high) AS (VALUES {values})
+                    SELECT DISTINCT c.low, c.high
+                    FROM candidates AS c
+                    WHERE EXISTS (
+                        SELECT 1 FROM scale_comparison_events AS e
+                        JOIN scale_versions AS v
+                          ON v.scale_version_id = e.scale_version_id
+                        WHERE v.scale_id = ? AND e.observation_low_id = c.low
+                          AND e.observation_high_id = c.high
+                    )""",
+                (*parameters, int(scale_id)),
+            ).fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
+
     def record_scale_comparison(
         self, scale_id: int, first_observation_id: int,
         second_observation_id: int, outcome: str, *,
@@ -3333,6 +3520,99 @@ class ProjectDatabase:
             ).fetchall()
         return [_scale_comparison_row(row) for row in rows]
 
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Page complete, immutable comparison history, including superseded events."""
+        if page_size < 1 or page_size > 200:
+            raise ValueError("History page size must be between 1 and 200.")
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM scales WHERE scale_id = ?", (int(scale_id),),
+            ).fetchone() is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            total = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events AS e "
+                "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                "WHERE v.scale_id = ?", (int(scale_id),),
+            ).fetchone()[0])
+            pages = max(1, (total + page_size - 1) // page_size)
+            current_page = max(1, min(int(page), pages))
+            rows = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ?
+                   ORDER BY e.comparison_event_id DESC LIMIT ? OFFSET ?""",
+                (int(scale_id), int(page_size), (current_page - 1) * page_size),
+            ).fetchall()
+        return [
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            for row in rows
+        ], total, current_page
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Get one historical event for correction without scanning a large batch."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT e.*, v.scale_id, v.version_number,
+                          EXISTS (
+                              SELECT 1 FROM scale_comparison_events AS correction
+                              WHERE correction.supersedes_event_id = e.comparison_event_id
+                          ) AS is_superseded
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.comparison_event_id = ?""",
+                (int(scale_id), int(event_id)),
+            ).fetchone()
+        return (
+            {**_scale_comparison_row(row), "is_superseded": bool(row["is_superseded"])}
+            if row is not None else None
+        )
+
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Find previously compared canonical pairs within a small candidate batch."""
+        ids = list(dict.fromkeys(int(item) for item in observation_ids))
+        if len(ids) < 2:
+            return set()
+        if len(ids) > 400:
+            raise ValueError("Pair candidate lookup requires at most 400 observations.")
+        placeholders = ", ".join("?" for _ in ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT e.observation_low_id, e.observation_high_id
+                    FROM scale_comparison_events AS e
+                    WHERE e.scale_version_id IN (
+                        SELECT scale_version_id FROM scale_versions WHERE scale_id = ?
+                    )
+                    AND e.observation_low_id IN ({placeholders})
+                    AND e.observation_high_id IN ({placeholders})""",
+                (int(scale_id), *ids, *ids),
+            ).fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        low, high = sorted((int(first), int(second)))
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE v.scale_id = ? AND e.observation_low_id = ?
+                     AND e.observation_high_id = ?""",
+                (int(scale_id), low, high),
+            ).fetchone()
+        return int(row[0])
+
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
         """Return current, eligible human judgments for later Scale fitting.
 
@@ -3359,6 +3639,286 @@ class ProjectDatabase:
             if item["observation_low_id"] in eligible
             and item["observation_high_id"] in eligible
         ]
+
+    # A hard cap prevents an accidental many-million-row batch. Above the cap
+    # the researcher can create an ordinary Scale instead; nothing is truncated.
+    _MAX_CODE_BOOTSTRAP_COMPARISONS = 100_000
+
+    def _human_code_bootstrap_snapshot(
+        self, connection: sqlite3.Connection, code_id: int,
+    ) -> tuple[dict[str, Any], list[int], list[int]]:
+        """Current effective human labels on atomic observations, in stable order."""
+        code_version = connection.execute(
+            "SELECT version_number FROM code_versions WHERE code_id = ? "
+            "ORDER BY version_number DESC LIMIT 1", (int(code_id),),
+        ).fetchone()
+        if code_version is None:
+            raise KeyError(f"Unknown code_id: {code_id}")
+        present: list[int] = []
+        absent: list[int] = []
+        digest = hashlib.sha256(f"code:{code_id}:v{code_version[0]}|".encode())
+        rows = connection.execute(
+            """SELECT ca.observation_id, ca.value, ca.annotation_event_id
+               FROM current_annotations AS ca
+               JOIN observations AS o ON o.observation_id = ca.observation_id
+               WHERE ca.code_id = ? AND o.kind = 'atomic'
+                 AND ca.value IN ('positive', 'negative')
+                 AND substr(ca.origin, 1, 6) = 'human_'
+                 AND length(ca.origin) > 6
+               ORDER BY ca.observation_id""",
+            (int(code_id),),
+        )
+        for row in rows:
+            observation_id = int(row["observation_id"])
+            if row["value"] == "positive":
+                present.append(observation_id)
+            else:
+                absent.append(observation_id)
+            digest.update(
+                f"{observation_id}:{row['value']}:{row['annotation_event_id']}|".encode()
+            )
+        comparisons = len(present) * len(absent)
+        preview = {
+            "code_id": int(code_id),
+            "code_version": int(code_version[0]),
+            "present": len(present),
+            "absent": len(absent),
+            "comparisons": comparisons,
+            "fingerprint": digest.hexdigest(),
+            "limit": self._MAX_CODE_BOOTSTRAP_COMPARISONS,
+        }
+        return preview, present, absent
+
+    def code_scale_bootstrap_preview(self, code_id: int) -> dict[str, Any]:
+        """Preview the full human Present x Absent Cartesian product."""
+        with self.connect() as connection:
+            preview, _, _ = self._human_code_bootstrap_snapshot(connection, int(code_id))
+        return preview
+
+    def bootstrap_existing_scale_from_code(
+        self, scale_id: int, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None, expected_scale_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically add an entire Code-derived Cartesian batch to an existing Scale.
+
+        This uses normal human comparison events and the same snapshot/cap policy
+        as creation-time bootstrapping. No independent evidence category is added.
+        """
+        if (not isinstance(submission_key, str) or len(submission_key) != 32
+                or any(letter not in "0123456789abcdef" for letter in submission_key)):
+            raise ValueError("A valid bootstrap submission key is required.")
+        if not isinstance(expected_preview, Mapping):
+            raise ValueError("Review the Code comparison counts before confirming.")
+        scale_id, code_id = int(scale_id), int(code_id)
+        prefix = f"scale-bootstrap-{submission_key}-{scale_id}-{code_id}-"
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            version = connection.execute(
+                "SELECT scale_version_id, version_number FROM scale_versions WHERE scale_id = ? "
+                "ORDER BY version_number DESC LIMIT 1", (scale_id,),
+            ).fetchone()
+            if version is None:
+                raise KeyError(f"Unknown scale_id: {scale_id}")
+            version_id = int(version["scale_version_id"])
+            previous = connection.execute(
+                "SELECT v.scale_id, e.scale_version_id, e.session_id, e.submission_key "
+                "FROM scale_comparison_events AS e "
+                "JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id "
+                "WHERE e.submission_key LIKE ? LIMIT 1",
+                (f"scale-bootstrap-{submission_key}-%",),
+            ).fetchone()
+            if previous is not None:
+                if (not str(previous["submission_key"]).startswith(prefix)
+                        or int(previous["scale_id"]) != scale_id
+                        or previous["session_id"] != session_id):
+                    raise ValueError("Bootstrap submission key was reused with different details.")
+                total = int(connection.execute(
+                    "SELECT COUNT(*) FROM scale_comparison_events "
+                    "WHERE submission_key LIKE ?", (f"{prefix}%",),
+                ).fetchone()[0])
+                if total != int(expected_preview.get("comparisons", -1)):
+                    raise ValueError("Bootstrap retry count differs from the original batch.")
+                return {"scale_id": scale_id, "comparisons_created": total, "retried": True}
+            if (expected_scale_version is not None
+                    and int(version["version_number"]) != int(expected_scale_version)):
+                raise ValueError(
+                    "The Scale definition changed after preview. Review the bootstrap again."
+                )
+            snapshot, present, absent = self._human_code_bootstrap_snapshot(
+                connection, code_id,
+            )
+            if snapshot != dict(expected_preview):
+                raise ValueError(
+                    "The Code's human annotations changed after preview. "
+                    "Review the counts again before bootstrapping."
+                )
+            if not present or not absent:
+                raise ValueError("Bootstrapping requires human Present and Absent observations.")
+            total = int(snapshot["comparisons"])
+            if total > self._MAX_CODE_BOOTSTRAP_COMPARISONS:
+                raise ValueError(
+                    f"Bootstrapping would create {total:,} comparisons, above the "
+                    f"{self._MAX_CODE_BOOTSTRAP_COMPARISONS:,} safety limit."
+                )
+            if session_id is not None and connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (int(session_id),),
+            ).fetchone() is None:
+                raise ValueError("The active session is no longer available.")
+            now = utc_now()
+            connection.executemany(
+                """INSERT INTO scale_comparison_events (
+                    scale_version_id, observation_low_id, observation_high_id,
+                    presented_first_id, presented_second_id, outcome, origin,
+                    reviewer_key, session_id, selection_provenance_json,
+                    supersedes_event_id, submission_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (version_id, min(first, second), max(first, second),
+                     first, second, "first_higher", "human_direct",
+                     None, session_id, "{}", None, f"{prefix}{index}", now)
+                    for index, (first, second) in enumerate(
+                        (first, second) for first in present for second in absent
+                    )
+                ),
+            )
+            written = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events "
+                "WHERE submission_key LIKE ?", (f"{prefix}%",),
+            ).fetchone()[0])
+            if written != total:
+                raise RuntimeError("Incomplete bootstrap batch; rolling back.")
+            return {"scale_id": scale_id, "comparisons_created": written, "retried": False}
+
+    def create_scale_from_code(
+        self, name: str, description: str, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Commit the independent Scale and every normal human comparison atomically.
+
+        The opaque submission key uses existing event idempotency. No new evidence
+        type, weight, or provenance field is created. No partial batch is committed.
+        """
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Scale name may not be empty.")
+        if (not isinstance(submission_key, str) or len(submission_key) != 32
+                or any(letter not in "0123456789abcdef" for letter in submission_key)):
+            raise ValueError("A valid creation submission key is required.")
+        if not isinstance(expected_preview, Mapping):
+            raise ValueError("Review the Code comparison counts before confirming.")
+        code_id = int(code_id)
+        prefix = f"scale-init-{submission_key}-{code_id}-"
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                """SELECT v.scale_id, e.submission_key
+                   FROM scale_comparison_events AS e
+                   JOIN scale_versions AS v ON v.scale_version_id = e.scale_version_id
+                   WHERE e.submission_key LIKE ? LIMIT 1""",
+                (f"scale-init-{submission_key}-%",),
+            ).fetchone()
+            if previous is not None:
+                if not str(previous["submission_key"]).startswith(prefix):
+                    raise ValueError("This creation key was already used for a different Code.")
+                scale_id = int(previous["scale_id"])
+                version = connection.execute(
+                    "SELECT name, description_markdown FROM scale_versions "
+                    "WHERE scale_id = ? AND version_number = 1",
+                    (scale_id,),
+                ).fetchone()
+                count = int(connection.execute(
+                    "SELECT COUNT(*) FROM scale_comparison_events AS e "
+                    "JOIN scale_versions AS v ON e.scale_version_id = v.scale_version_id "
+                    "WHERE v.scale_id = ? AND e.submission_key LIKE ?",
+                    (scale_id, f"{prefix}%"),
+                ).fetchone()[0])
+                first_session = connection.execute(
+                    "SELECT session_id FROM scale_comparison_events "
+                    "WHERE submission_key = ?", (f"{prefix}0",),
+                ).fetchone()
+                if (version is None or version["name"] != clean_name
+                        or version["description_markdown"] != description
+                        or count != expected_preview.get("comparisons")
+                        or first_session is None
+                        or first_session["session_id"] != session_id):
+                    raise ValueError("Creation key was reused with different Scale details.")
+                return {
+                    "scale_id": scale_id, "comparisons_created": count, "retried": True,
+                }
+
+            snapshot, present, absent = self._human_code_bootstrap_snapshot(
+                connection, code_id,
+            )
+            if snapshot != dict(expected_preview):
+                raise ValueError(
+                    "The Code's effective human annotations changed after preview. "
+                    "Review the counts again before creating this Scale."
+                )
+            if not present or not absent:
+                raise ValueError(
+                    "Bootstrapping requires at least one human Present and one human Absent "
+                    "atomic observation. Create the Scale without bootstrapping instead."
+                )
+            total = snapshot["comparisons"]
+            if total > self._MAX_CODE_BOOTSTRAP_COMPARISONS:
+                raise ValueError(
+                    f"Bootstrapping would create {total:,} comparisons, above the "
+                    f"{self._MAX_CODE_BOOTSTRAP_COMPARISONS:,} safety limit. "
+                    "No Scale or comparisons were created."
+                )
+            if session_id is not None and connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (int(session_id),),
+            ).fetchone() is None:
+                raise ValueError("The active session is no longer available.")
+            identity = connection.execute(
+                "INSERT INTO constructs(type, created_at) VALUES ('scale', ?)",
+                (now,),
+            )
+            scale_id = int(identity.lastrowid)
+            connection.execute(
+                "INSERT INTO scales(scale_id, eligibility_spec_json, "
+                "eligibility_revision, updated_at) VALUES (?, ?, 1, ?)",
+                (scale_id, '{"kind":"all"}', now),
+            )
+            version = connection.execute(
+                "INSERT INTO scale_versions(scale_id, version_number, name, "
+                "description_markdown, created_at) VALUES (?, 1, ?, ?, ?)",
+                (scale_id, clean_name, description, now),
+            )
+            version_id = int(version.lastrowid)
+            connection.executemany(
+                """INSERT INTO scale_comparison_events(
+                    scale_version_id, observation_low_id, observation_high_id,
+                    presented_first_id, presented_second_id, outcome, origin,
+                    reviewer_key, session_id, selection_provenance_json,
+                    supersedes_event_id, submission_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (version_id, min(first, second), max(first, second),
+                     first, second, "first_higher", "human_direct",
+                     None, session_id, "{}", None,
+                     f"{prefix}{index}", now)
+                    for index, (first, second) in enumerate(
+                        (first, second)
+                        for first in present for second in absent
+                    )
+                ),
+            )
+            written = int(connection.execute(
+                "SELECT COUNT(*) FROM scale_comparison_events WHERE scale_version_id = ?",
+                (version_id,),
+            ).fetchone()[0])
+            if written != total:
+                raise RuntimeError(
+                    f"Expected {total} comparisons but wrote {written}; "
+                    "rolling back the entire bootstrap."
+                )
+            return {
+                "scale_id": scale_id, "comparisons_created": written, "retried": False,
+            }
 
     def create_scale(
         self, name: str, description: str = "",
@@ -4410,6 +4970,128 @@ class ProjectDatabase:
             if score is not None:
                 result[int(row["classifier_fit_id"])][int(row["unit_id"])] = float(score)
         return result
+
+    def ranked_budgeted_code_recommendation(
+        self, *, source: str, source_id: int, code_id: int,
+        session_id: int, strategy: str, budget: int,
+    ) -> dict[str, Any] | None:
+        """Rank a stable bounded sample of frozen Code prediction rows.
+
+        Sample identities depend only on the fit/prepared source and budget,
+        not on navigation or subsequent annotations. The live SQL predicates
+        exclude judged/visited cases without resampling or widening the scored
+        candidate set. Default/Exhaustive retain the original indexed queries.
+        """
+        from geometric_coder.explore import deterministic_page_permutation_parameters
+
+        sources = {
+            "classifier": ("classifier_predictions", "classifier_fit_id",
+                           "probability", "uncertainty"),
+            "learned_committee": ("classifier_committee_predictions", "committee_fit_id",
+                                  "probability", "uncertainty"),
+            "fixed_committee": ("prepared_committee_scores", "committee_id",
+                                "probability", "uncertainty"),
+        }
+        if source not in sources:
+            raise ValueError("Unknown Code recommendation source.")
+        if type(budget) is not int or budget < 1:
+            raise ValueError("Finite candidate budget must be a positive integer.")
+        if strategy not in {"likely_positive", "likely_negative",
+                            "classifier_uncertainty", "committee_uncertainty",
+                            "classifier_disagreement"}:
+            raise ValueError("Unsupported Code recommendation strategy.")
+        if strategy == "classifier_disagreement" and source != "fixed_committee":
+            raise ValueError("Disagreement requires prepared fixed committee scores.")
+        table, id_column, _, _ = sources[source]
+        score_column = (
+            "disagreement" if strategy == "classifier_disagreement"
+            else "uncertainty" if strategy in {"classifier_uncertainty", "committee_uncertainty"}
+            else "probability"
+        )
+        ascending = strategy == "likely_negative"
+        with self.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0])
+            if total == 0:
+                return None
+            # A budget covering every atomic unit is equivalent to Exhaustive.
+            # Use the existing frozen-score indexes instead of scanning the
+            # entire corpus in 128-position batches on every Next click.
+            if budget >= total:
+                if source == "classifier":
+                    return self.ranked_classifier_recommendation(
+                        classifier_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                if source == "learned_committee":
+                    return self.ranked_classifier_committee_recommendation(
+                        committee_fit_id=source_id, code_id=code_id,
+                        session_id=session_id, strategy=strategy,
+                    )
+                return self.ranked_prepared_committee_recommendation(
+                    committee_id=source_id, code_id=code_id,
+                    session_id=session_id, strategy=strategy,
+                )
+            # Freeze this sampling order for a particular fit/configuration.
+            seed = (int(source_id) * 2654435761 + int(code_id) * 2246822519
+                    + {"classifier": 1, "learned_committee": 2,
+                       "fixed_committee": 3}[source]) & 0xFFFFFFFF
+            multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+            best: dict[str, Any] | None = None
+            best_key: tuple[float, int] | None = None
+            # A fixed sample of at most 'budget' frozen prediction rows is
+            # reused on subsequent clicks. Live exclusions may reduce the
+            # number actually scored; they never cause the window to grow.
+            evaluated = 0
+            inspected = 0
+            fixed_window = min(total, budget)
+            batch_size = 128
+            while inspected < fixed_window:
+                count = min(batch_size, fixed_window - inspected)
+                positions = [
+                    (multiplier * rank + shift) % total
+                    for rank in range(inspected, inspected + count)
+                ]
+                inspected += count
+                values = ", ".join("(?)" for _ in positions)
+                rows = connection.execute(
+                    f"""WITH positions(row_position) AS (VALUES {values})
+                        SELECT u.unit_id, p.observation_id, p.probability,
+                               p.uncertainty,
+                               {("p.disagreement" if source == "fixed_committee" else "NULL")} AS disagreement
+                        FROM positions AS selected
+                        JOIN units AS u ON u.row_position = selected.row_position
+                        JOIN {table} AS p ON p.observation_id = u.observation_id
+                        WHERE p.{id_column} = ? AND p.probability IS NOT NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM navigation_events AS nav
+                              WHERE nav.session_id = ? AND nav.unit_id = u.unit_id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM annotation_events AS ae
+                              WHERE ae.observation_id = u.observation_id AND ae.code_id = ?
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM annotation_event_retractions AS aer
+                                    WHERE aer.annotation_event_id = ae.annotation_event_id
+                                )
+                          )""",
+                    (*positions, int(source_id), int(session_id), int(code_id)),
+                ).fetchall()
+                for row in rows:
+                    evaluated += 1
+                    score = float(row[score_column])
+                    identity = int(row["observation_id"])
+                    key = (score if ascending else -score, identity)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best = {
+                            "unit_id": int(row["unit_id"]),
+                            "observation_id": identity,
+                            "probability": float(row["probability"]),
+                            "uncertainty": float(row["uncertainty"]),
+                        }
+                        if source == "fixed_committee":
+                            best["disagreement"] = float(row["disagreement"])
+            return best
 
     def ranked_classifier_recommendation(
         self,
@@ -6471,6 +7153,288 @@ class ProjectDatabase:
         }
 
 
+    def store_scale_acquisition(
+        self, *, scale_id: int, fit_id: int, scale_version_id: int,
+        spec_id: int, fingerprint: str, provenance: Mapping[str, Any],
+        diagnostics: Mapping[str, Any], strategy: str, reason: str | None,
+        ranked_pairs: Sequence[tuple[int, int, float | None]],
+        publication_guard: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically validate and replace one bounded frozen ranking.
+
+        A guard may read through separate connections while BEGIN IMMEDIATE holds
+        the SQLite writer lock; competing changes cannot commit until publication
+        finishes. The guard must only read and raise on a stale snapshot.
+        """
+        if strategy not in {"eig", "random"}:
+            raise ValueError("Invalid acquisition strategy.")
+        if any(low >= high for low, high, _ in ranked_pairs):
+            raise ValueError("Acquisition pairs must have canonical identity.")
+        values = [(int(a), int(b), None if score is None else float(score))
+                  for a, b, score in ranked_pairs]
+        if len({(a, b) for a, b, _ in values}) != len(values):
+            raise ValueError("Duplicate acquisition pair.")
+        import math
+        if any(score is not None and not math.isfinite(score) for _, _, score in values):
+            raise ValueError("Acquisition scores must be finite.")
+        meta = json.dumps(dict(provenance), sort_keys=True, allow_nan=False)
+        diag = json.dumps(dict(diagnostics), sort_keys=True, allow_nan=False)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if publication_guard is not None:
+                publication_guard()
+            fit = connection.execute(
+                "SELECT scale_id, scale_version_id, scaler_spec_id FROM scaler_fits "
+                "WHERE scaler_fit_id = ?", (int(fit_id),)
+            ).fetchone()
+            if fit is None or (int(fit["scale_id"]), int(fit["scale_version_id"]),
+                               int(fit["scaler_spec_id"])) != (
+                                   int(scale_id), int(scale_version_id), int(spec_id)):
+                raise ValueError("Acquisition ranking cannot reference another Scale fit.")
+            connection.execute(
+                "DELETE FROM scale_acquisition_runs WHERE scale_id = ?", (int(scale_id),)
+            )
+            cursor = connection.execute(
+                """INSERT INTO scale_acquisition_runs
+                (scale_id, scaler_fit_id, scale_version_id, scaler_spec_id,
+                 selection_fingerprint, provenance_json, diagnostics_json,
+                 strategy, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(scale_id), int(fit_id), int(scale_version_id), int(spec_id),
+                 str(fingerprint), meta, diag, strategy, reason, utc_now()),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.executemany(
+                """INSERT INTO scale_acquisition_pairs
+                (run_id, observation_low_id, observation_high_id,
+                 acquisition_score, ranking_position) VALUES (?, ?, ?, ?, ?)""",
+                ((run_id, low, high, score, rank)
+                 for rank, (low, high, score) in enumerate(values)),
+            )
+        return {"run_id": run_id, "count": len(values), "strategy": strategy}
+
+    def scale_acquisition_run(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scale_acquisition_runs WHERE scale_id = ? "
+                "ORDER BY run_id DESC LIMIT 1", (int(scale_id),)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": int(row["run_id"]),
+            "scale_id": int(row["scale_id"]),
+            "scaler_fit_id": int(row["scaler_fit_id"]),
+            "scale_version_id": int(row["scale_version_id"]),
+            "scaler_spec_id": int(row["scaler_spec_id"]),
+            "selection_fingerprint": str(row["selection_fingerprint"]),
+            "provenance": json.loads(row["provenance_json"]),
+            "diagnostics": json.loads(row["diagnostics_json"]),
+            "strategy": str(row["strategy"]), "reason": row["reason"],
+        }
+
+    def scale_acquisition_page(
+        self, run_id: int, *, offset: int = 0, limit: int = 128,
+    ) -> list[dict[str, Any]]:
+        if offset < 0 or limit < 1 or limit > 256:
+            raise ValueError("Invalid bounded acquisition page.")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT observation_low_id, observation_high_id,
+                          acquisition_score, ranking_position
+                   FROM scale_acquisition_pairs WHERE run_id = ?
+                   ORDER BY ranking_position LIMIT ? OFFSET ?""",
+                (int(run_id), int(limit), int(offset)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def configure_scaler(
+        self, scale_id: int, representation_id: int,
+        estimator_family: str, hyperparameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a Scale's sole active configuration without deleting historical fits."""
+        payload = json.dumps(
+            dict(hyperparameters), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+            if current is not None and (
+                int(current["representation_id"]) == int(representation_id)
+                and current["estimator_family"] == estimator_family
+                and current["hyperparameters_json"] == payload
+            ):
+                return _scaler_spec_row(current)
+            connection.execute(
+                """INSERT INTO scaler_specs (
+                    scale_id, representation_id, estimator_family,
+                    hyperparameters_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scale_id) DO UPDATE SET
+                    representation_id=excluded.representation_id,
+                    estimator_family=excluded.estimator_family,
+                    hyperparameters_json=excluded.hyperparameters_json,
+                    updated_at=excluded.updated_at""",
+                (int(scale_id), int(representation_id), estimator_family,
+                 payload, utc_now()),
+            )
+        result = self.get_scaler_spec(int(scale_id))
+        assert result is not None
+        return result
+
+    def get_scaler_spec(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scaler_specs WHERE scale_id = ?", (int(scale_id),)
+            ).fetchone()
+        return _scaler_spec_row(row) if row is not None else None
+
+    def scale_reference_positions(self, scale_id: int, max_rows: int = 2048) -> tuple[list[int], int]:
+        """Deterministically sample eligible atomic rows with bounded memory.
+
+        Use the same metadata and human-Code predicates as comparison eligibility.
+        Reservoir sampling avoids reading the entire corpus's text or keys.
+        """
+        from geometric_coder.storage.metadata_queries import (
+            compile_filter_sql, register_filter_functions,
+        )
+        spec = self.get_scale(int(scale_id))["eligibility"]
+        predicate, params = compile_filter_sql(
+            spec.get("metadata_clauses", []),
+            operator=spec.get("metadata_operator", "and"),
+        )
+        extra = ""
+        extra_params: list[Any] = []
+        for item in spec.get("code_filters", []):
+            extra += """ AND EXISTS (
+                SELECT 1 FROM current_annotations AS ca
+                WHERE ca.observation_id = u.observation_id
+                  AND ca.code_id = ? AND ca.value = 'positive'
+                  AND substr(ca.origin, 1, 6) = 'human_'
+            )"""
+            extra_params.append(int(item["code_id"]))
+        import random
+        rng = random.Random(0)
+        reservoir: list[int] = []
+        total = 0
+        with self.connect() as connection:
+            register_filter_functions(connection)
+            for row in connection.execute(
+                f"SELECT u.row_position FROM units AS u WHERE ({predicate}) {extra} "
+                "ORDER BY u.row_position",
+                [*params, *extra_params],
+            ):
+                position = int(row["row_position"])
+                total += 1
+                if len(reservoir) < max_rows:
+                    reservoir.append(position)
+                else:
+                    index = rng.randrange(total)
+                    if index < max_rows:
+                        reservoir[index] = position
+        return sorted(reservoir), total
+
+    def find_scaler_fit(
+        self, scale_id: int, snapshot_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND snapshot_fingerprint = ?
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id), snapshot_fingerprint),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def latest_scaler_fit(self, scale_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scale_id = ?
+                   AND artifact_path != ''
+                   ORDER BY scaler_fit_id DESC LIMIT 1""",
+                (int(scale_id),),
+            ).fetchone()
+        return _scaler_fit_row(row) if row is not None else None
+
+    def register_scaler_fit(
+        self, *, scale_id: int, scaler_spec_id: int,
+        scale_version_id: int, fingerprint: str,
+        snapshot: Mapping[str, Any], artifact_path: str,
+        diagnostics: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Publish one live artifact; keep lightweight historical fit metadata.
+
+        Old sidecars are retired only after the transaction commits. Reusing an
+        earlier evidence fingerprint refreshes that row instead of letting its
+        unique key prevent replacing an already retired artifact.
+        """
+        snapshot_json = json.dumps(
+            dict(snapshot), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        diagnostics_json = json.dumps(
+            dict(diagnostics), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            spec = connection.execute(
+                "SELECT scale_id FROM scaler_specs WHERE scaler_spec_id = ?",
+                (int(scaler_spec_id),),
+            ).fetchone()
+            if spec is None or int(spec["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and configuration belong to different Scales.")
+            version = connection.execute(
+                "SELECT scale_id FROM scale_versions WHERE scale_version_id = ?",
+                (int(scale_version_id),),
+            ).fetchone()
+            if version is None or int(version["scale_id"]) != int(scale_id):
+                raise ValueError("Scaler fit and definition belong to different Scales.")
+            existing = connection.execute(
+                "SELECT scaler_fit_id, artifact_path FROM scaler_fits "
+                "WHERE scaler_spec_id = ? AND snapshot_fingerprint = ?",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+            retired = [
+                str(row["artifact_path"]) for row in connection.execute(
+                    "SELECT artifact_path FROM scaler_fits "
+                    "WHERE scale_id = ? AND artifact_path != '' AND artifact_path != ?",
+                    (int(scale_id), artifact_path),
+                )
+            ]
+            connection.execute(
+                "UPDATE scaler_fits SET artifact_path = '' "
+                "WHERE scale_id = ? AND artifact_path != ?",
+                (int(scale_id), artifact_path),
+            )
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO scaler_fits (
+                        scaler_spec_id, scale_id, scale_version_id,
+                        snapshot_fingerprint, snapshot_json, artifact_path,
+                        diagnostics_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (int(scaler_spec_id), int(scale_id), int(scale_version_id),
+                     fingerprint, snapshot_json, artifact_path,
+                     diagnostics_json, utc_now()),
+                )
+            else:
+                connection.execute(
+                    """UPDATE scaler_fits SET scale_version_id = ?,
+                        snapshot_json = ?, artifact_path = ?, diagnostics_json = ?,
+                        created_at = ? WHERE scaler_fit_id = ?""",
+                    (int(scale_version_id), snapshot_json, artifact_path,
+                     diagnostics_json, utc_now(), int(existing["scaler_fit_id"])),
+                )
+            row = connection.execute(
+                """SELECT * FROM scaler_fits WHERE scaler_spec_id = ?
+                   AND snapshot_fingerprint = ?""",
+                (int(scaler_spec_id), fingerprint),
+            ).fetchone()
+        assert row is not None
+        return {**_scaler_fit_row(row), "_retired_artifact_paths": retired}
+
+
 
 def _next_committee_deleted_name(
     connection: sqlite3.Connection,
@@ -7082,3 +8046,27 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+def _scaler_spec_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "representation_id": int(row["representation_id"]),
+        "estimator_family": str(row["estimator_family"]),
+        "hyperparameters": json.loads(row["hyperparameters_json"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _scaler_fit_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "scaler_fit_id": int(row["scaler_fit_id"]),
+        "scaler_spec_id": int(row["scaler_spec_id"]),
+        "scale_id": int(row["scale_id"]),
+        "scale_version_id": int(row["scale_version_id"]),
+        "snapshot_fingerprint": str(row["snapshot_fingerprint"]),
+        "snapshot": json.loads(row["snapshot_json"]),
+        "artifact_path": str(row["artifact_path"]),
+        "diagnostics": json.loads(row["diagnostics_json"]),
+        "created_at": str(row["created_at"]),
+    }

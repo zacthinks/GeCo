@@ -51,8 +51,8 @@ def _version_and_topics(path: Path) -> tuple[int, bool]:
 
 
 def test_current_schema_and_upgrade_registry() -> None:
-    assert SCHEMA_VERSION == 19
-    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18}
+    assert SCHEMA_VERSION == 21
+    assert set(storage_database._MIGRATIONS) == {13, 14, 15, 16, 17, 18, 19, 20}
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -76,7 +76,7 @@ def test_open_schema_13_upgrades_and_preserves_research_state(
 
     provider = object() if external else None
     reopened = GeometricCoder.open(project.project_dir, external_provider=provider)
-    assert _version_and_topics(path) == (19, True)
+    assert _version_and_topics(path) == (21, True)
     assert reopened.topic_models() == []
     with sqlite3.connect(path) as connection:
         for table, rows in baseline.items():
@@ -97,7 +97,7 @@ def test_latest_schema_skips_migration_function(
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, unexpected)
     reopened = GeometricCoder.open(project.project_dir)
     assert reopened.topic_models() == []
-    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (19, True)
+    assert _version_and_topics(project.project_dir / project.DATABASE_FILENAME) == (21, True)
 
 
 def test_13_to_14_upgrade_is_transactional(
@@ -116,7 +116,7 @@ def test_13_to_14_upgrade_is_transactional(
     assert _version_and_topics(path) == (13, False)
     monkeypatch.setitem(storage_database._MIGRATIONS, 13, original)
     assert GeometricCoder.open(project.project_dir).topic_models() == []
-    assert _version_and_topics(path) == (19, True)
+    assert _version_and_topics(path) == (21, True)
 
 
 def test_unsupported_older_and_newer_versions_fail_without_changes(
@@ -124,7 +124,7 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
 ) -> None:
     project = _make_workspace(tmp_path)
     path = project.project_dir / project.DATABASE_FILENAME
-    for version in (12, 20):
+    for version in (12, 22):
         with sqlite3.connect(path) as connection:
             connection.execute(
                 "UPDATE project SET schema_version = ? WHERE project_id = 1",
@@ -133,6 +133,45 @@ def test_unsupported_older_and_newer_versions_fail_without_changes(
         with pytest.raises(RuntimeError, match="migration|newer schema"):
             GeometricCoder.open(project.project_dir)
         assert _version_and_topics(path) == (version, True)
+
+
+def test_20_to_21_acquisition_tables_migrate_transactionally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_workspace(tmp_path)
+    path = project.project_dir / project.DATABASE_FILENAME
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE scale_acquisition_pairs")
+        connection.execute("DROP TABLE scale_acquisition_runs")
+        connection.execute("UPDATE project SET schema_version = 20")
+
+    original = storage_database._MIGRATIONS[20]
+
+    def broken(connection: sqlite3.Connection) -> None:
+        original(connection)
+        raise RuntimeError("injected acquisition migration failure")
+
+    monkeypatch.setitem(storage_database._MIGRATIONS, 20, broken)
+    with pytest.raises(RuntimeError, match="injected acquisition migration failure"):
+        GeometricCoder.open(project.project_dir)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT schema_version FROM project").fetchone()[0] == 20
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_runs'"
+        ).fetchone() is None
+
+    monkeypatch.setitem(storage_database._MIGRATIONS, 20, original)
+    GeometricCoder.open(project.project_dir)
+    GeometricCoder.open(project.project_dir)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT schema_version FROM project").fetchone()[0] == 21
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_runs'"
+        ).fetchone() is not None
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scale_acquisition_pairs'"
+        ).fetchone() is not None
 
 
 def test_external_workspace_needs_provider_before_migrating(tmp_path: Path) -> None:

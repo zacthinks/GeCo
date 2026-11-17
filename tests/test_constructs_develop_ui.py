@@ -64,7 +64,7 @@ def test_construct_selector_callback_hides_binary_develop_for_scales(tmp_path: P
     code = project.create_code("Code", "binary definition")
     scale = project.create_scale("Scale", "continuous definition")
     app = create_app(project)
-    callback = _callback(app, "focus-scale-heading.children")
+    callback = _callback(app, "focus-scale-top-summary.children")
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("Scale route called a Code-only classifier API")
@@ -73,16 +73,21 @@ def test_construct_selector_callback_hides_binary_develop_for_scales(tmp_path: P
     monkeypatch.setattr(project, "classifier_status", forbidden)
     selected_scale = callback(scale)
     assert selected_scale[0] is None
+    assert selected_scale[1] == {"display": "none"}
     assert selected_scale[2] == {}
-    assert selected_scale[3] == "Scale: Scale"
-    assert "continuous definition" in selected_scale[4]
-    assert selected_scale[-1] == {"display": "none"}
+    assert selected_scale[5] == {"display": "none"}
+    assert "continuous definition" in str(selected_scale[6])
+    assert "Definition version 1" in str(selected_scale[6])
+    assert "All observations eligible" not in str(selected_scale[6])
+    assert selected_scale[7] == {}
+    assert selected_scale[8] == {}
 
     selected_code = callback(code)
     assert selected_code[0] == code
     assert selected_code[1] == {}
     assert selected_code[2] == {"display": "none"}
-    assert selected_code[-1] == {}
+    assert selected_code[7] == {"display": "none"}
+    assert selected_code[8] == {"display": "none"}
 
     cleared = callback(None)
     assert cleared[0] is None
@@ -104,8 +109,32 @@ def test_center_lists_both_types_and_guards_binary_content(tmp_path: Path) -> No
     ]
     assert "2 constructs" in status
     display = _callback(app, "code-center-type-label.children")
-    assert display(scale)[-1] == {"display": "none"}
-    assert display(code)[-1] == {}
+    assert display(scale)[-2] == {}
+    assert display(scale)[-1] == "scale-center-mode"
+    assert display(code)[-2] == {}
+    assert display(code)[-1] == ""
+
+
+def test_scale_hashtags_are_searchable_in_constructs_center(tmp_path: Path) -> None:
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Argument quality", "A descriptive #argument #quality Scale.")
+    project.create_code("Other", "A #binary Code")
+    app = create_app(project)
+
+    tags = _callback(app, "code-center-tags.options")(0, 0)
+    assert {"label": "#argument", "value": "argument"} in tags
+    assert {"label": "#binary", "value": "binary"} in tags
+
+    rows, _, _ = _callback(app, "code-center-table.data")(
+        "", "full", ["argument"], 0, 0, 0, None
+    )
+    assert len(rows) == 1
+    assert rows[0]["construct_id"] == scale
+    assert rows[0]["type"] == "Scale"
+    assert "#quality" in rows[0]["hashtags"]
 
 
 def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) -> None:
@@ -142,6 +171,13 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
     assert saved["focus_committee_id"] is None
     restored = restore(session_id)
     assert restored[23] == scale
+    # Echoes of the already-active session must never restore the saved
+    # workspace over a user's newly selected Develop tab.
+    from dash import no_update
+    replayed = restore(session_id, session_id)
+    assert len(replayed) == len(restored) == 40
+    assert all(item is no_update for item in replayed)
+    assert restored[20] == "focus"
     assert restored[24] is None
 
     project.patch_session_state(
@@ -154,6 +190,8 @@ def test_ui_callbacks_persist_and_restore_scale_and_legacy_code(tmp_path: Path) 
 
 def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Path) -> None:
     pytest.importorskip("dash")
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
     from geometric_coder.ui.app import create_app
 
     project = _project(tmp_path)
@@ -162,12 +200,27 @@ def test_scale_creation_and_version_update_through_center_callbacks(tmp_path: Pa
         inspect.unwrap(entry["callback"])
         for entry in app.callback_map.values() if "callback" in entry
     ]
-    create = next(func for func in callbacks if func.__name__ == "create_center_scale")
+    create = next(func for func in callbacks if func.__name__ == "manage_code_modal")
     save = next(func for func in callbacks if func.__name__ == "save_code_center_version")
-    revision, message, _, _ = create(1, "Quality", "Initial", 0)
-    assert revision == 1 and "Created Scale" in message
-    assert project.codes() == []
-    scale = project.constructs()[0]["construct_id"]
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "code-modal-create-button.n_clicks", "value": 1}]
+    ))
+    try:
+        # The shared modal is usable from Constructs without creating any Code.
+        result = create(0, 0, 1, 0, 0, 1, "center", "Quality", "Initial",
+                        0, 0, [], "scale")
+        assert result[0] == {"display": "none"}
+        assert result[6] is not None
+        assert project.codes() == []
+        scale = project.constructs()[0]["construct_id"]
+        assert project.scale(scale)["name"] == "Quality"
+        # The exact same modal can create a Scale directly in Develop.
+        result = create(0, 1, 0, 0, 0, 1, "focus", "Clarity", "Definition",
+                        0, 0, [], "scale")
+        assert result[6] == project.constructs()[1]["construct_id"]
+        assert project.codes() == []
+    finally:
+        context_value.reset(token)
     save(1, scale, "Quality revised", "Revised", 0, 0)
     assert [v["description"] for v in project.scale_versions(scale)] == [
         "Initial", "Revised",
@@ -186,7 +239,7 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
     code = project.create_code("Binary", "code definition")
     scale = project.create_scale("Argument quality", "definition v1")
     app = create_app(project)
-    route = _callback(app, "focus-scale-heading.children")
+    route = _callback(app, "focus-scale-top-summary.children")
     save = next(
         inspect.unwrap(entry["callback"])
         for entry in app.callback_map.values()
@@ -195,9 +248,9 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
     )
 
     selected = route(scale)
-    assert selected[3] == "Scale: Argument quality"
-    assert selected[4] == "definition v1"
-    assert "Definition version 1" in selected[5]
+    assert "Argument quality" in str(selected[6])
+    assert "definition v1" in str(selected[6])
+    assert "Definition version 1" in str(selected[6])
 
     # The real save path increments focus-refresh-store. The Construct selection
     # remains unchanged while Dash fires the refresh input.
@@ -214,12 +267,13 @@ def test_scale_revision_refreshes_develop_without_resetting_code_state(tmp_path:
         context_value.reset(token)
 
     assert revised[0] is no_update
-    assert revised[1] is no_update
-    assert revised[2] is no_update
-    assert revised[3] == "Scale: Argument quality revised"
-    assert revised[4] == "definition v2"
-    assert "Definition version 2" in revised[5]
-    assert all(value is no_update for value in revised[6:])
+    assert revised[1] == {"display": "none"}
+    assert revised[2] == {}
+    assert revised[5] == {"display": "none"}
+    assert "Argument quality revised" in str(revised[6])
+    assert "definition v2" in str(revised[6])
+    assert "Definition version 2" in str(revised[6])
+    assert revised[7] == {}
     assert all(value is no_update for value in unchanged_code)
 
     # Explicit selection changes still switch the Code-only controls normally.
@@ -248,4 +302,88 @@ def test_ui_source_keeps_legacy_code_callbacks_and_new_shared_state() -> None:
     assert 'project.create_scale(' in source
     assert 'project.update_scale(' in source
     assert "project.scale_versions(" in source
-    assert 'Input("code-center-create-scale", "n_clicks")' in source
+    assert 'id="code-modal-construct-type"' in source
+    assert 'Create Construct' in source
+    assert 'New Construct' in source
+
+
+def _component_with_id(root, identifier):
+    if getattr(root, "id", None) == identifier:
+        return root
+    children = getattr(root, "children", None)
+    if children is None:
+        return None
+    for child in (children if isinstance(children, (list, tuple)) else [children]):
+        found = _component_with_id(child, identifier)
+        if found is not None:
+            return found
+    return None
+
+
+def test_restored_scale_develop_layout_starts_with_readable_summary(tmp_path: Path) -> None:
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity", "A continuous definition")
+    session_id = int(project.sessions()[0]["session_id"])
+    project.patch_session_state(session_id, {
+        "workspace": "focus",
+        "focus_construct_id": scale,
+        "focus_code_id": None,
+    })
+    app = create_app(project)
+    layout = app.layout
+
+    top = _component_with_id(layout, "focus-scale-top-summary")
+    teaching = _component_with_id(layout, "focus-scale-count-summary")
+    assert top.style == {}
+    assert "Definition version 1" in str(top.children)
+    assert "All observations eligible" not in str(top.children)
+    assert teaching.style == {}
+    assert teaching.children[1].disabled is True
+    assert "Teaching examples" in str(teaching.children[0])
+    assert _component_with_id(layout, "focus-scale-state").style == {}
+    assert _component_with_id(layout, "focus-active-area").style == {"display": "none"}
+    assert _component_with_id(layout, "focus-disabled-message").children == (
+        "Select a Code or Scale to begin developing it."
+    )
+
+
+def test_scale_color_overlay_reuses_displayed_1d_coordinates() -> None:
+    import numpy as np
+    from geometric_coder.ui.app import _base_geometry_display_points
+    from geometric_coder.ui.figures import build_geometry_figure
+
+    units = [
+        {"unit_id": 11, "user_key": {"id": "A"}},
+        {"unit_id": 12, "user_key": {"id": "B"}},
+    ]
+    figure = build_geometry_figure(
+        coordinates=np.array([[0.5], [1.5]]),
+        units=units, eligible=[False, False],
+    )
+    displayed = _base_geometry_display_points(figure)
+    assert set(displayed) == {11, 12}
+    assert displayed[11][0] == 0.5
+    assert displayed[12][0] == 1.5
+    assert displayed[11][1] == figure.data[0].y[0]
+    assert displayed[12][1] == figure.data[0].y[1]
+    assert displayed[11][1] != displayed[12][1]
+
+
+def test_scale_center_uses_continuous_signed_green_plotly_colorbar() -> None:
+    from pathlib import Path
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "geometric_coder" / "ui" / "app.py"
+    ).read_text(encoding="utf-8")
+    scale_overlay = source.split('mode="markers", name="Fitted Scale position",', 1)[1]
+    scale_overlay = scale_overlay.split("hovertemplate=", 1)[0]
+    assert '"color": [score for _, _, score in plotted]' in scale_overlay
+    assert '"colorscale": [[0.0, "#e7f1ea"], [1.0, "#1d4930"]]' in scale_overlay
+    assert '"showscale": True' in scale_overlay
+    assert '"colorbar": {"title": "Scale position"}' in scale_overlay
+    assert '"Viridis"' not in scale_overlay
+    assert 'model["status"] == "current"' in source
+    assert 'trace.name = "Unscored observations"' in source

@@ -1532,3 +1532,92 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
     grid-template-columns: minmax(105px, 1fr) repeat(3, minmax(0, 0.5fr));
   }
 }
+
+
+/* Scale development shares the Code sidebar, context and judgment grammar. */
+.scale-workspace {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.42fr) minmax(0, 1.8fr);
+  gap: 0.8rem;
+  align-items: start;
+  margin-top: 0.65rem;
+}
+.scale-model-panel, .scale-comparison-main { min-width: 0; }
+.scale-model-panel { padding: 0.85rem; }
+.scale-model-panel .classifier-training-options { display: grid; gap: 0.35rem; }
+.scale-model-panel .focus-model-detail { overflow-wrap: anywhere; }
+.scale-comparison-main { padding: 0.8rem; background: #fff; border: 1px solid var(--geco-border); border-radius: 10px; }
+.scale-comparison-main > h3 { margin-top: 0; }
+.scale-comparison-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(165px, 0.58fr);
+  gap: 0.75rem;
+  align-items: stretch;
+  margin: 0.8rem 0;
+}
+.scale-reading-card { min-width: 0; }
+.scale-reading-card > .focus-coding-panel { min-width: 0; overflow-wrap: anywhere; }
+.scale-reading-card .context-content { max-height: 60vh; overflow-y: auto; }
+.scale-judgment-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.8rem;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--geco-border);
+  border-radius: 10px;
+  background: var(--geco-panel);
+}
+.scale-judgment-heading { font-weight: 700; margin: 0 0 0.4rem; }
+.scale-judgment-button { min-height: 40px; min-width: 0; padding: 0.5rem; white-space: normal; }
+.scale-judgment-button.judgment-selected {
+  color: #fff; border-color: var(--geco-green-700); background: var(--geco-green-600);
+  cursor: pointer;
+}
+.scale-judgment-button.judgment-selected:hover:not(:disabled) {
+  color: #fff; border-color: var(--geco-green-800); background: var(--geco-green-700);
+}
+.scale-judgment-button.judgment-selected:focus-visible {
+  outline: 3px solid var(--geco-green-300); outline-offset: 2px;
+}
+.scale-next-pair-wrap {
+  width: 100%;
+  margin-top: auto;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--geco-border);
+}
+.scale-next-pair { display: block; width: 100%; min-height: 44px; padding: 0.65rem; }
+.scale-saved-indicator { font-size: 0.8rem; color: var(--geco-text-muted); }
+.scale-acquisition-note { color: var(--geco-text-muted); font-size: 0.8rem; }
+.scale-context-controls { margin: 0.55rem 0; }
+.scale-teaching-disabled { opacity: 0.5; }
+.scale-teaching-disabled button { cursor: not-allowed; }
+.scale-bootstrap-action { width: 100%; margin-top: 0.8rem; }
+.scale-prediction-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; }
+.scale-prediction-header h4 { margin: 0; }
+.scale-prediction-panel { margin: 1rem 0; }
+.scale-prediction-preview { margin-top: 0.75rem; }
+.scale-prediction-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin: 0.65rem 0; }
+.scale-prediction-toolbar label { margin: 0; }
+.scale-prediction-toolbar .page-number-input { width: 70px; }
+@media (max-width: 1080px) {
+  .scale-workspace { grid-template-columns: 1fr; }
+  .scale-comparison-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .scale-judgment-actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .scale-judgment-actions button { flex: 1 1 145px; }
+  .scale-judgment-heading, .scale-saved-indicator { flex-basis: 100%; }
+  .scale-next-pair-wrap { flex: 1 0 100%; margin-top: 0.35rem; }
+}
+@media (max-width: 620px) {
+  .scale-comparison-grid { grid-template-columns: 1fr; }
+  .scale-judgment-actions { grid-column: 1; }
+}
+
+/* Reuse the Construct Center geometric inspector without binary assignment UI. */
+.scale-center-mode .code-center-assignment-panel,
+.scale-center-mode .code-center-positive-toggle { display: none; }
+.scale-center-mode .code-center-geometry-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 720px) {
+  .scale-center-mode .code-center-geometry-controls { grid-template-columns: 1fr; }
+}

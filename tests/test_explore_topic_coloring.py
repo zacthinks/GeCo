@@ -191,3 +191,24 @@ def test_compact_explore_controls_and_shared_spacing_contract():
     assert '.topic-manager-card > label {' in css
     assert '.explore-controls #topic-component-wrap {' in css
     assert 'normalize_color_mode(mode) != "plain"' in source
+
+
+def test_selected_topic_green_gradient_matches_legend_and_preserves_weights():
+    from geometric_coder.ui.topic_explore import _gradient
+    result = topic_point_colors(
+        packet(), mode="intensity", selected_topic="topic_1", requested_count=4,
+    )
+    assert _gradient(0.0) == "#e7f1ea"
+    assert _gradient(1.0) == "#1d4930"
+    assert result.colors[0] == _gradient(1.0)
+    assert result.colors[3] == _gradient(0.125)
+    assert result.legend[:2] == (
+        (_gradient(0.0), "Low selected-topic weight"),
+        (_gradient(1.0), "High selected-topic weight"),
+    )
+    assert result.colors[1] == UNCOVERED_COLOR
+    assert result.colors[2] == UNASSIGNED_COLOR
+    assert "page range 0–0.8 (raw weight)" in result.status
+    dominant = topic_point_colors(packet(), mode="dominant", selected_topic=None, requested_count=4)
+    assert dominant.colors[0] == component_color("topic_1")
+    assert dominant.colors[3] == component_color("topic_0")

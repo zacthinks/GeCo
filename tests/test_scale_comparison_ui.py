@@ -1,0 +1,565 @@
+"""End-to-end callback contracts for manual human Scale comparisons."""
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from geometric_coder import GeometricCoder
+from geometric_coder.ui.scale_comparisons import (
+    _prepare_scale_task, _restore_scale_task, _scale_task_snapshot,
+)
+
+dash = pytest.importorskip("dash")
+from dash import no_update
+from dash._callback_context import context_value
+from dash._utils import AttributeDict
+
+
+def _project(tmp_path: Path, *, count: int = 80) -> GeometricCoder:
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "pair-ui.geco",
+        data=pd.DataFrame({
+            "key": list(range(count)),
+            "text": [f"observation {i} " + "context " * 4 for i in range(count)],
+            "group": ["alpha" if i < count // 2 else "beta" for i in range(count)],
+        }),
+        keys=["key"], text="text", metadata=["group"], geometries=None,
+    )
+    return project
+
+
+def _callback(app, name: str):
+    for record in app.callback_map.values():
+        if "callback" not in record:
+            continue
+        fn = inspect.unwrap(record["callback"])
+        if fn.__name__ == name:
+            return fn
+    raise AssertionError(f"Missing callback: {name}")
+
+
+def _invoke(callback, trigger: str, *args, **kwargs):
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": f"{trigger}.n_clicks", "value": 1}]
+    ))
+    try:
+        return callback(*args, **kwargs)
+    finally:
+        context_value.reset(token)
+
+
+def _manage(
+    callback, trigger: str, *, scale: int, session: int,
+    task: dict | None = None, rows: list | None = None, selection: list | None = None,
+    history: list | None = None, history_selection: list | None = None,
+    repeat_ack: list | None = None, reviewer: str | None = None,
+    focal: int | None = None,
+):
+    return _invoke(
+        callback, trigger, scale, session, *([0] * 11),
+        rows or [], selection or [], task, reviewer, repeat_ack or [],
+        history or [], history_selection or [], focal,
+    )
+
+
+def test_manual_comparison_with_correction_and_independent_repeats(tmp_path: Path, monkeypatch) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Argument quality", "Operational definition")
+    assert project.codes() == []
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    browse = _callback(app, "browse_scale_units")
+    manage = _callback(app, "manage_scale_comparison")
+    display = _callback(app, "display_scale_task")
+    listing = _callback(app, "refresh_scale_history")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Scale judgment attempted classifier fitting")
+    monkeypatch.setattr(project, "train_classifier", forbidden)
+    monkeypatch.setattr(project, "train_classifiers", forbidden)
+
+    rows, selected_rows, status = browse(scale, 1, "focus")
+    assert len(rows) == 20 and selected_rows == []
+    assert "Page 1" in status
+    a, b = rows[2]["observation_id"], rows[7]["observation_id"]
+    task, _, _ = _manage(manage, "scale-select-first", scale=scale, session=session, rows=rows, selection=[2])
+    task, _, _ = _manage(manage, "scale-select-second", scale=scale, session=session, task=task, rows=rows, selection=[7])
+    task, _, _ = _manage(manage, "scale-prepare", scale=scale, session=session, task=task, reviewer="researcher")
+    assert task["status"] == "ready"
+    assert {task["first"], task["second"]} == {a, b}
+    assert task["first"] != task["second"]
+    assert task["snapshot"]["version_number"] == 1
+    assert len(task["submission_key"]) >= 16
+    selection, first_display, second_display, warning, note, *rest = display(task, [], scale, 0)
+    disabled = rest[:4]
+    assert "First selection" in selection
+    assert first_display and second_display
+    assert not any(disabled)
+    assert "Manual pair" in note
+    assert not warning
+
+    judged, message, _ = _manage(manage, "scale-judge-first", scale=scale, session=session, task=task)
+    assert judged["status"] == "saved" and "Saved event" in message
+    saved = project.scale_comparisons(scale)
+    assert len(saved) == 1
+    assert saved[0]["presented_first_id"] == task["first"]
+    assert saved[0]["presented_second_id"] == task["second"]
+    assert saved[0]["origin"] == "human_direct"
+    assert saved[0]["reviewer_key"] == "researcher"
+    assert saved[0]["outcome"] == "first_higher"
+    assert saved[0]["submission_key"] == task["submission_key"]
+    assert saved[0]["selection_provenance"]["mode"] == "independent"
+    assert saved[0]["session_id"] == session
+    retried, _, _ = _manage(manage, "scale-judge-first", scale=scale, session=session, task=judged)
+    from dash import no_update
+    assert retried is no_update
+    assert len(project.scale_comparisons(scale)) == 1
+
+    history, _, _ = listing(scale, judged, "focus")
+    assert len(history) == 1
+    correction, _, _ = _manage(
+        manage, "scale-correct", scale=scale, session=session, task=judged,
+        history=history, history_selection=[0], reviewer="researcher",
+    )
+    assert correction["mode"] == "correction"
+    assert correction["first"] == task["first"]
+    assert correction["second"] == task["second"]
+    corrected, _, _ = _manage(
+        manage, "scale-judge-parity", scale=scale, session=session, task=correction,
+    )
+    assert corrected["status"] == "saved"
+    history_rows = project.scale_comparisons(scale)
+    assert len(history_rows) == 2
+    assert history_rows[1]["supersedes_event_id"] == history_rows[0]["comparison_event_id"]
+    assert history_rows[1]["outcome"] == "parity"
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+    history, _, _ = listing(scale, corrected, "focus")
+    assert history[0]["state"] == "Effective"
+    assert history[1]["state"] == "Superseded"
+
+    repeated, _, _ = _manage(
+        manage, "scale-new-repeat", scale=scale, session=session, task=corrected,
+    )
+    assert repeated["mode"] == "independent"
+    _, _, _, _, prior, *rest = display(repeated, [], scale, 0)
+    assert "confirm an independent repeat" in prior
+    assert all(rest[:4])
+    _, rejection, _ = _manage(
+        manage, "scale-judge-second", scale=scale, session=session, task=repeated,
+    )
+    assert "Confirm" in rejection
+    repeated_saved, _, _ = _manage(
+        manage, "scale-judge-second", scale=scale, session=session, task=repeated,
+        repeat_ack=["repeat"],
+    )
+    assert repeated_saved["status"] == "saved"
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 2
+    assert project.scale_comparisons(scale)[-1]["supersedes_event_id"] is None
+
+    next_repeat, _, _ = _manage(
+        manage, "scale-new-repeat", scale=scale, session=session, task=repeated_saved,
+    )
+    unsure, _, _ = _manage(
+        manage, "scale-judge-unsure", scale=scale, session=session, task=next_repeat,
+        repeat_ack=["repeat"],
+    )
+    assert unsure["status"] == "saved"
+    assert project.scale_comparisons(scale)[-1]["outcome"] == "unsure"
+    assert len(project.scale_training_comparisons(scale)) == 2
+
+
+def test_saved_judgment_can_be_changed_in_place_without_new_effective_evidence(
+    tmp_path: Path,
+) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity", "Comparative clarity")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    display = _callback(app, "display_scale_task")
+
+    units = project.database.unit_rows_at_positions([0, 1])
+    task = _prepare_scale_task(project, {
+        "scale_id": scale, "session_id": session,
+        "picked_a": units[0]["observation_id"],
+        "picked_b": units[1]["observation_id"],
+        "status": "selecting",
+    }, None)
+    saved, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                          session=session, task=task)
+    assert saved["status"] == "saved"
+    assert display(saved, [], scale, 0)[5:9] == (False, False, False, False)
+    assert "judgment-selected" in display(saved, [], scale, 0)[9]
+
+    unchanged, _, _ = _manage(manage, "scale-judge-first", scale=scale,
+                              session=session, task=saved)
+    assert unchanged is no_update
+    assert len(project.scale_comparisons(scale)) == 1
+
+    changed, _, _ = _manage(manage, "scale-judge-parity", scale=scale,
+                            session=session, task=saved)
+    assert changed["first"] == saved["first"]
+    assert changed["second"] == saved["second"]
+    assert changed["submission_key"] != saved["submission_key"]
+    assert changed["supersedes_event_id"] == saved["event_id"]
+    assert changed["outcome"] == "parity"
+    assert len(project.scale_comparisons(scale)) == 2
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+
+    changed_again, _, _ = _manage(manage, "scale-judge-second", scale=scale,
+                                  session=session, task=changed)
+    assert changed_again["supersedes_event_id"] == changed["event_id"]
+    assert len(project.scale_comparisons(scale, effective_only=True)) == 1
+
+
+def test_reversed_presentation_preserves_actual_orientation(tmp_path: Path, monkeypatch) -> None:
+    from geometric_coder.ui.app import create_app
+    import geometric_coder.ui.scale_comparisons as comparisons
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clarity")
+    session = int(project.sessions()[0]["session_id"])
+    first = project.observation_id_for_unit(1)
+    second = project.observation_id_for_unit(2)
+    monkeypatch.setattr(comparisons.secrets, "randbelow", lambda upper: 1)
+    task = _prepare_scale_task(project, {
+        "scale_id": scale, "session_id": session,
+        "picked_a": first, "picked_b": second, "status": "selecting",
+    }, None)
+    assert task["first"] == second
+    assert task["second"] == first
+    app = create_app(project)
+    saved, _, _ = _manage(
+        _callback(app, "manage_scale_comparison"), "scale-judge-first",
+        scale=scale, session=session, task=task,
+    )
+    assert saved["status"] == "saved"
+    event = project.scale_comparisons(scale)[0]
+    assert event["presented_first_id"] == second
+    assert event["presented_second_id"] == first
+    assert event["canonical_outcome"] == "high_higher"
+
+
+def test_eligibility_self_pair_and_stale_definition(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale(
+        "Strength", "v1", eligibility={
+            "kind": "filtered",
+            "metadata_clauses": [{
+                "field": "group", "type": "categorical",
+                "operator": "in", "value": ["alpha"],
+            }],
+        },
+    )
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    browse = _callback(app, "browse_scale_units")
+    manage = _callback(app, "manage_scale_comparison")
+    page1, _, _ = browse(scale, 1, "focus")
+    page4, _, _ = browse(scale, 4, "focus")
+    assert all(x["eligibility"] == "Eligible" for x in page1)
+    assert all(x["eligibility"] == "Excluded" for x in page4)
+    initial = _restore_scale_task(project, scale, session, None)
+    initial["picked_a"] = initial["picked_b"] = page1[0]["observation_id"]
+    with pytest.raises(ValueError, match="different"):
+        _prepare_scale_task(project, initial, None)
+    initial["picked_b"] = page4[0]["observation_id"]
+    with pytest.raises(ValueError, match="eligib"):
+        _prepare_scale_task(project, initial, None)
+    initial["picked_b"] = page1[1]["observation_id"]
+    task = _prepare_scale_task(project, initial, None)
+    project.update_scale(scale, "Strength revised", "v2")
+    _, status, _ = _manage(
+        manage, "scale-judge-first", scale=scale, session=session, task=task,
+    )
+    assert "definition or eligibility changed" in status
+    assert project.scale_comparisons(scale) == []
+    assert all(display is True for display in _callback(
+        app, "display_scale_task"
+    )(task, [], scale, 1)[5:9])
+
+
+def test_session_restoration_keeps_orientation_and_saved_pair(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Clearness")
+    session = int(project.sessions()[0]["session_id"])
+    other_session = int(project.create_session("Other"))
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    rows, _, _ = _callback(app, "browse_scale_units")(scale, 1, "focus")
+    task, _, _ = _manage(manage, "scale-select-first", scale=scale, session=session, rows=rows, selection=[1])
+    task, _, _ = _manage(manage, "scale-select-second", scale=scale, session=session, task=task, rows=rows, selection=[2])
+    task, _, _ = _manage(manage, "scale-prepare", scale=scale, session=session, task=task)
+    snapshot = (task["first"], task["second"], task["submission_key"])
+    assert project.database.get_session(session)["state"]["scale_comparison_task"] == task
+
+    for active in (other_session, session):
+        token = context_value.set(AttributeDict(
+            triggered_inputs=[{"prop_id": "active-session-store.data", "value": active}]
+        ))
+        try:
+            reopened, _, _ = manage(
+                scale, active, *([0] * 11), [], [], None, None, [], [], [], None,
+            )
+        finally:
+            context_value.reset(token)
+        if active == other_session:
+            assert reopened["status"] == "ready"
+            assert reopened["scale_id"] == scale
+            assert reopened["first"] != reopened["second"]
+        else:
+            assert (reopened["first"], reopened["second"], reopened["submission_key"]) == snapshot
+
+
+def test_random_pair_is_primary_flow_and_next_pair_changes_ids(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Quality")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    manage = _callback(app, "manage_scale_comparison")
+    token = context_value.set(AttributeDict(
+        triggered_inputs=[{"prop_id": "focus-construct-dropdown.value", "value": scale}]
+    ))
+    try:
+        task, status, _ = manage(
+            scale, session, *([0] * 11), [], [], None, None, [], [], [], None,
+        )
+    finally:
+        context_value.reset(token)
+    assert status == ""
+    assert task["status"] == "ready"
+    assert task["first"] != task["second"]
+    assert task["reviewer_key"] is None
+    assert project.database.get_session(session)["state"]["scale_comparison_task"] == task
+    first_pair = set((task["first"], task["second"]))
+
+    saved, _, _ = _manage(
+        manage, "scale-judge-parity", scale=scale, session=session, task=task,
+    )
+    assert saved["status"] == "saved"
+    assert project.scale_comparisons(scale)[-1]["outcome"] == "parity"
+
+    next_pair = _callback(app, "next_scale_pair")
+    next_task, message, repeat = next_pair(1, scale, session)
+    assert message == ""
+    assert repeat == []
+    assert next_task["status"] == "ready"
+    assert set((next_task["first"], next_task["second"])) != first_pair
+    assert next_task["submission_key"] != task["submission_key"]
+    assert next_task["reviewer_key"] is None
+    assert len(project.scale_comparisons(scale)) == 1
+
+
+def test_history_labels_nonhuman_and_earlier_definitions(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    scale = project.create_scale("Measure")
+    first = project.observation_id_for_unit(1)
+    second = project.observation_id_for_unit(2)
+    machine = project.record_scale_comparison(
+        scale, first, second, "first_higher", origin="model_apply",
+    )
+    project.update_scale(scale, "Measure", "refined")
+    project.record_scale_comparison(
+        scale, second, first, "unsure", origin="human_direct",
+    )
+    app = create_app(project)
+    history, _, _ = _callback(app, "refresh_scale_history")(scale, None, "focus")
+    assert len(history) == 2
+    assert any(row["origin"].startswith("Nonhuman") for row in history)
+    assert {int(row["version"]) for row in history} == {1, 2}
+    manage = _callback(app, "manage_scale_comparison")
+    _, status, _ = _manage(
+        manage, "scale-correct", scale=scale,
+        session=int(project.sessions()[0]["session_id"]),
+        history=history, history_selection=[1],
+    )
+    assert "earlier Scale definition" in status
+    assert machine in {row["comparison_event_id"] for row in project.scale_comparisons(scale)}
+
+
+def test_large_project_page_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=10000)
+    scale = project.create_scale("Quality")
+    app = create_app(project)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Comparison browser materialized corpus")
+    monkeypatch.setattr(project, "units", forbidden)
+    monkeypatch.setattr(project.database, "list_observations", forbidden)
+    monkeypatch.setattr(project.database, "iter_unit_texts", forbidden)
+    monkeypatch.setattr(project, "geometry_matrix", forbidden)
+
+    rows, _, _ = _callback(app, "browse_scale_units")(scale, 500, "focus")
+    assert len(rows) == 20
+    assert rows[-1]["unit_id"] == 10000
+    assert rows[0]["eligibility"] == "Eligible"
+
+
+def test_develop_eig_selection_provenance_survives_reopen(tmp_path: Path) -> None:
+    """Recommendation lineage remains distinct from the human judgment origin."""
+    import numpy as np
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=12)
+    matrix = np.column_stack((np.arange(12, 0, -1, dtype=float),
+                              np.arange(12, dtype=float) % 2))
+    path, is_sparse = project.artifacts.save_geometry_matrix("eig_test", matrix)
+    geometry_id = project.database.register_geometry(
+        name="eig_test", class_name="SyntheticGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path=path,
+        matrix_sparse=is_sparse, state_path=None, supports_query=False,
+        supports_text_transform=False,
+    )
+    representation = project.database.representation_for_legacy("geometry", geometry_id)
+    scale = project.create_scale("Clarity")
+    observations = [project.database.observation_for_unit(i) for i in range(1, 13)]
+    for i, j, outcome in [
+        (0, 1, "first_higher"), (1, 2, "first_higher"),
+        (0, 2, "first_higher"), (3, 4, "parity"),
+        (2, 3, "first_higher"), (4, 5, "first_higher"),
+    ]:
+        project.record_scale_comparison(
+            scale, observations[i], observations[j], outcome
+        )
+    project.configure_scale_model(scale, int(representation["representation_id"]))
+    fit = project.train_scale(scale)
+    assert fit["acquisition"]["strategy"] == "eig"
+    from geometric_coder.scale_recommendations import scale_acquisition_status
+    acquisition = scale_acquisition_status(project, scale)
+    assert acquisition["strategy"] == "eig"
+
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    next_pair = _callback(app, "next_scale_pair")
+    task, _, _ = next_pair(1, scale, session)
+    assert task["acquisition"]["strategy"] == "eig"
+    assert task["acquisition"]["source_run_id"] == acquisition["run_id"]
+    # Navigating without answering must advance through the frozen ranking,
+    # not silently create an Unsure / Skip event or change any saved scores.
+    initial_pair = {task["first"], task["second"]}
+    frozen_page = project.database.scale_acquisition_page(acquisition["run_id"])
+    count_before = len(project.scale_comparisons(scale))
+    task2, _, _ = next_pair(2, scale, session)
+    assert {task2["first"], task2["second"]} != initial_pair
+    assert task2["acquisition"]["navigation_offset"] > task["acquisition"]["navigation_offset"]
+    assert len(project.scale_comparisons(scale)) == count_before
+    reopened_mid_navigation = GeometricCoder.open(project.project_dir)
+    reopened_app = create_app(reopened_mid_navigation)
+    task3, _, _ = _callback(reopened_app, "next_scale_pair")(3, scale, session)
+    assert {task3["first"], task3["second"]} not in (
+        initial_pair, {task2["first"], task2["second"]}
+    )
+    assert len(reopened_mid_navigation.scale_comparisons(scale)) == count_before
+    assert reopened_mid_navigation.database.scale_acquisition_page(
+        acquisition["run_id"]
+    ) == frozen_page
+    task = task3
+    display = _callback(app, "display_scale_task")
+    _, _, _, _, note, *_ = display(task, [], scale, 0)
+    assert "Recommended pair" in note
+    manage = _callback(app, "manage_scale_comparison")
+    saved, _, _ = _manage(
+        manage, "scale-judge-first", scale=scale, session=session, task=task
+    )
+    assert saved["status"] == "saved"
+    reopened = GeometricCoder.open(project.project_dir)
+    event = reopened.scale_comparison_event(scale, saved["event_id"])
+    provenance = event["selection_provenance"]
+    assert event["origin"] == "human_direct"
+    assert provenance["strategy"] == "eig"
+    assert provenance["source_acquisition_run_id"] == acquisition["run_id"]
+    assert provenance["random_seed"] == acquisition["provenance"]["random_seed"]
+    assert provenance["source_fit_id"] == acquisition["scaler_fit_id"]
+    assert provenance["source_selection_fingerprint"] == acquisition["selection_fingerprint"]
+    assert provenance["fallback_reason"] is None
+    assert provenance["mode"] == "independent"
+
+
+def test_develop_random_fallback_provenance_and_reason(tmp_path: Path) -> None:
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=8)
+    scale = project.create_scale("Random-first scale")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    task, _, _ = _callback(app, "next_scale_pair")(1, scale, session)
+    assert task["acquisition"]["strategy"] == "random"
+    first_pair = {task["first"], task["second"]}
+    next_task, _, _ = _callback(app, "next_scale_pair")(2, scale, session)
+    assert {next_task["first"], next_task["second"]} != first_pair
+    assert project.scale_comparisons(scale) == []
+    task = next_task
+    display = _callback(app, "display_scale_task")
+    _, _, _, _, note, *_ = display(task, [], scale, 0)
+    assert "Random pair" in note
+    saved, _, _ = _manage(
+        _callback(app, "manage_scale_comparison"),
+        "scale-judge-parity", scale=scale, session=session, task=task,
+    )
+    provenance = GeometricCoder.open(project.project_dir).scale_comparison_event(
+        scale, saved["event_id"]
+    )["selection_provenance"]
+    assert provenance["strategy"] == "random"
+    assert provenance["random_seed"] is not None
+    assert provenance["source_acquisition_run_id"] is None
+    assert provenance["fallback_reason"] == "no_frozen_ranking"
+
+
+def test_next_pair_with_single_available_pair_reports_exhaustion_without_event(
+    tmp_path: Path,
+) -> None:
+    """An unanswered pair must not be silently re-served when no alternative exists."""
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path, count=2)
+    scale = project.create_scale("Only two observations")
+    session = int(project.sessions()[0]["session_id"])
+    app = create_app(project)
+    next_pair = _callback(app, "next_scale_pair")
+    first, message, _ = next_pair(1, scale, session)
+    assert message == ""
+    assert first["acquisition"]["strategy"] == "random"
+    second, message, _ = next_pair(2, scale, session)
+    assert second is no_update
+    assert "No other unjudged eligible Scale pair" in message
+    assert project.scale_comparisons(scale) == []
+    assert project.database.get_session(session)["state"]["scale_comparison_task"] == first
+
+
+def test_develop_pair_help_describes_eig_and_random_fallback() -> None:
+    from geometric_coder.ui.scale_comparisons import comparison_layout
+    from dash import dcc, html, dash_table
+
+    layout = comparison_layout(dcc=dcc, html=html, dash_table=dash_table)
+
+    def collect_strings(component):
+        if isinstance(component, str):
+            return [component]
+        if isinstance(component, (tuple, list)):
+            return [part for item in component for part in collect_strings(item)]
+        if not hasattr(component, "children"):
+            return []
+        return collect_strings(component.children)
+
+    content = " ".join(collect_strings(layout))
+    assert "Next pair" in content
+    assert "Unsure / Skip records a response" in content
+    assert "manual" in content.lower()
+    assert "Pairs are sampled randomly for now" not in content

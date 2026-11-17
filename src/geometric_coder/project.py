@@ -2141,6 +2141,33 @@ class GeometricCoder:
         """Read the latest or a historical Construct definition."""
         return self.database.get_construct(int(construct_id), version_number)
 
+    def code_scale_bootstrap_preview(self, code_id: int) -> dict[str, Any]:
+        """Count effective human Present/Absent atomic observations without creating a Scale."""
+        return self.database.code_scale_bootstrap_preview(int(code_id))
+
+    def bootstrap_existing_scale_from_code(
+        self, scale_id: int, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None, expected_scale_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Append complete Code-derived ordinary human comparisons to a Scale."""
+        return self.database.bootstrap_existing_scale_from_code(
+            int(scale_id), int(code_id), expected_preview=expected_preview,
+            submission_key=submission_key, session_id=session_id,
+            expected_scale_version=expected_scale_version,
+        )
+
+    def create_scale_from_code(
+        self, name: str, description: str, code_id: int, *,
+        expected_preview: Mapping[str, Any], submission_key: str,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Create an independent Scale with an atomic Cartesian batch of ordinary comparisons."""
+        return self.database.create_scale_from_code(
+            name, description, int(code_id), expected_preview=expected_preview,
+            submission_key=submission_key, session_id=session_id,
+        )
+
     def create_scale(
         self, name: str, description: str = "",
         eligibility: Mapping[str, Any] | None = None,
@@ -2186,6 +2213,54 @@ class GeometricCoder:
             scale_id, version_number=version_number, effective_only=effective_only,
         )
 
+    def scale_comparison_history_page(
+        self, scale_id: int, *, page: int = 1, page_size: int = 60,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return one page of comparison history with supersession status."""
+        return self.database.scale_comparison_history_page(
+            int(scale_id), page=page, page_size=page_size,
+        )
+
+    def scale_comparison_event(
+        self, scale_id: int, event_id: int,
+    ) -> dict[str, Any] | None:
+        """Read a single stored comparison event."""
+        return self.database.scale_comparison_event(int(scale_id), int(event_id))
+
+    def scale_existing_pairs(
+        self, scale_id: int, observation_ids: Sequence[int],
+    ) -> set[tuple[int, int]]:
+        """Inspect only a bounded candidate set for previously judged pairs."""
+        return self.database.scale_existing_pairs(int(scale_id), observation_ids)
+
+    def candidate_run(
+        self, construct_id: int, *, budget: int | None = None,
+        seed: int = 0, batch_size: int = 128,
+        session_id: int | None = None,
+        source_fit_id: int | None = None,
+        source_configuration_id: int | None = None,
+    ) -> Any:
+        """Create a reproducible Code-observation or Scale-pair candidate run.
+
+        Sampling is lazy and read-only. The scorer must acknowledge completed
+        evaluations explicitly; rankings belong to the existing frozen
+        recommendation lifecycle, not to this method.
+        """
+        from geometric_coder.candidate_sampling import prepare_candidate_run
+        return prepare_candidate_run(
+            self, construct_id, budget=budget, seed=seed, batch_size=batch_size,
+            session_id=session_id, source_fit_id=source_fit_id,
+            source_configuration_id=source_configuration_id,
+        )
+
+    def scale_pair_history_count(
+        self, scale_id: int, first: int, second: int,
+    ) -> int:
+        """Count events for one canonical pair without loading full history."""
+        return self.database.scale_pair_history_count(
+            int(scale_id), int(first), int(second),
+        )
+
     def scale_training_comparisons(self, scale_id: int) -> list[dict[str, Any]]:
         """Effective, non-skip, eligibility-allowed pairs for the current Scale version."""
         return self.database.scale_training_comparisons(scale_id)
@@ -2205,6 +2280,45 @@ class GeometricCoder:
     ) -> list[int]:
         """Filter stable atomic observation IDs using current Scale eligibility."""
         return self.database.eligible_scale_observation_ids(scale_id, observation_ids)
+
+    def configure_scale_model(
+        self, scale_id: int, representation_id: int, *,
+        estimator_family: str = "linear_davidson",
+        hyperparameters: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Choose an analytic representation and a persistent Scale estimator."""
+        from geometric_coder.scale_models import configure_scale_model
+        return configure_scale_model(
+            self, scale_id, representation_id,
+            estimator_family=estimator_family, hyperparameters=hyperparameters,
+        )
+
+    def scale_model_status(self, scale_id: int) -> dict[str, Any]:
+        """Check Scale fit freshness without loading a geometry or fitted model."""
+        from geometric_coder.scale_models import scale_model_status
+        return scale_model_status(self, scale_id)
+
+    def train_scale(
+        self, scale_id: int, *, estimator_factory: Any = None,
+        tune: bool = False, retune_current: bool = False, folds: int = 5,
+    ) -> dict[str, Any]:
+        """Fit a Scale, optionally selecting model parameters by grouped CV."""
+        from geometric_coder.scale_models import train_scale_model
+        return train_scale_model(
+            self, scale_id, estimator_factory=estimator_factory,
+            tune=tune, retune_current=retune_current, folds=folds,
+        )
+
+    def scale_scores(
+        self, scale_id: int, observation_ids: Sequence[int], *,
+        allow_stale: bool = False, include_uncertainty: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Predict frozen scalar positions for explicitly selected observations."""
+        from geometric_coder.scale_models import scale_model_scores
+        return scale_model_scores(
+            self, scale_id, observation_ids,
+            allow_stale=allow_stale, include_uncertainty=include_uncertainty,
+        )
 
     def create_code(self, name: str, definition: str = "") -> int:
         """Create a code without implicitly creating classifiers."""
@@ -4310,6 +4424,43 @@ class GeometricCoder:
         )
         return {"prepared": True, "unit_count": len(scores)}
 
+    def _code_candidate_budget(self) -> int:
+        """Positive finite acquisition budget; 0 means legacy exhaustive."""
+        try:
+            settings = json.loads(
+                (self.project_dir / "ui_settings.json").read_text(encoding="utf-8")
+            )
+            value = settings.get("candidate_evaluation_budget", -1)
+            return value if type(value) is int and value > 0 else 0
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
+
+    def _rank_code_recommendation(
+        self, *, source: str, source_id: int, code_id: int,
+        session_id: int, strategy: str,
+    ) -> dict[str, Any] | None:
+        """Use a stable bounded subset only when a finite budget is set."""
+        budget = self._code_candidate_budget()
+        if budget:
+            return self.database.ranked_budgeted_code_recommendation(
+                source=source, source_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy, budget=budget,
+            )
+        if source == "classifier":
+            return self.database.ranked_classifier_recommendation(
+                classifier_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        if source == "learned_committee":
+            return self.database.ranked_classifier_committee_recommendation(
+                committee_fit_id=source_id, code_id=code_id,
+                session_id=session_id, strategy=strategy,
+            )
+        return self.database.ranked_prepared_committee_recommendation(
+            committee_id=source_id, code_id=code_id,
+            session_id=session_id, strategy=strategy,
+        )
+
     def focus_recommendation(
         self,
         *,
@@ -4405,10 +4556,9 @@ class GeometricCoder:
                     if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                     else strategy
                 )
-                ranked = self.database.ranked_classifier_recommendation(
-                    classifier_fit_id=fit_id,
-                    code_id=int(code_id),
-                    session_id=int(session_id),
+                ranked = self._rank_code_recommendation(
+                    source="classifier", source_id=fit_id,
+                    code_id=int(code_id), session_id=int(session_id),
                     strategy=ranked_strategy,
                 )
                 if ranked is None:
@@ -4495,8 +4645,8 @@ class GeometricCoder:
                             "This committee is missing predictions for newly added units. "
                             "Train the selected committee to extend its frozen scores."
                         )
-                    ranked_committee = self.database.ranked_classifier_committee_recommendation(
-                        committee_fit_id=learned_fit_id,
+                    ranked_committee = self._rank_code_recommendation(
+                        source="learned_committee", source_id=learned_fit_id,
                         code_id=int(code_id), session_id=int(session_id),
                         strategy=committee_strategy,
                     )
@@ -4593,9 +4743,10 @@ class GeometricCoder:
                     ranked_strategy = ("classifier_disagreement" if strategy in {
                         "classifier_disagreement", "geometry_disagreement"
                     } else strategy)
-                    selection = self.database.ranked_prepared_committee_recommendation(
-                        committee_id=int(committee_id), code_id=int(code_id),
-                        session_id=int(session_id), strategy=ranked_strategy,
+                    selection = self._rank_code_recommendation(
+                        source="fixed_committee", source_id=int(committee_id),
+                        code_id=int(code_id), session_id=int(session_id),
+                        strategy=ranked_strategy,
                     )
                     if selection is None:
                         return None
@@ -4799,10 +4950,9 @@ class GeometricCoder:
                         if strategy in {"classifier_uncertainty", "geometry_uncertainty"}
                         else strategy
                     )
-                    ranked = self.database.ranked_classifier_recommendation(
-                        classifier_fit_id=int(fit["classifier_fit_id"]),
-                        code_id=int(code_id),
-                        session_id=int(session_id),
+                    ranked = self._rank_code_recommendation(
+                        source="classifier", source_id=int(fit["classifier_fit_id"]),
+                        code_id=int(code_id), session_id=int(session_id),
                         strategy=ranked_strategy,
                     )
                     if ranked is None:
@@ -4861,12 +5011,42 @@ class GeometricCoder:
             recommendation_probabilities = {name: result["probabilities"]}
             recommendation_aggregation = "mean"
 
+        # Exceptional legacy paths (for example learned-committee disagreement
+        # or explicit programmatic auto_retrain) still resolve corpus-wide
+        # frozen vectors above. Bound acquisition scoring of these vectors too.
+        # The UI's ordinary indexed classifier/committee paths return earlier.
+        candidate_units = unit_ids
+        candidate_probabilities = recommendation_probabilities
+        finite_budget = self._code_candidate_budget()
+        if finite_budget and recommendation_strategy != "random":
+            from geometric_coder.explore import deterministic_page_permutation_parameters
+
+            total = len(unit_ids)
+            if total:
+                source_identity = (
+                    int(committee_id) if use_committee and committee_id is not None
+                    else int(active_classifier_spec_id or 0)
+                )
+                seed = (
+                    source_identity * 2654435761 + int(code_id) * 2246822519
+                    + (3 if use_committee else 1)
+                ) & 0xFFFFFFFF
+                multiplier, shift = deterministic_page_permutation_parameters(total, seed)
+                positions = [
+                    (multiplier * rank + shift) % total
+                    for rank in range(min(total, finite_budget))
+                ]
+                candidate_units = [unit_ids[index] for index in positions]
+                candidate_probabilities = {
+                    name: np.asarray(values, dtype=float)[positions]
+                    for name, values in recommendation_probabilities.items()
+                }
         recommendation = recommend_focus_unit(
             strategy=recommendation_strategy,  # type: ignore[arg-type]
-            unit_ids=unit_ids,
+            unit_ids=candidate_units,
             seen_unit_ids=seen_ids,
             annotated_unit_ids=annotated_ids,
-            probabilities_by_geometry=recommendation_probabilities,
+            probabilities_by_geometry=candidate_probabilities,
             selected_geometry=selected_name,
             committee_aggregation=recommendation_aggregation,  # type: ignore[arg-type]
             random_seed=random_seed,

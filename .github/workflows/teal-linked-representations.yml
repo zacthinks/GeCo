@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - main
+      - scaling
   workflow_dispatch:
 
 jobs:

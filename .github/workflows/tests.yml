@@ -14,6 +14,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Check out TeAL for linked integration tests
+        uses: actions/checkout@v7
+        with:
+          repository: zacthinks/text-analysis-lab
+          ref: main
+          path: _teal
+
       - name: Install uv
         uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -22,5 +29,25 @@ jobs:
       - name: Install GeCo and all dependencies
         run: uv sync --all-extras
 
-      - name: Run pytest
-        run: uv run pytest -q -rs
+      - name: Browser-level Scale prediction preview regression
+        run: uv run --with playwright pytest -q -rs tests/test_scale_prediction_browser.py
+
+      - name: Upload browser verification screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-prediction-browser-screenshots
+          path: scale-prediction-browser-*.png
+          if-no-files-found: ignore
+
+      - name: Install TeAL in the GeCo test environment
+        run: uv pip install --python .venv/bin/python -e ./_teal
+
+      - name: Verify TeAL can be imported
+        run: uv run --no-sync python -c "import text_analysis_lab; import geometric_coder; print(text_analysis_lab.__file__)"
+
+      - name: Run pytest with TeAL available
+        run: uv run --no-sync pytest -q -rs
+
+      - name: Benchmark 300k Scale candidate sampling
+        run: uv run --no-sync python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000

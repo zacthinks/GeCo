@@ -252,3 +252,73 @@ def test_representation_wizard_wires_live_suggested_names():
     assert 'Input("representation-wizard-view-dimensions", "value")' in source
     assert 'Input("representation-wizard-recipe", "value")' in source
     assert 'existing.extend(' in source
+
+
+def test_sentence_transformer_presets_are_curated_and_use_existing_model_validation():
+    from geometric_coder.ui.representation_ui import (
+        DEFAULT_SENTENCE_TRANSFORMER_MODEL, SENTENCE_TRANSFORMER_PRESETS,
+        selected_sentence_transformer_model,
+    )
+
+    assert len(SENTENCE_TRANSFORMER_PRESETS) == 9
+    models = [option["value"] for option in SENTENCE_TRANSFORMER_PRESETS]
+    assert len(set(models)) == len(models)
+    assert DEFAULT_SENTENCE_TRANSFORMER_MODEL == "sentence-transformers/all-MiniLM-L12-v2"
+    assert DEFAULT_SENTENCE_TRANSFORMER_MODEL in models
+    assert sum("General" in option["label"] for option in SENTENCE_TRANSFORMER_PRESETS) == 4
+    assert sum("Search / Q&A" in option["label"] for option in SENTENCE_TRANSFORMER_PRESETS) == 3
+    assert sum("Multilingual" in option["label"] for option in SENTENCE_TRANSFORMER_PRESETS) == 2
+    assert all("multi-qa-" not in model or "-cos-v1" in model for model in models)
+    for model in models:
+        assert selected_sentence_transformer_model(model, "ignored") == model
+        assert tg.parse_sentence_transformer_model(model) == model
+    assert selected_sentence_transformer_model(
+        "custom", " https://huggingface.co/owner/model "
+    ) == "https://huggingface.co/owner/model"
+    assert selected_sentence_transformer_model("custom", None) == ""
+    with pytest.raises(ValueError, match="Choose a Sentence Transformer"):
+        selected_sentence_transformer_model("unknown", None)
+    with pytest.raises(ValueError, match="Choose a Sentence Transformer"):
+        selected_sentence_transformer_model(None, None)
+
+
+def test_sentence_transformer_wizard_preserves_custom_entry_and_advanced_controls():
+    from dash import dcc, html
+    from geometric_coder.ui import representation_ui as ui
+
+    # Render the actual modal tree, not just a source-string contract.
+    modal = ui.representation_modal(
+        SimpleNamespace(is_external_backed=False), html=html, dcc=dcc,
+        dash_table=__import__("dash").dash_table,
+    )
+
+    def find(node, target):
+        if getattr(node, "id", None) == target:
+            return node
+        children = getattr(node, "children", None)
+        for child in (children if isinstance(children, (list, tuple))
+                      else ([children] if children is not None else [])):
+            result = find(child, target)
+            if result is not None:
+                return result
+        return None
+
+    preset = find(modal, "representation-text-model")
+    assert isinstance(preset, dcc.Dropdown)
+    assert preset.clearable is False
+    assert preset.value == ui.DEFAULT_SENTENCE_TRANSFORMER_MODEL
+    assert len(preset.options) == 10
+    assert preset.options[-1]["value"] == "custom"
+    custom = find(modal, "representation-text-model-custom")
+    assert isinstance(custom, dcc.Input)
+    assert find(modal, "representation-text-model-custom-wrap").style == {
+        "display": "none",
+    }
+    for name in ("representation-text-revision", "representation-text-normalize",
+                 "representation-text-truncation"):
+        assert find(modal, name) is not None
+
+    source = Path(ui.__file__).read_text(encoding="utf-8")
+    assert 'Output("representation-text-model-custom-wrap", "style")' in source
+    assert 'State("representation-text-model-custom", "value")' in source
+    assert "selected_sentence_transformer_model(" in source
