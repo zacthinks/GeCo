@@ -64,8 +64,16 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
-                    "?.data?.[0]?.type === 'scattergl'", timeout=20000,
+                    "?.data?.[0]?.type === 'scattergl' || "
+                    "(document.querySelector('#analysis-status')?.textContent || '').trim().length > 0",
+                    timeout=20000,
                 )
+                assert not page.locator("#analysis-status").inner_text().strip(), (
+                    "Scatter preview validation: " + page.locator("#analysis-status").inner_text()
+                )
+                assert page.evaluate(
+                    "() => document.querySelector('#analysis-figure .js-plotly-plot')?.data?.[0]?.type"
+                ) == "scattergl"
                 page.locator("#analysis-save").click()
                 page.wait_for_function(
                     "() => getComputedStyle(document.querySelector('#analysis-editor'))"
