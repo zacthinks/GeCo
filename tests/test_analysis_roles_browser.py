@@ -85,8 +85,10 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                     page.get_by_text(label, exact=True).last.click()
 
                 def selected_model():
+                    # Read the visible dropdown, not an implementation-specific
+                    # React-Select class that varies across Dash versions.
                     return page.locator(
-                        '[id*="analysis-role-predictor"] .Select-value-label'
+                        '[id*="analysis-role-predictor"]'
                     ).first.inner_text()
 
                 page.locator("#analysis-new").click()
