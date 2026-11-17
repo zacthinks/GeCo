@@ -262,6 +262,8 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             html.Div([
                 html.Label("Values — numerical variables"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
+                html.Label("Group — categorical metadata / binned numeric / calendar period"),
+                dcc.Dropdown(id="analysis-continuous-group", options=[]),
                 html.Label("Rows — categorical variable"), dcc.Dropdown(id="analysis-role-rows", options=[]),
                 html.Label("Columns — categorical variable"), dcc.Dropdown(id="analysis-role-columns", options=[]),
             ], id="analysis-continuous-roles", style={"display": "none"}),
@@ -337,6 +339,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-role-continuous-values", "options"),
         Output("analysis-role-rows", "options"),
         Output("analysis-role-columns", "options"),
+        Output("analysis-continuous-group", "options"),
         Input("workspace-tabs", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
@@ -345,11 +348,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def refresh_variables(workspace: str, _code_refresh: Any, _focus_refresh: Any,
                           _editor_style: Any) -> Any:
         if workspace != "analyses":
-            return (no_update,) * 10
+            return (no_update,) * 11
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
         metadata = [c for c in choices if c["value"].startswith("metadata:")]
-        return codes, codes, choices, metadata, choices, choices, choices, choices, choices, choices
+        return codes, codes, choices, metadata, choices, choices, choices, choices, choices, choices, choices
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -377,6 +380,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-hist-method", "value"),
         Output("analysis-hist-bins", "value"),
         Output("analysis-hist-width", "value"),
+        Output("analysis-continuous-group", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -389,14 +393,14 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         trigger = callback_context.triggered_id
         empty = ({"display": "block"}, {"id": None, "schema_version": 2},
                  "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1)
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
                     None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1)
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 25
+            return (no_update,) * 26
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -419,6 +423,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("rows"), slots.get("columns"),
             spec.get("statistic", "mean"), spec.get("binning", {}).get("method", "equal_width"),
             spec.get("binning", {}).get("bins", 20), spec.get("binning", {}).get("width", 1),
+            slots.get("group") if spec["kind"] in ("histogram", "summary_bar") else None,
         )
 
     @app.callback(
@@ -516,6 +521,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-role-continuous-values", "value"),
         Input("analysis-role-rows", "value"),
         Input("analysis-role-columns", "value"),
+        Input("analysis-continuous-group", "value"),
         Input("analysis-editing", "data"),
         State("analysis-role-config", "data"),
     )
@@ -523,7 +529,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                       distribution: list[str] | None, indicators: list[str] | None,
                       x: str | None, y: str | None, color: str | None,
                       continuous_values: list[str] | None, rows: str | None,
-                      columns: str | None,
+                      columns: str | None, continuous_group: str | None,
                       editing: Any, configs: dict[str, Any] | None) -> Any:
         if editing is None:
             return []
@@ -538,7 +544,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                      "color": [color] if color else []}
         else:
             slots = {"values": continuous_values or [] if kind == "correlation_heatmap" else (continuous_values or [])[:1],
-                     "group": [group] if kind in ("histogram", "summary_bar") and group else [],
+                     "group": [continuous_group] if kind in ("histogram", "summary_bar") and continuous_group else [],
                      "rows": [rows] if kind == "value_heatmap" and rows else [],
                      "columns": [columns] if kind == "value_heatmap" and columns else []}
         nodes = []
@@ -692,41 +698,63 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return result if result != (existing or {}) else no_update
 
     def current_slots(kind: str, values: Any, group: Any,
-                      distribution: Any, indicators: Any) -> dict[str, Any]:
+                      distribution: Any, indicators: Any,
+                      x: Any, y: Any, color: Any, continuous_values: Any,
+                      rows: Any, columns: Any, continuous_group: Any) -> dict[str, Any]:
         if kind == "bar":
             return {"values": values or [], "group": group}
         if kind == "distribution":
             return {"values": distribution or []}
-        return {"indicators": indicators or []}
+        if kind == "heatmap":
+            return {"indicators": indicators or []}
+        if kind == "scatter":
+            return {"x": x, "y": y, "color": color}
+        if kind == "histogram":
+            return {"values": (continuous_values or [None])[0], "group": continuous_group}
+        if kind == "summary_bar":
+            return {"values": (continuous_values or [None])[0], "group": continuous_group}
+        if kind == "value_heatmap":
+            return {"values": (continuous_values or [None])[0], "rows": rows, "columns": columns}
+        return {"values": continuous_values or []}
 
     def run_recipe(kind: str, measure: str, values: Any, group: Any,
                    distribution: Any, indicators: Any,
                    configs: dict[str, Any] | None, level: str | None,
                    method: str, threshold: float | None,
-                   editing: dict[str, Any]) -> dict[str, Any]:
+                   editing: dict[str, Any], x: Any, y: Any, color: Any,
+                   continuous_values: Any, rows: Any, columns: Any,
+                   continuous_group: Any, statistic: Any,
+                   hist_method: Any, hist_bins: Any, hist_width: Any) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
+        from geometric_coder.analysis_continuous import CONTINUOUS_KINDS
+        if kind in CONTINUOUS_KINDS and legacy:
+            raise ValueError("Legacy analyses cannot switch to a numerical chart; create a new analysis.")
+        bins = {"kind": "histogram_bins", "method": hist_method}
+        if hist_method == "fixed_width":
+            bins.update(width=hist_width, origin=0)
+        else:
+            bins["bins"] = int(hist_bins or 20)
+        all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
+                                  color, continuous_values, rows, columns, continuous_group)
         recipe = editor_recipe(
             kind, measure if kind == "heatmap" else "count",
-            current_slots(kind, values, group, distribution, indicators),
-            configs or {}, level, method, threshold, legacy=legacy,
+            all_slots, configs or {}, level, method, threshold, legacy=legacy,
+            extra_slots=all_slots,
+            continuous_options={"statistic": statistic or "mean", "binning": bins},
         )
         if legacy:
-            # v1 is retained exactly, without non-v1 representation fields.
             for var in recipe["variables"]:
                 if var["type"] == "code":
                     if var.get("predictor_kind") == "committee":
                         raise ValueError("Existing v1 analyses cannot store committee sources.")
-                    if var["source"] == "labels":
-                        var.pop("predictor_kind", None)
-                    else:
-                        var.pop("predictor_kind", None)
+                    var.pop("predictor_kind", None)
                 elif var["type"] == "metadata":
                     if var.get("value", "categorical") != "categorical":
-                        raise ValueError("Numeric/temporal metadata requires a Phase 3 chart.")
+                        raise ValueError("Numeric/temporal metadata requires a numerical chart.")
                     var.pop("value", None)
                     var.pop("numeric_strings", None)
                 else:
-                    raise ValueError("Scale positions need a Phase 3 chart.")
+                    raise ValueError("Legacy analyses cannot store Scale positions.")
         return recipe
 
     state_args = [
@@ -740,6 +768,17 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-aggregate-level", "value"),
         State("analysis-aggregate-method", "value"),
         State("analysis-aggregate-threshold", "value"),
+        State("analysis-role-x", "value"),
+        State("analysis-role-y", "value"),
+        State("analysis-role-color", "value"),
+        State("analysis-role-continuous-values", "value"),
+        State("analysis-role-rows", "value"),
+        State("analysis-role-columns", "value"),
+        State("analysis-continuous-group", "value"),
+        State("analysis-statistic", "value"),
+        State("analysis-hist-method", "value"),
+        State("analysis-hist-bins", "value"),
+        State("analysis-hist-width", "value"),
     ]
 
     @app.callback(
@@ -756,12 +795,17 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def save(_click: int, name: str | None, editing: Any, kind: str, measure: str,
              values: Any, group: Any, distribution: Any, indicators: Any,
              configs: Any, level: Any, method: str, threshold: Any,
+             x: Any, y: Any, color: Any, continuous_values: Any,
+             rows: Any, columns: Any, continuous_group: Any, statistic: Any,
+             hist_method: Any, hist_bins: Any, hist_width: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 5
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
-                              configs, level, method, threshold, editing)
+                              configs, level, method, threshold, editing, x, y, color,
+                              continuous_values, rows, columns, continuous_group, statistic,
+                              hist_method, hist_bins, hist_width)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
             return no_update, no_update, no_update, str(exc), no_update
@@ -778,12 +822,17 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     )
     def preview(_click: int, editing: Any, kind: str, measure: str,
                 values: Any, group: Any, distribution: Any, indicators: Any,
-                configs: Any, level: Any, method: str, threshold: Any) -> tuple[Any, str]:
+                configs: Any, level: Any, method: str, threshold: Any,
+                x: Any, y: Any, color: Any, continuous_values: Any,
+                rows: Any, columns: Any, continuous_group: Any, statistic: Any,
+                hist_method: Any, hist_bins: Any, hist_width: Any) -> tuple[Any, str]:
         if editing is None:
             return no_update, ""
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
-                              configs, level, method, threshold, editing)
+                              configs, level, method, threshold, editing, x, y, color,
+                              continuous_values, rows, columns, continuous_group, statistic,
+                              hist_method, hist_bins, hist_width)
             result = compute_analysis(project, spec)
             fig = analysis_figure(result)
             if result.get("warnings"):
