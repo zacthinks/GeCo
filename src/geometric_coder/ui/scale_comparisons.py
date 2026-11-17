@@ -634,9 +634,10 @@ def register_comparison_callbacks(
         Output("scale-model-geometry", "options"),
         Output("scale-model-geometry", "value"),
         Input("focus-construct-dropdown", "value"),
+        Input("representation-refresh-store", "data"),
     )
     def scale_model_geometry_options(
-        construct_id: int | None,
+        construct_id: int | None, _representation_revision: int | None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         scale_id = active_scale_id(construct_id)
         if scale_id is None:
