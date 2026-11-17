@@ -1570,6 +1570,18 @@ def create_app(
         return {"display": "flex"} if callback_context.triggered_id == "topic-create-open" else {"display": "none"}
 
     @app.callback(
+        Output("topic-create-submit", "disabled", allow_duplicate=True),
+        Input("topic-create-geometry", "options"),
+        prevent_initial_call=True,
+    )
+    def refresh_topic_create_availability(
+        options: list[dict[str, Any]] | None,
+    ) -> bool:
+        # The dropdown options refresh when representations are added, removed,
+        # or made analytic/view-only; the startup disabled flag alone goes stale.
+        return teal_linked_project(project) is None or not bool(options)
+
+    @app.callback(
         Output("topic-create-parameters", "children"),
         Output("topic-create-advanced", "children"),
         Output("topic-create-advanced-wrap", "style"),
