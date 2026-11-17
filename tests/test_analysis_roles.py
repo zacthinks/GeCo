@@ -150,3 +150,47 @@ def test_v1_id_rename_duplicate_and_outputs_remain_unchanged(project):
     assert clone != identity
     p.delete_analysis(clone)
     assert p.analysis(identity)["name"] == "Renamed"
+
+
+def test_fixed_committee_binary_is_executable_without_retraining(tmp_path, monkeypatch):
+    from geometric_coder import CountGeometry
+
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "committee-roles.geco",
+        data=pd.DataFrame({
+            "id": list(range(6)),
+            "text": ["good clear", "great useful", "nice clear",
+                     "bad confusing", "poor unclear", "weak bad"],
+        }),
+        keys=["id"], text="text",
+        geometries={"lexical": CountGeometry(lemmatize=False, weighting="tfidf")},
+    )
+    code_id = p.create_code("Sentiment")
+    p.ensure_default_classifier_specs(code_id=code_id)
+    classifier = int(p.classifier_specs(code_id)[0]["classifier_spec_id"])
+    ids = [row["observation_id"] for row in p.database.list_units()]
+    p.annotate(ids[0], code_id, "positive")
+    p.annotate(ids[3], code_id, "negative")
+    p.train_classifier(code_id=code_id, classifier_spec_id=classifier)
+    committee = p.create_classifier_committee(
+        code_id=code_id, name="Only member",
+        classifier_spec_ids=[classifier], aggregation="mean",
+    )
+    ref = {
+        "type": "code", "code_id": code_id, "source": "predictions",
+        "value": "binary", "predictor_kind": "committee",
+        "predictor_id": committee,
+    }
+    spec = {"schema_version": 2, "kind": "bar", "measure": "count",
+            "roles": {"values": [entry(ref)]}}
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A preview must not train a model or change evidence.")
+    monkeypatch.setattr(p, "train_classifier", forbidden)
+    monkeypatch.setattr(p, "train_scale", forbidden)
+    result = compute_analysis(p, spec)
+    assert result["counts"][0][0] <= result["denominators"][0][0]
+    assert result["denominators"][0][0] == 6
+    assert p.save_analysis("Committee", spec) > 0
+    bad = {**spec, "aggregation": {"level": "id", "method": "any"}}
+    with pytest.raises(ValueError):
+        validate_analysis(p, bad)
