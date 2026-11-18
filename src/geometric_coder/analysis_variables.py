@@ -330,6 +330,7 @@ def resolve_analytical_variables(
     observation_ids: Sequence[int],
     *,
     allow_stale_scales: bool = False,
+    status_cache: dict[tuple[Any, ...], Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve a bounded page of *atomic observation IDs* without writes.
 
@@ -354,6 +355,14 @@ def resolve_analytical_variables(
             f"Resolve at most {MAX_RESOLUTION_OBSERVATIONS} observations per call; page the IDs."
         )
     selected = list(dict.fromkeys(requested))
+    # One query-local cache shared by paged charts. Cache statuses only, never
+    # prediction values; no global invalidation or cross-request state.
+    def cached_status(key: tuple[Any, ...], supplier: Any) -> Any:
+        if status_cache is None:
+            return supplier()
+        if key not in status_cache:
+            status_cache[key] = supplier()
+        return status_cache[key]
     descriptors = [validate_variable(project, item) for item in references]
     codes = [v for v in descriptors if v["type"] == "code"]
     joins: list[str] = []
@@ -371,8 +380,11 @@ def resolve_analytical_variables(
         member_fit_ids: list[int | None] = []
         if descriptor["source"] != "labels":
             if predictor_kind == "committee":
-                state = project.classifier_committee_status(
-                    code_id=code_id, committee_id=descriptor["predictor_id"]
+                state = cached_status(
+                    ("committee", code_id, descriptor["predictor_id"]),
+                    lambda: project.classifier_committee_status(
+                        code_id=code_id, committee_id=descriptor["predictor_id"]
+                    ),
                 )
                 committee = state["committee"]
                 status = state["status"]
@@ -391,9 +403,12 @@ def resolve_analytical_variables(
                     if fit is not None:
                         member_fit_ids = [int(i) for i in fit["member_fit_ids"]]
             else:
-                state = project.classifier_status(
-                    code_id=code_id, classifier_spec_ids=[descriptor["predictor_id"]]
-                )["classifiers"][0]
+                state = cached_status(
+                    ("classifier", code_id, descriptor["predictor_id"]),
+                    lambda: project.classifier_status(
+                        code_id=code_id, classifier_spec_ids=[descriptor["predictor_id"]]
+                    )["classifiers"][0],
+                )
                 fit_id = state["classifier_fit_id"]
                 status = state["status"]
             if status == "not_trained":
@@ -587,7 +602,9 @@ def resolve_analytical_variables(
             scale_id = descriptor["scale_id"]
             scale = project.scale(scale_id)
             name = str(scale["name"])
-            state = project.scale_model_status(scale_id)
+            state = cached_status(
+                ("scale", scale_id), lambda: project.scale_model_status(scale_id)
+            )
             fit = state.get("fit")
             status = str(state["status"])
             fit_id = None if fit is None else int(fit["scaler_fit_id"])

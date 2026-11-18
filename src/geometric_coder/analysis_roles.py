@@ -50,6 +50,9 @@ def validate_role_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, A
         raise ValueError("Role-based analyses require schema_version 2.")
     kind = spec.get("kind")
     if kind not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, validate_continuous_analysis
+        if kind in CONTINUOUS_KINDS:
+            return validate_continuous_analysis(project, spec)
         raise ValueError("This visualization is not implemented.")
     if not isinstance(spec.get("roles"), Mapping):
         raise ValueError("Assign variables to the visualization's roles.")
@@ -128,7 +131,10 @@ def ensure_role_sources_ready(project: Any, spec: Mapping[str, Any]) -> None:
     retained fit remains usable with the existing warning semantics.
     """
     roles = spec["roles"]
-    entries = roles.get("values", roles.get("indicators", []))
+    if spec["kind"] not in ROLE_CONTRACT:
+        entries = [item for value in roles.values() for item in (value if isinstance(value, list) else [value])]
+    else:
+        entries = roles.get("values", roles.get("indicators", []))
     checked: set[tuple[int, str, int]] = set()
     for item in entries:
         variable = item["variable"]
@@ -173,6 +179,11 @@ def ensure_role_chart_executable(project: Any, spec: Mapping[str, Any]) -> None:
     data-dependent dimension or bin limits.
     """
     roles = spec["roles"]
+    if spec["kind"] not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import compute_continuous_analysis
+        # All new numerical charts must be demonstrably executable on save.
+        compute_continuous_analysis(project, spec)
+        return
     entries = roles.get("values", roles.get("indicators", []))
     variables = [item["variable"] for item in entries]
     if "group" in roles:
@@ -207,18 +218,20 @@ def to_legacy_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 def _pages(project: Any, descriptors: list[dict[str, Any]]):
     """Read only IDs and bounded typed columns, never unit texts or full arrays."""
-    offset = 0
+    after = -1
+    status_cache: dict[tuple[Any, ...], Any] = {}
     while True:
         with project.database.connect() as conn:
             rows = conn.execute(
-                "SELECT observation_id FROM units ORDER BY row_position LIMIT ? OFFSET ?",
-                (MAX_RESOLUTION_OBSERVATIONS, offset),
+                "SELECT observation_id, row_position FROM units "
+                "WHERE row_position > ? ORDER BY row_position LIMIT ?",
+                (after, MAX_RESOLUTION_OBSERVATIONS),
             ).fetchall()
         if not rows:
             break
         ids = [int(row[0]) for row in rows]
-        yield resolve_analytical_variables(project, descriptors, ids)
-        offset += len(ids)
+        after = int(rows[-1][1])
+        yield resolve_analytical_variables(project, descriptors, ids, status_cache=status_cache)
 
 
 def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,7 +249,7 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
     ]
     warnings: set[str] = set()
     if kind == "bar":
-        groups: dict[str, list[list[int]]] = defaultdict(
+        groups: dict[tuple[bool, str], list[list[int]]] = defaultdict(
             lambda: [[0, 0] for _ in range(code_count)]
         )
     elif kind == "distribution":
@@ -251,9 +264,9 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
             values = [col["values"][i] for col in columns[:code_count]]
             if kind == "bar":
                 category = (
-                    "(Missing)" if group and columns[-1]["values"][i] is None
-                    else str(columns[-1]["values"][i]) if group
-                    else "All observations"
+                    (True, "") if group and columns[-1]["values"][i] is None
+                    else (False, str(columns[-1]["values"][i])) if group
+                    else (False, "All observations")
                 )
                 if category not in groups and len(groups) >= 100:
                     raise ValueError("Metadata has more than 100 categories.")
@@ -287,7 +300,12 @@ def _committee_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]
         if len(groups) > 100:
             raise ValueError("Metadata has more than 100 categories.")
         categories = sorted(groups)
-        return {"kind": "bar", "names": names, "categories": categories,
+        labels = [
+            "(Missing)" if missing else
+            "“(Missing)” (category)" if label == "(Missing)" else label
+            for missing, label in categories
+        ]
+        return {"kind": "bar", "names": names, "categories": labels,
                 "counts": [[groups[g][j][0] for g in categories] for j in range(code_count)],
                 "denominators": [[groups[g][j][1] for g in categories] for j in range(code_count)],
                 "warnings": sorted(warnings)}
@@ -325,6 +343,9 @@ def compute_role_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, An
     """Validate before any data read; adapt stable legacy SQL whenever possible."""
     from geometric_coder.analyses import compute_analysis
     normalized = validate_role_analysis(project, spec)
+    if normalized["kind"] not in ROLE_CONTRACT:
+        from geometric_coder.analysis_continuous import compute_continuous_analysis
+        return compute_continuous_analysis(project, normalized)
     refs = [item["variable"] for item in
             normalized["roles"].get("values", normalized["roles"].get("indicators", []))]
     if any(v.get("predictor_kind") == "committee" for v in refs):

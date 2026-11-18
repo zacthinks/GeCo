@@ -329,7 +329,51 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
 def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
     """Convert the compact aggregate into an interactive Plotly figure."""
     fig = go.Figure()
-    if result["kind"] == "distribution":
+    if result["kind"] == "scatter":
+        points = result["points"]
+        categories = sorted({item["color"] for item in points}, key=lambda x: str(x))
+        for category in categories:
+            selected = [p for p in points if p["color"] == category]
+            fig.add_trace(go.Scattergl(
+                x=[p["x"] for p in selected], y=[p["y"] for p in selected],
+                mode="markers", name=str(category) if category is not None else "Observations",
+                customdata=[p["id"] for p in selected],
+                hovertemplate="x=%{x:.4g}, y=%{y:.4g}<extra>Observation %{customdata}</extra>",
+            ))
+        fig.update_layout(
+            xaxis_title=result["names"][0], yaxis_title=result["names"][1],
+            title=f"Scatterplot — {result['sampled']:,} of {result['eligible']:,} eligible observations",
+        )
+    elif result["kind"] == "histogram":
+        for group in result["groups"]:
+            fig.add_trace(go.Bar(
+                x=result["bins"], y=result["counts"][group], name=str(group),
+                customdata=[result["denominators"][group]] * len(result["bins"]),
+                hovertemplate="%{x}: %{y} (n=%{customdata} in range)<extra>%{fullData.name}</extra>",
+            ))
+        fig.update_layout(barmode="group", xaxis_title=result["names"][0],
+                          yaxis_title="Observed frequency")
+    elif result["kind"] == "summary_bar":
+        fig.add_trace(go.Bar(
+            x=result["categories"], y=result["values"],
+            customdata=result["denominators"],
+            hovertemplate="%{x}: %{y:.4g} (n=%{customdata})<extra></extra>",
+        ))
+        fig.update_layout(xaxis_title="Group", yaxis_title=result["statistic"].title())
+    elif result["kind"] in ("correlation_heatmap", "value_heatmap"):
+        correlation = result["kind"] == "correlation_heatmap"
+        fig.add_trace(go.Heatmap(
+            x=result["names"] if correlation else result["columns"],
+            y=result["names"] if correlation else result["rows"],
+            z=result["values"], customdata=result["samples"],
+            colorscale="RdBu" if correlation else "Greens",
+            reversescale=correlation,
+            zmin=-1 if correlation else None, zmax=1 if correlation else None,
+            hovertemplate="%{y} × %{x}: %{z:.4g} (n=%{customdata})<extra></extra>",
+        ))
+        fig.update_layout(title="Pairwise-complete Pearson correlation" if correlation
+                          else f"Grouped {result['statistic']} values")
+    elif result["kind"] == "distribution":
         # Explain both the observational grain and the reduction. Without a
         # parent aggregation this is a binary frequency plot, not a histogram
         # of an unnamed 'aggregated code value'.

@@ -469,3 +469,42 @@ def test_learned_committee_frozen_scores_and_human_first_hybrid(sample):
     assert stale["provenance"]["committee_fit_id"] == stored["committee_fit_id"]
     assert stale["provenance"]["fit_status"] == "stale"
     assert any("stale" in message for message in stale["warnings"])
+
+
+def test_phase3_mixed_probability_scale_and_numeric_metadata_charts(sample, monkeypatch):
+    """The new chart path must consume trained typed sources without retraining."""
+    from geometric_coder.analyses import compute_analysis
+    project, code, predictor, scale, ids = sample
+
+    probability = {"variable": _code(code, "predictions", "probability", predictor)}
+    position = {"variable": {"type": "scale", "scale_id": scale, "value": "position"}}
+    numeric = {"variable": {"type": "metadata", "field": "score", "value": "numeric"}}
+    group = {"variable": {"type": "metadata", "field": "group", "value": "categorical"}}
+    scatter = {"schema_version": 2, "kind": "scatter", "roles": {
+        "x": position, "y": probability, "color": group,
+    }}
+    with monkeypatch.context() as patch:
+        patch.setattr(project, "train_scale", lambda *args, **kwargs:
+                      pytest.fail("Analyses must never retrain Scales"))
+        patch.setattr(project, "train_classifier", lambda *args, **kwargs:
+                      pytest.fail("Analyses must never retrain classifiers"))
+        output = compute_analysis(project, scatter)
+        assert output["eligible"] == len(ids)
+        assert output["sampled"] == len(ids)
+        assert {point["id"] for point in output["points"]} == set(ids)
+        assert all(0 <= point["y"] <= 1 for point in output["points"])
+        matrix = compute_analysis(project, {
+            "schema_version": 2, "kind": "correlation_heatmap",
+            "roles": {"values": [probability, position, numeric]},
+        })
+        assert matrix["samples"][0][1] == len(ids)
+        assert matrix["samples"][1][2] == len(ids)
+        assert matrix["values"][1][2] is not None
+        summary = compute_analysis(project, {
+            "schema_version": 2, "kind": "summary_bar",
+            "roles": {"values": position, "group": group},
+            "statistic": "mean",
+        })
+        assert summary["categories"] == ["A", "B", "C"]
+        assert summary["denominators"] == [2, 2, 2]
+        assert summary["values"] == pytest.approx([5.5, 3.5, 1.5])
