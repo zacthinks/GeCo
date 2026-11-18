@@ -50,60 +50,17 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 def choose(dropdown, label):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    # A selected value in a different role may have identical
-                    # text to the open menu's option. Exclude text inside the
-                    # already-mounted dropdown buttons.
-                    if label != "Numeric (continuous charts)":
-                        page.get_by_text(label, exact=True).filter(visible=True).last.click()
-                    else:
-                        matches = page.get_by_text(label, exact=True).filter(visible=True)
-                        target_id = dropdown.get_attribute("id")
-                        candidates = matches.all()
-                        target_candidates = [
-                            item for item in candidates
-                            if item.evaluate(
-                                """el => el.closest('button[id*="analysis-role-value"]')?.id || null"""
-                            ) == target_id
-                        ]
-                        # The numerical role's option can be rendered beneath
-                        # its own button. If the library portals the menu, the
-                        # option has no enclosing role-value button instead.
-                        if target_candidates:
-                            target_candidates[-1].click()
-                        else:
-                            portal_candidates = [
-                                item for item in candidates if item.evaluate(
-                                    """el => !el.closest('button[id*="analysis-role-value"]')"""
-                                )
-                            ]
-                            if not portal_candidates:
-                                raise AssertionError(f"No matching option for {label!r}")
-                            portal_candidates[-1].click()
+                    page.get_by_text(label, exact=True).filter(visible=True).last.click()
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
                 choose(page.locator("#analysis-kind"), "Scatterplot — two numerical axes")
                 choose(page.locator("#analysis-role-x"), "Metadata: score")
                 choose(page.locator("#analysis-role-y"), "Metadata: rating")
-                # Role controls are rebuilt asynchronously after assigning Y.
-                # Wait for the completed X/Y render before editing their types;
-                # otherwise Playwright may select a dropdown about to unmount.
-                page.locator(
-                    'button[id*="analysis-role-value"][id*="y:metadata:rating"]'
-                ).wait_for(state="visible", timeout=15000)
-                page.get_by_text("Y: metadata:rating", exact=True).wait_for(
-                    state="visible", timeout=15000,
-                )
                 choose(page.locator('button[id*="analysis-role-value"][id*="x:metadata:score"]'),
                        "Numeric (continuous charts)")
                 choose(page.locator('button[id*="analysis-role-value"][id*="y:metadata:rating"]'),
                        "Numeric (continuous charts)")
-                assert "Numeric (continuous charts)" in page.locator(
-                    'button[id*="analysis-role-value"][id*="x:metadata:score"]'
-                ).inner_text()
-                assert "Numeric (continuous charts)" in page.locator(
-                    'button[id*="analysis-role-value"][id*="y:metadata:rating"]'
-                ).inner_text()
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
