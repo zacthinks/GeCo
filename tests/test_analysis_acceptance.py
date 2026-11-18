@@ -114,3 +114,72 @@ def test_chart_performance_harness_smoke():
     }
     assert all(chart["plotly_bytes"] < 1_000_000
                for chart in output["charts"].values())
+
+
+def test_teal_linked_scale_source_alignment_and_stale_fit(tmp_path, monkeypatch):
+    import numpy as np
+
+    class KeyedProvider:
+        def geometry_matrix(self, external_ref, keys):
+            assert external_ref == {"geometry": "by-key"}
+            return np.asarray([[float(key["key"]), 1.0] for key in keys])
+
+    class ScalarFixture:
+        def __init__(self, **kwargs):
+            self.success_ = True
+            self.message_ = "converged"
+            self.posterior_ = None
+
+        def fit(self, X, pairs, outcomes, *, reference_X=None):
+            return self
+
+        def predict_scores(self, X):
+            column = X[:, 0]
+            return np.asarray(column.toarray()
+                              if hasattr(column, "toarray") else column).ravel()
+
+    project = GeometricCoder.create_external(
+        project_dir=tmp_path / "linked-acceptance.geco",
+        data=pd.DataFrame({
+            "key": [501, 101, 401, 201], "text": ["a", "b", "c", "d"],
+            "score": [5.0, 1.0, 4.0, 2.0],
+        }), keys=["key"], text="text", metadata=["score"],
+        external_provider=KeyedProvider(),
+    )
+    geometry = project.database.register_geometry(
+        name="by_key", class_name="ExternalGeometry", modality="text",
+        public=True, config={}, dependency_names=[], matrix_path="",
+        matrix_sparse=False, state_path=None, supports_query=False,
+        supports_text_transform=False, storage_kind="external",
+        external_ref={"geometry": "by-key"},
+    )
+    representation = project.database.representation_for_legacy("geometry", geometry)
+    scale = project.create_scale("Linked Scale")
+    ids = [row["observation_id"] for row in project.database.list_units()]
+    project.record_scale_comparison(scale, ids[0], ids[1], "first_higher")
+    project.record_scale_comparison(scale, ids[2], ids[3], "first_higher")
+    project.configure_scale_model(scale, int(representation["representation_id"]))
+    assert project.train_scale(scale, estimator_factory=ScalarFixture)["status"] == "current"
+    spec = {"schema_version": 2, "kind": "scatter",
+            "roles": {"x": field("score", "numeric"),
+                      "y": {"variable": {"type": "scale", "scale_id": scale}}}}
+    monkeypatch.setattr(project, "train_scale",
+                        lambda *a, **k: pytest.fail("Analyses retrained a Scale"))
+    current = compute_analysis(project, spec)
+    assert current["eligible"] == 4
+    assert current["sources"][1]["provenance"]["fit_status"] == "current"
+    assert current["sources"][1]["provenance"]["scaler_fit_id"] is not None
+    assert {(point["x"], point["y"]) for point in current["points"]} == {
+        (5.0, 501.0), (1.0, 101.0), (4.0, 401.0), (2.0, 201.0),
+    }
+    saved = project.save_analysis("Linked numeric", spec)
+    assert project.run_analysis(saved)["eligible"] == 4
+    # A new human comparison makes the retained fit stale, without silently
+    # selecting another model or treating unavailable Scale scores as zero.
+    project.record_scale_comparison(scale, ids[0], ids[2], "second_higher")
+    stale = project.run_analysis(saved)
+    assert stale["eligible"] == 0
+    assert stale["coverage"]["observed"][1] == 0
+    assert stale["sources"][1]["provenance"]["fit_status"] != "current"
+    assert sum(stale["sources"][1]["missing_reasons"].values()) == 4
+    assert stale["warnings"]
