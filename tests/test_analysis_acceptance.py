@@ -118,6 +118,55 @@ def test_chart_performance_harness_smoke():
                for chart in output["charts"].values())
 
 
+
+def test_numerical_source_coverage_is_visible_and_grain_explicit():
+    from dash import html
+    from geometric_coder.ui.analyses import _source_coverage
+
+    def content(component):
+        if isinstance(component, (list, tuple)):
+            return " ".join(content(child) for child in component)
+        if hasattr(component, "children"):
+            return content(component.children)
+        return str(component)
+
+    source = {
+        "descriptor": {"type": "code", "code_id": 5, "source": "predictions",
+                       "predictor_kind": "classifier", "predictor_id": 7},
+        "provenance": {"classifier_fit_id": 11, "fit_status": "current"},
+        "missing_reasons": {"unreviewed": 3, "missing_prediction": 2},
+    }
+    result = {"names": ["Theme"], "coverage": {"total": 10, "complete": 5,
+              "observed": [5]}, "sources": [source]}
+    visible = content(_source_coverage(result, html))
+    assert "classifier #7" in visible and "fit #11" in visible
+    assert "missing_prediction: 2" in visible and "unreviewed: 3" in visible
+    assert "5 / 10 atomic observations" in visible
+
+    parent = content(_source_coverage(
+        {**result, "aggregation": {"level": "document"}}, html))
+    assert "parent groups" in parent
+    assert "missing-reason counts refer to atomic observations" in parent
+    assert _source_coverage({"kind": "bar"}, html) == []
+
+
+def test_benchmark_oracle_rejects_lost_second_pass_counts():
+    import runpy
+    from pathlib import Path
+    benchmark = runpy.run_path(
+        str(Path(__file__).parents[1] / "benchmarks" / "analyses_300k.py")
+    )
+    with pytest.raises(AssertionError):
+        benchmark["_assert_chart_values"](
+            "histogram",
+            {"edges": [0.0, 100.0], "counts": {"2024-01": [0]},
+             "excluded_range": 0, "missing_group": 0, "denominators": {}},
+            120, benchmark["_expected_cell_statistics"](120),
+        )
+
+
+
+
 class ScalarFixture:
     """Picklable retained model fixture for linked Scale acceptance."""
 
