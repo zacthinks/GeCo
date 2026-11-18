@@ -137,15 +137,28 @@ def test_fit_only_geometry_is_navigation_only_and_does_not_claim_replay(fake_lin
     coder.database.assign_representation_parent.assert_called_once_with(149, 103)
 
 
-def test_derived_observations_block_registration_before_teal_fit(fake_link):
+@pytest.mark.parametrize("kind", ["span", "teaching_example"])
+@pytest.mark.parametrize("replayable", [False, True])
+def test_derived_observations_allow_geometry_registration(fake_link, kind, replayable):
     coder, project, linked, artifact, derived = fake_link
-    coder.database.list_observations.return_value = [{"kind": "span"}]
-    with pytest.raises(ConfigurationError, match="backfill"):
-        rm.create_geometry(coder, name="Cannot register", source_geometry_id=3,
-                           recipe="umap")
-    project.translate.assert_not_called()
-    linked.add_geometry.assert_not_called()
-    coder.register_external_geometry.assert_not_called()
+    coder.database.list_observations.return_value = [{"kind": kind}]
+    if not replayable:
+        from text_analysis_lab.core.errors import PipelineError
+        project.pipeline.side_effect = PipelineError("Fit-only numerical artifact")
+    created = rm.create_geometry(
+        coder, name="With derived observations", source_geometry_id=3,
+        recipe="normalize",
+    )
+    assert created.replayable is replayable
+    project.translate.assert_called_once()
+    if replayable:
+        linked.add_geometry.assert_called_once()
+        coder.register_external_geometry.assert_not_called()
+    else:
+        linked.add_geometry.assert_not_called()
+        coder.register_external_geometry.assert_called_once()
+    # No eager backfill, and no change to existing derived observations.
+    coder.database.list_observations.assert_not_called()
 
 
 def test_replayable_registration_uses_teal_link_validation(fake_link):
@@ -187,6 +200,19 @@ def test_projected_view_is_registered_once_as_view_only(fake_link):
     coder.database.assign_representation_parent.assert_called_once_with(149, 103)
     derived.add_alias.assert_called_once_with("Map")
     linked.add_projection.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["span", "teaching_example"])
+def test_derived_observations_allow_view_registration(fake_link, kind):
+    coder, project, linked, artifact, derived = fake_link
+    coder.database.list_observations.return_value = [{"kind": kind}]
+    derived.get_matrix.return_value = __import__("numpy").ones((1, 2))
+    representation_id = rm.create_view(
+        coder, name="View with derived", geometry_id=3, method="umap",
+    )
+    assert representation_id == 149
+    coder.register_external_geometry.assert_called_once()
+    coder.database.list_observations.assert_not_called()
 
 
 def test_one_dimensional_view_is_navigation_only(fake_link):
