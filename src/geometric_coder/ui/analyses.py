@@ -113,6 +113,19 @@ def _reconcile_live_source_choices(
     return resolved
 
 
+def _preserve_hidden_bin_settings(current: dict[str, Any], previous: Any) -> dict[str, Any]:
+    """Keep supported settings absent from the editor when the method is unchanged."""
+    if not isinstance(previous, dict) or any(
+        current.get(field) != previous.get(field) for field in ("kind", "method")
+    ):
+        return current
+    hidden = {
+        "equal_width": ("min", "max"),
+        "fixed_width": ("origin", "min", "max"),
+    }.get(current["method"], ())
+    return {**current, **{field: previous[field] for field in hidden if field in previous}}
+
+
 def compatible_aggregation_method(kind: str, measure: str, method: str | None) -> str:
     """Reset incompatible Code reductions without discarding valid settings."""
     selected = method or "any"
@@ -172,7 +185,7 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
         if kind in ("summary_bar", "value_heatmap"):
             recipe["statistic"] = options.get("statistic", "mean")
         if kind == "scatter":
-            recipe["max_points"] = 2000
+            recipe["max_points"] = options.get("max_points", 2000)
         if aggregate_level and aggregate_level != "none":
             recipe["aggregation"] = {
                 "level": aggregate_level, "method": aggregate_method,
@@ -444,7 +457,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                  "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "")
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar", "count", [],
-                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None)
+                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None,
+                    "mean", "equal_width", 20, 1, None, "mean", "")
         if trigger == "analysis-new":
             return empty
         if selected is None:
@@ -456,7 +470,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return (
             {"display": "block"},
             {"id": int(selected) if trigger == "analysis-edit" else None,
-             "schema_version": spec.get("schema_version", 1)},
+             "schema_version": spec.get("schema_version", 1), "original_spec": spec},
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec.get("measure", "count"),
@@ -766,7 +780,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             if transform is None:
                 conf.pop("transform", None)
             else:
-                conf["transform"] = transform
+                conf["transform"] = _preserve_hidden_bin_settings(transform, conf.get("transform"))
         return result if result != (existing or {}) else no_update
 
     def current_slots(kind: str, values: Any, group: Any,
@@ -821,6 +835,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 raise ValueError("Explicit histogram bin edges must be comma-separated numbers.")
         else:
             bins["bins"] = hist_bins
+        original = editing.get("original_spec")
+        original = original if isinstance(original, dict) and original.get("kind") == kind else {}
+        bins = _preserve_hidden_bin_settings(bins, original.get("binning"))
+        original_transforms = {
+            f"{role}:{_identity(entry['variable'])}": entry["transform"]
+            for role, raw in original.get("roles", {}).items()
+            for entry in (raw if isinstance(raw, list) else [raw])
+            if "transform" in entry
+        }
         # The recipe consumes the current mounted role inputs directly. The
         # Store callback may still be resolving a preceding UI change when
         # Preview/Save is clicked; its snapshot alone is not authoritative.
@@ -859,7 +882,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             if transform is None:
                 resolved.setdefault(key, {}).pop("transform", None)
             else:
-                resolved.setdefault(key, {})["transform"] = transform
+                config = resolved.setdefault(key, {})
+                config["transform"] = _preserve_hidden_bin_settings(
+                    transform, original_transforms.get(key, config.get("transform"))
+                )
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
                                   color, continuous_values, rows, columns, continuous_group)
         recipe = editor_recipe(
@@ -867,7 +893,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             all_slots, resolved, level, method, threshold, legacy=legacy,
             extra_slots=all_slots,
             continuous_options={"statistic": statistic or "mean", "binning": bins,
-                                "numeric_method": parent_numeric_method or "mean"},
+                                "numeric_method": parent_numeric_method or "mean",
+                                "max_points": original.get("max_points", 2000)},
         )
         if legacy:
             for var in recipe["variables"]:
