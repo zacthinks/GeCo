@@ -101,3 +101,16 @@ def test_model_or_source_changes_during_scan_are_rejected(tmp_path, monkeypatch)
     monkeypatch.setattr(analysis_continuous, "_pages", changed_pages)
     with pytest.raises(ValueError, match="source or fitted model changed"):
         compute_analysis(project, spec)
+
+
+def test_chart_performance_harness_smoke():
+    # The full 300k workload runs as a separate required CI step.
+    from benchmarks.analyses_300k import benchmark
+    output = benchmark(120)
+    assert output["observations"] == 120
+    assert set(output["charts"]) == {
+        "scatter", "histogram", "histogram_quantile", "summary_mean",
+        "summary_median", "correlation", "value_heatmap", "numeric_group",
+    }
+    assert all(chart["plotly_bytes"] < 1_000_000
+               for chart in output["charts"].values())
