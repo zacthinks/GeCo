@@ -118,6 +118,24 @@ def test_chart_performance_harness_smoke():
                for chart in output["charts"].values())
 
 
+class ScalarFixture:
+    """Picklable retained model fixture for linked Scale acceptance."""
+
+    def __init__(self, **kwargs):
+        self.success_ = True
+        self.message_ = "converged"
+        self.posterior_ = None
+
+    def fit(self, X, pairs, outcomes, *, reference_X=None):
+        return self
+
+    def predict_scores(self, X):
+        import numpy as np
+        column = X[:, 0]
+        return np.asarray(column.toarray()
+                          if hasattr(column, "toarray") else column).ravel()
+
+
 def test_teal_linked_scale_source_alignment_and_stale_fit(tmp_path, monkeypatch):
     import numpy as np
 
@@ -126,19 +144,6 @@ def test_teal_linked_scale_source_alignment_and_stale_fit(tmp_path, monkeypatch)
             assert external_ref == {"geometry": "by-key"}
             return np.asarray([[float(key["key"]), 1.0] for key in keys])
 
-    class ScalarFixture:
-        def __init__(self, **kwargs):
-            self.success_ = True
-            self.message_ = "converged"
-            self.posterior_ = None
-
-        def fit(self, X, pairs, outcomes, *, reference_X=None):
-            return self
-
-        def predict_scores(self, X):
-            column = X[:, 0]
-            return np.asarray(column.toarray()
-                              if hasattr(column, "toarray") else column).ravel()
 
     project = GeometricCoder.create_external(
         project_dir=tmp_path / "linked-acceptance.geco",
