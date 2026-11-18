@@ -237,6 +237,11 @@ def test_hidden_numerical_options_survive_editor_round_trips(workspace):
     assert p.analysis(next(row["analysis_id"] for row in p.analyses()
                            if row["name"] == "Custom histogram copy"))["spec"] == original
 
+    # Calendar transforms have a unit rather than a numerical bin method.
+    calendar = {"kind": "calendar", "unit": "month"}
+    assert _preserve_hidden_bin_settings(calendar, calendar) == calendar
+    assert _preserve_hidden_bin_settings(calendar, None) == calendar
+
     # Switching methods must not bring incompatible ranges/origins forward.
     assert _preserve_hidden_bin_settings(
         {"kind": "histogram_bins", "method": "quantile", "bins": 4},
