@@ -132,13 +132,26 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
-                    "?.data?.length > 0", timeout=20000,
+                    "?.data?.[0]?.type === 'bar' || "
+                    "(document.querySelector('#analysis-status')?.textContent || '').trim().length > 0",
+                    timeout=20000,
+                )
+                assert not page.locator("#analysis-status").inner_text().strip(), (
+                    "Histogram preview validation: " + page.locator("#analysis-status").inner_text()
                 )
                 page.locator("#analysis-save").click()
                 page.wait_for_function(
                     "() => getComputedStyle(document.querySelector('#analysis-editor'))"
-                    ".display === 'none'", timeout=15000,
+                    ".display === 'none' || "
+                    "(document.querySelector('#analysis-status')?.textContent || '').trim().length > 0",
+                    timeout=15000,
                 )
+                assert not page.locator("#analysis-status").inner_text().strip(), (
+                    "Histogram save validation: " + page.locator("#analysis-status").inner_text()
+                )
+                assert page.locator("#analysis-editor").evaluate(
+                    "(node) => getComputedStyle(node).display"
+                ) == "none"
                 saved = next(row for row in project.analyses()
                              if row["name"] == "Calendar histogram")
                 assert saved["spec"]["roles"]["group"]["transform"] == {
