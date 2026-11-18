@@ -275,3 +275,100 @@ def test_value_heatmap_pairwise_cells_and_missingness(workspace):
     assert result["coverage"]["total"] == 6
     assert result["coverage"]["complete"] == 5
     assert len(analysis_figure(result).data) == 1
+
+
+def test_parent_group_metadata_requires_consistent_missingness(tmp_path):
+    """A parent with observed and missing group labels cannot be assigned one label."""
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "parent-missing-group.geco",
+        data=pd.DataFrame({
+            "parent": [1, 1, 2, 2],
+            "id": [1, 2, 1, 2],
+            "text": ["a", "b", "c", "d"],
+            "group": ["Treatment", None, "Control", "Control"],
+            "score": [2., 8., 4., 6.],
+        }),
+        keys=["parent", "id"], text="text",
+        metadata=["group", "score"], geometries=None,
+    )
+    spec = recipe("summary_bar", values=meta("score", "numeric"),
+                  group=meta("group", "categorical"))
+    spec["aggregation"] = {"level": "parent", "numeric_method": "mean"}
+    with pytest.raises(ValueError, match="metadata varies within a parent"):
+        compute_analysis(p, spec)
+    with pytest.raises(ValueError, match="metadata varies within a parent"):
+        p.save_analysis("Invalid grouping", spec)
+    assert not p.analyses()
+
+
+def test_parent_all_missing_group_and_conflicting_group_behavior(tmp_path):
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "parent-categories.geco",
+        data=pd.DataFrame({
+            "parent": [1, 1, 2, 2],
+            "id": [1, 2, 1, 2],
+            "text": ["a", "b", "c", "d"],
+            "group": [None, None, "A", "A"],
+            "score": [2., 8., 4., 6.],
+        }),
+        keys=["parent", "id"], text="text",
+        metadata=["group", "score"], geometries=None,
+    )
+    spec = recipe("summary_bar", values=meta("score", "numeric"),
+                  group=meta("group", "categorical"))
+    spec["aggregation"] = {"level": "parent", "numeric_method": "mean"}
+    result = compute_analysis(p, spec)
+    assert result["categories"] == ["A"]
+    assert result["values"] == pytest.approx([5.])
+    # Two different nonmissing labels within one parent must still fail.
+    with p.database.connect() as conn:
+        import json
+        row = conn.execute("SELECT observation_id, metadata_json FROM units "
+                           "WHERE row_position = 3").fetchone()
+        obj = json.loads(row["metadata_json"])
+        obj["group"] = "B"
+        conn.execute("UPDATE units SET metadata_json = ? WHERE observation_id = ?",
+                     (json.dumps(obj), row["observation_id"]))
+    with pytest.raises(ValueError, match="metadata varies within a parent"):
+        compute_analysis(p, spec)
+
+
+def test_mixed_type_categories_remain_distinct_in_all_grouped_charts(tmp_path):
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "mixed-type-groups.geco",
+        data=pd.DataFrame({
+            "id": [1, 2, 3, 4, 5, 6],
+            "text": ["a", "b", "c", "d", "e", "f"],
+            "group": [1, "1", True, "True", "1 (integer)", 1.0],
+            "score": [1., 2., 3., 4., 5., 6.],
+        }),
+        keys=["id"], text="text",
+        metadata=["group", "score"], geometries=None,
+    )
+    values = meta("score", "numeric")
+    group = meta("group", "categorical")
+    summary = compute_analysis(p, recipe("summary_bar", values=values, group=group))
+    assert len(summary["categories"]) == 6
+    assert len(set(summary["categories"])) == 6
+    assert sorted(summary["values"]) == pytest.approx([1., 2., 3., 4., 5., 6.])
+    histogram = compute_analysis(p, recipe("histogram", values=values, group=group))
+    assert len(histogram["groups"]) == 6
+    assert len(histogram["counts"]) == 6
+    assert sum(map(sum, histogram["counts"].values())) == 6
+    heatmap = compute_analysis(
+        p, recipe("value_heatmap", values=values,
+                  rows=group, columns=group))
+    assert len(heatmap["rows"]) == len(heatmap["columns"]) == 6
+    assert sorted(n for row in heatmap["samples"] for n in row if n) == [1] * 6
+    scatter = compute_analysis(p, recipe("scatter", x=values, y=values, color=group))
+    assert len({point["color"] for point in scatter["points"]}) == 6
+
+
+def test_constant_quantile_histogram_has_nonzero_interval(workspace):
+    p, _, _ = workspace
+    spec = recipe("histogram", values=meta("score", "numeric"))
+    spec["binning"] = {"kind": "histogram_bins", "method": "quantile", "bins": 5}
+    # Direct bin edge helper ensures exact all-tied samples remain meaningful.
+    from geometric_coder.analysis_continuous import _edges
+    edges = _edges([3.0] * 6, spec["binning"])
+    assert edges[0] < 3.0 < edges[-1]
