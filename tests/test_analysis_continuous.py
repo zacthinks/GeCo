@@ -201,3 +201,72 @@ def test_parent_code_reductions_in_continuous_summary(tmp_path):
         assert result["categories"] == ["A", "B"]
         assert result["values"] == pytest.approx(expected)
         assert result["denominators"] == [1, 1]
+
+
+def test_hidden_numerical_options_survive_editor_round_trips(workspace):
+    """Edit/duplicate reconstruction must retain meaningful non-UI options."""
+    from geometric_coder.ui.analyses import (
+        _initial_config, _preserve_hidden_bin_settings, _slots, editor_recipe,
+    )
+
+    p, _, _ = workspace
+    histogram = recipe(
+        "histogram", values=meta("score", "numeric"),
+        group={"variable": {"type": "metadata", "field": "score", "value": "numeric"},
+               "transform": {"kind": "numeric_bins", "method": "fixed_width",
+                             "width": 2.0, "origin": 1.0, "min": 1.0, "max": 5.0}},
+    )
+    histogram["binning"] = {"kind": "histogram_bins", "method": "fixed_width",
+                            "width": 2.0, "origin": 1.0, "min": 1.0, "max": 5.0}
+    original = p.analysis(p.save_analysis("Custom histogram", histogram))["spec"]
+    source = original["roles"]["group"]["transform"]
+    preserved = _preserve_hidden_bin_settings(
+        {"kind": "numeric_bins", "method": "fixed_width", "width": 2.0, "origin": 0},
+        source,
+    )
+    assert preserved == source
+    options = _preserve_hidden_bin_settings(
+        {"kind": "histogram_bins", "method": "fixed_width", "width": 2.0, "origin": 0},
+        original["binning"],
+    )
+    recreated = editor_recipe(
+        "histogram", "count", _slots(original), _initial_config(original),
+        None, "any", 1, continuous_options={"binning": options},
+    )
+    assert p.save_analysis("Custom histogram copy", recreated)
+    assert p.analysis(next(row["analysis_id"] for row in p.analyses()
+                           if row["name"] == "Custom histogram copy"))["spec"] == original
+
+    # Switching methods must not bring incompatible ranges/origins forward.
+    assert _preserve_hidden_bin_settings(
+        {"kind": "histogram_bins", "method": "quantile", "bins": 4},
+        original["binning"],
+    ) == {"kind": "histogram_bins", "method": "quantile", "bins": 4}
+
+    scatter = recipe("scatter", x=meta("score", "numeric"), y=meta("score", "numeric"))
+    scatter["max_points"] = 3
+    persisted = p.analysis(p.save_analysis("Custom scatter", scatter))["spec"]
+    reconstructed = editor_recipe(
+        "scatter", "count", _slots(persisted), _initial_config(persisted),
+        None, "any", 1, continuous_options={"max_points": persisted["max_points"]},
+    )
+    assert p.analysis(p.save_analysis("Custom scatter copy", reconstructed))["spec"] == persisted
+
+
+def test_value_heatmap_pairwise_cells_and_missingness(workspace):
+    p, _, _ = workspace
+    spec = recipe(
+        "value_heatmap", values=meta("score", "numeric"),
+        rows=meta("group", "categorical"),
+        columns={**meta("day", "temporal"),
+                 "transform": {"kind": "calendar", "unit": "month"}},
+    )
+    result = compute_analysis(p, spec)
+    assert result["rows"] == ["(Missing)", "A", "B"]
+    assert result["columns"] == ["2025-12", "2026-01", "2026-02"]
+    assert result["samples"] == [[0, 0, 1], [1, 1, 0], [0, 1, 1]]
+    assert result["values"] == [[None, None, 5.0], [1.0, 2.0, None],
+                                [None, 3.0, 4.0]]
+    assert result["coverage"]["total"] == 6
+    assert result["coverage"]["complete"] == 5
+    assert len(analysis_figure(result).data) == 1
