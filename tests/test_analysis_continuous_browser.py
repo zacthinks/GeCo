@@ -93,8 +93,16 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 page.locator("#analysis-role-y").wait_for(state="visible")
                 assert project.analysis(record["analysis_id"])["spec"]["roles"]["y"]["variable"]["field"] == "rating"
                 page.locator("#analysis-cancel").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none' && document.querySelector('#analysis-name').value === ''",
+                    timeout=15000,
+                )
+                assert page.locator("#analysis-editing").count() == 0  # Dash Store is not a DOM element
+                assert not errors, errors
 
                 page.locator("#analysis-new").click()
+                page.locator("#analysis-name").wait_for(state="visible", timeout=15000)
                 page.locator("#analysis-name").fill("Calendar histogram")
                 choose(page.locator("#analysis-kind"), "Continuous histogram")
                 choose(page.locator("#analysis-role-continuous-values"), "Metadata: score")
