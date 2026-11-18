@@ -237,6 +237,69 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
     return recipe
 
 
+
+def _source_coverage(result: dict[str, Any], html: Any) -> Any:
+    """Visible provenance and denominator context for numerical chart results.
+
+    Missing reasons are always counted over atomic source rows; when a chart
+    reduces to parents its top-level observed/complete counts have a different
+    grain and must not be subtracted from those atomic missing counts.
+    """
+    sources = result.get("sources")
+    if not sources:
+        return []
+    coverage = result["coverage"]
+    parent_grain = bool(result.get("aggregation"))
+    grain = "parent groups" if parent_grain else "atomic observations"
+    rows = []
+    for index, source in enumerate(sources):
+        descriptor = source["descriptor"]
+        provenance = source.get("provenance", {})
+        if descriptor["type"] == "metadata":
+            detail = f"Metadata: {descriptor['field']} ({descriptor['value']})"
+        elif descriptor["type"] == "scale":
+            detail = (f"Scale #{descriptor['scale_id']} position; "
+                      f"version #{provenance.get('scale_version_id', 'unknown')}; "
+                      f"fit #{provenance.get('scaler_fit_id') or 'none'}; "
+                      f"status: {provenance.get('fit_status', 'unknown')}")
+        elif descriptor.get("source") == "labels":
+            detail = f"Code #{descriptor['code_id']}: human judgments"
+        else:
+            kind = descriptor.get("predictor_kind", "classifier")
+            fit = (provenance.get("committee_fit_id") if kind == "committee"
+                   else provenance.get("classifier_fit_id"))
+            members = provenance.get("member_classifier_fit_ids")
+            detail = (f"Code #{descriptor['code_id']}: {descriptor['source']} "
+                      f"{kind} #{descriptor['predictor_id']}; "
+                      f"fit #{fit or 'none'}; "
+                      f"status: {provenance.get('fit_status', 'unknown')}")
+            if members:
+                detail += f"; member fits: {', '.join(str(value) for value in members)}"
+        reasons = source.get("missing_reasons", {})
+        reason_text = ", ".join(f"{reason}: {count:,}"
+                                for reason, count in sorted(reasons.items())) or "none"
+        rows.append(html.Tr([
+            html.Th(result["names"][index], scope="row"),
+            html.Td(detail),
+            html.Td(f"{coverage['observed'][index]:,} / {coverage['total']:,} {grain}"),
+            html.Td(reason_text),
+        ]))
+    note = ("Observed and complete counts refer to parent groups; missing-reason "
+            "counts refer to atomic observations (not parent groups)."
+            if parent_grain else
+            "Missing-reason counts refer to atomic observations; missing values are not zero.")
+    return html.Div([
+        html.H4("Sources and coverage"),
+        html.P(f"{coverage['complete']:,} complete of {coverage['total']:,} {grain}."),
+        html.P(note),
+        html.Table([
+            html.Thead(html.Tr([html.Th("Variable"), html.Th("Source / fit"),
+                                html.Th("Observed"), html.Th("Missing reasons")])),
+            html.Tbody(rows),
+        ]),
+    ], className="analysis-source-summary")
+
+
 def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
     return html.Div([
         dcc.Store(id="analysis-refresh", data=0),
@@ -374,6 +437,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             "kind": "bar", "names": [], "counts": [],
             "denominators": [], "categories": [],
         }), config={"displaylogo": False}),
+        html.Div(id="analysis-provenance"),
     ], className="analysis-manager")
 
 
@@ -999,6 +1063,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
 
     @app.callback(
         Output("analysis-figure", "figure", allow_duplicate=True),
+        Output("analysis-provenance", "children", allow_duplicate=True),
         Output("analysis-status", "children", allow_duplicate=True),
         Input("analysis-preview", "n_clicks"),
         *state_args,
@@ -1018,7 +1083,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 live_widths: Any, live_width_ids: Any, live_edges: Any,
                 live_edge_ids: Any) -> tuple[Any, str]:
         if editing is None:
-            return no_update, ""
+            return no_update, no_update, ""
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
@@ -1036,9 +1101,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     x=0, y=1.14, xanchor="left", showarrow=False,
                     font={"color": "#9a6510", "size": 11},
                 )
-            return fig, ""
+            return fig, _source_coverage(result, html), ""
         except (ValueError, KeyError) as exc:
-            return no_update, f"Preview unavailable: {exc}"
+            return no_update, no_update, f"Preview unavailable: {exc}"
 
     @app.callback(
         Output("analysis-delete-dialog", "style"),
@@ -1067,6 +1132,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
 
     @app.callback(
         Output("analysis-figure", "figure"),
+        Output("analysis-provenance", "children"),
         Input("analysis-select", "value"),
         Input("analysis-refresh", "data"),
         Input("workspace-tabs", "value"),
@@ -1078,9 +1144,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def render(selected: int | None, _refresh: int, workspace: str, _cancel: int,
                _annotations: int, _focus: int, _teaching: int) -> Any:
         if workspace != "analyses":
-            return no_update
+            return no_update, no_update
         if selected is None:
-            return _empty_figure("Select or create an analysis.")
+            return _empty_figure("Select or create an analysis."), []
         try:
             result = project.run_analysis(int(selected))
             fig = analysis_figure(result)
@@ -1090,6 +1156,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     x=0, y=1.14, xanchor="left", showarrow=False,
                     font={"color": "#9a6510", "size": 11},
                 )
-            return fig
+            return fig, _source_coverage(result, html)
         except (ValueError, KeyError) as exc:
-            return _empty_figure(f"Analysis unavailable: {exc}")
+            return _empty_figure(f"Analysis unavailable: {exc}"), []
