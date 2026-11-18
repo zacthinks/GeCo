@@ -94,6 +94,13 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 assert page.evaluate(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')?.data?.[0]?.type"
                 ) == "scattergl"
+                page.wait_for_function(
+                    "() => (document.querySelector('#analysis-provenance')?.textContent || '')"
+                    ".includes('Sources and coverage')", timeout=15000,
+                )
+                preview_coverage = page.locator("#analysis-provenance").inner_text()
+                assert "score" in preview_coverage and "rating" in preview_coverage
+                assert "4 / 4 atomic observations" in preview_coverage
                 page.locator("#analysis-save").click()
                 page.wait_for_function(
                     "() => getComputedStyle(document.querySelector('#analysis-editor'))"
@@ -105,6 +112,10 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 assert project.run_analysis(record["analysis_id"])["eligible"] == 4
 
                 choose(page.locator("#analysis-select"), "Numerical browser")
+                page.wait_for_function(
+                    "() => (document.querySelector('#analysis-provenance')?.textContent || '')"
+                    ".includes('4 / 4 atomic observations')", timeout=15000,
+                )
                 page.locator("#analysis-edit").click()
                 page.locator("#analysis-role-y").wait_for(state="visible")
                 assert project.analysis(record["analysis_id"])["spec"]["roles"]["y"]["variable"]["field"] == "rating"
