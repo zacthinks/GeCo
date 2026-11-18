@@ -50,7 +50,10 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 def choose(dropdown, label):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    page.get_by_text(label, exact=True).filter(visible=True).last.click()
+                    # Duplicate labels appear in other role controls. Select
+                    # the option from the dropdown just opened, not from the
+                    # entire page (which may already show the same value).
+                    dropdown.get_by_text(label, exact=True).filter(visible=True).last.click()
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
@@ -70,6 +73,12 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                        "Numeric (continuous charts)")
                 choose(page.locator('button[id*="analysis-role-value"][id*="y:metadata:rating"]'),
                        "Numeric (continuous charts)")
+                assert "Numeric (continuous charts)" in page.locator(
+                    'button[id*="analysis-role-value"][id*="x:metadata:score"]'
+                ).inner_text()
+                assert "Numeric (continuous charts)" in page.locator(
+                    'button[id*="analysis-role-value"][id*="y:metadata:rating"]'
+                ).inner_text()
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
