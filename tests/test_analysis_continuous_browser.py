@@ -31,6 +31,22 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
         }), keys=["id"], text="text",
         metadata=["score", "rating", "date"], geometries=None,
     )
+    numeric = {"variable": {"type": "metadata", "field": "score", "value": "numeric"}}
+    custom_hist = {
+        "schema_version": 2, "kind": "histogram",
+        "roles": {"values": numeric},
+        "binning": {"kind": "histogram_bins", "method": "fixed_width",
+                    "width": 2.0, "origin": 1.0, "min": 1.0, "max": 4.0},
+    }
+    custom_scatter = {
+        "schema_version": 2, "kind": "scatter",
+        "roles": {"x": numeric, "y": numeric}, "max_points": 3,
+    }
+    custom_hist_id = project.save_analysis("Custom numeric histogram", custom_hist)
+    custom_scatter_id = project.save_analysis("Custom numeric scatter", custom_scatter)
+    original_hist = project.analysis(custom_hist_id)["spec"]
+    original_scatter = project.analysis(custom_scatter_id)["spec"]
+
     app = create_app(project)
     server = make_server("127.0.0.1", 0, app.server, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -128,6 +144,20 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 assert saved["spec"]["roles"]["group"]["transform"] == {
                     "kind": "calendar", "unit": "month",
                 }
+                # An untouched Edit -> Save must not silently rewrite saved
+                # numerical settings that have no dedicated UI controls.
+                for name, analysis_id, original in (
+                    ("Custom numeric histogram", custom_hist_id, original_hist),
+                    ("Custom numeric scatter", custom_scatter_id, original_scatter),
+                ):
+                    choose(page.locator("#analysis-select"), name)
+                    page.locator("#analysis-edit").click()
+                    page.locator("#analysis-save").click()
+                    page.wait_for_function(
+                        "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                        ".display === 'none'", timeout=15000,
+                    )
+                    assert project.analysis(analysis_id)["spec"] == original
                 assert not errors, errors
             finally:
                 browser.close()
