@@ -57,14 +57,28 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                         page.get_by_text(label, exact=True).filter(visible=True).last.click()
                     else:
                         matches = page.get_by_text(label, exact=True).filter(visible=True)
-                        for candidate in matches.all():
-                            if candidate.evaluate(
-                                """el => !el.closest('button[id*="analysis-role-value"]')"""
-                            ):
-                                candidate.click()
-                                break
+                        target_id = dropdown.get_attribute("id")
+                        candidates = matches.all()
+                        target_candidates = [
+                            item for item in candidates
+                            if item.evaluate(
+                                """el => el.closest('button[id*="analysis-role-value"]')?.id || null"""
+                            ) == target_id
+                        ]
+                        # The numerical role's option can be rendered beneath
+                        # its own button. If the library portals the menu, the
+                        # option has no enclosing role-value button instead.
+                        if target_candidates:
+                            target_candidates.last.click()
                         else:
-                            raise AssertionError(f"No visible numeric option for {label!r}")
+                            portal_candidates = [
+                                item for item in candidates if item.evaluate(
+                                    """el => !el.closest('button[id*="analysis-role-value"]')"""
+                                )
+                            ]
+                            if not portal_candidates:
+                                raise AssertionError(f"No matching option for {label!r}")
+                            portal_candidates.last.click()
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
