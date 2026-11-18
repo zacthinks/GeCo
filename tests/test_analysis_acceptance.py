@@ -166,6 +166,26 @@ def test_benchmark_oracle_rejects_lost_second_pass_counts():
 
 
 
+def test_approximate_median_benchmark_uses_quantile_rank():
+    import runpy
+    from pathlib import Path
+
+    benchmark = runpy.run_path(
+        str(Path(__file__).parents[1] / "benchmarks" / "analyses_300k.py")
+    )
+    check = benchmark["_assert_approximate_median"]
+    # Sampled value 51 has a 10-unit gap from the exact median (41),
+    # but its population rank is essentially 50% in this discrete fixture.
+    population = [float(value) for value in range(1, 92, 10) for _ in range(3000)]
+    check(51.0, population)
+    with pytest.raises(AssertionError):
+        check(91.0, population)
+    # No approximation is permitted for cells below the sampling threshold.
+    check(2.0, [1.0, 2.0, 3.0])
+    with pytest.raises(AssertionError):
+        check(3.0, [1.0, 2.0, 3.0])
+
+
 
 class ScalarFixture:
     """Picklable retained model fixture for linked Scale acceptance."""
