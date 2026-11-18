@@ -57,6 +57,15 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 choose(page.locator("#analysis-kind"), "Scatterplot — two numerical axes")
                 choose(page.locator("#analysis-role-x"), "Metadata: score")
                 choose(page.locator("#analysis-role-y"), "Metadata: rating")
+                # Role controls are rebuilt asynchronously after assigning Y.
+                # Wait for the completed X/Y render before editing their types;
+                # otherwise Playwright may select a dropdown about to unmount.
+                page.locator(
+                    'button[id*="analysis-role-value"][id*="y:metadata:rating"]'
+                ).wait_for(state="visible", timeout=15000)
+                page.get_by_text("Y: metadata:rating", exact=True).wait_for(
+                    state="visible", timeout=15000,
+                )
                 choose(page.locator('button[id*="analysis-role-value"][id*="x:metadata:score"]'),
                        "Numeric (continuous charts)")
                 choose(page.locator('button[id*="analysis-role-value"][id*="y:metadata:rating"]'),
