@@ -171,6 +171,37 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                         ".display === 'none'", timeout=15000,
                     )
                     assert project.analysis(analysis_id)["spec"] == original
+
+                # Phase 4: a numerical recipe can be duplicated, reopened,
+                # executed, and deleted without affecting the source recipe.
+                choose(page.locator("#analysis-select"), "Custom numeric scatter")
+                page.locator("#analysis-duplicate").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')"
+                    "?.value === 'Custom numeric scatter (copy)'", timeout=15000,
+                )
+                page.locator("#analysis-save").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                copied = next(row for row in project.analyses()
+                              if row["name"] == "Custom numeric scatter (copy)")
+                assert copied["analysis_id"] != custom_scatter_id
+                assert copied["spec"] == original_scatter
+                assert project.run_analysis(copied["analysis_id"]) == project.run_analysis(custom_scatter_id)
+                choose(page.locator("#analysis-select"), "Custom numeric scatter (copy)")
+                page.locator("#analysis-delete").click()
+                page.locator("#analysis-delete-confirm").wait_for(state="visible")
+                page.locator("#analysis-delete-confirm").click()
+                page.wait_for_function(
+                    "() => !document.querySelector('#analysis-delete-dialog')"
+                    " || getComputedStyle(document.querySelector('#analysis-delete-dialog'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                assert all(row["analysis_id"] != copied["analysis_id"]
+                           for row in project.analyses())
+                assert project.analysis(custom_scatter_id)["spec"] == original_scatter
                 assert not errors, errors
             finally:
                 browser.close()
