@@ -67,12 +67,12 @@ first group by the declared prefix of key columns; binary Codes then use observe
 positive count, any, threshold, proportion, or log-count according to the
 explicit method, while numeric Codes/Scale/metadata are reduced to a mean or
 median using `numeric_method`. A parent with zero observed values remains
-missing; categorical/temporal values must be constant within a parent.
+missing; categorical/temporal values must be constant within a parent, including missingness (a parent cannot mix missing and nonmissing categories).
 Correlation always uses the pairwise-complete set for *each variable pair*,
 with separate `samples` counts. Constant or insufficiently observed variables
 produce undefined (`null`) correlations; no significance tests are performed.
 
-Coverage reports total units at the selected grain, fully complete rows, and
+Categorical group keys preserve source types: numerical 1, text "1", and boolean true are distinct, with unique labels when displayed. Coverage reports total units at the selected grain, fully complete rows, and
 per-source observed counts. For scatterplots, `eligible` and `sampled` report
 the complete-pair population and plotted sample. Histogram outputs provide
 per-group denominators, values excluded from bin ranges, and missing group counts.
