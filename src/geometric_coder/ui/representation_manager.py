@@ -199,12 +199,6 @@ def create_geometry(
         coder, source_geometry_id=source_geometry_id,
         source_representation_id=source_representation_id,
     )
-    # Reject unsupported derived-observation backfill *before* an expensive fit.
-    if coder.database.list_observations(kinds=["span", "teaching_example"]):
-        raise ConfigurationError(
-            "Create Geometry requires a workspace without existing spans or teaching "
-            "examples until safe geometry backfill is available."
-        )
     from text_analysis_lab.core.project import Project
 
     # Validate the exact TeAL alias rule before performing an expensive fit.
@@ -930,12 +924,6 @@ def create_view(
         coder, source_geometry_id=geometry_id,
         source_representation_id=source_representation_id,
     )
-    if coder.database.list_observations(kinds=["span", "teaching_example"]):
-        raise ConfigurationError(
-            "New numerical representations require derived-observation backfill, "
-            "which is not yet implemented."
-        )
-
     from text_analysis_lab.core.project import Project
     operator = _operator_for_recipe(
         method, {**(parameters or {}), "n_components": dimensions}
@@ -1128,12 +1116,6 @@ def create_metadata_geometry(
     source_id, ref = _source_representation(
         coder, source_representation_id=source_representation_id,
     )
-    if coder.database.list_observations(kinds=["span", "teaching_example"]):
-        raise ConfigurationError(
-            "Add metadata features requires a workspace without existing spans or "
-            "teaching examples until safe geometry backfill is available."
-        )
-
     from text_analysis_lab.core.project import Project
     from text_analysis_lab.core.query_scope import QueryScope
     from text_analysis_lab.translators import FeatureMatrix
