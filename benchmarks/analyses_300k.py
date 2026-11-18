@@ -8,6 +8,10 @@ metadata; no text, model fit, or TeAL geometry is allocated.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
+from collections import defaultdict
+import math
+from statistics import median
 from contextlib import contextmanager
 from datetime import date
 import json
@@ -112,12 +116,133 @@ def cases() -> dict[str, dict]:
     return result
 
 
+
+def _synthetic_rows(units: int):
+    """Independent fixture oracle, not using GeCo chart grouping/bin kernels."""
+    for i in range(units):
+        yield (
+            None if i % 20 == 0 else float(i % 100),
+            None if i % 25 == 0 else float((i % 100) * 2 + 3),
+            None if i % 17 == 0 else "G" + str(i % 10),
+            f"{2024 + (i // 120000):04d}-{(i // 10000) % 12 + 1:02d}",
+        )
+
+
+def _expected_cell_statistics(units: int):
+    grouped = defaultdict(list)
+    by_month = defaultdict(list)
+    heatmap = defaultdict(list)
+    pairs = []
+    for score, rating, group, month in _synthetic_rows(units):
+        if score is not None and group is not None:
+            grouped[group].append(score)
+            heatmap[(group, month)].append(score)
+        if score is not None:
+            by_month[month].append(score)
+        if score is not None and rating is not None:
+            pairs.append((score, rating))
+    return grouped, by_month, heatmap, pairs
+
+
+def _bin_oracle(value: float, edges: list[float]) -> int | None:
+    if value < edges[0] or value > edges[-1]:
+        return None
+    return min(len(edges) - 2, bisect_right(edges, value) - 1)
+
+
+def _assert_chart_values(name: str, result: dict, units: int, oracle) -> None:
+    """Require exact second-pass counts, not merely non-exceedance.
+
+    The synthetic oracle reconstructs values from the fixture generator, not
+    GeCo's chart rows, group reducers, or histogram aggregation functions.
+    """
+    grouped, by_month, heatmap, pairs = oracle
+    expected_score = sum(score is not None for score, _, _, _ in _synthetic_rows(units))
+    expected_rating = sum(rating is not None for _, rating, _, _ in _synthetic_rows(units))
+    if name.startswith("histogram"):
+        edges = result["edges"]
+        expected_counts = defaultdict(lambda: [0] * (len(edges) - 1))
+        excluded = missing_group = 0
+        for score, _, group, month in _synthetic_rows(units):
+            if score is None:
+                continue
+            category = month if name == "histogram" else group
+            if category is None:
+                missing_group += 1
+                continue
+            index = _bin_oracle(score, edges)
+            if index is None:
+                excluded += 1
+                continue
+            expected_counts[category][index] += 1
+        assert result["counts"] == dict(expected_counts), name
+        assert result["excluded_range"] == excluded, name
+        assert result["missing_group"] == missing_group, name
+        assert result["denominators"] == {
+            group: sum(counts) for group, counts in expected_counts.items()
+        }, name
+    elif name in ("summary_mean", "summary_median"):
+        expected_groups = sorted(grouped)
+        assert result["categories"] == expected_groups, name
+        assert result["denominators"] == [len(grouped[g]) for g in expected_groups], name
+        if name == "summary_mean":
+            for actual, group in zip(result["values"], expected_groups, strict=True):
+                assert math.isclose(actual, sum(grouped[group]) / len(grouped[group]),
+                                    abs_tol=1e-9), (name, group, actual)
+        else:
+            for actual, group in zip(result["values"], expected_groups, strict=True):
+                # The production median is a documented deterministic 5k sample
+                # above its threshold, not an exact population median.
+                tolerance = 0 if len(grouped[group]) <= 5000 else 5
+                assert abs(actual - median(grouped[group])) <= tolerance, (name, group, actual)
+    elif name == "correlation":
+        assert result["samples"] == [
+            [expected_score, len(pairs)], [len(pairs), expected_rating]
+        ], name
+        if len(pairs) >= 2:
+            xs, ys = zip(*pairs)
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            covariance = sum((x - mx) * (y - my) for x, y in pairs)
+            variance_x = sum((x - mx) ** 2 for x in xs)
+            variance_y = sum((y - my) ** 2 for y in ys)
+            expected_r = covariance / math.sqrt(variance_x * variance_y)
+            assert math.isclose(result["values"][0][1], expected_r, abs_tol=1e-10), name
+    elif name == "value_heatmap":
+        assert result["rows"] == sorted(grouped), name
+        assert result["columns"] == sorted({month for _, _, _, month in _synthetic_rows(units)}), name
+        for i, group in enumerate(result["rows"]):
+            for j, month in enumerate(result["columns"]):
+                cell = heatmap.get((group, month), [])
+                assert result["samples"][i][j] == len(cell), (name, group, month)
+                expected_value = sum(cell) / len(cell) if cell else None
+                actual = result["values"][i][j]
+                assert (actual is None if expected_value is None else
+                        math.isclose(actual, expected_value, abs_tol=1e-9)), (name, group, month)
+    elif name == "numeric_group":
+        edges = result["transformations"]["group"]["edges"]
+        by_bin = defaultdict(list)
+        for score, rating, _, _ in _synthetic_rows(units):
+            if score is None or rating is None:
+                continue
+            index = _bin_oracle(rating, edges)
+            if index is not None:
+                by_bin[index].append(score)
+        # Group labels are intervals; they appear in ascending-bin order.
+        assert len(result["categories"]) == len(by_bin), name
+        for i, bin_index in enumerate(sorted(by_bin)):
+            values = by_bin[bin_index]
+            assert result["denominators"][i] == len(values), (name, bin_index)
+            assert math.isclose(result["values"][i], sum(values) / len(values),
+                                abs_tol=1e-9), (name, bin_index)
+
+
 def benchmark(units: int, max_payload_bytes: int = 1_000_000) -> dict:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "analyses.sqlite"
         expected = populate(path, units)
         project = Project(path)
         records = {}
+        oracle = _expected_cell_statistics(units)
         for name, spec in cases().items():
             tracemalloc.start()
             started = time.perf_counter()
@@ -139,16 +264,7 @@ def benchmark(units: int, max_payload_bytes: int = 1_000_000) -> dict:
                 assert result["eligible"] == paired, result["eligible"]
                 assert result["sampled"] == min(paired, 2000)
                 assert sum(len(trace.x) for trace in figure.data) == result["sampled"]
-            elif name.startswith("histogram"):
-                assert sum(sum(values) for values in result["counts"].values()) <= expected["score"]
-                assert result["coverage"]["observed"][0] == expected["score"]
-            elif name.startswith("summary") or name == "numeric_group":
-                assert sum(result["denominators"]) <= expected["score"]
-            elif name == "correlation":
-                assert result["samples"][0][0] == expected["score"]
-                assert result["samples"][1][1] == expected["rating"]
-            elif name == "value_heatmap":
-                assert sum(map(sum, result["samples"])) <= expected["score"]
+            _assert_chart_values(name, result, units, oracle)
             assert len(result["sources"]) == len(result["coverage"]["observed"])
             records[name] = {
                 "seconds": round(elapsed, 3),
