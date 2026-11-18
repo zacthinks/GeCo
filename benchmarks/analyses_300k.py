@@ -8,7 +8,7 @@ metadata; no text, model fit, or TeAL geometry is allocated.
 from __future__ import annotations
 
 import argparse
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 import math
 from statistics import median
@@ -150,6 +150,26 @@ def _bin_oracle(value: float, edges: list[float]) -> int | None:
     return min(len(edges) - 2, bisect_right(edges, value) - 1)
 
 
+def _assert_approximate_median(actual: float, observed: list[float]) -> None:
+    """Compare sampled medians by population rank, not arbitrary value units.
+
+    A 5k sample can move across a large gap in a discrete distribution while
+    changing the population quantile rank negligibly. The 3-percentage-point
+    band is a conservative sampling-approximation acceptance tolerance (near
+    the 99.9% DKW bound for 5k random draws), not an inferential CI: the
+    production sample is deterministic and hash-selected.
+    """
+    if len(observed) <= 5000:
+        assert math.isclose(actual, median(observed), abs_tol=1e-9), actual
+        return
+    ordered = sorted(observed)
+    below = bisect_left(ordered, actual) / len(ordered)
+    at_or_below = bisect_right(ordered, actual) / len(ordered)
+    assert below <= 0.53 and at_or_below >= 0.47, (
+        actual, below, at_or_below,
+    )
+
+
 def _assert_chart_values(name: str, result: dict, units: int, oracle) -> None:
     """Require exact second-pass counts, not merely non-exceedance.
 
@@ -191,10 +211,9 @@ def _assert_chart_values(name: str, result: dict, units: int, oracle) -> None:
                                     abs_tol=1e-9), (name, group, actual)
         else:
             for actual, group in zip(result["values"], expected_groups, strict=True):
-                # The production median is a documented deterministic 5k sample
-                # above its threshold, not an exact population median.
-                tolerance = 0 if len(grouped[group]) <= 5000 else 5
-                assert abs(actual - median(grouped[group])) <= tolerance, (name, group, actual)
+                # The sampled median is an estimate of the 50th percentile;
+                # numeric error depends on measurement scale and value gaps.
+                _assert_approximate_median(actual, grouped[group])
     elif name == "correlation":
         assert result["samples"] == [
             [expected_score, len(pairs)], [len(pairs), expected_rating]
