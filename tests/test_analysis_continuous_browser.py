@@ -51,18 +51,10 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
                     if label == "Numeric (continuous charts)":
-                        print("NUMERIC_DEBUG", dropdown.get_attribute("id"),
-                              page.evaluate("""() => Array.from(document.querySelectorAll('*'))
-                                .filter(el => el.textContent?.trim() === 'Numeric (continuous charts)'
-                                  && el.children.length === 0)
-                                .map(el => ({tag:el.tagName, html:el.outerHTML.slice(0,400),
-                                  ancestor:el.closest('button')?.id,
-                                  parent:el.parentElement?.outerHTML.slice(0,500)}))
-                                .slice(0,16)"""), flush=True)
+                        # The two numerical roles share identical option labels;
+                        # allow the newly opened menu to settle before selecting.
+                        page.wait_for_timeout(150)
                     page.get_by_text(label, exact=True).filter(visible=True).last.click()
-                    if label == "Numeric (continuous charts)":
-                        print("NUMERIC_AFTER", dropdown.get_attribute("id"),
-                              dropdown.inner_text(), flush=True)
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
