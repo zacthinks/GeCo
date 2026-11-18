@@ -53,15 +53,18 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                     # A selected value in a different role may have identical
                     # text to the open menu's option. Exclude text inside the
                     # already-mounted dropdown buttons.
-                    matches = page.get_by_text(label, exact=True).filter(visible=True)
-                    for candidate in matches.all():
-                        if candidate.evaluate(
-                            """el => !el.closest('button[id*="analysis-role-value"]')"""
-                        ):
-                            candidate.click()
-                            break
+                    if label != "Numeric (continuous charts)":
+                        page.get_by_text(label, exact=True).filter(visible=True).last.click()
                     else:
-                        raise AssertionError(f"No visible menu option for {label!r}")
+                        matches = page.get_by_text(label, exact=True).filter(visible=True)
+                        for candidate in matches.all():
+                            if candidate.evaluate(
+                                """el => !el.closest('button[id*="analysis-role-value"]')"""
+                            ):
+                                candidate.click()
+                                break
+                        else:
+                            raise AssertionError(f"No visible numeric option for {label!r}")
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
