@@ -115,6 +115,9 @@ def _reconcile_live_source_choices(
 
 def _preserve_hidden_bin_settings(current: dict[str, Any], previous: Any) -> dict[str, Any]:
     """Keep supported settings absent from the editor when the method is unchanged."""
+    if current.get("kind") not in ("numeric_bins", "histogram_bins"):
+        # Calendar transformations have a unit, not a binning method.
+        return current
     if not isinstance(previous, dict) or any(
         current.get(field) != previous.get(field) for field in ("kind", "method")
     ):
