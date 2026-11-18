@@ -73,7 +73,13 @@ with separate `samples` counts. Constant or insufficiently observed variables
 produce undefined (`null`) correlations; no significance tests are performed.
 
 Categorical group keys preserve source types: numerical 1, text "1", and boolean true are distinct, with unique labels when displayed. Coverage reports total units at the selected grain, fully complete rows, and
-per-source observed counts. For scatterplots, `eligible` and `sampled` report
+per-source observed counts. Numerical results also expose a positional `sources`
+array with each variable descriptor, the resolved predictor/Scale fit identity,
+fit status and source provenance, and an atomic missing-reason tally. Missing
+reasons are collected from the first bounded corpus scan only, not doubled by
+the chart's subsequent aggregation pass. In parent-grain charts, these source
+missing-reason counts refer to atomic observations, whereas the top-level
+coverage denominator refers to parents; they must not be interchanged. For scatterplots, `eligible` and `sampled` report
 the complete-pair population and plotted sample. Histogram outputs provide
 per-group denominators, values excluded from bin ranges, and missing group counts.
 Numerical summaries provide each group's actually observed denominator. No
