@@ -264,6 +264,48 @@ def _bin_labels(edges: list[float]) -> list[str]:
             for i, (a, b) in enumerate(zip(edges, edges[1:]))]
 
 
+def _categorical_key(value: Any) -> tuple[str, str]:
+    """Keep source types distinct while grouping, before creating display labels."""
+    if isinstance(value, bool):
+        return ("boolean", str(value))
+    if isinstance(value, int):
+        return ("integer", str(value))
+    if isinstance(value, float):
+        return ("float", repr(value))
+    return ("text", str(value))
+
+
+def _category_labels(
+    keys: list[tuple[str, Any]], role: str,
+    bin_labels: Mapping[str, list[str]],
+) -> dict[tuple[str, Any], str]:
+    """Build unique presentation labels without merging differently typed keys.
+
+    Preserve familiar unqualified labels when unambiguous. A literal text
+    category such as '1' must never merge with numeric 1, and a literal
+    '1 (integer)' must not overwrite an automatically qualified label.
+    """
+    base = {
+        key: (bin_labels[role][key[1]] if key[0] == "bin" else str(key[1]))
+        for key in keys
+    }
+    duplicates = Counter(base.values())
+    labels: dict[tuple[str, Any], str] = {}
+    used: set[str] = set()
+    for key in keys:
+        candidate = base[key]
+        if duplicates[candidate] > 1:
+            candidate = f"{candidate} ({key[0]})"
+        original = candidate
+        suffix = 2
+        while candidate in used:
+            candidate = f"{original} [{suffix}]"
+            suffix += 1
+        used.add(candidate)
+        labels[key] = candidate
+    return labels
+
+
 def calendar_period(value: Mapping[str, str], unit: str) -> str:
     """Date-only and naive timestamps retain their written calendar day.
 
@@ -322,7 +364,10 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
     keys = project.metadata["key_columns"]
     prefix = keys[:keys.index(aggregation["level"]) + 1]
     import json
-    # Each source stores [n, sum, positives, first categorical value, reservoir].
+    # Each source stores [observed n, sum, positives, first category,
+    # median sample, saw missing category]. Missing numeric values are ignored,
+    # but mixing missing and observed grouping metadata within a parent is
+    # inconsistent, exactly as for legacy parent-grain analysis.
     parents: dict[tuple[Any, ...], list[list[Any]]] = {}
     warnings: set[str] = set()
     for page in _pages(project, descriptors):
@@ -339,14 +384,21 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
             parent = parent_for_id[observation_id]
             if parent not in parents and len(parents) >= 100000:
                 raise ValueError("More than 100,000 parent groups; choose a coarser observation level.")
-            state = parents.setdefault(parent, [[0, 0., 0, None, []] for _ in descriptors])
+            state = parents.setdefault(parent, [[0, 0., 0, None, [], False] for _ in descriptors])
             for j, col in enumerate(page["columns"]):
                 value = col["values"][i]
-                if value is None:
-                    continue
                 cell = state[j]
-                cell[0] += 1
                 variable = descriptors[j]
+                is_category = not _numeric(variable)
+                if value is None:
+                    if is_category:
+                        if cell[0]:
+                            raise ValueError("Selected grouping metadata varies within a parent group.")
+                        cell[5] = True
+                    continue
+                if is_category and cell[5]:
+                    raise ValueError("Selected grouping metadata varies within a parent group.")
+                cell[0] += 1
                 if variable["type"] == "code" and variable["value"] == "binary":
                     cell[2] += int(value == 1)
                 elif _numeric(variable):
@@ -363,7 +415,7 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
         state = parents[parent]
         reduced = []
         for cell, variable in zip(state, descriptors):
-            count, total, positives, first, sample = cell
+            count, total, positives, first, sample, _missing_category = cell
             if not count:
                 reduced.append(None)
             elif variable["type"] == "code" and variable["value"] == "binary":
@@ -488,7 +540,10 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             edges[role] = _edges(values, settings)
             # Quantile ranks may be sampled, but counts must never discard
             # corpus extrema merely because the sample missed them.
-            if edges[role]:
+            if edges[role] and bounds[0] < bounds[1]:
+                # Preserve the expanded interval for a truly constant source:
+                # replacing both ends with the same extrema creates a
+                # misleading zero-width quantile bin.
                 edges[role][0] = min(edges[role][0], bounds[0])
                 edges[role][-1] = max(edges[role][-1], bounds[1])
             if bounds[2] > MAX_SAMPLE:
@@ -501,7 +556,10 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             edges[role] = _edges([bounds[0], bounds[1]], settings)
         transform_info[role] = {"edges": edges[role], "excluded_range": 0}
 
-    def category(role: str, value: Any) -> str | None:
+    # Compute bin labels once per transformation, not for every observation.
+    bin_labels = {role: _bin_labels(value) for role, value in edges.items()}
+
+    def category(role: str, value: Any) -> tuple[str, Any] | None:
         if value is None:
             return None
         item = roles[role]
@@ -511,16 +569,16 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             if index is None:
                 transform_info[role]["excluded_range"] += 1
                 return None
-            return _bin_labels(edges[role])[index]
+            return ("bin", index)
         if transform and transform["kind"] == "calendar":
-            return calendar_period(value, transform["unit"])
-        return str(value)
+            return ("calendar", calendar_period(value, transform["unit"]))
+        return _categorical_key(value)
 
-    def ordered_categories(role: str, used: Any) -> list[str]:
+    def ordered_categories(role: str, used: Any) -> list[tuple[str, Any]]:
         known = set(used)
         if role in edges:
-            return [label for label in _bin_labels(edges[role]) if label in known]
-        return sorted(known)
+            return sorted(known, key=lambda key: key[1])
+        return sorted(known, key=lambda key: (str(key[1]), key[0]))
 
     result = {
         "kind": kind, "warnings": sorted(warnings),
@@ -531,7 +589,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
     if kind == "scatter":
         heap: list[tuple[int, Any]] = []
         eligible = 0
-        color_categories: set[str] = set()
+        color_categories: set[tuple[str, Any]] = set()
         for identity, values, _ in _parent_rows(project, descriptors, spec):
             x, y = values[:2]
             color = category("color", values[position["color"]]) if "color" in roles else None
@@ -544,8 +602,12 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
             eligible += 1
             _reservoir(heap, spec["max_points"], _rank(identity),
                        (identity, float(x), float(y), color))
+        color_labels = _category_labels(
+            ordered_categories("color", color_categories), "color", bin_labels
+        )
         result.update(
-            points=[{"id": id_, "x": x, "y": y, "color": color}
+            points=[{"id": id_, "x": x, "y": y,
+                     "color": color_labels[color] if color is not None else None}
                     for _, (id_, x, y, color) in sorted(heap, reverse=True)],
             eligible=eligible, sampled=len(heap),
             sampling="deterministic identity-hash sample; raw corpus not sent to browser",
@@ -553,13 +615,13 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
     elif kind == "histogram":
         hist_edges = edges["__histogram__"]
         bins = _bin_labels(hist_edges)
-        counts: dict[str, list[int]] = {}
+        counts: dict[tuple[str, Any], list[int]] = {}
         excluded = missing_group = 0
         for _, values, _ in _parent_rows(project, descriptors, spec):
             value = values[0]
             if value is None:
                 continue
-            group = category("group", values[position["group"]]) if "group" in roles else "All observations"
+            group = category("group", values[position["group"]]) if "group" in roles else ("text", "All observations")
             if group is None:
                 missing_group += 1
                 continue
@@ -572,16 +634,19 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
                     raise ValueError("More than 100 histogram groups.")
                 counts[group] = [0] * len(bins)
             counts[group][index] += 1
-        result.update(edges=hist_edges, bins=bins, groups=(ordered_categories("group", counts) if "group" in roles else sorted(counts)),
-                      counts=counts, excluded_range=excluded,
-                      missing_group=missing_group,
-                      denominators={g: sum(counts[g]) for g in counts})
+        group_keys = ordered_categories("group", counts)
+        group_labels = _category_labels(group_keys, "group", bin_labels)
+        result.update(edges=hist_edges, bins=bins,
+                      groups=[group_labels[key] for key in group_keys],
+                      counts={group_labels[key]: value for key, value in counts.items()},
+                      excluded_range=excluded, missing_group=missing_group,
+                      denominators={group_labels[key]: sum(value) for key, value in counts.items()})
     elif kind in ("summary_bar", "value_heatmap"):
         # Sums and counts are exact at every corpus size. Cell medians use
         # bounded stable samples only if more than 5,000 observations contribute.
-        sums: dict[tuple[str, str | None], float] = defaultdict(float)
-        counts: dict[tuple[str, str | None], int] = defaultdict(int)
-        medians: dict[tuple[str, str | None], list[tuple[int, float]]] = defaultdict(list)
+        sums: dict[tuple[Any, Any], float] = defaultdict(float)
+        counts: dict[tuple[Any, Any], int] = defaultdict(int)
+        medians: dict[tuple[Any, Any], list[tuple[int, float]]] = defaultdict(list)
         for identity, values, _ in _parent_rows(project, descriptors, spec):
             if values[0] is None:
                 continue
@@ -598,30 +663,33 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
                 _reservoir(medians[key], MAX_SAMPLE, _rank((identity, row, col)), float(values[0]))
         if spec["statistic"] == "median" and any(n > MAX_SAMPLE for n in counts.values()):
             warnings.add("Median uses a deterministic sample of at most 5,000 values per group where needed.")
-        def value(key: tuple[str, str | None]) -> float | None:
+        def value(key: tuple[Any, Any]) -> float | None:
             if not counts.get(key):
                 return None
             if spec["statistic"] == "mean":
                 return sums[key] / counts[key]
             return median(item[1] for item in medians[key])
         row_role = "group" if kind == "summary_bar" else "rows"
-        row_labels = ordered_categories(row_role, (key[0] for key in counts))
-        if len(row_labels) > MAX_CATEGORIES:
+        row_keys = ordered_categories(row_role, (key[0] for key in counts))
+        if len(row_keys) > MAX_CATEGORIES:
             raise ValueError("More than 100 summary categories.")
+        row_labels = _category_labels(row_keys, row_role, bin_labels)
         if kind == "summary_bar":
-            result.update(categories=row_labels,
-                          values=[value((row, None)) for row in row_labels],
-                          denominators=[counts[(row, None)] for row in row_labels],
+            result.update(categories=[row_labels[row] for row in row_keys],
+                          values=[value((row, None)) for row in row_keys],
+                          denominators=[counts[(row, None)] for row in row_keys],
                           statistic=spec["statistic"])
         else:
-            column_labels = ordered_categories("columns", (key[1] for key in counts if key[1] is not None))
-            if len(column_labels) > MAX_CATEGORIES:
+            column_keys = ordered_categories("columns", (key[1] for key in counts if key[1] is not None))
+            if len(column_keys) > MAX_CATEGORIES:
                 raise ValueError("More than 100 summary columns.")
-            result.update(rows=row_labels, columns=column_labels,
-                          values=[[value((row, col)) for col in column_labels]
-                                  for row in row_labels],
-                          samples=[[counts.get((row, col), 0) for col in column_labels]
-                                   for row in row_labels],
+            column_labels = _category_labels(column_keys, "columns", bin_labels)
+            result.update(rows=[row_labels[row] for row in row_keys],
+                          columns=[column_labels[col] for col in column_keys],
+                          values=[[value((row, col)) for col in column_keys]
+                                  for row in row_keys],
+                          samples=[[counts.get((row, col), 0) for col in column_keys]
+                                   for row in row_keys],
                           statistic=spec["statistic"])
     else:
         size = len(descriptors)
