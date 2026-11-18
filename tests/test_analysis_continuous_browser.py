@@ -50,13 +50,18 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 def choose(dropdown, label):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    # React-select may portal the option list outside the
-                    # button, so pick the visible, open menu option by role.
-                    options = page.get_by_role("option", name=label, exact=True)
-                    if options.count():
-                        options.last.click()
+                    # A selected value in a different role may have identical
+                    # text to the open menu's option. Exclude text inside the
+                    # already-mounted dropdown buttons.
+                    matches = page.get_by_text(label, exact=True).filter(visible=True)
+                    for candidate in matches.all():
+                        if candidate.evaluate(
+                            """el => !el.closest('button[id*="analysis-role-value"]')"""
+                        ):
+                            candidate.click()
+                            break
                     else:
-                        page.get_by_text(label, exact=True).filter(visible=True).last.click()
+                        raise AssertionError(f"No visible menu option for {label!r}")
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
