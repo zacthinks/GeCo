@@ -50,10 +50,13 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 def choose(dropdown, label):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    # Duplicate labels appear in other role controls. Select
-                    # the option from the dropdown just opened, not from the
-                    # entire page (which may already show the same value).
-                    dropdown.get_by_text(label, exact=True).filter(visible=True).last.click()
+                    # React-select may portal the option list outside the
+                    # button, so pick the visible, open menu option by role.
+                    options = page.get_by_role("option", name=label, exact=True)
+                    if options.count():
+                        options.last.click()
+                    else:
+                        page.get_by_text(label, exact=True).filter(visible=True).last.click()
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
