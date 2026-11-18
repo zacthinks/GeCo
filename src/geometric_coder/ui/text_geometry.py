@@ -140,11 +140,6 @@ def _validate_name(coder: Any, name: str) -> str:
         raise ValueError("Enter a geometry name.")
     if coder.has_geometry(clean) or coder.has_view(clean):
         raise ConfigurationError(f"Representation {clean!r} is already registered.")
-    if coder.database.list_observations(kinds=["span", "teaching_example"]):
-        raise ConfigurationError(
-            "Creating new geometries requires a workspace without existing spans "
-            "or teaching examples until derived-observation backfill is available."
-        )
     if teal_linked_project(coder) is None:
         raise ConfigurationError(
             "Creating geometries from text requires a TeAL-linked workspace."
@@ -172,7 +167,7 @@ def create_text_geometry(
 
     TeAL handles tokenization, model caching, translation and persistence.
     spaCy can emit no token rows for empty inputs; GeCo checks full
-    observation coverage before registering a representation.
+    atomic observation coverage before registering a representation.
     """
     clean = _validate_name(coder, name)
     if method not in {"spacy_dtm", "sentence_transformer"}:
@@ -296,8 +291,8 @@ def create_text_geometry(
             }:
                 raise ConfigurationError("The text recipe did not produce a numerical matrix.")
             # TeAL's tokens-only count vectorizer intentionally omits any
-            # observation with no original token rows. GeCo presently requires
-            # complete matrix coverage for its existing observation universe.
+            # atomic observation with no original token rows. GeCo requires
+            # complete matrix coverage for the linked atomic document universe.
             if list(output.primary_key) != list(linked.documents.primary_key):
                 raise ConfigurationError(
                     "The output key hierarchy does not match the linked observations."

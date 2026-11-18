@@ -64,6 +64,13 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path, m
             row["default_transform"] == "onehot"
             for row in discovered if row["value"] == "publication_source"
         )
+        # A preexisting teaching example belongs to the coding workspace,
+        # not to every numerical geometry we subsequently register.
+        teaching_code_id = coder.create_code("preexisting examples")
+        teaching_id = coder.create_teaching_example(
+            code_id=teaching_code_id, text="a standalone teaching example",
+            label="positive",
+        )
         specs = {
             "publication_year": {
                 "transform": "fixed_width", "width": 10, "anchor": 2000,
@@ -85,6 +92,9 @@ def test_metadata_featurematrix_linked_lifecycle_and_mixed_committee(tmp_path, m
         assert created.replayable is False
         registered = coder.database.get_geometry(created.geometry_id)
         assert not registered["supports_query"] and not registered["supports_text_transform"]
+        assert coder.database.observation_vector_record(
+            teaching_id, created.geometry_id,
+        ) is None
         child = coder.database.representation_for_legacy(
             "geometry", created.geometry_id,
         )

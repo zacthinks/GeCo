@@ -78,12 +78,18 @@ def test_bad_source_text_requests_fail_before_teal_project_open(monkeypatch):
         )
 
 
-def test_spans_and_unlinked_workspaces_fail_preflight(monkeypatch):
+@pytest.mark.parametrize("kind", ["span", "teaching_example"])
+def test_existing_derived_observations_do_not_block_source_text_preflight(monkeypatch, kind):
+    from unittest.mock import Mock
+
     coder = _coder()
-    coder.database.list_observations = lambda **_: [{"kind": "span"}]
+    coder.database.list_observations = Mock(return_value=[{"kind": kind}])
     monkeypatch.setattr(tg, "teal_linked_project", lambda _: Path("/tmp/teal"))
-    with pytest.raises(ConfigurationError, match="backfill"):
-        tg.create_text_geometry(coder, name="DTM", method="spacy_dtm")
+    assert tg._validate_name(coder, "DTM") == "DTM"
+    coder.database.list_observations.assert_not_called()
+
+
+def test_unlinked_workspace_fails_source_text_preflight(monkeypatch):
     coder = _coder()
     monkeypatch.setattr(tg, "teal_linked_project", lambda _: None)
     with pytest.raises(ConfigurationError, match="TeAL-linked"):
