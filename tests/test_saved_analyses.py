@@ -400,7 +400,9 @@ def test_analysis_editor_has_quiet_feedback_and_separated_actions():
     assert '"Changes saved."' not in source
     assert '"Analysis created."' not in source
     assert '"Analysis deleted."' not in source
-    assert 'return fig, ""' in source
+    # A successful preview clears validation feedback while returning provenance.
+    assert 'Output("analysis-provenance", "children", allow_duplicate=True)' in source
+    assert 'return fig, _source_coverage(result, html), ""' in source
     assert 'Input("analysis-cancel", "n_clicks")' in source
     assert 'except (ValueError, KeyError) as exc:' in source
     assert 'f"Preview unavailable: {exc}"' in source

@@ -58,3 +58,6 @@ jobs:
 
       - name: Benchmark 300k Scale candidate sampling
         run: uv run --no-sync python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000
+
+      - name: Benchmark 300k continuous Analyses charts and browser payload bounds
+        run: uv run --no-sync python benchmarks/analyses_300k.py --units 300000

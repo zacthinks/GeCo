@@ -349,15 +349,32 @@ def _categories(rows: list[tuple[Any, ...]], index: int, spec: Mapping[str, Any]
     return [str(v) if v is not None else None for v in raw], {}
 
 
-def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[str, Any]):
+def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[str, Any], *,
+                 source_info: dict[str, Any] | None = None,
+                 count_missing: bool = True):
     """Yield atomic rows or bounded-memory parent-grain reductions by stable keys.
 
     No raw observations are sent to the browser. Parent states retain only
     numerical moments, counts, a bounded median sample, and grouping labels.
     """
+    def record_sources(page: Mapping[str, Any]) -> None:
+        if source_info is None:
+            return
+        columns = page["columns"]
+        provenance = [dict(col["provenance"]) for col in columns]
+        if source_info["provenance"] is None:
+            source_info["provenance"] = provenance
+            source_info["missing_reasons"] = [Counter() for _ in columns]
+        elif source_info["provenance"] != provenance:
+            raise ValueError("Analytical source or fitted model changed during chart computation.")
+        if count_missing:
+            for counts, col in zip(source_info["missing_reasons"], columns, strict=True):
+                counts.update(col["coverage"]["by_reason"])
+
     aggregation = spec.get("aggregation")
     if not aggregation:
         for page in _pages(project, descriptors):
+            record_sources(page)
             for i, observation_id in enumerate(page["observation_ids"]):
                 yield (observation_id, tuple(col["values"][i] for col in page["columns"]), page["warnings"])
         return
@@ -371,6 +388,7 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
     parents: dict[tuple[Any, ...], list[list[Any]]] = {}
     warnings: set[str] = set()
     for page in _pages(project, descriptors):
+        record_sources(page)
         warnings.update(page["warnings"])
         ids = page["observation_ids"]
         with project.database.connect() as conn:
@@ -485,6 +503,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
     warnings: set[str] = set()
     coverage = Counter()
     observed = [0] * len(descriptors)
+    source_info: dict[str, Any] = {"provenance": None, "missing_reasons": []}
     MAX_SAMPLE = 5000
 
     # A first, bounded scan is needed to determine numerical bin edges before
@@ -501,7 +520,9 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         limits[role] = [math.inf, -math.inf, 0]
     timezone_kinds = {role: set() for role, item in roles.items()
                       if role in GROUP_ROLES and item.get("transform", {}).get("kind") == "calendar"}
-    for identity, values, issues in _parent_rows(project, descriptors, spec):
+    for identity, values, issues in _parent_rows(
+        project, descriptors, spec, source_info=source_info
+    ):
         warnings.update(issues)
         coverage["total"] += 1
         coverage["complete"] += int(all(v is not None for v in values))
@@ -585,12 +606,21 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         "coverage": {"total": coverage["total"], "complete": coverage["complete"],
                      "observed": observed},
         "names": names, "transformations": transform_info,
+        **({"aggregation": spec["aggregation"]} if "aggregation" in spec else {}),
+        "sources": [
+            {"descriptor": descriptor,
+             "provenance": source_info["provenance"][index]
+             if source_info["provenance"] is not None else {},
+             "missing_reasons": dict(source_info["missing_reasons"][index])
+             if source_info["missing_reasons"] else {}}
+            for index, descriptor in enumerate(descriptors)
+        ],
     }
     if kind == "scatter":
         heap: list[tuple[int, Any]] = []
         eligible = 0
         color_categories: set[tuple[str, Any]] = set()
-        for identity, values, _ in _parent_rows(project, descriptors, spec):
+        for identity, values, _ in _parent_rows(project, descriptors, spec, source_info=source_info, count_missing=False):
             x, y = values[:2]
             color = category("color", values[position["color"]]) if "color" in roles else None
             if x is None or y is None or ("color" in roles and color is None):
@@ -617,7 +647,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         bins = _bin_labels(hist_edges)
         counts: dict[tuple[str, Any], list[int]] = {}
         excluded = missing_group = 0
-        for _, values, _ in _parent_rows(project, descriptors, spec):
+        for _, values, _ in _parent_rows(project, descriptors, spec, source_info=source_info, count_missing=False):
             value = values[0]
             if value is None:
                 continue
@@ -647,7 +677,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         sums: dict[tuple[Any, Any], float] = defaultdict(float)
         counts: dict[tuple[Any, Any], int] = defaultdict(int)
         medians: dict[tuple[Any, Any], list[tuple[int, float]]] = defaultdict(list)
-        for identity, values, _ in _parent_rows(project, descriptors, spec):
+        for identity, values, _ in _parent_rows(project, descriptors, spec, source_info=source_info, count_missing=False):
             if values[0] is None:
                 continue
             row = category("group", values[position["group"]]) if kind == "summary_bar" else category("rows", values[position["rows"]])
@@ -700,7 +730,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         ss_x = [[0.0] * size for _ in range(size)]
         ss_y = [[0.0] * size for _ in range(size)]
         cross = [[0.0] * size for _ in range(size)]
-        for _, values, _ in _parent_rows(project, descriptors, spec):
+        for _, values, _ in _parent_rows(project, descriptors, spec, source_info=source_info, count_missing=False):
             for i, x in enumerate(values):
                 if x is None:
                     continue

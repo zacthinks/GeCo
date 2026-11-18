@@ -54,7 +54,7 @@ You retain control over what becomes a coding decision. You can change a proposa
 
 This is an **iterative workflow**, not a sequence you complete only once. Reviewing a broad set of proposals may reveal a surprising case or a weakness in a code's definition. You can return to Explore to read it in context, revise the code and its examples, go back to Develop to improve the classifiers, and then apply and review again.
 
-Dedicated **Codes** and **Memos** workspaces help you manage code definitions, coding evidence, and interpretive notes throughout the process.
+Dedicated **Codes**, **Analyses**, and **Memos** workspaces help you manage definitions, explore patterns, and document interpretations. In **Analyses**, choose a chart first, then assign Codes, fitted Scale positions, and categorical, numerical, or date metadata to its roles. Explore scatterplots, histograms, grouped mean/median bars, categorical comparisons, and correlation or grouped-value heatmaps. You can bin numbers or group dates by day, week, month, quarter, or year without changing imported metadata. Save, duplicate, edit, or reopen a chart to refresh it against current evidence; numerical plots disclose missing coverage and model provenance, with deterministic sampling and approximate statistics identified where used. Analyses never trains models or commits judgments. Apply & Review continues to operate on Codes, not numerical Scale ratings.
 
 ## GeCo, TeAL, and GeCo Desktop
 
