@@ -105,7 +105,9 @@ def test_model_or_source_changes_during_scan_are_rejected(tmp_path, monkeypatch)
 
 def test_chart_performance_harness_smoke():
     # The full 300k workload runs as a separate required CI step.
-    from benchmarks.analyses_300k import benchmark
+    import runpy
+    from pathlib import Path
+    benchmark = runpy.run_path(str(Path(__file__).parents[1] / "benchmarks" / "analyses_300k.py"))["benchmark"]
     output = benchmark(120)
     assert output["observations"] == 120
     assert set(output["charts"]) == {
