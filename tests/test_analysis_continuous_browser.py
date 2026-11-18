@@ -69,7 +69,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                         # its own button. If the library portals the menu, the
                         # option has no enclosing role-value button instead.
                         if target_candidates:
-                            target_candidates.last.click()
+                            target_candidates[-1].click()
                         else:
                             portal_candidates = [
                                 item for item in candidates if item.evaluate(
@@ -78,7 +78,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                             ]
                             if not portal_candidates:
                                 raise AssertionError(f"No matching option for {label!r}")
-                            portal_candidates.last.click()
+                            portal_candidates[-1].click()
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
