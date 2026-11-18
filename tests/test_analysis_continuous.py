@@ -147,3 +147,57 @@ def test_bounded_scatter_sampling_and_source_change(workspace):
     assert compute_analysis(p, spec)["points"] == result["points"]
     saved = p.save_analysis("Sampled scatter", spec)
     assert p.run_analysis(saved)["points"] == result["points"]
+
+
+def test_scatter_color_limit_checked_on_eligible_population_before_save(tmp_path):
+    # Even a tiny sampled plot must reject unbounded color traces.
+    count = 101
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "scatter-colors.geco",
+        data=pd.DataFrame({
+            "id": list(range(count)),
+            "text": ["observation"] * count,
+            "x": list(range(count)),
+            "color": [f"category_{i:03d}" for i in range(count)],
+        }),
+        keys=["id"], text="text", metadata=["x", "color"], geometries=None,
+    )
+    spec = recipe("scatter", x=meta("x", "numeric"), y=meta("x", "numeric"),
+                  color=meta("color", "categorical"))
+    spec["max_points"] = 2
+    with pytest.raises(ValueError, match="Scatter color has more than 100 categories"):
+        compute_analysis(p, spec)
+    with pytest.raises(ValueError, match="Scatter color has more than 100 categories"):
+        p.save_analysis("Too many colors", spec)
+    assert not any(row["name"] == "Too many colors" for row in p.analyses())
+
+
+def test_parent_code_reductions_in_continuous_summary(tmp_path):
+    from geometric_coder.ui.analyses import editor_recipe
+
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "parent-continuous.geco",
+        data=pd.DataFrame({
+            "cluster": [1, 1, 2, 2],
+            "id": [1, 2, 1, 2],
+            "text": ["a", "b", "c", "d"],
+            "group": ["A", "A", "B", "B"],
+        }),
+        keys=["cluster", "id"], text="text",
+        metadata=["group"], geometries=None,
+    )
+    code = p.create_code("Theme")
+    ids = [unit["observation_id"] for unit in p.database.list_units()]
+    for identity, judgment in zip(ids, ["positive", "positive", "positive", "negative"]):
+        p.annotate(identity, code, judgment)
+    slots = {"values": f"code:{code}", "group": "metadata:group"}
+    for method, expected in (("count", [2, 1]), ("mean", [1, 0.5]),
+                             ("log_count", [math.log1p(2), math.log1p(1)])):
+        spec = editor_recipe("summary_bar", "count", slots, {},
+                             "cluster", method, 1,
+                             continuous_options={"statistic": "mean"})
+        assert spec["aggregation"]["method"] == method
+        result = compute_analysis(p, spec)
+        assert result["categories"] == ["A", "B"]
+        assert result["values"] == pytest.approx(expected)
+        assert result["denominators"] == [1, 1]

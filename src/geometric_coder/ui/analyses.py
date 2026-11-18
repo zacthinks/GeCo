@@ -89,11 +89,37 @@ def _ref(raw: str, settings: dict[str, Any]) -> dict[str, Any]:
     return ref
 
 
+def _reconcile_live_source_choices(
+    configs: dict[str, Any] | None,
+    sources: Any, source_ids: Any,
+    predictors: Any, predictor_ids: Any,
+) -> dict[str, Any]:
+    """Prefer currently mounted source/model controls over an asynchronous Store."""
+    resolved = {key: dict(item) for key, item in (configs or {}).items()}
+    for item, source in zip(source_ids or [], sources or []):
+        resolved.setdefault(item["index"], {})["source"] = source
+    for item, selected in zip(predictor_ids or [], predictors or []):
+        config = resolved.setdefault(item["index"], {})
+        if selected:
+            family, predictor_id = selected.split(":", 1)
+            if family not in ("classifier", "committee"):
+                raise ValueError("Select a valid classifier or committee.")
+            config["predictor_kind"] = family
+            config["predictor_id"] = int(predictor_id)
+        else:
+            # Explicitly cleared selection must not fall back to a cached fit.
+            config.pop("predictor_kind", None)
+            config.pop("predictor_id", None)
+    return resolved
+
+
 def compatible_aggregation_method(kind: str, measure: str, method: str | None) -> str:
     """Reset incompatible Code reductions without discarding valid settings."""
     selected = method or "any"
     if selected in {"count", "mean", "log_count"} and not (
-        kind == "distribution" or (kind == "heatmap" and measure == "correlation")
+        kind in {"scatter", "histogram", "summary_bar", "correlation_heatmap", "value_heatmap"}
+        or kind == "distribution"
+        or (kind == "heatmap" and measure == "correlation")
     ):
         return "any"
     return selected
@@ -772,6 +798,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    continuous_group: Any, statistic: Any,
                    hist_method: Any, hist_bins: Any, hist_width: Any,
                    parent_numeric_method: Any, hist_edges: Any,
+                   live_sources: Any, live_source_ids: Any,
+                   live_predictors: Any, live_predictor_ids: Any,
                    live_values: Any, live_value_ids: Any,
                    live_transforms: Any, live_transform_ids: Any,
                    live_bins: Any, live_bin_ids: Any,
@@ -796,7 +824,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         # The recipe consumes the current mounted role inputs directly. The
         # Store callback may still be resolving a preceding UI change when
         # Preview/Save is clicked; its snapshot alone is not authoritative.
-        resolved = {key: dict(item) for key, item in (configs or {}).items()}
+        resolved = _reconcile_live_source_choices(
+            configs, live_sources, live_source_ids, live_predictors, live_predictor_ids,
+        )
         for item, value in zip(live_value_ids or [], live_values or []):
             resolved.setdefault(item["index"], {})["value"] = value
         settings_by_key = {
@@ -878,6 +908,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-width", "value"),
         State("analysis-parent-numeric-method", "value"),
         State("analysis-hist-edges", "value"),
+        State({"type":"analysis-role-source","index":ALL}, "value"),
+        State({"type":"analysis-role-source","index":ALL}, "id"),
+        State({"type":"analysis-role-predictor","index":ALL}, "value"),
+        State({"type":"analysis-role-predictor","index":ALL}, "id"),
         State({"type":"analysis-role-value","index":ALL}, "value"),
         State({"type":"analysis-role-value","index":ALL}, "id"),
         State({"type":"analysis-role-transform","index":ALL}, "value"),
@@ -908,6 +942,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
              parent_numeric_method: Any, hist_edges: Any,
+             live_sources: Any, live_source_ids: Any,
+             live_predictors: Any, live_predictor_ids: Any,
              live_values: Any, live_value_ids: Any, live_transforms: Any,
              live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
              live_widths: Any, live_width_ids: Any, live_edges: Any,
@@ -920,7 +956,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_values, live_value_ids, live_transforms,
+                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
@@ -944,6 +981,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
                 hist_method: Any, hist_bins: Any, hist_width: Any,
                 parent_numeric_method: Any, hist_edges: Any,
+                live_sources: Any, live_source_ids: Any,
+                live_predictors: Any, live_predictor_ids: Any,
                 live_values: Any, live_value_ids: Any, live_transforms: Any,
                 live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
                 live_widths: Any, live_width_ids: Any, live_edges: Any,
@@ -955,7 +994,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_values, live_value_ids, live_transforms,
+                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
             result = compute_analysis(project, spec)

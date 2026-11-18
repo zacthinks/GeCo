@@ -90,8 +90,9 @@ medians use exact group values up to 5,000, then bounded deterministic
 the same threshold. Analysis status/provenance is cached only within a single
 paged resolver scan (never globally). Parent-group states are bounded to
 100,000 distinct groups, numerical summary cells to 2,500, and category
-cardinalities to 100. Invalid or infeasible new v2 recipes are rejected before
-save. Saved recipes are recomputed against current project data each time.
+cardinalities to 100 (including scatterplot Color categories, checked over
+all eligible observations rather than only the plotted sample). Invalid or
+infeasible new v2 recipes are rejected before save. Saved recipes are recomputed against current project data each time.
 
 Existing v1 saved recipes, original Code count charts, and legacy categorical
 association matrices still execute on their original paths. This is an

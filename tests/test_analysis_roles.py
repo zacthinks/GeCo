@@ -7,7 +7,8 @@ import pytest
 from geometric_coder import GeometricCoder
 from geometric_coder.analyses import compute_analysis, validate_analysis
 from geometric_coder.ui.analyses import (
-    _initial_config, _slots, compatible_aggregation_method, editor_recipe,
+    _initial_config, _slots, _reconcile_live_source_choices,
+    compatible_aggregation_method, editor_recipe,
 )
 
 
@@ -150,6 +151,11 @@ def test_legacy_restoration_and_role_config_isolation(project):
         ("bar", "count", "count", "any"),
         ("bar", "count", "minimum", "minimum"),
         ("bar", "count", "any", "any"),
+        ("scatter", "count", "count", "count"),
+        ("histogram", "count", "log_count", "log_count"),
+        ("summary_bar", "count", "mean", "mean"),
+        ("correlation_heatmap", "count", "count", "count"),
+        ("value_heatmap", "count", "log_count", "log_count"),
     ],
 )
 def test_chart_aggregation_method_compatibility(kind, measure, method, expected):
@@ -450,3 +456,29 @@ def test_committee_bar_rejects_category_101_before_next_page(monkeypatch):
     }
     with pytest.raises(ValueError, match="more than 100 categories"):
         analysis_roles._committee_analysis(FakeProject(), spec)
+
+
+def test_mounted_source_and_predictor_override_stale_role_store():
+    key = "values:code:17"
+    other = "group:metadata:category"
+    stale = {
+        key: {"source": "labels", "value": "binary",
+              "predictor_kind": "classifier", "predictor_id": 5},
+        other: {"value": "categorical"},
+    }
+    live = _reconcile_live_source_choices(
+        stale, ["predictions"], [{"index": key}],
+        ["committee:9"], [{"index": key}],
+    )
+    assert live[key]["source"] == "predictions"
+    assert live[key]["predictor_kind"] == "committee"
+    assert live[key]["predictor_id"] == 9
+    assert live[other] == stale[other]
+    assert stale[key]["source"] == "labels"
+
+    cleared = _reconcile_live_source_choices(
+        live, ["hybrid"], [{"index": key}], [None], [{"index": key}],
+    )
+    assert cleared[key]["source"] == "hybrid"
+    assert "predictor_id" not in cleared[key]
+    assert "predictor_kind" not in cleared[key]

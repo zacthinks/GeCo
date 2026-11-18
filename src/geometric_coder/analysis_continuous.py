@@ -531,11 +531,16 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
     if kind == "scatter":
         heap: list[tuple[int, Any]] = []
         eligible = 0
+        color_categories: set[str] = set()
         for identity, values, _ in _parent_rows(project, descriptors, spec):
             x, y = values[:2]
             color = category("color", values[position["color"]]) if "color" in roles else None
             if x is None or y is None or ("color" in roles and color is None):
                 continue
+            if color is not None:
+                color_categories.add(color)
+                if len(color_categories) > MAX_CATEGORIES:
+                    raise ValueError(f"Scatter color has more than {MAX_CATEGORIES} categories.")
             eligible += 1
             _reservoir(heap, spec["max_points"], _rank(identity),
                        (identity, float(x), float(y), color))

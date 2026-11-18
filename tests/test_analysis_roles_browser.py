@@ -152,6 +152,37 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert changed["roles"]["values"][0]["variable"]["predictor_kind"] == "committee"
                 assert changed["roles"]["values"][0]["variable"]["predictor_id"] == committee
 
+                # Save immediately after changing the source and model. These
+                # mounted controls must win over a lagging role-config Store.
+                page.locator("#analysis-edit").click()
+                choose(page.locator('button[id*="analysis-role-source"]').first,
+                       "Human labels only")
+                page.locator("#analysis-save").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                assert project.analysis(created["analysis_id"])["spec"]["roles"]["values"][0][
+                    "variable"]["source"] == "labels"
+
+                page.locator("#analysis-edit").click()
+                choose(page.locator('button[id*="analysis-role-source"]').first,
+                       "Predictions only")
+                choose(page.locator('button[id*="analysis-role-predictor"]').first,
+                       next(f"Classifier: {row['name']}"
+                            for row in project.classifier_specs(code)
+                            if int(row["classifier_spec_id"]) == classifier))
+                page.locator("#analysis-save").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                restored_predictor = project.analysis(created["analysis_id"])["spec"][
+                    "roles"]["values"][0]["variable"]
+                assert restored_predictor["source"] == "predictions"
+                assert restored_predictor["predictor_kind"] == "classifier"
+                assert restored_predictor["predictor_id"] == classifier
+
                 # v1 edit and duplicate restore aggregation without changing
                 # either the existing identity or its output.
                 before = project.run_analysis(legacy_id)
@@ -215,6 +246,27 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 switched = next(row for row in project.analyses()
                                 if row["name"] == "Switching aggregation")
                 assert switched["spec"]["aggregation"]["method"] == "any"
+
+                # Continuous numerical charts support parent-level Code counts,
+                # even though a legacy bar resets that reduction to "any".
+                page.locator("#analysis-new").click()
+                page.locator("#analysis-name").fill("Numerical parent count")
+                choose(page.locator("#analysis-kind"), "Grouped numerical mean / median")
+                choose(page.locator("#analysis-role-continuous-values"), "Code: Theme")
+                choose(page.locator("#analysis-continuous-group"), "Metadata: group")
+                choose(page.locator("#analysis-aggregate-level"),
+                       "Group by interview (and preceding keys)")
+                choose(page.locator("#analysis-aggregate-method"),
+                       "Number of positive units per group")
+                page.locator("#analysis-save").click()
+                page.wait_for_function(
+                    "() => getComputedStyle(document.querySelector('#analysis-editor'))"
+                    ".display === 'none'", timeout=15000,
+                )
+                parent_count = next(row for row in project.analyses()
+                                    if row["name"] == "Numerical parent count")
+                assert parent_count["spec"]["aggregation"]["method"] == "count"
+                assert project.run_analysis(parent_count["analysis_id"])["values"] == [2.0, 0.0]
 
                 # An explicitly temporal role is visible but cannot execute
                 # calendar bucketing in this phase, even if the raw data look
