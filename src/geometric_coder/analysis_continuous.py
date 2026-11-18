@@ -606,6 +606,7 @@ def compute_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[s
         "coverage": {"total": coverage["total"], "complete": coverage["complete"],
                      "observed": observed},
         "names": names, "transformations": transform_info,
+        **({"aggregation": spec["aggregation"]} if "aggregation" in spec else {}),
         "sources": [
             {"descriptor": descriptor,
              "provenance": source_info["provenance"][index]
