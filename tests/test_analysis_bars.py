@@ -164,11 +164,46 @@ def test_code_and_numeric_metadata_with_identical_names_remain_separate(workspac
 
 
 def test_total_variable_limit_includes_both_grouping_roles(workspace):
-    p, code = workspace
-    valid = chart([code_value(code)] * 18, "sum",
+    p, first_code = workspace
+    # The limit test needs genuinely distinct descriptors: repeated Values
+    # are invalid regardless of whether the total stays below 20.
+    codes = [first_code] + [p.create_code(f"Other value {i}") for i in range(18)]
+    valid = chart([code_value(code) for code in codes[:18]], "sum",
                   meta("condition"), meta("site"))
     assert len(validate_analysis(p, valid)["roles"]["values"]) == 18
-    invalid = chart([code_value(code)] * 19, "sum",
+    invalid = chart([code_value(code) for code in codes], "sum",
                     meta("condition"), meta("site"))
     with pytest.raises(ValueError, match="21 analytical variables.*maximum is 20"):
         validate_analysis(p, invalid)
+
+
+@pytest.mark.parametrize("statistic", ["count", "sum", "mean", "median"])
+def test_duplicate_code_values_are_rejected_before_execution(workspace, statistic):
+    p, code = workspace
+    duplicated = chart([code_value(code), code_value(code)],
+                       statistic, meta("condition"))
+    with pytest.raises(ValueError, match="Values variable may be selected only once"):
+        validate_analysis(p, duplicated)
+    with pytest.raises(ValueError, match="Values variable may be selected only once"):
+        compute_analysis(p, duplicated)
+    with pytest.raises(ValueError, match="Values variable may be selected only once"):
+        p.save_analysis(f"Invalid repeated Values {statistic}", duplicated)
+
+
+def test_duplicate_metadata_values_rejected_but_same_variable_can_group(workspace):
+    p, _ = workspace
+    with pytest.raises(ValueError, match="Values variable may be selected only once"):
+        validate_analysis(p, chart([meta("rating", "numeric")] * 2,
+                                   "sum", meta("condition")))
+    # Role reuse is legitimate; only repetition within Values is rejected.
+    result = compute_analysis(p, chart([meta("condition")], group=meta("condition")))
+    assert result["categories"] == ["A", "B"]
+    assert sum(sum(series["values"]) for series in result["series"]) == 6
+
+
+def test_variable_identity_distinguishes_prediction_source_and_representation():
+    from geometric_coder.analysis_bars import _variable_identity
+    descriptor = {"type": "code", "code_id": 7, "source": "labels", "value": "binary"}
+    predicted = {**descriptor, "source": "classifier", "predictor_id": 21}
+    probability = {**predicted, "value": "probability"}
+    assert len({_variable_identity(value) for value in (descriptor, predicted, probability)}) == 3
