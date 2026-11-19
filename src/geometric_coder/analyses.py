@@ -12,7 +12,7 @@ from typing import Any, Mapping
 import plotly.graph_objects as go
 
 _ALLOWED_KINDS = {"bar", "heatmap", "distribution"}
-_ALLOWED_SOURCES = {"labels", "predictions", "hybrid"}
+_ALLOWED_SOURCES = {"labels", "predictions", "hybrid", "hybrid_unsure"}
 _ALLOWED_MEASURES = {"count", "jaccard", "correlation"}
 _AGGREGATE_METHODS = {"any", "minimum", "count", "mean", "log_count"}
 _ALLOWED_VALUES = {"binary", "probability"}
@@ -250,6 +250,12 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
         return " ".join(joins), prediction, args
     if variable["value"] == "probability":
         human = f"CASE {a}.value WHEN 'positive' THEN 1.0 WHEN 'negative' THEN 0.0 ELSE NULL END"
+    if variable["source"] == "hybrid_unsure":
+        return " ".join(joins), (
+            f"CASE WHEN {a}.value IN ('positive', 'negative') THEN {human} "
+            f"WHEN {a}.observation_id IS NULL OR {a}.value = 'unsure' "
+            f"THEN {prediction} ELSE NULL END"
+        ), args
     return " ".join(joins), (
         f"CASE WHEN {a}.observation_id IS NOT NULL THEN {human} "
         f"ELSE {prediction} END"
