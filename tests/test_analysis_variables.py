@@ -359,16 +359,25 @@ def test_fixed_committee_probabilities_binary_hybrid_alignment_and_provenance(sa
         {"first": original[0]["values"], "second": original[1]["values"]},
         aggregation="harmonic_mean",
     )
-    probability, binary, hybrid = resolve_analytical_variables(project, [
+    probability, binary, hybrid, fallback, fallback_binary = resolve_analytical_variables(project, [
         _committee(code, committee),
         _committee(code, committee, value="binary"),
         _committee(code, committee, source="hybrid"),
+        _committee(code, committee, source="hybrid_unsure"),
+        _committee(code, committee, source="hybrid_unsure", value="binary"),
     ], requested)["columns"]
     assert probability["values"] == pytest.approx(combined.tolist())
     assert binary["values"] == [float(value >= 0.5) for value in combined]
     assert hybrid["values"][1] == 1.0
     assert hybrid["values"][2] is None
     assert hybrid["missing_reasons"][2] == "unsure"
+    assert fallback["values"][1] == 1.0
+    assert fallback["values"][2] == pytest.approx(combined[2])
+    assert fallback["values"][3] == 0.0
+    assert fallback["coverage"]["missing"] == 0
+    assert fallback_binary["values"][2] == float(combined[2] >= 0.5)
+    assert fallback_binary["values"][1] == 1.0
+    assert fallback_binary["values"][3] == 0.0
     assert hybrid["values"][3] == 0.0
     assert hybrid["values"][0] == pytest.approx(combined[0])
     assert probability["values"][0] == probability["values"][4]
