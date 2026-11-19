@@ -600,7 +600,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return (
             {"display": "block"},
             {"id": int(selected) if trigger == "analysis-edit" else None,
-             "schema_version": spec.get("schema_version", 1), "original_spec": spec},
+             "schema_version": spec.get("schema_version", 1), "original_spec": spec,
+             "original_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)"},
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec.get("measure", "count"),
@@ -1098,6 +1099,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-select", "options", allow_duplicate=True),
         Output("analysis-status", "children"),
         Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
         Input("analysis-save", "n_clicks"),
         State("analysis-name", "value"),
         *state_args, State("analysis-refresh", "data"),
@@ -1119,7 +1121,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              live_edge_ids: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
-            return (no_update,) * 5
+            return (no_update,) * 6
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
@@ -1131,10 +1133,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               live_width_ids, live_edges, live_edge_ids)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
-            return no_update, no_update, no_update, str(exc), no_update
+            return no_update, no_update, no_update, str(exc), no_update, no_update
         options = [{"label": row["name"], "value": row["analysis_id"]}
                    for row in project.analyses()]
-        return int(revision or 0) + 1, analysis_id, options, "", {"display": "none"}
+        return int(revision or 0) + 1, analysis_id, options, "", {"display": "none"}, None
 
     @app.callback(
         Output("analysis-figure", "figure", allow_duplicate=True),
