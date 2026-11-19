@@ -259,6 +259,9 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
 def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
+    if normalized.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import compute_bar_chart
+        return compute_bar_chart(project, normalized)
     if normalized["schema_version"] == 2:
         from geometric_coder.analysis_roles import compute_role_analysis
         return compute_role_analysis(project, normalized)
