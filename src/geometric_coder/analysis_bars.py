@@ -24,6 +24,40 @@ MAX_BAR_CELLS = 2500
 STATS = {"count", "sum", "mean", "median"}
 
 
+def _variable_identity(variable: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+    """Canonical source/representation identity, not a display name or slot index."""
+    return tuple(sorted(variable.items()))
+
+
+def _series_labels(
+    descriptors: list[dict[str, Any]], names: list[str], count: int,
+) -> dict[tuple[tuple[str, Any], ...], str]:
+    """Disambiguate equal-looking names *after* aggregation keys are determined."""
+    identities = [_variable_identity(variable) for variable in descriptors[:count]]
+    duplicates = Counter(names[:count])
+    labels: dict[tuple[tuple[str, Any], ...], str] = {}
+    used: set[str] = set()
+    for identifier, variable, name in zip(
+        identities, descriptors[:count], names[:count], strict=True
+    ):
+        if identifier in labels:
+            continue
+        label = name
+        if duplicates[name] > 1:
+            family = variable["type"].title()
+            if variable["type"] == "code" and variable.get("source") != "labels":
+                family += " " + variable["source"]
+            label = f"{name} ({family})"
+        original = label
+        suffix = 2
+        while label in used:
+            label = f"{original} [{suffix}]"
+            suffix += 1
+        labels[identifier] = label
+        used.add(label)
+    return labels
+
+
 def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     if spec.get("schema_version") != 2 or spec.get("kind") != "bar_chart":
         raise ValueError("Expected a schema-v2 Bar chart.")
@@ -55,6 +89,14 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         normalized[role] = {"variable": variable}
         if transform is not None:
             normalized[role]["transform"] = transform
+    descriptor_count = len(normalized["values"]) + sum(
+        role in normalized for role in ("group", "color")
+    )
+    if descriptor_count > 20:
+        raise ValueError(
+            f"Bar chart selects {descriptor_count} analytical variables across Values, "
+            "Group, and Color; the maximum is 20 in total."
+        )
     if stat == "count":
         categorical = [v["variable"]["type"] == "code" and v["variable"]["value"] == "binary"
                        or v["variable"]["type"] == "metadata" and v["variable"]["value"] == "categorical"
@@ -98,6 +140,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     descriptors = [item["variable"] for item in entries]
     names = [_label(v, project) for v in descriptors]
     n_values = len(roles["values"])
+    value_names = _series_labels(descriptors, names, n_values)
     stat = spec["statistic"]
     categorical_count = stat == "count" and (
         descriptors[0]["type"] == "code" and descriptors[0]["value"] == "binary"
@@ -185,7 +228,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
             value = values[index]
             if value is None:
                 continue
-            value_name = names[index]
+            value_identity = _variable_identity(descriptors[index])
             if categorical_count:
                 binary = descriptors[index]["type"] == "code" and descriptors[index]["value"] == "binary"
                 is_reduced_numeric = bool(spec.get("aggregation")) and (
@@ -195,10 +238,10 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
                            if binary and not is_reduced_numeric and value in (0, 1)
                            else _categorical_key(value))
                 x = group_key if group_key is not None else val_key
-                series = ("series", value_name) if group_key is None else ("series", value_name, val_key)
+                series = ("series", value_identity) if group_key is None else ("series", value_identity, val_key)
             else:
-                x = group_key if group_key is not None else ("series", value_name)
-                series = ("series", value_name)
+                x = group_key if group_key is not None else ("series", value_identity)
+                series = ("series", value_identity)
             if color_key is not None:
                 series = ("colored", series, color_key)
             key = (x, series)
@@ -220,9 +263,12 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     s_keys = sorted({s for _, s in cells}, key=str)
     if len(x_keys) > MAX_CATEGORIES or len(s_keys) > MAX_CATEGORIES:
         raise ValueError("Bar chart exceeds 100 categories or series.")
-    # Use the typed display formatter for the primary x categories. Series
-    # concatenate already labeled components and never expose internal IDs.
-    x_labels = _category_labels(x_keys, "group" if "group" in roles else "values", labels)
+    # Series keys retain canonical variable identities. Format those identities
+    # only after aggregation, so same-named Codes and metadata never merge.
+    if not categorical_count and "group" not in roles:
+        x_labels = {key: value_names[key[1]] for key in x_keys}
+    else:
+        x_labels = _category_labels(x_keys, "group" if "group" in roles else "values", labels)
     color_keys = sorted({s[2] for s in s_keys if s[0] == "colored"}, key=str)
     color_labels = (_category_labels(color_keys, "color", labels) if color_keys else {})
     value_keys = sorted({s[2] for s in s_keys if s[0] == "series" and len(s) > 2}, key=str)
@@ -232,8 +278,8 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         if key[0] == "colored":
             return series_name(key[1]) + " / " + color_labels[key[2]]
         if len(key) > 2:
-            return key[1] + " / " + value_labels[key[2]]
-        return key[1]
+            return value_names[key[1]] + " / " + value_labels[key[2]]
+        return value_names[key[1]]
 
     result_series = []
     for series in s_keys:
