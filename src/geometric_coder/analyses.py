@@ -363,7 +363,8 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                 hovertemplate="%{x}: %{y:.4g} (n=%{customdata})<extra>%{fullData.name}</extra>",
             ))
         fig.update_layout(barmode="group", xaxis_type="category",
-                          xaxis_title="Group", yaxis_title=result["statistic"].title())
+                          xaxis_title=result["xaxis_title"],
+                          yaxis_title=result["statistic"].title())
     elif result["kind"] == "histogram":
         for group in result["groups"]:
             fig.add_trace(go.Bar(
