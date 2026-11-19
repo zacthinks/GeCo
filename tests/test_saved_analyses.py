@@ -341,6 +341,37 @@ def test_distribution_of_turn_level_positive_counts(turn_project):
     assert fig.layout.xaxis.title.text == "log(1 + positive sentence observations per turn)"
     assert fig.layout.yaxis.title.text == "Number of turn groups"
     assert "Question" in fig.layout.title.text
+    assert fig.layout.xaxis.type == "linear"
+    assert list(fig.data[0].x) == pytest.approx([0, 0.69, 1.1], abs=0.01)
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_axis_type"),
+    [
+        ("any", "category"),
+        ("minimum", "category"),
+        ("count", "linear"),
+        ("mean", "linear"),
+        ("log_count", "linear"),
+    ],
+)
+def test_saved_distribution_axis_respects_parent_reduction(
+    turn_project, method, expected_axis_type,
+):
+    workspace, code_id = turn_project
+    spec = {
+        "kind": "distribution",
+        "measure": "count",
+        "variables": [_code(code_id)],
+        "aggregation": {"level": "turn", "method": method},
+    }
+    result = workspace.run_analysis(
+        workspace.save_analysis(f"Distribution with {method}", spec)
+    )
+    figure = analysis_figure(result)
+    assert figure.layout.xaxis.type == expected_axis_type
+    if expected_axis_type == "linear":
+        assert all(isinstance(x, (int, float)) for x in figure.data[0].x)
 
 
 def test_histogram_positive_count_changes_with_grouping(turn_project):
@@ -356,6 +387,7 @@ def test_histogram_positive_count_changes_with_grouping(turn_project):
     }
     assert atomic["aggregation"] is None
     assert "atomic level" in analysis_figure(atomic).layout.xaxis.title.text
+    assert analysis_figure(atomic).layout.xaxis.type == "category"
 
     grouped = compute_analysis(workspace, {
         "kind": "distribution", "measure": "count",
@@ -369,6 +401,7 @@ def test_histogram_positive_count_changes_with_grouping(turn_project):
     figure = analysis_figure(grouped)
     assert figure.layout.xaxis.title.text == "Number of positive sentence observations per turn"
     assert figure.layout.yaxis.title.text == "Number of turn groups"
+    assert figure.layout.xaxis.type == "linear"
 
 
 def test_histogram_preview_is_explicit_and_uses_unsaved_editor_settings():
