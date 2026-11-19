@@ -133,6 +133,10 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page.locator("#analysis-edit").click()
                 assert not page.get_by_text("Color: cohort (Metadata)", exact=True).count()
                 page.locator("#analysis-cancel").click()
+                # Finish the asynchronous close before selecting and editing
+                # a different saved analysis; otherwise a late Cancel callback
+                # can clear the next editor's restored state.
+                page.locator("#analysis-editor").wait_for(state="hidden")
 
                 # Existing-format Bars expose only supported controls. No
                 # Color/Statistic edit can silently disappear during a save
