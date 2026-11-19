@@ -1300,6 +1300,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         )
 
     @app.callback(
+        Output("analysis-select", "disabled"),
+        Input("analysis-nav-pending", "data"),
+    )
+    def lock_analysis_selection(pending: dict[str, Any] | None) -> bool:
+        # Once a switch requires confirmation, lock the selector until the
+        # researcher explicitly chooses Save, Discard or Stay.
+        return pending is not None
+
+    @app.callback(
         Output("analysis-refresh", "data", allow_duplicate=True),
         Output("analysis-select", "value", allow_duplicate=True),
         Output("analysis-editor", "style", allow_duplicate=True),
