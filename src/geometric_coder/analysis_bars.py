@@ -12,7 +12,7 @@ from statistics import median
 from typing import Any
 
 from geometric_coder.analysis_continuous import (
-    MAX_CATEGORIES, _bin, _bin_labels, _bin_spec, _categorical_key,
+    MAX_CATEGORIES, _bin, _bin_labels, _categorical_key,
     _category_labels, _edges, _label, _numeric, _parent_rows, _rank,
     _reservoir, _transform, calendar_period,
 )
