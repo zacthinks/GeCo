@@ -163,3 +163,28 @@ The current `schema_version: 1` format, SQL aggregation paths, distributions,
 bar/heatmaps, missingness, parent-level reductions, and live recomputation
 remain unchanged. Phase 1 deliberately does not route existing charts through
 the new resolver, which is an additive boundary for later charts.
+
+
+## Final acceptance polish: binary metadata and opt-in Unsure fallback
+
+Numerical chart roles accept binary Codes, model probabilities, fitted Scale positions,
+numeric metadata, and explicit binary metadata (0/1 or true/false). The
+`{"type":"metadata","field":"flag","value":"binary"}` descriptor maps observed
+true/1 to 1.0 and false/0 to 0.0. It does not assign a numerical ordering
+to arbitrary category labels; invalid binary observations are reported as
+missing with `invalid_binary`. The existing `value:"numeric"` contract remains
+strict about boolean metadata. Multi-category variables need an explicit,
+chart-appropriate representation rather than implicit integer labels.
+
+Code source `hybrid` retains conservative semantics: Present/Absent human
+judgments override model values; Unsure remains missing; unreviewed units
+may use the selected retained predictor. The new opt-in `hybrid_unsure`
+uses the same human Present/Absent overrides but allows the selected
+predictor (classifier or committee) to supply values for both Unsure and
+unreviewed observations, without changing the human assignment events.
+Missing/stale/untrained predictor coverage is still reported. Binary and
+probability representations use the same source-choice semantics.
+
+The editor presents the histogram grouping series as **Color**, but
+existing `histogram.roles.group` recipe keys are preserved on disk.
+Legacy saved definitions are not silently migrated.
