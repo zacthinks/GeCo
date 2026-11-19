@@ -97,7 +97,13 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 # Dirty edits offer an explicit discard decision.
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-edit").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')?.value === 'Unified bars' && "
+                    "getComputedStyle(document.querySelector('#analysis-editor')).display !== 'none'",
+                    timeout=15000,
+                )
                 page.locator("#analysis-name").fill("Unsaved change")
+                assert page.locator("#analysis-name").input_value() == "Unsaved change"
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
                 page.locator("#analysis-nav-discard").click()
@@ -107,7 +113,13 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 # Save and switch must update the original ID, not the newly selected chart.
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-edit").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')?.value === 'Unified bars' && "
+                    "getComputedStyle(document.querySelector('#analysis-editor')).display !== 'none'",
+                    timeout=15000,
+                )
                 page.locator("#analysis-name").fill("Unified bars edited")
+                assert page.locator("#analysis-name").input_value() == "Unified bars edited"
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
                 page.locator("#analysis-nav-save").click()
@@ -119,7 +131,13 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 # modified editor open for continued editing.
                 choose(page.locator("#analysis-select"), "Unified bars edited")
                 page.locator("#analysis-edit").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')?.value === 'Unified bars edited' && "
+                    "getComputedStyle(document.querySelector('#analysis-editor')).display !== 'none'",
+                    timeout=15000,
+                )
                 page.locator("#analysis-name").fill("Stay here draft")
+                assert page.locator("#analysis-name").input_value() == "Stay here draft"
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
                 # The navigation decision remains open until a researcher
