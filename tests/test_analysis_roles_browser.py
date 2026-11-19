@@ -263,9 +263,8 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert parent_count["spec"]["aggregation"]["method"] == "count"
                 assert project.run_analysis(parent_count["analysis_id"])["series"][0]["values"] == [2.0, 0.0]
 
-                # An explicitly temporal role is visible but cannot execute
-                # calendar bucketing in this phase, even if the raw data look
-                # like valid dates.
+                # A temporal group must select an explicit calendar unit;
+                # date-like strings are never bucketed implicitly.
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Temporal unavailable")
                 choose(page.locator("#analysis-role-values"), "Code: Theme")
@@ -284,7 +283,7 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 ).wait_for(timeout=15000)
                 page.locator("#analysis-save").click()
                 page.locator("#analysis-status").get_by_text(
-                    "Phase 3", exact=False
+                    "calendar unit", exact=False
                 ).wait_for(timeout=15000)
                 assert not any(row["name"] == "Temporal unavailable"
                                for row in project.analyses())
