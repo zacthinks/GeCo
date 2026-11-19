@@ -467,6 +467,14 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                     b=90 if result["kind"] == "distribution" else 60),
     )
     if result["kind"] == "distribution":
-        fig.update_xaxes(type="category", automargin=True)
+        # Only atomic and binary parent reductions are discrete. Parent-level
+        # counts, proportions and log-counts are genuinely numerical, and
+        # must retain their metric spacing on the horizontal axis.
+        aggregation = result.get("aggregation")
+        method = aggregation.get("method", "any") if aggregation else "any"
+        if method in ("any", "minimum"):
+            fig.update_xaxes(type="category", automargin=True)
+        else:
+            fig.update_xaxes(type="linear", automargin=True)
         fig.update_yaxes(automargin=True)
     return fig
