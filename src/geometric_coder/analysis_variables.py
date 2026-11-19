@@ -75,7 +75,7 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
             raise ValueError(f"Unknown Code ID: {code_id}") from error
         source = reference.get("source", "labels")
         value = reference.get("value", "binary")
-        if source not in ("labels", "predictions", "hybrid"):
+        if source not in ("labels", "predictions", "hybrid", "hybrid_unsure"):
             raise ValueError("Unknown Code source.")
         if value not in ("binary", "probability"):
             raise ValueError("Unknown Code value representation.")
@@ -117,8 +117,8 @@ def validate_variable(project: Any, reference: Mapping[str, Any]) -> dict[str, A
         if not isinstance(field, str) or field not in project.metadata.get("metadata_columns", []):
             raise ValueError("Unknown metadata field.")
         value = reference.get("value", "categorical")
-        if value not in ("categorical", "numeric", "temporal"):
-            raise ValueError("Metadata must be categorical, numeric, or temporal.")
+        if value not in ("categorical", "binary", "numeric", "temporal"):
+            raise ValueError("Metadata must be categorical, binary, numeric, or temporal.")
         numeric_strings = reference.get("numeric_strings", False)
         if not isinstance(numeric_strings, bool) or (numeric_strings and value != "numeric"):
             raise ValueError("numeric_strings is only valid for numeric metadata.")
@@ -196,8 +196,21 @@ def _metadata_value(raw: Any, descriptor: Mapping[str, Any]) -> tuple[Any, str |
                 return None, "invalid_metadata"
             return raw, None
         return None, "invalid_metadata"
+    if descriptor["value"] == "binary":
+        # Opt-in binary interpretation; arbitrary category labels are not numbered.
+        if isinstance(raw, bool):
+            return float(raw), None
+        if isinstance(raw, (int, float)) and raw in (0, 1):
+            return float(raw), None
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            if token in ("1", "true"):
+                return 1.0, None
+            if token in ("0", "false"):
+                return 0.0, None
+        return None, "invalid_binary"
     if isinstance(raw, bool):
-        return None, "invalid_numeric"
+        return float(raw), None
     if isinstance(raw, (int, float)):
         try:
             number = float(raw)
@@ -231,9 +244,16 @@ def _committee_join(
         f"CASE {p}.predicted_label WHEN 'positive' THEN 1.0 "
         "WHEN 'negative' THEN 0.0 ELSE NULL END"
     )
-    if source == "hybrid":
+    if source in ("hybrid", "hybrid_unsure"):
         human = f"CASE {a}.value WHEN 'positive' THEN 1.0 WHEN 'negative' THEN 0.0 ELSE NULL END"
-        prediction = f"CASE WHEN {a}.observation_id IS NOT NULL THEN {human} ELSE {prediction} END"
+        if source == "hybrid_unsure":
+            prediction = (
+                f"CASE WHEN {a}.value IN ('positive', 'negative') THEN {human} "
+                f"WHEN {a}.observation_id IS NULL OR {a}.value = 'unsure' "
+                f"THEN {prediction} ELSE NULL END"
+            )
+        else:
+            prediction = f"CASE WHEN {a}.observation_id IS NOT NULL THEN {human} ELSE {prediction} END"
     return " ".join(joins), prediction, [code_id, -1 if fit_id is None else fit_id]
 
 
@@ -299,7 +319,8 @@ def _code_missing(row: Any, index: int, descriptor: Mapping[str, Any],
     human = row[f"a{index}_value"]
     has_human = row[f"a{index}_id"] is not None
     if descriptor["source"] != "predictions" and has_human:
-        return "unsure" if human == "unsure" else "invalid_human_label"
+        if human != "unsure" or descriptor["source"] != "hybrid_unsure":
+            return "unsure" if human == "unsure" else "invalid_human_label"
     if descriptor["source"] == "labels":
         return "unreviewed"
     if fit_status == "not_trained":
@@ -523,7 +544,10 @@ def resolve_analytical_variables(
             for observation_id in requested:
                 row = rows_by_id[observation_id]
                 if fixed:
-                    if descriptor["source"] == "hybrid" and row[f"a{index}_id"] is not None:
+                    if (descriptor["source"] in ("hybrid", "hybrid_unsure")
+                            and row[f"a{index}_id"] is not None
+                            and not (descriptor["source"] == "hybrid_unsure"
+                                     and row[f"a{index}_value"] == "unsure")):
                         human = row[f"a{index}_value"]
                         if human in ("positive", "negative"):
                             values.append(1.0 if human == "positive" else 0.0)
