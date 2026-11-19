@@ -141,3 +141,34 @@ def test_legacy_bar_and_distribution_still_execute_unchanged(workspace):
     assert [v["kind"] for v in (p.analysis(
         p.save_analysis(f"Old {i}", spec))["spec"] for i, spec in enumerate((v1, old_dist))
     )] == ["bar", "distribution"]
+
+def test_code_and_numeric_metadata_with_identical_names_remain_separate(workspace):
+    p, _ = workspace
+    code = p.create_code("rating")
+    units = [unit["observation_id"] for unit in p.database.list_units()]
+    for index, label in enumerate(("positive", "negative", "positive",
+                                  "negative", "positive", "negative")):
+        p.annotate(units[index], code, label)
+    result = compute_analysis(
+        p, chart([code_value(code), meta("rating", "numeric")],
+                 "sum", meta("condition"))
+    )
+    assert result["categories"] == ["A", "B"]
+    assert len(result["series"]) == 2
+    by_name = {row["name"]: row for row in result["series"]}
+    assert set(by_name) == {"rating (Code)", "rating (Metadata)"}
+    assert by_name["rating (Code)"]["values"] == [2, 1]
+    assert by_name["rating (Code)"]["denominators"] == [3, 3]
+    assert by_name["rating (Metadata)"]["values"] == pytest.approx([2.0, 14.0])
+    assert by_name["rating (Metadata)"]["denominators"] == [2, 2]
+
+
+def test_total_variable_limit_includes_both_grouping_roles(workspace):
+    p, code = workspace
+    valid = chart([code_value(code)] * 18, "sum",
+                  meta("condition"), meta("site"))
+    assert len(validate_analysis(p, valid)["roles"]["values"]) == 18
+    invalid = chart([code_value(code)] * 19, "sum",
+                    meta("condition"), meta("site"))
+    with pytest.raises(ValueError, match="21 analytical variables.*maximum is 20"):
+        validate_analysis(p, invalid)
