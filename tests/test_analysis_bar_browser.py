@@ -119,6 +119,21 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 }
                 assert len(project.run_analysis(categorical_saved["analysis_id"])["series"]) == 2
 
+                # Clearing an optional role must persist through Save and reopen.
+                choose(page.locator("#analysis-select"), "Three-role categorical Count")
+                page.locator("#analysis-edit").click()
+                page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for()
+                page.locator("#analysis-clear-bar-color").click()
+                page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for(state="detached")
+                page.locator("#analysis-save").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                cleared = project.analysis(categorical_saved["analysis_id"])["spec"]
+                assert "color" not in cleared["roles"]
+                choose(page.locator("#analysis-select"), "Three-role categorical Count")
+                page.locator("#analysis-edit").click()
+                assert not page.get_by_text("Color: cohort (Metadata)", exact=True).count()
+                page.locator("#analysis-cancel").click()
+
                 # Existing-format Bars expose only supported controls. No
                 # Color/Statistic edit can silently disappear during a save
                 # or bypass the navigation guard.
