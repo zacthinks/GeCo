@@ -105,6 +105,11 @@ def cases() -> dict[str, dict]:
         "correlation": recipe("correlation_heatmap", values=[score, rating]),
         "value_heatmap": recipe("value_heatmap", values=score, rows=group, columns=month),
         "numeric_group": recipe("summary_bar", values=score, group=numeric_group),
+        "unified_bar": {
+            "schema_version": 2, "kind": "bar_chart",
+            "roles": {"values": [score], "group": group, "color": month},
+            "statistic": "sum",
+        },
     }
     result["histogram"]["binning"] = {
         "kind": "histogram_bins", "method": "equal_width", "bins": 20,
@@ -237,6 +242,33 @@ def _assert_chart_values(name: str, result: dict, units: int, oracle) -> None:
                 actual = result["values"][i][j]
                 assert (actual is None if expected_value is None else
                         math.isclose(actual, expected_value, abs_tol=1e-9)), (name, group, month)
+    elif name == "unified_bar":
+        expected_groups = sorted(grouped)
+        assert result["categories"] == expected_groups, name
+        # The independent fixture oracle computes expected per-group monthly
+        # values without calling GeCo bar aggregation or grouping helpers.
+        by_month_series = {
+            record["name"]: record for record in result["series"]
+        }
+        expected_months = sorted(
+            {month for _, _, _, month in _synthetic_rows(units)}
+        )
+        assert set(by_month_series) == {
+            f"score / {month}" for month in expected_months
+            if any(heatmap.get((group, month)) for group in expected_groups)
+        }, name
+        for month in expected_months:
+            series = by_month_series.get(f"score / {month}")
+            if series is None:
+                continue
+            for index, group in enumerate(expected_groups):
+                values = heatmap.get((group, month), [])
+                assert series["denominators"][index] == len(values), (
+                    name, group, month, "denominator"
+                )
+                assert math.isclose(
+                    series["values"][index], sum(values), abs_tol=1e-9
+                ), (name, group, month, "sum")
     elif name == "numeric_group":
         edges = result["transformations"]["group"]["edges"]
         by_bin = defaultdict(list)
