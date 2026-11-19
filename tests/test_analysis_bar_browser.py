@@ -83,6 +83,35 @@ def test_bar_editor_and_switch_guard(tmp_path):
                              if row["name"] == "Unified bars")
                 assert saved["spec"]["kind"] == "bar_chart"
 
+                # Existing-format Bars expose only supported controls. No
+                # Color/Statistic edit can silently disappear during a save
+                # or bypass the navigation guard.
+                choose(page.locator("#analysis-select"), "Other saved analysis")
+                page.locator("#analysis-edit").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-kind')"
+                    "?.textContent?.includes('existing format')",
+                    timeout=15000,
+                )
+                page.locator("#analysis-bar-color-box").wait_for(state="hidden")
+                page.locator("#analysis-bar-statistic-box").wait_for(state="hidden")
+                assert page.locator("#analysis-bar-color").is_hidden()
+                assert page.locator("#analysis-bar-statistic").is_hidden()
+                # A supported legacy Group change must be tracked and saved,
+                # preserving legacy count semantics and the original ID.
+                choose(page.locator("#analysis-role-group"), "Metadata: condition")
+                choose(page.locator("#analysis-select"), "Unified bars")
+                page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                page.locator("#analysis-nav-save").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                legacy = project.analysis(other)["spec"]
+                assert legacy["kind"] == "bar"
+                assert legacy["measure"] == "count"
+                assert "statistic" not in legacy
+                assert "color" not in legacy.get("roles", {})
+                assert any(variable.get("field") == "condition"
+                           for variable in legacy.get("variables", []))
+
                 # The unchanged edit must close immediately on analysis switch.
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-edit").click()
