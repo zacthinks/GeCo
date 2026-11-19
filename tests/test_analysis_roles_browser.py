@@ -97,6 +97,7 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Roles browser")
                 choose(page.locator("#analysis-role-values"), "Code: Theme")
+                choose(page.locator("#analysis-bar-statistic"), "Sum")
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
@@ -218,22 +219,15 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert duplicate["analysis_id"] != legacy_id
                 assert project.run_analysis(duplicate["analysis_id"]) == before
 
-                # A distribution supports parent-level counts. Switching to a
-                # bar must reset that incompatible reduction, not reject a
-                # chart that is otherwise valid. A correlation heatmap may
-                # retain the count reduction; Jaccard may not.
+                # Unified bars support binary Code sums and parent-level
+                # positive counts, while keeping the source and denominator explicit.
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Switching aggregation")
-                choose(page.locator("#analysis-kind"), "Code-value distribution")
-                choose(page.locator("#analysis-role-distribution"), "Code: Theme")
+                choose(page.locator("#analysis-role-values"), "Code: Theme")
+                choose(page.locator("#analysis-role-group"), "Metadata: group")
+                choose(page.locator("#analysis-bar-statistic"), "Sum")
                 choose(page.locator("#analysis-aggregate-level"), "Group by interview (and preceding keys)")
                 choose(page.locator("#analysis-aggregate-method"), "Number of positive units per group")
-                choose(page.locator("#analysis-kind"), "Bar plot — positive Code counts")
-                page.wait_for_function(
-                    "() => document.querySelector('#analysis-aggregate-method')"
-                    "?.innerText?.includes('Any observed positive')", timeout=15000,
-                )
-                choose(page.locator("#analysis-role-values"), "Code: Theme")
                 page.locator("#analysis-preview").click()
                 page.locator("#analysis-status").get_by_text(
                     "Preview unavailable:", exact=False
@@ -245,15 +239,16 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 )
                 switched = next(row for row in project.analyses()
                                 if row["name"] == "Switching aggregation")
-                assert switched["spec"]["aggregation"]["method"] == "any"
+                assert switched["spec"]["kind"] == "bar_chart"
+                assert switched["spec"]["aggregation"]["method"] == "count"
 
-                # Continuous numerical charts support parent-level Code counts,
-                # even though a legacy bar resets that reduction to "any".
+                # Numerical parent reduction and grouped mean remain available
+                # in the same new Bar chart workflow.
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical parent count")
-                choose(page.locator("#analysis-kind"), "Grouped numerical mean / median")
-                choose(page.locator("#analysis-role-continuous-values"), "Code: Theme")
-                choose(page.locator("#analysis-continuous-group"), "Metadata: group")
+                choose(page.locator("#analysis-role-values"), "Code: Theme")
+                choose(page.locator("#analysis-role-group"), "Metadata: group")
+                choose(page.locator("#analysis-bar-statistic"), "Mean")
                 choose(page.locator("#analysis-aggregate-level"),
                        "Group by interview (and preceding keys)")
                 choose(page.locator("#analysis-aggregate-method"),
@@ -266,7 +261,7 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 parent_count = next(row for row in project.analyses()
                                     if row["name"] == "Numerical parent count")
                 assert parent_count["spec"]["aggregation"]["method"] == "count"
-                assert project.run_analysis(parent_count["analysis_id"])["values"] == [2.0, 0.0]
+                assert project.run_analysis(parent_count["analysis_id"])["series"][0]["values"] == [2.0, 0.0]
 
                 # An explicitly temporal role is visible but cannot execute
                 # calendar bucketing in this phase, even if the raw data look
@@ -282,10 +277,10 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                     'button[id*="analysis-role-value"][id*="group:metadata:date"]'
                 )
                 date_interpretation.wait_for(state="visible", timeout=15000)
-                choose(date_interpretation, "Temporal / ISO date (calendar grouping)")
+                choose(date_interpretation, "Date/time")
                 page.locator("#analysis-preview").click()
                 page.locator("#analysis-status").get_by_text(
-                    "Phase 3", exact=False
+                    "calendar unit", exact=False
                 ).wait_for(timeout=15000)
                 page.locator("#analysis-save").click()
                 page.locator("#analysis-status").get_by_text(
