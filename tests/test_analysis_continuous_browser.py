@@ -74,7 +74,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
-                choose(page.locator("#analysis-kind"), "Scatterplot — two numerical axes")
+                choose(page.locator("#analysis-kind"), "Scatterplot")
                 choose(page.locator("#analysis-role-x"), "Metadata: score")
                 choose(page.locator("#analysis-role-y"), "Metadata: rating")
                 choose(page.locator('button[id*="analysis-role-value"][id*="x:metadata:score"]'),
