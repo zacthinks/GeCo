@@ -383,24 +383,28 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 {"label": "Continuous histogram", "value": "histogram"},
                 
                 {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
-                {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+                {"label": "Summary heatmap", "value": "value_heatmap"},
             ], value="bar_chart", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
                 html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
-                html.Label("Group (optional)"),
-                dcc.Dropdown(id="analysis-role-group", options=[], value=None),
-                html.Div([
-                    html.Label("Color (optional)"),
-                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
-                ], id="analysis-bar-color-box"),
                 html.Div([
                     html.Label("Statistic"),
                     dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
                         options=[{"label": label, "value": value} for label, value in
                                  (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
                 ], id="analysis-bar-statistic-box"),
+                html.P("Count summarizes observed values; categorical Count displays category frequencies. "
+                       "Sum of a binary Code counts Present judgments."),
+                html.Label("Group (optional)"),
+                dcc.Dropdown(id="analysis-role-group", options=[], value=None, clearable=True),
+                html.Button("Clear Group", id="analysis-clear-bar-group", n_clicks=0, type="button"),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None, clearable=True),
+                    html.Button("Clear Color", id="analysis-clear-bar-color", n_clicks=0, type="button"),
+                ], id="analysis-bar-color-box"),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -423,14 +427,37 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("X"), dcc.Dropdown(id="analysis-role-x", options=[]),
                 html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
                 html.Label("Color (optional)"),
-                dcc.Dropdown(id="analysis-role-color", options=[]),
+                dcc.Dropdown(id="analysis-role-color", options=[], clearable=True),
+                html.Button("Clear Color", id="analysis-clear-scatter-color", n_clicks=0, type="button"),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
                 html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
                 html.Div([
-                    html.Label("Group"),
-                    dcc.Dropdown(id="analysis-continuous-group", options=[]),
+                    html.Label("Histogram bin method"),
+                    dcc.Dropdown(id="analysis-hist-method", options=[
+                        {"label": "Equal width", "value": "equal_width"},
+                        {"label": "Quantiles", "value": "quantile"},
+                        {"label": "Fixed width", "value": "fixed_width"},
+                        {"label": "Explicit edges", "value": "explicit"}],
+                        value="equal_width", clearable=False),
+                    html.Div([
+                        html.Label("Bin count"),
+                        dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
+                    ], id="analysis-hist-bins-box"),
+                    html.Div([
+                        html.Label("Fixed bin width"),
+                        dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
+                    ], id="analysis-hist-width-box"),
+                    html.Div([
+                        html.Label("Explicit bin edges (comma-separated, ascending)"),
+                        dcc.Input(id="analysis-hist-edges", type="text", placeholder="0, 10, 20, 30"),
+                    ], id="analysis-hist-edges-box"),
+                ], id="analysis-hist-options", style={"display": "none"}),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-continuous-group", options=[], clearable=True),
+                    html.Button("Clear Color", id="analysis-clear-histogram-color", n_clicks=0, type="button"),
                 ], id="analysis-continuous-group-box"),
                 html.Div([
                     html.Label("Rows"),
@@ -446,18 +473,6 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                     id="analysis-statistic", options=[{"label":"Mean","value":"mean"},
                     {"label":"Median","value":"median"}], value="mean", clearable=False),
             ], id="analysis-statistic-options", style={"display":"none"}),
-            html.Div([
-                html.Label("Histogram bin method"),
-                dcc.Dropdown(id="analysis-hist-method", options=[
-                    {"label":"Equal width","value":"equal_width"},
-                    {"label":"Quantiles","value":"quantile"},
-                    {"label":"Fixed width","value":"fixed_width"},
-                    {"label":"Explicit edges","value":"explicit"}], value="equal_width", clearable=False),
-                html.Label("Bin count"), dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
-                html.Label("Fixed bin width"), dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
-                html.Label("Explicit bin edges (comma-separated, ascending)"),
-                dcc.Input(id="analysis-hist-edges", type="text", placeholder="0, 10, 20, 30"),
-            ], id="analysis-hist-options", style={"display":"none"}),
             html.Div(id="analysis-role-settings"),
             html.Label("Aggregate observations (optional)"),
             dcc.Dropdown(id="analysis-aggregate-level", clearable=False,
@@ -517,7 +532,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             {"label": "Scatterplot", "value": "scatter"},
             {"label": "Continuous histogram", "value": "histogram"},
             {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
-            {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+            {"label": "Summary heatmap", "value": "value_heatmap"},
         ]
         old = (editing or {}).get("original_spec") or {}
         kind = old.get("kind")
@@ -795,7 +810,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 config = (configs or {}).get(key, {})
                 display = next((item["label"] for item in variable_options(project) if item["value"] == raw), raw)
                 family_name, _, value_name = display.partition(": ")
-                readable = f"{role.title()}: {value_name} ({family_name})" if value_name else f"{role.title()}: {display}"
+                label_role = "Color" if kind == "histogram" and role == "group" else role.title()
+                readable = f"{label_role}: {value_name} ({family_name})" if value_name else f"{label_role}: {display}"
                 controls = [html.H4(readable)]
                 if family == "code":
                     code_id = int(identity)
@@ -803,6 +819,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         {"label": "Human labels only", "value": "labels"},
                         {"label": "Predictions only", "value": "predictions"},
                         {"label": "Human first, then predictions", "value": "hybrid"},
+                        {"label": "Human first, including Unsure predictions", "value": "hybrid_unsure"},
                     ]
                     controls.extend([
                         html.Label("Source"),
@@ -834,6 +851,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                             id={"type": "analysis-role-value", "index": key},
                             options=[
                                 {"label": "Categorical", "value": "categorical"},
+                                {"label": "Binary (0/1 or true/false)", "value": "binary"},
                                 {"label": "Numerical", "value": "numeric"},
                                 {"label": "Date/time", "value": "temporal"},
                             ], value=config.get("value", "categorical"),
