@@ -508,3 +508,47 @@ def test_phase3_mixed_probability_scale_and_numeric_metadata_charts(sample, monk
         assert summary["categories"] == ["A", "B", "C"]
         assert summary["denominators"] == [2, 2, 2]
         assert summary["values"] == pytest.approx([5.5, 3.5, 1.5])
+
+
+def test_hybrid_can_explicitly_fallback_for_unsure_without_rewriting_human_judgments(sample):
+    project, code, predictor, _scale, ids = sample
+    original = resolve_analytical_variables(project, [
+        _code(code, "hybrid", "probability", predictor),
+        _code(code, "hybrid_unsure", "probability", predictor),
+        _code(code, "predictions", "probability", predictor),
+    ], ids)["columns"]
+    conservative, fallback, predicted = original
+    assert conservative["values"][1] is None
+    assert conservative["missing_reasons"][1] == "unsure"
+    assert fallback["values"][1] == pytest.approx(predicted["values"][1])
+    assert fallback["values"][0] == 1.0
+    assert fallback["values"][3] == 0.0
+    assert fallback["values"][2] == pytest.approx(predicted["values"][2])
+    assert fallback["coverage"]["missing"] == 0
+    human = resolve_analytical_variables(project, [_code(code)], ids)["columns"][0]
+    assert human["missing_reasons"][1] == "unsure"
+
+
+def test_binary_metadata_requires_explicit_representation(sample):
+    project, _code, _predictor, _scale, ids = sample
+    import json
+    values = [True, False, 1, 0, "true", "control"]
+    with project.database.connect() as connection:
+        for observation_id, raw in zip(ids, values):
+            record = connection.execute(
+                "SELECT metadata_json FROM units WHERE observation_id = ?",
+                (observation_id,),
+            ).fetchone()
+            metadata = json.loads(record["metadata_json"])
+            metadata["score"] = raw
+            connection.execute(
+                "UPDATE units SET metadata_json = ? WHERE observation_id = ?",
+                (json.dumps(metadata), observation_id),
+            )
+    raw, binary = resolve_analytical_variables(project, [
+        {"type": "metadata", "field": "score"},
+        {"type": "metadata", "field": "score", "value": "binary"},
+    ], ids)["columns"]
+    assert raw["kind"] == "categorical"
+    assert binary["values"] == [1.0, 0.0, 1.0, 0.0, 1.0, None]
+    assert binary["missing_reasons"][-1] == "invalid_binary"
