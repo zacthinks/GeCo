@@ -328,21 +328,27 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                       placeholder="Analysis name", maxLength=160),
             html.Label("Visualization"),
             dcc.Dropdown(id="analysis-kind", options=[
-                {"label": "Bar plot — positive Code counts", "value": "bar"},
+                {"label": "Bar chart", "value": "bar_chart"},
                 {"label": "Association heatmap", "value": "heatmap"},
-                {"label": "Code-value distribution", "value": "distribution"},
+                
                 {"label": "Scatterplot — two numerical axes", "value": "scatter"},
                 {"label": "Continuous histogram", "value": "histogram"},
-                {"label": "Grouped numerical mean / median", "value": "summary_bar"},
+                
                 {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
                 {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
-            ], value="bar", clearable=False),
+            ], value="bar_chart", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
                 html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
                 html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None),
+                html.Label("Color (optional)"),
+                dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
+                html.Label("Statistic"),
+                dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
+                    options=[{"label": label, "value": value} for label, value in
+                             (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -466,6 +472,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-role-rows", "options"),
         Output("analysis-role-columns", "options"),
         Output("analysis-continuous-group", "options"),
+        Output("analysis-bar-color", "options"),
         Input("workspace-tabs", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
@@ -474,11 +481,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def refresh_variables(workspace: str, _code_refresh: Any, _focus_refresh: Any,
                           _editor_style: Any) -> Any:
         if workspace != "analyses":
-            return (no_update,) * 11
+            return (no_update,) * 12
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
         metadata = [c for c in choices if c["value"].startswith("metadata:")]
-        return codes, codes, choices, metadata, choices, choices, choices, choices, choices, choices, choices
+        return choices, codes, choices, choices, choices, choices, choices, choices, choices, choices, choices, choices
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -590,10 +597,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             help_text = ("A symmetric matrix of positive co-occurrence, Jaccard "
                          "similarity, or pairwise-complete correlations. "
                          "Categorical metadata expands into indicators.")
+        elif kind == "bar_chart":
+            help_text = "Choose a statistic, then compare values across an optional group and color."
         else:
             help_text = "Counts positive Code assignments, optionally by categorical metadata."
         return (
-            visible if kind == "bar" else hidden,
+            visible if kind in ("bar", "bar_chart") else hidden,
             visible if kind == "distribution" else hidden,
             visible if kind == "heatmap" else hidden,
             visible if kind == "heatmap" else hidden,
