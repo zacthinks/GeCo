@@ -312,15 +312,22 @@ def _source_coverage(result: dict[str, Any], html: Any) -> Any:
             if parent_grain else
             "Missing-reason counts refer to atomic observations; missing values are not zero.")
     return html.Div([
-        html.H4("Sources and coverage"),
-        html.P(f"{coverage['complete']:,} complete of {coverage['total']:,} {grain}."),
-        html.P(note),
-        html.Table([
-            html.Thead(html.Tr([html.Th("Variable"), html.Th("Source / fit"),
-                                html.Th("Observed"), html.Th("Missing reasons")])),
-            html.Tbody(rows),
-        ]),
-    ], className="analysis-source-summary")
+        html.P(
+            f"{coverage['complete']:,} of {coverage['total']:,} {grain} complete",
+            className="analysis-coverage-overview",
+        ),
+        html.Details([
+            html.Summary("Data and sources"),
+            html.Div([
+                html.P(note),
+                html.Table([
+                    html.Thead(html.Tr([html.Th("Variable"), html.Th("Source / fit"),
+                                        html.Th("Observed"), html.Th("Missing reasons")])),
+                    html.Tbody(rows),
+                ]),
+            ], className="analysis-source-summary"),
+        ], className="analysis-provenance-details"),
+    ])
 
 
 def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
@@ -476,7 +483,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             "kind": "bar", "names": [], "counts": [],
             "denominators": [], "categories": [],
         }), config={"displaylogo": False}),
-        html.Details([html.Summary("Data and sources"), html.Div(id="analysis-provenance")], className="analysis-provenance-details"),
+        html.Div(id="analysis-provenance"),
     ], className="analysis-manager")
 
 
