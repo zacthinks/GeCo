@@ -159,9 +159,17 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 choose(page.locator("#analysis-role-group"), "Metadata: condition")
                 # Wait for the role-settings callback to acknowledge the
                 # selection before triggering another asynchronous callback.
-                page.get_by_text("Group: condition (Metadata)", exact=True).wait_for(
-                    state="visible"
-                )
+                try:
+                    page.get_by_text("Group: condition (Metadata)", exact=True).wait_for(
+                        state="visible", timeout=6000,
+                    )
+                except playwright.Error as exc:
+                    raise AssertionError(
+                        "Legacy Group selection did not render; "
+                        "dropdown=" + repr(page.locator("#analysis-role-group").inner_text())
+                        + "; roles=" + repr(page.locator("#analysis-role-settings").inner_text())
+                        + "; editor=" + repr(page.locator("#analysis-editor").inner_text()[:300])
+                    ) from exc
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
                 page.locator("#analysis-nav-save").click()
