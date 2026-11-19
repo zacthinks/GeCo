@@ -545,7 +545,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             return (no_update,) * 12
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
-        metadata = [c for c in choices if c["value"].startswith("metadata:")]
         return choices, codes, choices, choices, choices, choices, choices, choices, choices, choices, choices, choices
 
     @app.callback(
