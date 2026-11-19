@@ -226,3 +226,56 @@ def test_numerical_values_without_group_have_values_axis(workspace):
     result = compute_analysis(p, chart([meta("rating", "numeric")], "sum"))
     assert result["xaxis_title"] == "Values"
     assert analysis_figure(result).layout.xaxis.title.text == "Values"
+
+
+def test_categorical_count_with_group_and_color_computes_and_saves(workspace):
+    project, _ = workspace
+    spec = chart([meta("condition")], "count", meta("site"), meta("condition"))
+    computed = compute_analysis(project, spec)
+    assert computed["categories"] == ["North", "South"]
+    by_name = {series["name"]: series for series in computed["series"]}
+    assert set(by_name) == {
+        "condition / A / A", "condition / B / B",
+    }
+    assert by_name["condition / A / A"]["values"] == [2, 1]
+    assert by_name["condition / B / B"]["values"] == [2, 1]
+    assert by_name["condition / A / A"]["denominators"] == [2, 1]
+    assert len(analysis_figure(computed).data) == 2
+    saved_id = project.save_analysis("Categorical Group and Color", spec)
+    assert project.analysis(saved_id)["spec"]["roles"] == validate_analysis(
+        project, spec
+    )["roles"]
+    assert project.run_analysis(saved_id)["series"] == computed["series"]
+
+
+def test_sum_missing_cells_remain_null_but_observed_zero_is_zero(workspace):
+    project, code = workspace
+    spec = chart([code_value(code)], "sum", meta("condition"), meta("site"))
+    result = compute_analysis(project, spec)
+    assert result["categories"] == ["A", "B"]
+    by_name = {row["name"]: row for row in result["series"]}
+    # A/North has one Present and one Unsure; B/North has an observed
+    # Absent and an unreviewed judgment. A/South is observed Absent.
+    # B/South is observed Present. All four cells have evidence.
+    assert by_name["Positive experience / North"]["values"] == [1.0, 0.0]
+    assert by_name["Positive experience / South"]["values"] == [0.0, 1.0]
+    assert by_name["Positive experience / North"]["denominators"] == [1, 1]
+    assert by_name["Positive experience / South"]["denominators"] == [1, 1]
+
+    # Make B/North wholly missing while retaining the group and color series
+    # elsewhere. No B/North evidence must produce None, not numeric zero.
+    units = project.database.list_units()
+    project.annotate(units[3]["observation_id"], code, "unsure")
+    missing = compute_analysis(project, spec)
+    by_name = {row["name"]: row for row in missing["series"]}
+    assert by_name["Positive experience / North"]["values"] == [1.0, None]
+    assert by_name["Positive experience / North"]["denominators"] == [1, 0]
+    assert by_name["Positive experience / South"]["values"] == [0.0, 1.0]
+    assert by_name["Positive experience / South"]["denominators"] == [1, 1]
+    fig = analysis_figure(missing)
+    north = next(trace for trace in fig.data if trace.name == "Positive experience / North")
+    assert list(north.y) == [1.0, None]
+    assert list(north.customdata) == [1, 0]
+
+    saved_id = project.save_analysis("Missing-aware Sum", spec)
+    assert project.run_analysis(saved_id)["series"] == missing["series"]
