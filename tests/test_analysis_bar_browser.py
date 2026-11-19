@@ -25,6 +25,8 @@ def test_bar_editor_and_switch_guard(tmp_path):
             "id": [1, 2, 3, 4],
             "text": ["nice product", "poor product", "useful tool", "unclear tool"],
             "condition": ["A", "A", "B", "B"],
+            "site": ["North", "South", "North", "South"],
+            "cohort": ["X", "Y", "X", "Y"],
             "rating": [0.0, 2.0, 4.0, None],
             "score": [1.0, 2.0, 3.0, 4.0],
         }),
@@ -82,6 +84,41 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 saved = next(row for row in project.analyses()
                              if row["name"] == "Unified bars")
                 assert saved["spec"]["kind"] == "bar_chart"
+
+                # Categorical Count with both Group and Color must compute,
+                # preview, and persist its complete typed recipe.
+                page.locator("#analysis-new").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')?.value === ''",
+                    timeout=15000,
+                )
+                page.locator("#analysis-name").fill("Three-role categorical Count")
+                choose(page.locator("#analysis-role-values"), "Metadata: condition")
+                choose(page.locator("#analysis-role-group"), "Metadata: site")
+                choose(page.locator("#analysis-bar-color"), "Metadata: cohort")
+                page.get_by_text("Values: condition (Metadata)", exact=True).wait_for()
+                page.get_by_text("Group: site (Metadata)", exact=True).wait_for()
+                page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for()
+                page.locator("#analysis-preview").click()
+                page.wait_for_function(
+                    "() => { const plot = document.querySelector('#analysis-figure .js-plotly-plot'); "
+                    "return plot?.data?.length === 2 && "
+                    "plot.data.every(trace => trace.y?.join(',') === '2,0' "
+                    "|| trace.y?.join(',') === '0,2'); }",
+                    timeout=20000,
+                )
+                page.locator("#analysis-save").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                categorical_saved = next(
+                    row for row in project.analyses()
+                    if row["name"] == "Three-role categorical Count"
+                )
+                assert categorical_saved["spec"]["kind"] == "bar_chart"
+                assert categorical_saved["spec"]["statistic"] == "count"
+                assert set(categorical_saved["spec"]["roles"]) == {
+                    "values", "group", "color"
+                }
+                assert len(project.run_analysis(categorical_saved["analysis_id"])["series"]) == 2
 
                 # Existing-format Bars expose only supported controls. No
                 # Color/Statistic edit can silently disappear during a save
