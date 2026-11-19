@@ -327,6 +327,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
     return html.Div([
         dcc.Store(id="analysis-refresh", data=0),
         dcc.Store(id="analysis-editing", data=None),
+        dcc.Store(id="analysis-nav-pending", data=None),
         dcc.Store(id="analysis-role-config", data={}),
         dcc.Store(id="analysis-role-reset", data=0),
         html.Div([
@@ -339,6 +340,15 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             html.Button("Duplicate", id="analysis-duplicate", n_clicks=0),
             html.Button("Delete", id="analysis-delete", n_clicks=0),
         ], className="analysis-actions"),
+        html.Div([
+            html.P("You have unsaved changes. Save them before switching analyses?"),
+            html.Div([
+                html.Button("Save and switch", id="analysis-nav-save", n_clicks=0),
+                html.Button("Discard and switch", id="analysis-nav-discard", n_clicks=0),
+                html.Button("Stay here", id="analysis-nav-stay", n_clicks=0),
+            ], className="analysis-editor-actions"),
+        ], id="analysis-nav-dialog", style={"display": "none"},
+           className="analysis-navigation-dialog"),
         html.Div([
             html.P("Delete this analysis? Codes and predictions will not be changed."),
             html.Button("Confirm delete", id="analysis-delete-confirm", n_clicks=0),
