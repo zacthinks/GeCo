@@ -62,12 +62,16 @@ def test_categorical_frequency_with_no_code_required(workspace):
     assert result["coverage"]["total"] == 6
     assert result["coverage"]["observed"] == [6]
     assert len(analysis_figure(result).data) == 1
+    assert result["xaxis_title"] == "condition"
+    assert analysis_figure(result).layout.xaxis.title.text == "condition"
 
 
 def test_binary_code_sum_is_positive_count_with_real_denominators(workspace):
     p, code = workspace
     result = compute_analysis(p, chart([code_value(code)], "sum", meta("condition")))
     assert result["categories"] == ["A", "B"]
+    assert result["xaxis_title"] == "condition"
+    assert analysis_figure(result).layout.xaxis.title.text == "condition"
     assert result["series"][0]["values"] == [1, 1]
     assert result["series"][0]["denominators"] == [2, 2]
     assert result["coverage"]["observed"][0] == 4
@@ -81,6 +85,7 @@ def test_binary_distribution_has_only_discrete_categories(workspace):
     assert result["series"][0]["values"] == [2, 2]
     fig = analysis_figure(result)
     assert fig.layout.xaxis.type == "category"
+    assert fig.layout.xaxis.title.text == "Positive experience"
     assert list(fig.data[0].x) == ["Absent", "Present"]
     assert 0.5 not in fig.data[0].x
 
@@ -207,3 +212,17 @@ def test_variable_identity_distinguishes_prediction_source_and_representation():
     predicted = {**descriptor, "source": "classifier", "predictor_id": 21}
     probability = {**predicted, "value": "probability"}
     assert len({_variable_identity(value) for value in (descriptor, predicted, probability)}) == 3
+
+
+def test_multiple_categorical_values_without_group_have_generic_value_axis(workspace):
+    p, code = workspace
+    result = compute_analysis(p, chart([code_value(code), meta("condition")]))
+    assert result["xaxis_title"] == "Value"
+    assert analysis_figure(result).layout.xaxis.title.text == "Value"
+
+
+def test_numerical_values_without_group_have_values_axis(workspace):
+    p, _ = workspace
+    result = compute_analysis(p, chart([meta("rating", "numeric")], "sum"))
+    assert result["xaxis_title"] == "Values"
+    assert analysis_figure(result).layout.xaxis.title.text == "Values"
