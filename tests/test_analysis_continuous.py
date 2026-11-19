@@ -372,3 +372,34 @@ def test_constant_quantile_histogram_has_nonzero_interval(workspace):
     from geometric_coder.analysis_continuous import _edges
     edges = _edges([3.0] * 6, spec["binning"])
     assert edges[0] < 3.0 < edges[-1]
+
+
+def test_binary_metadata_is_valid_on_numeric_axes_and_as_a_group(workspace):
+    project, _code_id, ids = workspace
+    from geometric_coder.analysis_variables import resolve_analytical_variables
+    import json
+    with project.database.connect() as connection:
+        for observation_id, value in zip(ids, [True, False, True, False, True, False]):
+            row = connection.execute(
+                "SELECT metadata_json FROM units WHERE observation_id = ?",
+                (observation_id,),
+            ).fetchone()
+            meta_json = json.loads(row["metadata_json"])
+            meta_json["group"] = value
+            connection.execute(
+                "UPDATE units SET metadata_json = ? WHERE observation_id = ?",
+                (json.dumps(meta_json), observation_id),
+            )
+    binary = meta("group", "binary")
+    scatter = recipe("scatter", x=binary, y=meta("score", "numeric"))
+    points = compute_analysis(project, scatter)["points"]
+    assert {point["x"] for point in points} == {0.0, 1.0}
+    corr = recipe("correlation_heatmap", values=[binary, meta("score", "numeric")])
+    matrix = compute_analysis(project, corr)["values"]
+    assert len(matrix) == 2
+    assert matrix[0][1] is not None
+    hist = recipe("histogram", values=binary)
+    counts = compute_analysis(project, hist)["counts"]
+    assert sum(map(sum, counts.values())) == 6
+    summary = recipe("summary_bar", values=meta("score", "numeric"), group=binary)
+    assert len(compute_analysis(project, summary)["categories"]) == 2
