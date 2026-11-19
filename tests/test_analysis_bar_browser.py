@@ -100,6 +100,11 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 # A supported legacy Group change must be tracked and saved,
                 # preserving legacy count semantics and the original ID.
                 choose(page.locator("#analysis-role-group"), "Metadata: condition")
+                # Wait for the role-settings callback to acknowledge the
+                # selection before triggering another asynchronous callback.
+                page.get_by_text("Group: condition (Metadata)", exact=True).wait_for(
+                    state="visible"
+                )
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
                 page.locator("#analysis-nav-save").click()
@@ -109,8 +114,9 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 assert legacy["measure"] == "count"
                 assert "statistic" not in legacy
                 assert "color" not in legacy.get("roles", {})
+                assert legacy.get("schema_version") == 1, legacy
                 assert any(variable.get("field") == "condition"
-                           for variable in legacy.get("variables", []))
+                           for variable in legacy.get("variables", [])), legacy
 
                 # The unchanged edit must close immediately on analysis switch.
                 choose(page.locator("#analysis-select"), "Unified bars")
