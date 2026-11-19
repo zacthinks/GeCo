@@ -475,6 +475,27 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     from geometric_coder.ui.app import _empty_figure
     from geometric_coder.analyses import compute_analysis
 
+    @app.callback(
+        Output("analysis-kind", "options"),
+        Input("analysis-editing", "data"),
+    )
+    def visualization_options(editing: dict[str, Any] | None) -> list[dict[str, str]]:
+        # Present one Bar chart choice for new analyses, without breaking the
+        # archived recipe type displayed when editing an existing saved chart.
+        options = [
+            {"label": "Bar chart", "value": "bar_chart"},
+            {"label": "Association heatmap", "value": "heatmap"},
+            {"label": "Scatterplot", "value": "scatter"},
+            {"label": "Continuous histogram", "value": "histogram"},
+            {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
+            {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+        ]
+        old = (editing or {}).get("original_spec") or {}
+        kind = old.get("kind")
+        if kind in ("bar", "distribution", "summary_bar"):
+            options.append({"label": "Bar chart (existing format)", "value": kind})
+        return options
+
     @app.callback(Output("analysis-select", "options"),
                   Input("analysis-refresh", "data"), Input("workspace-tabs", "value"))
     def options(_revision: int, workspace: str) -> Any:
