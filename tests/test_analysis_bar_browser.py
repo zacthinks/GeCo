@@ -146,7 +146,11 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 # A modified *unnamed* new Scatterplot draft must not be
                 # discarded just because the bar Values selectors are empty.
                 page.locator("#analysis-new").click()
-                assert page.locator("#analysis-name").input_value() == ""
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-name')?.value === '' && "
+                    "getComputedStyle(document.querySelector('#analysis-editor')).display !== 'none'",
+                    timeout=15000,
+                )
                 choose(page.locator("#analysis-kind"), "Scatterplot")
                 choose(page.locator("#analysis-role-x"), "Metadata: rating")
                 choose(page.locator("#analysis-role-y"), "Metadata: score")
