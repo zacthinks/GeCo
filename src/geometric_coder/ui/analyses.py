@@ -588,7 +588,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def open_editor(_new: int, _edit: int, _duplicate: int, _cancel: int,
                     selected: int | None) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
-        empty = ({"display": "block"}, {"id": None, "schema_version": 2},
+        empty = ({"display": "block"}, {"id": None, "schema_version": 2,
+                  "initial_spec": {"schema_version": 2, "kind": "bar_chart",
+                                   "roles": {"values": []}, "statistic": "count"},
+                  "initial_name": ""},
                  "New analysis", "", "bar_chart", "count", [], None, [], [], {},
                  "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-cancel":
@@ -607,7 +610,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             {"display": "block"},
             {"id": int(selected) if trigger == "analysis-edit" else None,
              "schema_version": spec.get("schema_version", 1), "original_spec": spec,
-             "original_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)"},
+             "original_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
+             "initial_spec": spec,
+             "initial_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)"},
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec.get("measure", "count"),
@@ -1270,19 +1275,23 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         old_id = editing.get("id")
         if old_id is not None and selected == old_id:
             return no_update, no_update, no_update, no_update
-        original = editing.get("original_spec")
-        if original:
-            try:
-                from geometric_coder.analyses import validate_analysis
-                modified = validate_analysis(project, _draft_recipe(draft))
-                previous = validate_analysis(project, original)
-                dirty = modified != previous or (name or "") != editing.get("original_name", "")
-            except (ValueError, KeyError, TypeError):
-                # An invalid draft still contains researcher input and must
-                # never be discarded without confirmation.
-                dirty = True
-        else:
-            dirty = bool((name or "").strip()) or bool(draft[3]) or bool(draft[5])
+        initial = editing.get("initial_spec", editing.get("original_spec"))
+        try:
+            from geometric_coder.analyses import validate_analysis
+            current = _draft_recipe(draft)
+            # A new blank draft has no Values and cannot pass the executable
+            # validator; comparing complete *unvalidated* recipes still catches
+            # edits to any role, setting, statistic or aggregation control.
+            if editing.get("original_spec"):
+                current = validate_analysis(project, current)
+                initial = validate_analysis(project, initial)
+            dirty = current != initial or (name or "") != editing.get(
+                "initial_name", editing.get("original_name", "")
+            )
+        except (ValueError, KeyError, TypeError):
+            # Invalid user input remains a draft and cannot be discarded
+            # without an explicit choice.
+            dirty = True
         if not dirty:
             return {"display": "none"}, None, {"display": "none"}, None
         return (
