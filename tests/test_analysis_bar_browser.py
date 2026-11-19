@@ -30,7 +30,7 @@ def test_bar_editor_and_switch_guard(tmp_path):
             "rating": [0.0, 2.0, 4.0, None],
             "score": [1.0, 2.0, 3.0, 4.0],
         }),
-        keys=["id"], text="text", metadata=["condition", "rating", "score"],
+        keys=["id"], text="text", metadata=["condition", "site", "cohort", "rating", "score"],
         geometries=None,
     )
     code = project.create_code("Positive experience")
