@@ -181,6 +181,14 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                 "numeric_method": options.get("numeric_method", "mean"),
             }
         return result
+    if kind == "bar" and (
+        (extra_slots or {}).get("color")
+        or (continuous_options or {}).get("bar_statistic", "count") != "count"
+    ):
+        raise ValueError(
+            "Existing-format Bar charts do not support Color or Statistic. "
+            "Create a new Bar chart to use these settings."
+        )
     if kind in CONTINUOUS_KINDS:
         if legacy:
             raise ValueError("A legacy analysis cannot be silently converted to a numerical chart; create a new analysis.")
@@ -383,12 +391,16 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
                 html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None),
-                html.Label("Color (optional)"),
-                dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
-                html.Label("Statistic"),
-                dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
-                    options=[{"label": label, "value": value} for label, value in
-                             (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
+                ], id="analysis-bar-color-box"),
+                html.Div([
+                    html.Label("Statistic"),
+                    dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
+                        options=[{"label": label, "value": value} for label, value in
+                                 (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
+                ], id="analysis-bar-statistic-box"),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -538,14 +550,21 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("analysis-editor", "style"),
+        Input("analysis-kind", "value"),
     )
     def refresh_variables(workspace: str, _code_refresh: Any, _focus_refresh: Any,
-                          _editor_style: Any) -> Any:
+                          _editor_style: Any, kind: str) -> Any:
         if workspace != "analyses":
             return (no_update,) * 12
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
-        return choices, codes, choices, choices, choices, choices, choices, choices, choices, choices, choices, choices
+        metadata = [c for c in choices if c["value"].startswith("metadata:")]
+        # Existing-format Bars accept only Code Values and metadata Group.
+        # Unified Bars allow any supported Value, Group, and Color role.
+        bar_values = codes if kind == "bar" else choices
+        bar_groups = metadata if kind == "bar" else choices
+        return (bar_values, codes, choices, bar_groups, choices, choices,
+                choices, choices, choices, choices, choices, choices)
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -647,6 +666,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-continuous-group-box", "style"),
         Output("analysis-continuous-row-box", "style"),
         Output("analysis-continuous-column-box", "style"),
+        Output("analysis-bar-color-box", "style"),
+        Output("analysis-bar-statistic-box", "style"),
         Input("analysis-kind", "value"),
         Input("analysis-aggregate-level", "value"),
         Input("analysis-aggregate-method", "value"),
@@ -684,6 +705,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind in ("histogram", "summary_bar") else hidden,
             visible if kind == "value_heatmap" else hidden,
             visible if kind == "value_heatmap" else hidden,
+            visible if kind == "bar_chart" else hidden,
+            visible if kind == "bar_chart" else hidden,
         )
 
     @app.callback(Output("analysis-aggregation-options", "style"),
