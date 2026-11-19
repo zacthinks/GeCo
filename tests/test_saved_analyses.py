@@ -381,7 +381,7 @@ def test_histogram_preview_is_explicit_and_uses_unsaved_editor_settings():
     assert 'Input("analysis-preview", "n_clicks")' in source
     assert "compute_analysis(project, spec)" in source
     assert 'id="analysis-visualization-help"' in source
-    assert '{"label": "Code-value distribution", "value": "distribution"}' in source
+    assert '{"label": "Bar chart", "value": "bar_chart"}' in source
     assert '{"label": "Number of positive units per group", "value": "count"}' in source
 
 
