@@ -133,7 +133,7 @@ def compatible_aggregation_method(kind: str, measure: str, method: str | None) -
     """Reset incompatible Code reductions without discarding valid settings."""
     selected = method or "any"
     if selected in {"count", "mean", "log_count"} and not (
-        kind in {"scatter", "histogram", "summary_bar", "correlation_heatmap", "value_heatmap"}
+        kind in {"scatter", "histogram", "summary_bar", "bar_chart", "correlation_heatmap", "value_heatmap"}
         or kind == "distribution"
         or (kind == "heatmap" and measure == "correlation")
     ):
