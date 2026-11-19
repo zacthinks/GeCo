@@ -158,6 +158,29 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   continuous_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct one recipe from role identities and role-scoped source choices."""
     from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, ROLE_LAYOUT
+    if kind == "bar_chart":
+        selections = {**slots, **(extra_slots or {})}
+        roles = {"values": [
+            {"variable": _ref(raw, configs.get(f"values:{raw}", {}))}
+            for raw in (selections.get("values") or [])
+        ]}
+        for role in ("group", "color"):
+            raw = selections.get(role)
+            if raw:
+                conf = configs.get(f"{role}:{raw}", {})
+                roles[role] = {"variable": _ref(raw, conf)}
+                if conf.get("transform"):
+                    roles[role]["transform"] = conf["transform"]
+        options = continuous_options or {}
+        result = {"schema_version": 2, "kind": kind, "roles": roles,
+                  "statistic": options.get("bar_statistic", "count")}
+        if aggregate_level and aggregate_level != "none":
+            result["aggregation"] = {
+                "level": aggregate_level, "method": aggregate_method,
+                "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
+                "numeric_method": options.get("numeric_method", "mean"),
+            }
+        return result
     if kind in CONTINUOUS_KINDS:
         if legacy:
             raise ValueError("A legacy analysis cannot be silently converted to a numerical chart; create a new analysis.")
