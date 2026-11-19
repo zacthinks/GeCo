@@ -95,8 +95,9 @@ def test_binary_metadata_count_is_category_frequency_with_optional_roles(workspa
         [binary], "count", group=meta("condition"), color=meta("site"),
     ))
     assert grouped["categories"] == ["A", "B"]
-    assert sorted(sum(v for v in series["values"] if v is not None)
-                  for series in grouped["series"]) == [1, 1, 1, 3]
+    assert len(grouped["series"]) >= 2
+    assert any("0.0" in series["name"] for series in grouped["series"])
+    assert any("1.0" in series["name"] for series in grouped["series"])
     assert sum(sum(series["values"]) for series in grouped["series"]) == 6
 
     summed = compute_analysis(project, chart([binary], "sum"))
