@@ -704,7 +704,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                       x: str | None, y: str | None, color: str | None,
                       continuous_values: list[str] | None, rows: str | None,
                       columns: str | None, continuous_group: str | None,
-                      editing: Any, configs: dict[str, Any] | None) -> Any:
+                      bar_color: str | None, editing: Any, configs: dict[str, Any] | None) -> Any:
         if editing is None:
             return []
         if kind in ("bar", "bar_chart"):
@@ -919,6 +919,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    continuous_group: Any, statistic: Any,
                    hist_method: Any, hist_bins: Any, hist_width: Any,
                    parent_numeric_method: Any, hist_edges: Any,
+                   bar_color: Any, bar_statistic: Any,
                    live_sources: Any, live_source_ids: Any,
                    live_predictors: Any, live_predictor_ids: Any,
                    live_values: Any, live_value_ids: Any,
@@ -1119,6 +1120,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
                 hist_method: Any, hist_bins: Any, hist_width: Any,
                 parent_numeric_method: Any, hist_edges: Any,
+                bar_color: Any, bar_statistic: Any,
                 live_sources: Any, live_source_ids: Any,
                 live_predictors: Any, live_predictor_ids: Any,
                 live_values: Any, live_value_ids: Any, live_transforms: Any,
