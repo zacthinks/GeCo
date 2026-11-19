@@ -1237,3 +1237,91 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             return fig, _source_coverage(result, html)
         except (ValueError, KeyError) as exc:
             return _empty_figure(f"Analysis unavailable: {exc}"), []
+
+
+    def _draft_recipe(draft: tuple[Any, ...]) -> dict[str, Any]:
+        """Use the same live form sources as Preview and Save for dirty checks."""
+        return run_recipe(*draft[1:11], draft[0], *draft[11:])
+
+    @app.callback(
+        Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
+        Output("analysis-nav-dialog", "style"),
+        Output("analysis-nav-pending", "data"),
+        Input("analysis-select", "value"),
+        State("analysis-editor", "style"),
+        State("analysis-name", "value"),
+        *state_args,
+        prevent_initial_call=True,
+    )
+    def selection_while_editing(
+        selected: int | None, style: dict[str, Any] | None, name: str | None,
+        *draft: Any,
+    ) -> tuple[Any, ...]:
+        editing = draft[0]
+        if not editing or not style or style.get("display") == "none":
+            return no_update, no_update, no_update, no_update
+        old_id = editing.get("id")
+        if old_id is not None and selected == old_id:
+            return no_update, no_update, no_update, no_update
+        original = editing.get("original_spec")
+        if original:
+            try:
+                from geometric_coder.analyses import validate_analysis
+                modified = validate_analysis(project, _draft_recipe(draft))
+                previous = validate_analysis(project, original)
+                dirty = modified != previous or (name or "") != editing.get("original_name", "")
+            except (ValueError, KeyError, TypeError):
+                # An invalid draft still contains researcher input and must
+                # never be discarded without confirmation.
+                dirty = True
+        else:
+            dirty = bool((name or "").strip()) or bool(draft[3]) or bool(draft[5])
+        if not dirty:
+            return {"display": "none"}, None, {"display": "none"}, None
+        return (
+            no_update, no_update, {"display": "block"},
+            {"from": old_id, "to": selected},
+        )
+
+    @app.callback(
+        Output("analysis-refresh", "data", allow_duplicate=True),
+        Output("analysis-select", "value", allow_duplicate=True),
+        Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
+        Output("analysis-nav-dialog", "style", allow_duplicate=True),
+        Output("analysis-nav-pending", "data", allow_duplicate=True),
+        Output("analysis-status", "children", allow_duplicate=True),
+        Input("analysis-nav-save", "n_clicks"),
+        Input("analysis-nav-discard", "n_clicks"),
+        Input("analysis-nav-stay", "n_clicks"),
+        State("analysis-nav-pending", "data"),
+        State("analysis-name", "value"),
+        *state_args,
+        State("analysis-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def resolve_navigation(
+        _save: int, _discard: int, _stay: int,
+        pending: dict[str, Any] | None, name: str | None,
+        *values: Any,
+    ) -> tuple[Any, ...]:
+        if pending is None:
+            return (no_update,) * 7
+        *draft, revision = values
+        choice = callback_context.triggered_id
+        hidden = {"display": "none"}
+        if choice == "analysis-nav-stay":
+            return no_update, pending.get("from"), no_update, no_update, hidden, None, ""
+        if choice == "analysis-nav-discard":
+            return no_update, no_update, hidden, None, hidden, None, ""
+        if choice != "analysis-nav-save":
+            return (no_update,) * 7
+        editing = draft[0]
+        try:
+            spec = _draft_recipe(tuple(draft))
+            project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
+        except (ValueError, KeyError, TypeError) as exc:
+            # Stay on the draft, with the prompt open and the error visible.
+            return no_update, no_update, no_update, no_update, no_update, no_update, str(exc)
+        return int(revision or 0) + 1, no_update, hidden, None, hidden, None, ""
