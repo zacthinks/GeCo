@@ -146,6 +146,12 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 )
                 page.locator("#analysis-bar-color-box").wait_for(state="hidden")
                 page.locator("#analysis-bar-statistic-box").wait_for(state="hidden")
+                # Wait for the restored legacy role configuration before
+                # selecting a new Group; otherwise an outstanding editor-open
+                # response can overwrite the newly selected dropdown value.
+                page.get_by_text(
+                    "Values: Positive experience (Code)", exact=True
+                ).wait_for(state="visible", timeout=15000)
                 assert page.locator("#analysis-bar-color").is_hidden()
                 assert page.locator("#analysis-bar-statistic").is_hidden()
                 # A supported legacy Group change must be tracked and saved,
