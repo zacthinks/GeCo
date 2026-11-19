@@ -9,6 +9,11 @@ on:
       - analyses
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_300k_benchmarks:
+        description: "Run slow 300k-observation performance benchmarks"
+        type: boolean
+        default: false
 
 jobs:
   pytest:
@@ -56,8 +61,13 @@ jobs:
       - name: Run pytest with TeAL available
         run: uv run --no-sync pytest -q -rs
 
+      # These large-scale performance checks are intentionally excluded from
+      # routine PR and integration-branch CI. To run them, manually dispatch
+      # "Tests" with the 300k benchmark input enabled on the desired branch.
       - name: Benchmark 300k Scale candidate sampling
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_300k_benchmarks }}
         run: uv run --no-sync python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000
 
       - name: Benchmark 300k continuous Analyses charts and browser payload bounds
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_300k_benchmarks }}
         run: uv run --no-sync python benchmarks/analyses_300k.py --units 300000
