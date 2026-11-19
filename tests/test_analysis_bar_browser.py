@@ -26,8 +26,9 @@ def test_bar_editor_and_switch_guard(tmp_path):
             "text": ["nice product", "poor product", "useful tool", "unclear tool"],
             "condition": ["A", "A", "B", "B"],
             "rating": [0.0, 2.0, 4.0, None],
+            "score": [1.0, 2.0, 3.0, 4.0],
         }),
-        keys=["id"], text="text", metadata=["condition", "rating"],
+        keys=["id"], text="text", metadata=["condition", "rating", "score"],
         geometries=None,
     )
     code = project.create_code("Positive experience")
@@ -113,6 +114,62 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page.locator("#analysis-editor").wait_for(state="hidden")
                 assert project.analysis(saved["analysis_id"])["name"] == "Unified bars edited"
                 assert project.analysis(other)["name"] == "Other saved analysis"
+
+                # Stay must restore the original selected analysis and keep the
+                # modified editor open for continued editing.
+                choose(page.locator("#analysis-select"), "Unified bars edited")
+                page.locator("#analysis-edit").click()
+                page.locator("#analysis-name").fill("Stay here draft")
+                choose(page.locator("#analysis-select"), "Other saved analysis")
+                page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                page.locator("#analysis-nav-stay").click()
+                page.locator("#analysis-nav-dialog").wait_for(state="hidden")
+                assert page.locator("#analysis-editor").is_visible()
+                assert page.locator("#analysis-name").input_value() == "Stay here draft"
+                page.wait_for_function(
+                    "(id) => document.querySelector('#analysis-select')"
+                    "?.textContent?.includes('Unified bars edited')",
+                    timeout=15000,
+                )
+                choose(page.locator("#analysis-select"), "Other saved analysis")
+                page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                page.locator("#analysis-nav-discard").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+
+                # A modified *unnamed* new Scatterplot draft must not be
+                # discarded just because the bar Values selectors are empty.
+                page.locator("#analysis-new").click()
+                assert page.locator("#analysis-name").input_value() == ""
+                choose(page.locator("#analysis-kind"), "Scatterplot")
+                choose(page.locator("#analysis-role-x"), "Metadata: rating")
+                choose(page.locator("#analysis-role-y"), "Metadata: score")
+                choose(page.locator("#analysis-select"), "Unified bars edited")
+                page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                # Invalid Save keeps the unsaved draft and the warning visible.
+                page.locator("#analysis-nav-save").click()
+                page.locator("#analysis-status").get_by_text(
+                    "Analysis name must contain", exact=False
+                ).wait_for(state="visible")
+                assert page.locator("#analysis-editor").is_visible()
+                assert page.locator("#analysis-nav-dialog").is_visible()
+                page.locator("#analysis-nav-discard").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                assert not any(row["name"] == "" for row in project.analyses())
+
+                # A duplicate with its default name unchanged can have
+                # modified roles, which must also trigger the prompt.
+                choose(page.locator("#analysis-select"), "Unified bars edited")
+                page.locator("#analysis-duplicate").click()
+                page.locator("#analysis-name").wait_for(state="visible")
+                assert page.locator("#analysis-name").input_value() == "Unified bars edited (copy)"
+                choose(page.locator("#analysis-role-group"), "Metadata: score")
+                choose(page.locator("#analysis-select"), "Other saved analysis")
+                page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                page.locator("#analysis-nav-discard").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                assert not any(row["name"] == "Unified bars edited (copy)"
+                               for row in project.analyses())
+
                 assert not errors, errors
             finally:
                 browser.close()
