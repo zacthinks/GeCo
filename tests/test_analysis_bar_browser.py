@@ -122,6 +122,14 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page.locator("#analysis-name").fill("Stay here draft")
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
+                # A pending decision locks out subsequent rapid selector changes.
+                page.locator("#analysis-select").wait_for(state="visible")
+                page.wait_for_function(
+                    "() => document.querySelector('#analysis-select')"
+                    "?.getAttribute('aria-disabled') === 'true' || "
+                    "document.querySelector('#analysis-select')?.disabled === true",
+                    timeout=15000,
+                )
                 page.locator("#analysis-nav-stay").click()
                 page.locator("#analysis-nav-dialog").wait_for(state="hidden")
                 assert page.locator("#analysis-editor").is_visible()
