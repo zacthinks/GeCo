@@ -177,9 +177,21 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 page.locator("#analysis-edit").click()
                 page.get_by_text("Color: date (Metadata)", exact=True).wait_for()
                 picker = page.locator('button[id*="analysis-role-transform"][id*="group:metadata:date"]')
+                picker.wait_for(state="visible", timeout=15000)
+                page.wait_for_function(
+                    "() => Array.from(document.querySelectorAll('button'))"
+                    ".some(el => el.id.includes('analysis-role-transform') && "
+                    "el.id.includes('group:metadata:date') && "
+                    "el.textContent.includes('Calendar month'))",
+                    timeout=15000,
+                )
                 picker.click()
-                assert page.get_by_text("Calendar year", exact=True).filter(visible=True).count() > 0
-                assert page.get_by_text("Equal-width numeric bins", exact=True).filter(visible=True).count() == 0
+                page.get_by_text("Calendar year", exact=True).filter(visible=True).wait_for(
+                    state="visible", timeout=15000,
+                )
+                assert page.get_by_text(
+                    "Equal-width numeric bins", exact=True
+                ).filter(visible=True).count() == 0
                 page.keyboard.press("Escape")
                 page.locator("#analysis-clear-histogram-color").click()
                 page.get_by_text("Color: date (Metadata)", exact=True).wait_for(state="detached")
