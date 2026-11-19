@@ -539,6 +539,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-continuous-group", "value"),
         Output("analysis-parent-numeric-method", "value"),
         Output("analysis-hist-edges", "value"),
+        Output("analysis-bar-color", "value"),
+        Output("analysis-bar-statistic", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -550,16 +552,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     selected: int | None) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
         empty = ({"display": "block"}, {"id": None, "schema_version": 2},
-                 "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "")
+                 "New analysis", "", "bar_chart", "count", [], None, [], [], {},
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-cancel":
-            return ({"display": "none"}, None, "", "", "bar", "count", [],
+            return ({"display": "none"}, None, "", "", "bar_chart", "count", [],
                     None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None,
-                    "mean", "equal_width", 20, 1, None, "mean", "")
+                    "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 28
+            return (no_update,) * 30
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -571,8 +573,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec.get("measure", "count"),
-            slots.get("values", []) if spec["kind"] == "bar" else [],
-            slots.get("group") if spec["kind"] == "bar" else None,
+            slots.get("values", []) if spec["kind"] in ("bar", "bar_chart") else [],
+            slots.get("group") if spec["kind"] in ("bar", "bar_chart") else None,
             slots.get("values", []) if spec["kind"] == "distribution" else [],
             slots.get("indicators", []) if spec["kind"] == "heatmap" else [],
             _initial_config(spec), aggregate.get("level", "none"),
@@ -585,6 +587,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("group") if spec["kind"] in ("histogram", "summary_bar") else None,
             aggregate.get("numeric_method", "mean"),
             ", ".join(str(v) for v in spec.get("binning", {}).get("edges", [])),
+            slots.get("color") if spec["kind"] == "bar_chart" else None,
+            spec.get("statistic", "count") if spec["kind"] == "bar_chart" else "count",
         )
 
     @app.callback(
