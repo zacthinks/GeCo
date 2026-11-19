@@ -113,6 +113,7 @@ def test_chart_performance_harness_smoke():
     assert set(output["charts"]) == {
         "scatter", "histogram", "histogram_quantile", "summary_mean",
         "summary_median", "correlation", "value_heatmap", "numeric_group",
+        "unified_bar",
     }
     assert all(chart["plotly_bytes"] < 1_000_000
                for chart in output["charts"].values())
