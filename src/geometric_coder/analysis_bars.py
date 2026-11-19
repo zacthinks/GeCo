@@ -216,7 +216,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         warnings.add("Medians use deterministic samples of up to 5,000 observed values per bar.")
     x_keys = sorted({x for x, _ in cells}, key=(
         (lambda key: key[1]) if "group" in bins else (lambda key: str(key))
-    )
+    ))
     s_keys = sorted({s for _, s in cells}, key=str)
     if len(x_keys) > MAX_CATEGORIES or len(s_keys) > MAX_CATEGORIES:
         raise ValueError("Bar chart exceeds 100 categories or series.")
