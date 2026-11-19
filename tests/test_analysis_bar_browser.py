@@ -26,7 +26,7 @@ def test_bar_editor_and_switch_guard(tmp_path):
             "text": ["nice product", "poor product", "useful tool", "unclear tool"],
             "condition": ["A", "A", "B", "B"],
             "site": ["North", "South", "North", "South"],
-            "cohort": ["X", "Y", "X", "Y"],
+            "cohort": ["X", "X", "Y", "Y"],
             "rating": [0.0, 2.0, 4.0, None],
             "score": [1.0, 2.0, 3.0, 4.0],
         }),
@@ -103,8 +103,7 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page.wait_for_function(
                     "() => { const plot = document.querySelector('#analysis-figure .js-plotly-plot'); "
                     "return plot?.data?.length === 2 && "
-                    "plot.data.every(trace => trace.y?.join(',') === '2,0' "
-                    "|| trace.y?.join(',') === '0,2'); }",
+                    "plot.data.every(trace => trace.y?.join(',') === '1,1'); }",
                     timeout=20000,
                 )
                 page.locator("#analysis-save").click()
