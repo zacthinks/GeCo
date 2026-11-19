@@ -293,7 +293,6 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert temporal["spec"]["roles"]["group"]["transform"] == {
                     "kind": "calendar", "unit": "month",
                 }
-                page.locator("#analysis-cancel").click()
                 assert not errors
             finally:
                 browser.close()
