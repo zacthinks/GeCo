@@ -279,7 +279,14 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         x_labels = _category_labels(x_keys, "group" if "group" in roles else "values", labels)
     color_keys = sorted({s[2] for s in s_keys if s[0] == "colored"}, key=str)
     color_labels = (_category_labels(color_keys, "color", labels) if color_keys else {})
-    value_keys = sorted({s[2] for s in s_keys if s[0] == "series" and len(s) > 2}, key=str)
+    # Color wraps the original series key; categorical Values labels must
+    # be discovered from the canonical inner series, not only from top-level
+    # keys. Keep the typed variable identity intact for later naming.
+    inner_series = [s[1] if s[0] == "colored" else s for s in s_keys]
+    value_keys = sorted(
+        {s[2] for s in inner_series if s[0] == "series" and len(s) > 2},
+        key=str,
+    )
     value_labels = _category_labels(value_keys, "values", labels) if value_keys else {}
 
     def series_name(key: tuple[str, Any]) -> str:
@@ -296,7 +303,10 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         for x in x_keys:
             cell = cells.get((x, series))
             if cell is None:
-                vals.append(0 if stat in ("count", "sum") else None)
+                # Count describes observed frequency and may show an empty
+                # combination as zero. Sum needs at least one observed Value:
+                # no evidence is missing (None), not an observed sum of zero.
+                vals.append(0 if stat == "count" else None)
                 denominators.append(0)
                 continue
             n, total, sample = cell
