@@ -706,8 +706,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                       editing: Any, configs: dict[str, Any] | None) -> Any:
         if editing is None:
             return []
-        if kind == "bar":
-            slots = {"values": values or [], "group": [group] if group else []}
+        if kind in ("bar", "bar_chart"):
+            slots = {"values": values or [], "group": [group] if group else [], "color": [bar_color] if kind == "bar_chart" and bar_color else []}
         elif kind == "distribution":
             slots = {"values": distribution or []}
         elif kind == "heatmap":
@@ -785,7 +785,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                "silently replaced by human ratings or categorical bins."),
                     ])
                 if role in ("group", "color", "rows", "columns") and kind in (
-                    "scatter", "histogram", "summary_bar", "value_heatmap",
+                    "scatter", "histogram", "summary_bar", "value_heatmap", "bar_chart",
                 ):
                     transform = config.get("transform", {})
                     controls.extend([
@@ -892,9 +892,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def current_slots(kind: str, values: Any, group: Any,
                       distribution: Any, indicators: Any,
                       x: Any, y: Any, color: Any, continuous_values: Any,
-                      rows: Any, columns: Any, continuous_group: Any) -> dict[str, Any]:
-        if kind == "bar":
-            return {"values": values or [], "group": group}
+                      rows: Any, columns: Any, continuous_group: Any, bar_color: Any) -> dict[str, Any]:
+        if kind in ("bar", "bar_chart"):
+            return {"values": values or [], "group": group, "color": bar_color if kind == "bar_chart" else None}
         if kind == "distribution":
             return {"values": distribution or []}
         if kind == "heatmap":
@@ -929,7 +929,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
             raise ValueError("Choose exactly one numeric Values variable for this visualization.")
         from geometric_coder.analysis_continuous import CONTINUOUS_KINDS
-        if kind in CONTINUOUS_KINDS and legacy:
+        if (kind in CONTINUOUS_KINDS or kind == "bar_chart") and legacy:
             raise ValueError("Legacy analyses cannot switch to a numerical chart; create a new analysis.")
         bins = {"kind": "histogram_bins", "method": hist_method}
         if hist_method == "fixed_width":
@@ -993,12 +993,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     transform, original_transforms.get(key, config.get("transform"))
                 )
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
-                                  color, continuous_values, rows, columns, continuous_group)
+                                  color, continuous_values, rows, columns, continuous_group, bar_color)
         recipe = editor_recipe(
             kind, measure if kind == "heatmap" else "count",
             all_slots, resolved, level, method, threshold, legacy=legacy,
             extra_slots=all_slots,
-            continuous_options={"statistic": statistic or "mean", "binning": bins,
+            continuous_options={"statistic": statistic or "mean", "bar_statistic": bar_statistic or "count", "binning": bins,
                                 "numeric_method": parent_numeric_method or "mean",
                                 "max_points": original.get("max_points", 2000)},
         )
