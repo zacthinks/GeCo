@@ -5,7 +5,7 @@ by their original engines. Only new schema-v2 bar_chart recipes use this module.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Mapping
 import math
 from statistics import median
@@ -214,7 +214,9 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
                     _reservoir(cell[2], MAX_MEDIAN_SAMPLE, _rank((identity, index)), float(value))
     if stat == "median" and any(cell[0] > MAX_MEDIAN_SAMPLE for cell in cells.values()):
         warnings.add("Medians use deterministic samples of up to 5,000 observed values per bar.")
-    x_keys = sorted({x for x, _ in cells}, key=str)
+    x_keys = sorted({x for x, _ in cells}, key=(
+        (lambda key: key[1]) if "group" in bins else (lambda key: str(key))
+    )
     s_keys = sorted({s for _, s in cells}, key=str)
     if len(x_keys) > MAX_CATEGORIES or len(s_keys) > MAX_CATEGORIES:
         raise ValueError("Bar chart exceeds 100 categories or series.")
