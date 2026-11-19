@@ -71,10 +71,18 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     if stat not in STATS:
         raise ValueError("Choose Count, Sum, Mean, or Median.")
     normalized = {"values": []}
+    seen_values: set[tuple[tuple[str, Any], ...]] = set()
     for item in raw_values:
         if not isinstance(item, Mapping) or set(item) != {"variable"}:
             raise ValueError("Bar Values must contain a variable without a transformation.")
         variable = validate_variable(project, item["variable"])
+        identity = _variable_identity(variable)
+        if identity in seen_values:
+            raise ValueError(
+                "Each Bar chart Values variable may be selected only once. "
+                "The same variable may still appear in another role."
+            )
+        seen_values.add(identity)
         if stat != "count" and not _numeric(variable):
             raise ValueError(f"{stat.title()} requires numerical Values (including binary Codes).")
         normalized["values"].append({"variable": variable})
