@@ -695,6 +695,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-role-rows", "value"),
         Input("analysis-role-columns", "value"),
         Input("analysis-continuous-group", "value"),
+        Input("analysis-bar-color", "value"),
         Input("analysis-editing", "data"),
         State("analysis-role-config", "data"),
     )
@@ -1041,6 +1042,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-width", "value"),
         State("analysis-parent-numeric-method", "value"),
         State("analysis-hist-edges", "value"),
+        State("analysis-bar-color", "value"),
+        State("analysis-bar-statistic", "value"),
         State({"type":"analysis-role-source","index":ALL}, "value"),
         State({"type":"analysis-role-source","index":ALL}, "id"),
         State({"type":"analysis-role-predictor","index":ALL}, "value"),
@@ -1075,6 +1078,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
              parent_numeric_method: Any, hist_edges: Any,
+             bar_color: Any, bar_statistic: Any,
              live_sources: Any, live_source_ids: Any,
              live_predictors: Any, live_predictor_ids: Any,
              live_values: Any, live_value_ids: Any, live_transforms: Any,
@@ -1089,7 +1093,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
@@ -1128,7 +1132,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
