@@ -107,7 +107,7 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         )
     if stat == "count":
         categorical = [v["variable"]["type"] == "code" and v["variable"]["value"] == "binary"
-                       or v["variable"]["type"] == "metadata" and v["variable"]["value"] == "categorical"
+                       or v["variable"]["type"] == "metadata" and v["variable"]["value"] in ("categorical", "binary")
                        for v in normalized["values"]]
         if any(categorical) and not all(categorical):
             raise ValueError("Count cannot mix categorical and numerical Values in one bar chart.")
