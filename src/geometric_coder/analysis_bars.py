@@ -309,6 +309,9 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         "kind": "bar_chart", "statistic": stat,
         "categories": [x_labels[key] for key in x_keys],
         "series": result_series, "names": names,
+        "xaxis_title": (names[n_values] if "group" in roles else
+                        names[0] if categorical_count and n_values == 1 else
+                        "Value" if categorical_count else "Values"),
         "coverage": {"total": coverage["total"], "complete": coverage["complete"], "observed": observed},
         "sources": [
             {"descriptor": variable,
