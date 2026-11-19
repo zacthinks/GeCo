@@ -35,7 +35,7 @@ MAX_CORRELATION_VARIABLES = 12
 
 
 def _numeric(v: Mapping[str, Any]) -> bool:
-    return v["type"] == "scale" or (v["type"] == "metadata" and v["value"] == "numeric") or (
+    return v["type"] == "scale" or (v["type"] == "metadata" and v["value"] in ("numeric", "binary")) or (
         v["type"] == "code" and v["value"] in {"binary", "probability"}
     )
 
@@ -45,7 +45,7 @@ def _transform(raw: Any, variable: Mapping[str, Any], role: str) -> dict[str, An
         if raw is not None:
             raise ValueError(f"{role}: binning belongs to categorical roles or a histogram.")
         return None
-    if variable["type"] == "metadata" and variable["value"] == "categorical":
+    if variable["type"] == "metadata" and variable["value"] in ("categorical", "binary"):
         if raw is not None:
             raise ValueError(f"{role}: categorical metadata does not need a transformation.")
         return None

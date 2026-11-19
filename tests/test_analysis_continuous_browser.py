@@ -170,6 +170,35 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 assert saved["spec"]["roles"]["group"]["transform"] == {
                     "kind": "calendar", "unit": "month",
                 }
+
+                # Categorical metadata should have no transformation selector;
+                # temporal metadata should offer calendar methods, not numeric bins.
+                choose(page.locator("#analysis-select"), "Calendar histogram")
+                page.locator("#analysis-edit").click()
+                page.get_by_text("Color: date (Metadata)", exact=True).wait_for()
+                picker = page.locator('button[id*="analysis-role-transform"][id*="group:metadata:date"]')
+                picker.wait_for(state="visible", timeout=15000)
+                page.wait_for_function(
+                    "() => Array.from(document.querySelectorAll('button'))"
+                    ".some(el => el.id.includes('analysis-role-transform') && "
+                    "el.id.includes('group:metadata:date') && "
+                    "el.textContent.includes('Calendar month'))",
+                    timeout=15000,
+                )
+                picker.click()
+                page.get_by_text("Calendar year", exact=True).filter(visible=True).wait_for(
+                    state="visible", timeout=15000,
+                )
+                assert page.get_by_text(
+                    "Equal-width numeric bins", exact=True
+                ).filter(visible=True).count() == 0
+                page.keyboard.press("Escape")
+                page.locator("#analysis-clear-histogram-color").click()
+                page.get_by_text("Color: date (Metadata)", exact=True).wait_for(state="detached")
+                page.locator("#analysis-save").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                cleared_hist = project.analysis(saved["analysis_id"])["spec"]
+                assert "group" not in cleared_hist["roles"]
                 # An untouched Edit -> Save must not silently rewrite saved
                 # numerical settings that have no dedicated UI controls.
                 for name, analysis_id, original in (

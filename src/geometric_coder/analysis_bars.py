@@ -107,7 +107,7 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         )
     if stat == "count":
         categorical = [v["variable"]["type"] == "code" and v["variable"]["value"] == "binary"
-                       or v["variable"]["type"] == "metadata" and v["variable"]["value"] == "categorical"
+                       or v["variable"]["type"] == "metadata" and v["variable"]["value"] in ("categorical", "binary")
                        for v in normalized["values"]]
         if any(categorical) and not all(categorical):
             raise ValueError("Count cannot mix categorical and numerical Values in one bar chart.")
@@ -152,7 +152,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     stat = spec["statistic"]
     categorical_count = stat == "count" and (
         descriptors[0]["type"] == "code" and descriptors[0]["value"] == "binary"
-        or descriptors[0]["type"] == "metadata" and descriptors[0]["value"] == "categorical"
+        or descriptors[0]["type"] == "metadata" and descriptors[0]["value"] in ("categorical", "binary")
     )
     role_indices = {role: n_values + i for i, role in enumerate(
         role for role in ("group", "color") if role in roles

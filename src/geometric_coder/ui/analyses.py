@@ -383,24 +383,28 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 {"label": "Continuous histogram", "value": "histogram"},
                 
                 {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
-                {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+                {"label": "Summary heatmap", "value": "value_heatmap"},
             ], value="bar_chart", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
                 html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
-                html.Label("Group (optional)"),
-                dcc.Dropdown(id="analysis-role-group", options=[], value=None),
-                html.Div([
-                    html.Label("Color (optional)"),
-                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
-                ], id="analysis-bar-color-box"),
                 html.Div([
                     html.Label("Statistic"),
                     dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
                         options=[{"label": label, "value": value} for label, value in
                                  (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
                 ], id="analysis-bar-statistic-box"),
+                html.P("Count summarizes observed values; categorical Count displays category frequencies. "
+                       "Sum of a binary Code counts Present judgments."),
+                html.Label("Group (optional)"),
+                dcc.Dropdown(id="analysis-role-group", options=[], value=None, clearable=True),
+                html.Button("Clear Group", id="analysis-clear-bar-group", n_clicks=0, type="button"),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None, clearable=True),
+                    html.Button("Clear Color", id="analysis-clear-bar-color", n_clicks=0, type="button"),
+                ], id="analysis-bar-color-box"),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -423,14 +427,37 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("X"), dcc.Dropdown(id="analysis-role-x", options=[]),
                 html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
                 html.Label("Color (optional)"),
-                dcc.Dropdown(id="analysis-role-color", options=[]),
+                dcc.Dropdown(id="analysis-role-color", options=[], clearable=True),
+                html.Button("Clear Color", id="analysis-clear-scatter-color", n_clicks=0, type="button"),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
                 html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
                 html.Div([
-                    html.Label("Group"),
-                    dcc.Dropdown(id="analysis-continuous-group", options=[]),
+                    html.Label("Histogram bin method"),
+                    dcc.Dropdown(id="analysis-hist-method", options=[
+                        {"label": "Equal width", "value": "equal_width"},
+                        {"label": "Quantiles", "value": "quantile"},
+                        {"label": "Fixed width", "value": "fixed_width"},
+                        {"label": "Explicit edges", "value": "explicit"}],
+                        value="equal_width", clearable=False),
+                    html.Div([
+                        html.Label("Bin count"),
+                        dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
+                    ], id="analysis-hist-bins-box"),
+                    html.Div([
+                        html.Label("Fixed bin width"),
+                        dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
+                    ], id="analysis-hist-width-box"),
+                    html.Div([
+                        html.Label("Explicit bin edges (comma-separated, ascending)"),
+                        dcc.Input(id="analysis-hist-edges", type="text", placeholder="0, 10, 20, 30"),
+                    ], id="analysis-hist-edges-box"),
+                ], id="analysis-hist-options", style={"display": "none"}),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-continuous-group", options=[], clearable=True),
+                    html.Button("Clear Color", id="analysis-clear-histogram-color", n_clicks=0, type="button"),
                 ], id="analysis-continuous-group-box"),
                 html.Div([
                     html.Label("Rows"),
@@ -446,18 +473,6 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                     id="analysis-statistic", options=[{"label":"Mean","value":"mean"},
                     {"label":"Median","value":"median"}], value="mean", clearable=False),
             ], id="analysis-statistic-options", style={"display":"none"}),
-            html.Div([
-                html.Label("Histogram bin method"),
-                dcc.Dropdown(id="analysis-hist-method", options=[
-                    {"label":"Equal width","value":"equal_width"},
-                    {"label":"Quantiles","value":"quantile"},
-                    {"label":"Fixed width","value":"fixed_width"},
-                    {"label":"Explicit edges","value":"explicit"}], value="equal_width", clearable=False),
-                html.Label("Bin count"), dcc.Input(id="analysis-hist-bins", type="number", min=1, max=100, step=1, value=20),
-                html.Label("Fixed bin width"), dcc.Input(id="analysis-hist-width", type="number", min=0, step="any", value=1),
-                html.Label("Explicit bin edges (comma-separated, ascending)"),
-                dcc.Input(id="analysis-hist-edges", type="text", placeholder="0, 10, 20, 30"),
-            ], id="analysis-hist-options", style={"display":"none"}),
             html.Div(id="analysis-role-settings"),
             html.Label("Aggregate observations (optional)"),
             dcc.Dropdown(id="analysis-aggregate-level", clearable=False,
@@ -517,7 +532,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             {"label": "Scatterplot", "value": "scatter"},
             {"label": "Continuous histogram", "value": "histogram"},
             {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
-            {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+            {"label": "Summary heatmap", "value": "value_heatmap"},
         ]
         old = (editing or {}).get("original_spec") or {}
         kind = old.get("kind")
@@ -742,6 +757,35 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         compatible = compatible_aggregation_method(kind, measure, method)
         return compatible if compatible != method else no_update
 
+    @app.callback(
+        Output("analysis-role-group", "value", allow_duplicate=True),
+        Output("analysis-bar-color", "value", allow_duplicate=True),
+        Output("analysis-role-color", "value", allow_duplicate=True),
+        Output("analysis-continuous-group", "value", allow_duplicate=True),
+        Input("analysis-clear-bar-group", "n_clicks"),
+        Input("analysis-clear-bar-color", "n_clicks"),
+        Input("analysis-clear-scatter-color", "n_clicks"),
+        Input("analysis-clear-histogram-color", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def clear_optional_roles(*_clicks: int) -> tuple[Any, ...]:
+        names = ("analysis-clear-bar-group", "analysis-clear-bar-color",
+                 "analysis-clear-scatter-color", "analysis-clear-histogram-color")
+        trigger = callback_context.triggered_id
+        return tuple(None if name == trigger else no_update for name in names)
+
+    @app.callback(
+        Output("analysis-hist-bins-box", "style"),
+        Output("analysis-hist-width-box", "style"),
+        Output("analysis-hist-edges-box", "style"),
+        Input("analysis-hist-method", "value"),
+    )
+    def histogram_binning_fields(method: str | None) -> tuple[dict[str, str], ...]:
+        visible, hidden = {"display": "block"}, {"display": "none"}
+        return (visible if method in ("equal_width", "quantile") else hidden,
+                visible if method == "fixed_width" else hidden,
+                visible if method == "explicit" else hidden)
+
     @app.callback(Output("analysis-save", "children"),
                   Input("analysis-editing", "data"))
     def primary_button(editing: dict[str, Any] | None) -> str:
@@ -763,7 +807,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-continuous-group", "value"),
         Input("analysis-bar-color", "value"),
         Input("analysis-editing", "data"),
-        State("analysis-role-config", "data"),
+        Input("analysis-role-config", "data"),
     )
     def role_settings(kind: str, values: list[str] | None, group: str | None,
                       distribution: list[str] | None, indicators: list[str] | None,
@@ -795,7 +839,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 config = (configs or {}).get(key, {})
                 display = next((item["label"] for item in variable_options(project) if item["value"] == raw), raw)
                 family_name, _, value_name = display.partition(": ")
-                readable = f"{role.title()}: {value_name} ({family_name})" if value_name else f"{role.title()}: {display}"
+                label_role = "Color" if kind == "histogram" and role == "group" else role.title()
+                readable = f"{label_role}: {value_name} ({family_name})" if value_name else f"{label_role}: {display}"
                 controls = [html.H4(readable)]
                 if family == "code":
                     code_id = int(identity)
@@ -803,6 +848,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         {"label": "Human labels only", "value": "labels"},
                         {"label": "Predictions only", "value": "predictions"},
                         {"label": "Human first, then predictions", "value": "hybrid"},
+                        {"label": "Human first, including Unsure predictions", "value": "hybrid_unsure"},
                     ]
                     controls.extend([
                         html.Label("Source"),
@@ -834,6 +880,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                             id={"type": "analysis-role-value", "index": key},
                             options=[
                                 {"label": "Categorical", "value": "categorical"},
+                                {"label": "Binary (0/1 or true/false)", "value": "binary"},
                                 {"label": "Numerical", "value": "numeric"},
                                 {"label": "Date/time", "value": "temporal"},
                             ], value=config.get("value", "categorical"),
@@ -854,32 +901,54 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 if role in ("group", "color", "rows", "columns") and kind in (
                     "scatter", "histogram", "summary_bar", "value_heatmap", "bar_chart",
                 ):
-                    transform = config.get("transform", {})
-                    controls.extend([
-                        html.Label("Grouping transformation"),
-                        dcc.Dropdown(id={"type":"analysis-role-transform","index":key},
-                                     options=[{"label":"No transformation (categorical / binary)","value":"none"},
-                                              {"label":"Calendar day","value":"day"},
-                                              {"label":"Calendar week","value":"week"},
-                                              {"label":"Calendar month","value":"month"},
-                                              {"label":"Calendar quarter","value":"quarter"},
-                                              {"label":"Calendar year","value":"year"},
-                                              {"label":"Equal-width numeric bins","value":"equal_width"},
-                                              {"label":"Quantile numeric bins","value":"quantile"},
-                                              {"label":"Fixed-width numeric bins","value":"fixed_width"},
-                                              {"label":"Explicit numerical intervals","value":"explicit"}],
-                                     value=(transform.get("unit") if transform.get("kind") == "calendar"
-                                            else transform.get("method", "none")),clearable=False),
-                        html.Label("Numeric bin count"),
-                        dcc.Input(id={"type":"analysis-role-bins","index":key},
-                                  type="number",min=1,max=100,step=1,value=transform.get("bins",10)),
-                        html.Label("Fixed bin width"),
-                        dcc.Input(id={"type":"analysis-role-width","index":key},
-                                  type="number",min=0,step="any",value=transform.get("width",1)),
-                        html.Label("Explicit bin edges (comma-separated)"),
-                        dcc.Input(id={"type":"analysis-role-edges","index":key},
-                                  type="text",value=", ".join(str(v) for v in transform.get("edges", []))),
-                    ])
+                    interpretation = (
+                        config.get("value", "binary") if family == "code"
+                        else config.get("value", "categorical") if family == "metadata"
+                        else "numeric"
+                    )
+                    if interpretation in ("numeric", "probability", "temporal"):
+                        transform = config.get("transform") or {}
+                        temporal = interpretation == "temporal"
+                        default = "month" if temporal else "equal_width"
+                        method = (transform.get("unit") if temporal else transform.get("method")) or default
+                        options = (
+                            [("Calendar day", "day"), ("Calendar week", "week"),
+                             ("Calendar month", "month"), ("Calendar quarter", "quarter"),
+                             ("Calendar year", "year")]
+                            if temporal else
+                            [("Equal-width numeric bins", "equal_width"),
+                             ("Quantile numeric bins", "quantile"),
+                             ("Fixed-width numeric bins", "fixed_width"),
+                             ("Explicit numerical intervals", "explicit")]
+                        )
+                        controls.extend([
+                            html.Label("Grouping transformation"),
+                            dcc.Dropdown(
+                                id={"type": "analysis-role-transform", "index": key},
+                                options=[{"label": label, "value": value} for label, value in options],
+                                value=method, clearable=False),
+                        ])
+                        if method in ("equal_width", "quantile"):
+                            controls.extend([
+                                html.Label("Numeric bin count"),
+                                dcc.Input(id={"type": "analysis-role-bins", "index": key},
+                                          type="number", min=1, max=100, step=1,
+                                          value=transform.get("bins", 10)),
+                            ])
+                        elif method == "fixed_width":
+                            controls.extend([
+                                html.Label("Fixed bin width"),
+                                dcc.Input(id={"type": "analysis-role-width", "index": key},
+                                          type="number", min=0, step="any",
+                                          value=transform.get("width", 1)),
+                            ])
+                        elif method == "explicit":
+                            controls.extend([
+                                html.Label("Explicit bin edges (comma-separated)"),
+                                dcc.Input(id={"type": "analysis-role-edges", "index": key},
+                                          type="text",
+                                          value=", ".join(str(v) for v in transform.get("edges", []))),
+                            ])
                 nodes.append(html.Div(controls, className="analysis-variable-settings"))
         return nodes
 
@@ -1059,6 +1128,22 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 config = resolved.setdefault(key, {})
                 config["transform"] = _preserve_hidden_bin_settings(
                     transform, original_transforms.get(key, config.get("transform"))
+                )
+        # Reinterpreting an optional role as categorical must drop stale bins.
+        for key, conf in resolved.items():
+            role = key.split(":", 1)[0]
+            if role not in ("group", "color", "rows", "columns"):
+                continue
+            family = key.split(":")[1] if ":" in key else ""
+            interpretation = (conf.get("value", "binary") if family == "code"
+                              else conf.get("value", "categorical") if family == "metadata"
+                              else "numeric")
+            if interpretation in ("categorical", "binary"):
+                conf.pop("transform", None)
+            elif not conf.get("transform"):
+                conf["transform"] = (
+                    {"kind": "calendar", "unit": "month"} if interpretation == "temporal"
+                    else {"kind": "numeric_bins", "method": "equal_width", "bins": 10}
                 )
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
                                   color, continuous_values, rows, columns, continuous_group, bar_color)

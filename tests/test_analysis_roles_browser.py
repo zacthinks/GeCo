@@ -263,31 +263,36 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
                 assert parent_count["spec"]["aggregation"]["method"] == "count"
                 assert project.run_analysis(parent_count["analysis_id"])["series"][0]["values"] == [2.0, 0.0]
 
-                # A temporal group must select an explicit calendar unit;
-                # date-like strings are never bucketed implicitly.
+                # Temporal grouping now exposes a calendar-only selector and
+                # explicitly defaults to month. The recipe must persist that
+                # choice rather than rejecting an unspecified calendar unit.
                 page.locator("#analysis-new").click()
-                page.locator("#analysis-name").fill("Temporal unavailable")
+                page.locator("#analysis-name").fill("Temporal month")
                 choose(page.locator("#analysis-role-values"), "Code: Theme")
                 choose(page.locator("#analysis-role-group"), "Metadata: date")
-                # The metadata settings arrive through a separate Dash callback.
-                # Do not select the last generic role-value dropdown: before
-                # that callback finishes, it can still be the Code's control.
                 date_interpretation = page.locator(
                     'button[id*="analysis-role-value"][id*="group:metadata:date"]'
                 )
                 date_interpretation.wait_for(state="visible", timeout=15000)
                 choose(date_interpretation, "Date/time")
-                page.locator("#analysis-preview").click()
-                page.locator("#analysis-status").get_by_text(
-                    "calendar unit", exact=False
-                ).wait_for(timeout=15000)
+                calendar = page.locator(
+                    'button[id*="analysis-role-transform"][id*="group:metadata:date"]'
+                )
+                calendar.wait_for(state="visible", timeout=15000)
+                page.wait_for_function(
+                    "() => Array.from(document.querySelectorAll('button'))"
+                    ".some(el => el.id.includes('analysis-role-transform') && "
+                    "el.id.includes('group:metadata:date') && "
+                    "el.textContent.includes('Calendar month'))",
+                    timeout=15000,
+                )
                 page.locator("#analysis-save").click()
-                page.locator("#analysis-status").get_by_text(
-                    "calendar unit", exact=False
-                ).wait_for(timeout=15000)
-                assert not any(row["name"] == "Temporal unavailable"
-                               for row in project.analyses())
-                page.locator("#analysis-cancel").click()
+                page.locator("#analysis-editor").wait_for(state="hidden")
+                temporal = next(row for row in project.analyses()
+                                if row["name"] == "Temporal month")
+                assert temporal["spec"]["roles"]["group"]["transform"] == {
+                    "kind": "calendar", "unit": "month",
+                }
                 assert not errors
             finally:
                 browser.close()

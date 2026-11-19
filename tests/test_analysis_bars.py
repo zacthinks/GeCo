@@ -66,6 +66,45 @@ def test_categorical_frequency_with_no_code_required(workspace):
     assert analysis_figure(result).layout.xaxis.title.text == "condition"
 
 
+def test_binary_metadata_count_is_category_frequency_with_optional_roles(workspace):
+    project, _ = workspace
+    import json
+
+    ids = [row["observation_id"] for row in project.database.list_units()]
+    raw = [True, False, True, False, True, False]
+    with project.database.connect() as conn:
+        for observation_id, value in zip(ids, raw, strict=True):
+            row = conn.execute(
+                "SELECT metadata_json FROM units WHERE observation_id = ?",
+                (observation_id,),
+            ).fetchone()
+            metadata = json.loads(row["metadata_json"])
+            metadata["rating"] = value
+            conn.execute(
+                "UPDATE units SET metadata_json = ? WHERE observation_id = ?",
+                (json.dumps(metadata), observation_id),
+            )
+
+    binary = meta("rating", "binary")
+    plain = compute_analysis(project, chart([binary], "count"))
+    assert plain["categories"] == ["0.0", "1.0"]
+    assert plain["series"][0]["values"] == [3, 3]
+    assert plain["series"][0]["denominators"] == [3, 3]
+
+    grouped = compute_analysis(project, chart(
+        [binary], "count", group=meta("condition"), color=meta("site"),
+    ))
+    assert grouped["categories"] == ["A", "B"]
+    assert len(grouped["series"]) >= 2
+    assert any("0.0" in series["name"] for series in grouped["series"])
+    assert any("1.0" in series["name"] for series in grouped["series"])
+    assert sum(sum(series["values"]) for series in grouped["series"]) == 6
+
+    summed = compute_analysis(project, chart([binary], "sum"))
+    assert summed["series"][0]["values"] == [3.0]
+    assert summed["series"][0]["denominators"] == [6]
+
+
 def test_binary_code_sum_is_positive_count_with_real_denominators(workspace):
     p, code = workspace
     result = compute_analysis(p, chart([code_value(code)], "sum", meta("condition")))
