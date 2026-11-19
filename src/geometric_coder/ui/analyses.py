@@ -339,17 +339,17 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             ], value="bar", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
-                html.Label("Values — Codes to count"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
-                html.Label("Group — categorical metadata (optional)"),
+                html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None),
             ], id="analysis-bar-roles"),
             html.Div([
-                html.Label("Values — Codes whose observed values are distributed"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-distribution", multi=True, options=[], value=[]),
             ], id="analysis-distribution-roles", style={"display": "none"}),
             html.Div([
-                html.Label("Indicators — Codes and categorical metadata"),
+                html.Label("Indicators"),
                 dcc.Dropdown(id="analysis-role-indicators", multi=True, options=[], value=[]),
                 html.P("A symmetric association matrix, not a Rows × Columns pivot table."),
             ], id="analysis-heatmap-roles", style={"display": "none"}),
@@ -362,24 +362,24 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 ]),
             ], id="analysis-measure-options", style={"display": "none"}),
             html.Div([
-                html.Label("X — numeric variable"), dcc.Dropdown(id="analysis-role-x", options=[]),
-                html.Label("Y — numeric variable"), dcc.Dropdown(id="analysis-role-y", options=[]),
-                html.Label("Color — categorical variable or transformed numeric/date (optional)"),
+                html.Label("X"), dcc.Dropdown(id="analysis-role-x", options=[]),
+                html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
+                html.Label("Color (optional)"),
                 dcc.Dropdown(id="analysis-role-color", options=[]),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
-                html.Label("Values — numerical variables"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
                 html.Div([
-                    html.Label("Group — categorical metadata / binned numeric / calendar period"),
+                    html.Label("Group"),
                     dcc.Dropdown(id="analysis-continuous-group", options=[]),
                 ], id="analysis-continuous-group-box"),
                 html.Div([
-                    html.Label("Rows — categorical variable"),
+                    html.Label("Rows"),
                     dcc.Dropdown(id="analysis-role-rows", options=[]),
                 ], id="analysis-continuous-row-box", style={"display":"none"}),
                 html.Div([
-                    html.Label("Columns — categorical variable"),
+                    html.Label("Columns"),
                     dcc.Dropdown(id="analysis-role-columns", options=[]),
                 ], id="analysis-continuous-column-box", style={"display":"none"}),
             ], id="analysis-continuous-roles", style={"display": "none"}),
@@ -437,7 +437,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             "kind": "bar", "names": [], "counts": [],
             "denominators": [], "categories": [],
         }), config={"displaylogo": False}),
-        html.Div(id="analysis-provenance"),
+        html.Details([html.Summary("Data and sources"), html.Div(id="analysis-provenance")], className="analysis-provenance-details"),
     ], className="analysis-manager")
 
 
@@ -690,7 +690,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 family, identity = raw.split(":", 1)
                 key = f"{role}:{raw}"
                 config = (configs or {}).get(key, {})
-                controls = [html.H4(f"{role.title()}: {raw}")]
+                display = next((item["label"] for item in variable_options(project) if item["value"] == raw), raw)
+                family_name, _, value_name = display.partition(": ")
+                readable = f"{role.title()}: {value_name} ({family_name})" if value_name else f"{role.title()}: {display}"
+                controls = [html.H4(readable)]
                 if family == "code":
                     code_id = int(identity)
                     sources = [
@@ -706,8 +709,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         html.Label("Value representation"),
                         dcc.Dropdown(id={"type": "analysis-role-value", "index": key},
                                      options=[
-                                         {"label": "Binary (0/1) — supported", "value": "binary"},
-                                         {"label": "Probability (numerical charts)", "value": "probability"},
+                                         {"label": "Binary (0/1)", "value": "binary"},
+                                         {"label": "Probability", "value": "probability"},
                                      ], value=config.get("value", "binary"), clearable=False),
                         html.Label("Prediction model (required for prediction/hybrid)"),
                         dcc.Dropdown(id={"type": "analysis-role-predictor", "index": key},
@@ -727,9 +730,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         dcc.Dropdown(
                             id={"type": "analysis-role-value", "index": key},
                             options=[
-                                {"label": "Categorical (supported)", "value": "categorical"},
-                                {"label": "Numeric (continuous charts)", "value": "numeric"},
-                                {"label": "Temporal / ISO date (calendar grouping)", "value": "temporal"},
+                                {"label": "Categorical", "value": "categorical"},
+                                {"label": "Numerical", "value": "numeric"},
+                                {"label": "Date/time", "value": "temporal"},
                             ], value=config.get("value", "categorical"),
                             clearable=False,
                         ),
