@@ -152,7 +152,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     stat = spec["statistic"]
     categorical_count = stat == "count" and (
         descriptors[0]["type"] == "code" and descriptors[0]["value"] == "binary"
-        or descriptors[0]["type"] == "metadata" and descriptors[0]["value"] == "categorical"
+        or descriptors[0]["type"] == "metadata" and descriptors[0]["value"] in ("categorical", "binary")
     )
     role_indices = {role: n_values + i for i, role in enumerate(
         role for role in ("group", "color") if role in roles
