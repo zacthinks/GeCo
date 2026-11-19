@@ -5,6 +5,7 @@ schema-v1 and Phase-2 categorical chart paths.
 
 | Chart | Roles | Statistic |
 |---|---|---|
+| `bar_chart` | One or more Values, optional Group and Color | Count for observed categorical/binary frequencies or observed numeric values; Sum, Mean, Median for numerical/Code 0/1 values. Group/Color can be categorical, explicitly binned numeric, or calendar period. |
 | `scatter` | X numeric, Y numeric, optional categorical Color | Paired observed positions; deterministic bounded sample |
 | `histogram` | one numeric Values, optional categorical Group | Exact observed frequencies within explicit bins |
 | `summary_bar` | one numeric Values, categorical Group | Mean or median per category, observed-only denominator |
@@ -104,3 +105,28 @@ Existing v1 saved recipes, original Code count charts, and legacy categorical
 association matrices still execute on their original paths. This is an
 exploratory visualization feature, not a measurement-validity claim or
 statistical inference workflow.
+
+
+## Unified Bar chart editor and saved-analysis compatibility
+
+The researcher-facing new-chart picker has a single **Bar chart** choice. Values,
+optional Group, optional Color, and Statistic are separate roles/controls. A
+binary Code can be displayed as two observed-value categories (Absent/Present)
+with Count, or as a Present count with Sum. Numerical metadata and fitted Scale
+positions can be summarized with Sum, Mean or Median. Categorical metadata can
+be counted without creating a Code. A second grouping produces named colored
+series, not a separate visualization type.
+
+The new `bar_chart` recipe is schema-v2 and uses bounded, observation-ID-aligned
+aggregation. The existing saved `bar`, `distribution`, and `summary_bar` v1/v2
+recipes remain executable without migrations or changes to their calculations.
+Existing-format saved charts retain their original controls on reopening rather
+than being silently converted to the new statistical contract. This limitation
+is visible in the editor and is subject to hands-on researcher acceptance.
+
+When switching a selected saved analysis during editing, a pristine draft closes
+automatically. Modified drafts require Save and switch, Discard and switch, or
+Stay here; Save always writes to the original editing ID. Numerical charts show
+a compact complete/total coverage count with detailed sources, fit identity,
+missing reasons, and denominators under a disclosure. This does not constitute
+inferential validation or automatic model training.

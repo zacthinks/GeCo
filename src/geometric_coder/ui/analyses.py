@@ -133,7 +133,7 @@ def compatible_aggregation_method(kind: str, measure: str, method: str | None) -
     """Reset incompatible Code reductions without discarding valid settings."""
     selected = method or "any"
     if selected in {"count", "mean", "log_count"} and not (
-        kind in {"scatter", "histogram", "summary_bar", "correlation_heatmap", "value_heatmap"}
+        kind in {"scatter", "histogram", "summary_bar", "bar_chart", "correlation_heatmap", "value_heatmap"}
         or kind == "distribution"
         or (kind == "heatmap" and measure == "correlation")
     ):
@@ -158,6 +158,37 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   continuous_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct one recipe from role identities and role-scoped source choices."""
     from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, ROLE_LAYOUT
+    if kind == "bar_chart":
+        selections = {**slots, **(extra_slots or {})}
+        roles = {"values": [
+            {"variable": _ref(raw, configs.get(f"values:{raw}", {}))}
+            for raw in (selections.get("values") or [])
+        ]}
+        for role in ("group", "color"):
+            raw = selections.get(role)
+            if raw:
+                conf = configs.get(f"{role}:{raw}", {})
+                roles[role] = {"variable": _ref(raw, conf)}
+                if conf.get("transform"):
+                    roles[role]["transform"] = conf["transform"]
+        options = continuous_options or {}
+        result = {"schema_version": 2, "kind": kind, "roles": roles,
+                  "statistic": options.get("bar_statistic", "count")}
+        if aggregate_level and aggregate_level != "none":
+            result["aggregation"] = {
+                "level": aggregate_level, "method": aggregate_method,
+                "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
+                "numeric_method": options.get("numeric_method", "mean"),
+            }
+        return result
+    if kind == "bar" and (
+        (extra_slots or {}).get("color")
+        or (continuous_options or {}).get("bar_statistic", "count") != "count"
+    ):
+        raise ValueError(
+            "Existing-format Bar charts do not support Color or Statistic. "
+            "Create a new Bar chart to use these settings."
+        )
     if kind in CONTINUOUS_KINDS:
         if legacy:
             raise ValueError("A legacy analysis cannot be silently converted to a numerical chart; create a new analysis.")
@@ -289,21 +320,29 @@ def _source_coverage(result: dict[str, Any], html: Any) -> Any:
             if parent_grain else
             "Missing-reason counts refer to atomic observations; missing values are not zero.")
     return html.Div([
-        html.H4("Sources and coverage"),
-        html.P(f"{coverage['complete']:,} complete of {coverage['total']:,} {grain}."),
-        html.P(note),
-        html.Table([
-            html.Thead(html.Tr([html.Th("Variable"), html.Th("Source / fit"),
-                                html.Th("Observed"), html.Th("Missing reasons")])),
-            html.Tbody(rows),
-        ]),
-    ], className="analysis-source-summary")
+        html.P(
+            f"{coverage['complete']:,} of {coverage['total']:,} {grain} complete",
+            className="analysis-coverage-overview",
+        ),
+        html.Details([
+            html.Summary("Data and sources"),
+            html.Div([
+                html.P(note),
+                html.Table([
+                    html.Thead(html.Tr([html.Th("Variable"), html.Th("Source / fit"),
+                                        html.Th("Observed"), html.Th("Missing reasons")])),
+                    html.Tbody(rows),
+                ]),
+            ], className="analysis-source-summary"),
+        ], className="analysis-provenance-details"),
+    ])
 
 
 def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
     return html.Div([
         dcc.Store(id="analysis-refresh", data=0),
         dcc.Store(id="analysis-editing", data=None),
+        dcc.Store(id="analysis-nav-pending", data=None),
         dcc.Store(id="analysis-role-config", data={}),
         dcc.Store(id="analysis-role-reset", data=0),
         html.Div([
@@ -317,6 +356,15 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             html.Button("Delete", id="analysis-delete", n_clicks=0),
         ], className="analysis-actions"),
         html.Div([
+            html.P("You have unsaved changes. Save them before switching analyses?"),
+            html.Div([
+                html.Button("Save and switch", id="analysis-nav-save", n_clicks=0),
+                html.Button("Discard and switch", id="analysis-nav-discard", n_clicks=0),
+                html.Button("Stay here", id="analysis-nav-stay", n_clicks=0),
+            ], className="analysis-editor-actions"),
+        ], id="analysis-nav-dialog", style={"display": "none"},
+           className="analysis-navigation-dialog"),
+        html.Div([
             html.P("Delete this analysis? Codes and predictions will not be changed."),
             html.Button("Confirm delete", id="analysis-delete-confirm", n_clicks=0),
             html.Button("Cancel", id="analysis-delete-cancel", n_clicks=0),
@@ -328,28 +376,38 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                       placeholder="Analysis name", maxLength=160),
             html.Label("Visualization"),
             dcc.Dropdown(id="analysis-kind", options=[
-                {"label": "Bar plot — positive Code counts", "value": "bar"},
+                {"label": "Bar chart", "value": "bar_chart"},
                 {"label": "Association heatmap", "value": "heatmap"},
-                {"label": "Code-value distribution", "value": "distribution"},
-                {"label": "Scatterplot — two numerical axes", "value": "scatter"},
+                
+                {"label": "Scatterplot", "value": "scatter"},
                 {"label": "Continuous histogram", "value": "histogram"},
-                {"label": "Grouped numerical mean / median", "value": "summary_bar"},
+                
                 {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
                 {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
-            ], value="bar", clearable=False),
+            ], value="bar_chart", clearable=False),
             html.Div(id="analysis-visualization-help"),
             html.Div([
-                html.Label("Values — Codes to count"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-values", multi=True, options=[], value=[]),
-                html.Label("Group — categorical metadata (optional)"),
+                html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None),
+                html.Div([
+                    html.Label("Color (optional)"),
+                    dcc.Dropdown(id="analysis-bar-color", options=[], value=None),
+                ], id="analysis-bar-color-box"),
+                html.Div([
+                    html.Label("Statistic"),
+                    dcc.Dropdown(id="analysis-bar-statistic", value="count", clearable=False,
+                        options=[{"label": label, "value": value} for label, value in
+                                 (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
+                ], id="analysis-bar-statistic-box"),
             ], id="analysis-bar-roles"),
             html.Div([
-                html.Label("Values — Codes whose observed values are distributed"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-distribution", multi=True, options=[], value=[]),
             ], id="analysis-distribution-roles", style={"display": "none"}),
             html.Div([
-                html.Label("Indicators — Codes and categorical metadata"),
+                html.Label("Indicators"),
                 dcc.Dropdown(id="analysis-role-indicators", multi=True, options=[], value=[]),
                 html.P("A symmetric association matrix, not a Rows × Columns pivot table."),
             ], id="analysis-heatmap-roles", style={"display": "none"}),
@@ -362,24 +420,24 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 ]),
             ], id="analysis-measure-options", style={"display": "none"}),
             html.Div([
-                html.Label("X — numeric variable"), dcc.Dropdown(id="analysis-role-x", options=[]),
-                html.Label("Y — numeric variable"), dcc.Dropdown(id="analysis-role-y", options=[]),
-                html.Label("Color — categorical variable or transformed numeric/date (optional)"),
+                html.Label("X"), dcc.Dropdown(id="analysis-role-x", options=[]),
+                html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
+                html.Label("Color (optional)"),
                 dcc.Dropdown(id="analysis-role-color", options=[]),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
-                html.Label("Values — numerical variables"),
+                html.Label("Values"),
                 dcc.Dropdown(id="analysis-role-continuous-values", options=[], multi=True, value=[]),
                 html.Div([
-                    html.Label("Group — categorical metadata / binned numeric / calendar period"),
+                    html.Label("Group"),
                     dcc.Dropdown(id="analysis-continuous-group", options=[]),
                 ], id="analysis-continuous-group-box"),
                 html.Div([
-                    html.Label("Rows — categorical variable"),
+                    html.Label("Rows"),
                     dcc.Dropdown(id="analysis-role-rows", options=[]),
                 ], id="analysis-continuous-row-box", style={"display":"none"}),
                 html.Div([
-                    html.Label("Columns — categorical variable"),
+                    html.Label("Columns"),
                     dcc.Dropdown(id="analysis-role-columns", options=[]),
                 ], id="analysis-continuous-column-box", style={"display":"none"}),
             ], id="analysis-continuous-roles", style={"display": "none"}),
@@ -446,6 +504,27 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     from geometric_coder.ui.app import _empty_figure
     from geometric_coder.analyses import compute_analysis
 
+    @app.callback(
+        Output("analysis-kind", "options"),
+        Input("analysis-editing", "data"),
+    )
+    def visualization_options(editing: dict[str, Any] | None) -> list[dict[str, str]]:
+        # Present one Bar chart choice for new analyses, without breaking the
+        # archived recipe type displayed when editing an existing saved chart.
+        options = [
+            {"label": "Bar chart", "value": "bar_chart"},
+            {"label": "Association heatmap", "value": "heatmap"},
+            {"label": "Scatterplot", "value": "scatter"},
+            {"label": "Continuous histogram", "value": "histogram"},
+            {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
+            {"label": "Grouped numerical heatmap", "value": "value_heatmap"},
+        ]
+        old = (editing or {}).get("original_spec") or {}
+        kind = old.get("kind")
+        if kind in ("bar", "distribution", "summary_bar"):
+            options.append({"label": "Bar chart (existing format)", "value": kind})
+        return options
+
     @app.callback(Output("analysis-select", "options"),
                   Input("analysis-refresh", "data"), Input("workspace-tabs", "value"))
     def options(_revision: int, workspace: str) -> Any:
@@ -466,19 +545,26 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-role-rows", "options"),
         Output("analysis-role-columns", "options"),
         Output("analysis-continuous-group", "options"),
+        Output("analysis-bar-color", "options"),
         Input("workspace-tabs", "value"),
         Input("explore-code-refresh-store", "data"),
         Input("focus-refresh-store", "data"),
         Input("analysis-editor", "style"),
+        Input("analysis-kind", "value"),
     )
     def refresh_variables(workspace: str, _code_refresh: Any, _focus_refresh: Any,
-                          _editor_style: Any) -> Any:
+                          _editor_style: Any, kind: str) -> Any:
         if workspace != "analyses":
-            return (no_update,) * 11
+            return (no_update,) * 12
         choices = variable_options(project)
         codes = [c for c in choices if c["value"].startswith("code:")]
         metadata = [c for c in choices if c["value"].startswith("metadata:")]
-        return codes, codes, choices, metadata, choices, choices, choices, choices, choices, choices, choices
+        # Existing-format Bars accept only Code Values and metadata Group.
+        # Unified Bars allow any supported Value, Group, and Color role.
+        bar_values = codes if kind == "bar" else choices
+        bar_groups = metadata if kind == "bar" else choices
+        return (bar_values, codes, choices, bar_groups, choices, choices,
+                choices, choices, choices, choices, choices, choices)
 
     @app.callback(
         Output("analysis-editor", "style"),
@@ -509,6 +595,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-continuous-group", "value"),
         Output("analysis-parent-numeric-method", "value"),
         Output("analysis-hist-edges", "value"),
+        Output("analysis-bar-color", "value"),
+        Output("analysis-bar-statistic", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -519,17 +607,20 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def open_editor(_new: int, _edit: int, _duplicate: int, _cancel: int,
                     selected: int | None) -> tuple[Any, ...]:
         trigger = callback_context.triggered_id
-        empty = ({"display": "block"}, {"id": None, "schema_version": 2},
-                 "New analysis", "", "bar", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "")
+        empty = ({"display": "block"}, {"id": None, "schema_version": 2,
+                  "initial_spec": {"schema_version": 2, "kind": "bar_chart",
+                                   "roles": {"values": []}, "statistic": "count"},
+                  "initial_name": ""},
+                 "New analysis", "", "bar_chart", "count", [], None, [], [], {},
+                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-cancel":
-            return ({"display": "none"}, None, "", "", "bar", "count", [],
+            return ({"display": "none"}, None, "", "", "bar_chart", "count", [],
                     None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None,
-                    "mean", "equal_width", 20, 1, None, "mean", "")
+                    "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 28
+            return (no_update,) * 30
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -537,12 +628,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         return (
             {"display": "block"},
             {"id": int(selected) if trigger == "analysis-edit" else None,
-             "schema_version": spec.get("schema_version", 1), "original_spec": spec},
+             "schema_version": spec.get("schema_version", 1), "original_spec": spec,
+             "original_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
+             "initial_spec": spec,
+             "initial_name": record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)"},
             "Edit analysis" if trigger == "analysis-edit" else "Duplicate analysis",
             record["name"] if trigger == "analysis-edit" else record["name"] + " (copy)",
             spec["kind"], spec.get("measure", "count"),
-            slots.get("values", []) if spec["kind"] == "bar" else [],
-            slots.get("group") if spec["kind"] == "bar" else None,
+            slots.get("values", []) if spec["kind"] in ("bar", "bar_chart") else [],
+            slots.get("group") if spec["kind"] in ("bar", "bar_chart") else None,
             slots.get("values", []) if spec["kind"] == "distribution" else [],
             slots.get("indicators", []) if spec["kind"] == "heatmap" else [],
             _initial_config(spec), aggregate.get("level", "none"),
@@ -555,6 +649,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("group") if spec["kind"] in ("histogram", "summary_bar") else None,
             aggregate.get("numeric_method", "mean"),
             ", ".join(str(v) for v in spec.get("binning", {}).get("edges", [])),
+            slots.get("color") if spec["kind"] == "bar_chart" else None,
+            spec.get("statistic", "count") if spec["kind"] == "bar_chart" else "count",
         )
 
     @app.callback(
@@ -570,6 +666,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-continuous-group-box", "style"),
         Output("analysis-continuous-row-box", "style"),
         Output("analysis-continuous-column-box", "style"),
+        Output("analysis-bar-color-box", "style"),
+        Output("analysis-bar-statistic-box", "style"),
         Input("analysis-kind", "value"),
         Input("analysis-aggregate-level", "value"),
         Input("analysis-aggregate-method", "value"),
@@ -590,10 +688,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             help_text = ("A symmetric matrix of positive co-occurrence, Jaccard "
                          "similarity, or pairwise-complete correlations. "
                          "Categorical metadata expands into indicators.")
+        elif kind == "bar_chart":
+            help_text = "Choose a statistic, then compare values across an optional group and color."
         else:
             help_text = "Counts positive Code assignments, optionally by categorical metadata."
         return (
-            visible if kind == "bar" else hidden,
+            visible if kind in ("bar", "bar_chart") else hidden,
             visible if kind == "distribution" else hidden,
             visible if kind == "heatmap" else hidden,
             visible if kind == "heatmap" else hidden,
@@ -605,6 +705,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind in ("histogram", "summary_bar") else hidden,
             visible if kind == "value_heatmap" else hidden,
             visible if kind == "value_heatmap" else hidden,
+            visible if kind == "bar_chart" else hidden,
+            visible if kind == "bar_chart" else hidden,
         )
 
     @app.callback(Output("analysis-aggregation-options", "style"),
@@ -659,6 +761,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-role-rows", "value"),
         Input("analysis-role-columns", "value"),
         Input("analysis-continuous-group", "value"),
+        Input("analysis-bar-color", "value"),
         Input("analysis-editing", "data"),
         State("analysis-role-config", "data"),
     )
@@ -667,11 +770,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                       x: str | None, y: str | None, color: str | None,
                       continuous_values: list[str] | None, rows: str | None,
                       columns: str | None, continuous_group: str | None,
-                      editing: Any, configs: dict[str, Any] | None) -> Any:
+                      bar_color: str | None, editing: Any, configs: dict[str, Any] | None) -> Any:
         if editing is None:
             return []
-        if kind == "bar":
-            slots = {"values": values or [], "group": [group] if group else []}
+        if kind in ("bar", "bar_chart"):
+            slots = {"values": values or [], "group": [group] if group else [], "color": [bar_color] if kind == "bar_chart" and bar_color else []}
         elif kind == "distribution":
             slots = {"values": distribution or []}
         elif kind == "heatmap":
@@ -690,7 +793,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 family, identity = raw.split(":", 1)
                 key = f"{role}:{raw}"
                 config = (configs or {}).get(key, {})
-                controls = [html.H4(f"{role.title()}: {raw}")]
+                display = next((item["label"] for item in variable_options(project) if item["value"] == raw), raw)
+                family_name, _, value_name = display.partition(": ")
+                readable = f"{role.title()}: {value_name} ({family_name})" if value_name else f"{role.title()}: {display}"
+                controls = [html.H4(readable)]
                 if family == "code":
                     code_id = int(identity)
                     sources = [
@@ -706,8 +812,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         html.Label("Value representation"),
                         dcc.Dropdown(id={"type": "analysis-role-value", "index": key},
                                      options=[
-                                         {"label": "Binary (0/1) — supported", "value": "binary"},
-                                         {"label": "Probability (numerical charts)", "value": "probability"},
+                                         {"label": "Binary (0/1)", "value": "binary"},
+                                         {"label": "Probability", "value": "probability"},
                                      ], value=config.get("value", "binary"), clearable=False),
                         html.Label("Prediction model (required for prediction/hybrid)"),
                         dcc.Dropdown(id={"type": "analysis-role-predictor", "index": key},
@@ -727,9 +833,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                         dcc.Dropdown(
                             id={"type": "analysis-role-value", "index": key},
                             options=[
-                                {"label": "Categorical (supported)", "value": "categorical"},
-                                {"label": "Numeric (continuous charts)", "value": "numeric"},
-                                {"label": "Temporal / ISO date (calendar grouping)", "value": "temporal"},
+                                {"label": "Categorical", "value": "categorical"},
+                                {"label": "Numerical", "value": "numeric"},
+                                {"label": "Date/time", "value": "temporal"},
                             ], value=config.get("value", "categorical"),
                             clearable=False,
                         ),
@@ -746,7 +852,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                "silently replaced by human ratings or categorical bins."),
                     ])
                 if role in ("group", "color", "rows", "columns") and kind in (
-                    "scatter", "histogram", "summary_bar", "value_heatmap",
+                    "scatter", "histogram", "summary_bar", "value_heatmap", "bar_chart",
                 ):
                     transform = config.get("transform", {})
                     controls.extend([
@@ -853,9 +959,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     def current_slots(kind: str, values: Any, group: Any,
                       distribution: Any, indicators: Any,
                       x: Any, y: Any, color: Any, continuous_values: Any,
-                      rows: Any, columns: Any, continuous_group: Any) -> dict[str, Any]:
-        if kind == "bar":
-            return {"values": values or [], "group": group}
+                      rows: Any, columns: Any, continuous_group: Any, bar_color: Any) -> dict[str, Any]:
+        if kind in ("bar", "bar_chart"):
+            return {"values": values or [], "group": group, "color": bar_color if kind == "bar_chart" else None}
         if kind == "distribution":
             return {"values": distribution or []}
         if kind == "heatmap":
@@ -879,6 +985,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    continuous_group: Any, statistic: Any,
                    hist_method: Any, hist_bins: Any, hist_width: Any,
                    parent_numeric_method: Any, hist_edges: Any,
+                   bar_color: Any, bar_statistic: Any,
                    live_sources: Any, live_source_ids: Any,
                    live_predictors: Any, live_predictor_ids: Any,
                    live_values: Any, live_value_ids: Any,
@@ -890,7 +997,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
             raise ValueError("Choose exactly one numeric Values variable for this visualization.")
         from geometric_coder.analysis_continuous import CONTINUOUS_KINDS
-        if kind in CONTINUOUS_KINDS and legacy:
+        if (kind in CONTINUOUS_KINDS or kind == "bar_chart") and legacy:
             raise ValueError("Legacy analyses cannot switch to a numerical chart; create a new analysis.")
         bins = {"kind": "histogram_bins", "method": hist_method}
         if hist_method == "fixed_width":
@@ -954,12 +1061,12 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     transform, original_transforms.get(key, config.get("transform"))
                 )
         all_slots = current_slots(kind, values, group, distribution, indicators, x, y,
-                                  color, continuous_values, rows, columns, continuous_group)
+                                  color, continuous_values, rows, columns, continuous_group, bar_color)
         recipe = editor_recipe(
             kind, measure if kind == "heatmap" else "count",
             all_slots, resolved, level, method, threshold, legacy=legacy,
             extra_slots=all_slots,
-            continuous_options={"statistic": statistic or "mean", "binning": bins,
+            continuous_options={"statistic": statistic or "mean", "bar_statistic": bar_statistic or "count", "binning": bins,
                                 "numeric_method": parent_numeric_method or "mean",
                                 "max_points": original.get("max_points", 2000)},
         )
@@ -1002,6 +1109,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State("analysis-hist-width", "value"),
         State("analysis-parent-numeric-method", "value"),
         State("analysis-hist-edges", "value"),
+        State("analysis-bar-color", "value"),
+        State("analysis-bar-statistic", "value"),
         State({"type":"analysis-role-source","index":ALL}, "value"),
         State({"type":"analysis-role-source","index":ALL}, "id"),
         State({"type":"analysis-role-predictor","index":ALL}, "value"),
@@ -1024,6 +1133,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-select", "options", allow_duplicate=True),
         Output("analysis-status", "children"),
         Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
         Input("analysis-save", "n_clicks"),
         State("analysis-name", "value"),
         *state_args, State("analysis-refresh", "data"),
@@ -1036,6 +1146,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              rows: Any, columns: Any, continuous_group: Any, statistic: Any,
              hist_method: Any, hist_bins: Any, hist_width: Any,
              parent_numeric_method: Any, hist_edges: Any,
+             bar_color: Any, bar_statistic: Any,
              live_sources: Any, live_source_ids: Any,
              live_predictors: Any, live_predictor_ids: Any,
              live_values: Any, live_value_ids: Any, live_transforms: Any,
@@ -1044,22 +1155,22 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              live_edge_ids: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
-            return (no_update,) * 5
+            return (no_update,) * 6
         try:
             spec = run_recipe(kind, measure, values, group, distribution, indicators,
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
-            return no_update, no_update, no_update, str(exc), no_update
+            return no_update, no_update, no_update, str(exc), no_update, no_update
         options = [{"label": row["name"], "value": row["analysis_id"]}
                    for row in project.analyses()]
-        return int(revision or 0) + 1, analysis_id, options, "", {"display": "none"}
+        return int(revision or 0) + 1, analysis_id, options, "", {"display": "none"}, None
 
     @app.callback(
         Output("analysis-figure", "figure", allow_duplicate=True),
@@ -1076,6 +1187,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 rows: Any, columns: Any, continuous_group: Any, statistic: Any,
                 hist_method: Any, hist_bins: Any, hist_width: Any,
                 parent_numeric_method: Any, hist_edges: Any,
+                bar_color: Any, bar_statistic: Any,
                 live_sources: Any, live_source_ids: Any,
                 live_predictors: Any, live_predictor_ids: Any,
                 live_values: Any, live_value_ids: Any, live_transforms: Any,
@@ -1089,7 +1201,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               configs, level, method, threshold, editing, x, y, color,
                               continuous_values, rows, columns, continuous_group, statistic,
                               hist_method, hist_bins, hist_width, parent_numeric_method,
-                              hist_edges, live_sources, live_source_ids, live_predictors,
+                              hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
                               live_width_ids, live_edges, live_edge_ids)
@@ -1159,3 +1271,104 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             return fig, _source_coverage(result, html)
         except (ValueError, KeyError) as exc:
             return _empty_figure(f"Analysis unavailable: {exc}"), []
+
+
+    def _draft_recipe(draft: tuple[Any, ...]) -> dict[str, Any]:
+        """Use the same live form sources as Preview and Save for dirty checks."""
+        return run_recipe(*draft[1:11], draft[0], *draft[11:])
+
+    @app.callback(
+        Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
+        Output("analysis-nav-dialog", "style"),
+        Output("analysis-nav-pending", "data"),
+        Input("analysis-select", "value"),
+        State("analysis-editor", "style"),
+        State("analysis-name", "value"),
+        *state_args,
+        prevent_initial_call=True,
+    )
+    def selection_while_editing(
+        selected: int | None, style: dict[str, Any] | None, name: str | None,
+        *draft: Any,
+    ) -> tuple[Any, ...]:
+        editing = draft[0]
+        if not editing or not style or style.get("display") == "none":
+            return no_update, no_update, no_update, no_update
+        old_id = editing.get("id")
+        if old_id is not None and selected == old_id:
+            return no_update, no_update, no_update, no_update
+        initial = editing.get("initial_spec", editing.get("original_spec"))
+        try:
+            from geometric_coder.analyses import validate_analysis
+            current = _draft_recipe(draft)
+            # A new blank draft has no Values and cannot pass the executable
+            # validator; comparing complete *unvalidated* recipes still catches
+            # edits to any role, setting, statistic or aggregation control.
+            if editing.get("original_spec"):
+                current = validate_analysis(project, current)
+                initial = validate_analysis(project, initial)
+            dirty = current != initial or (name or "") != editing.get(
+                "initial_name", editing.get("original_name", "")
+            )
+        except (ValueError, KeyError, TypeError):
+            # Invalid user input remains a draft and cannot be discarded
+            # without an explicit choice.
+            dirty = True
+        if not dirty:
+            return {"display": "none"}, None, {"display": "none"}, None
+        return (
+            no_update, no_update, {"display": "block"},
+            {"from": old_id, "to": selected},
+        )
+
+    @app.callback(
+        Output("analysis-select", "disabled"),
+        Input("analysis-nav-pending", "data"),
+    )
+    def lock_analysis_selection(pending: dict[str, Any] | None) -> bool:
+        # Once a switch requires confirmation, lock the selector until the
+        # researcher explicitly chooses Save, Discard or Stay.
+        return pending is not None
+
+    @app.callback(
+        Output("analysis-refresh", "data", allow_duplicate=True),
+        Output("analysis-select", "value", allow_duplicate=True),
+        Output("analysis-editor", "style", allow_duplicate=True),
+        Output("analysis-editing", "data", allow_duplicate=True),
+        Output("analysis-nav-dialog", "style", allow_duplicate=True),
+        Output("analysis-nav-pending", "data", allow_duplicate=True),
+        Output("analysis-status", "children", allow_duplicate=True),
+        Input("analysis-nav-save", "n_clicks"),
+        Input("analysis-nav-discard", "n_clicks"),
+        Input("analysis-nav-stay", "n_clicks"),
+        State("analysis-nav-pending", "data"),
+        State("analysis-name", "value"),
+        *state_args,
+        State("analysis-refresh", "data"),
+        prevent_initial_call=True,
+    )
+    def resolve_navigation(
+        _save: int, _discard: int, _stay: int,
+        pending: dict[str, Any] | None, name: str | None,
+        *values: Any,
+    ) -> tuple[Any, ...]:
+        if pending is None:
+            return (no_update,) * 7
+        *draft, revision = values
+        choice = callback_context.triggered_id
+        hidden = {"display": "none"}
+        if choice == "analysis-nav-stay":
+            return no_update, pending.get("from"), no_update, no_update, hidden, None, ""
+        if choice == "analysis-nav-discard":
+            return no_update, no_update, hidden, None, hidden, None, ""
+        if choice != "analysis-nav-save":
+            return (no_update,) * 7
+        editing = draft[0]
+        try:
+            spec = _draft_recipe(tuple(draft))
+            project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
+        except (ValueError, KeyError, TypeError) as exc:
+            # Stay on the draft, with the prompt open and the error visible.
+            return no_update, no_update, no_update, no_update, no_update, no_update, str(exc)
+        return int(revision or 0) + 1, no_update, hidden, None, hidden, None, ""

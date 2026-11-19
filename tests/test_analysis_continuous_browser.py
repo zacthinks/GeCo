@@ -66,7 +66,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 def choose(dropdown, label):
                     dropdown.wait_for(state="visible", timeout=15000)
                     dropdown.click()
-                    if label == "Numeric (continuous charts)":
+                    if label == "Numerical":
                         # The two numerical roles share identical option labels;
                         # allow the newly opened menu to settle before selecting.
                         page.wait_for_timeout(150)
@@ -74,13 +74,13 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
 
                 page.locator("#analysis-new").click()
                 page.locator("#analysis-name").fill("Numerical browser")
-                choose(page.locator("#analysis-kind"), "Scatterplot — two numerical axes")
+                choose(page.locator("#analysis-kind"), "Scatterplot")
                 choose(page.locator("#analysis-role-x"), "Metadata: score")
                 choose(page.locator("#analysis-role-y"), "Metadata: rating")
                 choose(page.locator('button[id*="analysis-role-value"][id*="x:metadata:score"]'),
-                       "Numeric (continuous charts)")
+                       "Numerical")
                 choose(page.locator('button[id*="analysis-role-value"][id*="y:metadata:rating"]'),
-                       "Numeric (continuous charts)")
+                       "Numerical")
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
                     "() => document.querySelector('#analysis-figure .js-plotly-plot')"
@@ -96,8 +96,9 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 ) == "scattergl"
                 page.wait_for_function(
                     "() => (document.querySelector('#analysis-provenance')?.textContent || '')"
-                    ".includes('Sources and coverage')", timeout=15000,
+                    ".includes('Data and sources')", timeout=15000,
                 )
+                page.locator("#analysis-provenance summary").click()
                 preview_coverage = page.locator("#analysis-provenance").inner_text()
                 assert "score" in preview_coverage and "rating" in preview_coverage
                 assert "4 / 4 atomic observations" in preview_coverage
@@ -112,6 +113,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 assert project.run_analysis(record["analysis_id"])["eligible"] == 4
 
                 choose(page.locator("#analysis-select"), "Numerical browser")
+                page.locator("#analysis-provenance summary").click()
                 page.wait_for_function(
                     "() => (document.querySelector('#analysis-provenance')?.textContent || '')"
                     ".includes('4 / 4 atomic observations')", timeout=15000,
@@ -135,9 +137,9 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                 choose(page.locator("#analysis-role-continuous-values"), "Metadata: score")
                 choose(page.locator("#analysis-continuous-group"), "Metadata: date")
                 choose(page.locator('button[id*="analysis-role-value"][id*="values:metadata:score"]'),
-                       "Numeric (continuous charts)")
+                       "Numerical")
                 choose(page.locator('button[id*="analysis-role-value"][id*="group:metadata:date"]'),
-                       "Temporal / ISO date (calendar grouping)")
+                       "Date/time")
                 choose(page.locator('button[id*="analysis-role-transform"][id*="group:metadata:date"]'),
                        "Calendar month")
                 page.locator("#analysis-preview").click()

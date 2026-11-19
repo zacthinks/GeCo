@@ -1621,3 +1621,32 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 @media (max-width: 720px) {
   .scale-center-mode .code-center-geometry-controls { grid-template-columns: 1fr; }
 }
+
+
+/* Researcher-first Analyses controls and provenance disclosure. */
+#analysis-visualization-help { margin: 0.55rem 0 1.35rem; line-height: 1.45; color: #53655c; }
+#analysis-nav-dialog {
+  padding: 1rem 1.2rem; border: 1px solid #c8d8ce; border-radius: 9px;
+  background: #f5faf7; box-shadow: 0 4px 20px rgba(20, 54, 35, 0.1);
+}
+#analysis-nav-dialog p { margin: 0 0 0.85rem; font-weight: 600; }
+.analysis-provenance-details {
+  border: 1px solid #d7e2da; border-radius: 9px; background: #fafcfb;
+  padding: 0.8rem 1rem; max-width: 100%; overflow-wrap: anywhere;
+}
+.analysis-provenance-details summary { cursor: pointer; font-weight: 600; color: #234936; }
+.analysis-source-summary { padding-top: 0.9rem; }
+.analysis-source-summary h4 { margin: 0 0 0.4rem; }
+.analysis-source-summary table {
+  border-collapse: collapse; width: 100%; max-width: 100%; display: block;
+  overflow-x: auto; font-size: 0.88rem;
+}
+.analysis-source-summary th, .analysis-source-summary td {
+  border-bottom: 1px solid #e4ece6; padding: 0.55rem 0.65rem;
+  vertical-align: top; text-align: left; min-width: 7rem;
+}
+.analysis-source-summary thead th { background: #eef5f0; color: #234936; }
+@media (max-width: 680px) {
+  .analysis-source-summary table { font-size: 0.8rem; }
+  .analysis-source-summary th, .analysis-source-summary td { padding: 0.45rem; min-width: 6rem; }
+}

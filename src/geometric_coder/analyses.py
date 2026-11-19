@@ -22,6 +22,9 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize and validate an analysis definition; reject dangling references."""
     if not isinstance(spec, Mapping):
         raise ValueError("Analysis settings must be an object.")
+    if spec.get("schema_version", 1) == 2 and spec.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import validate_bar_chart
+        return validate_bar_chart(project, spec)
     if spec.get("schema_version", 1) == 2:
         from geometric_coder.analysis_roles import validate_role_analysis
         return validate_role_analysis(project, spec)
@@ -146,7 +149,12 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
     if not clean or len(clean) > 160:
         raise ValueError("Analysis name must contain 1–160 characters.")
     normalized = validate_analysis(project, spec)
-    if normalized["schema_version"] == 2:
+    if normalized.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import compute_bar_chart
+        from geometric_coder.analysis_roles import ensure_role_sources_ready
+        ensure_role_sources_ready(project, normalized)
+        compute_bar_chart(project, normalized)
+    elif normalized["schema_version"] == 2:
         from geometric_coder.analysis_roles import (
             ensure_role_chart_executable, ensure_role_sources_ready,
         )
@@ -251,6 +259,9 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
 def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
+    if normalized.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import compute_bar_chart
+        return compute_bar_chart(project, normalized)
     if normalized["schema_version"] == 2:
         from geometric_coder.analysis_roles import compute_role_analysis
         return compute_role_analysis(project, normalized)
@@ -344,6 +355,16 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
             xaxis_title=result["names"][0], yaxis_title=result["names"][1],
             title=f"Scatterplot — {result['sampled']:,} of {result['eligible']:,} eligible observations",
         )
+    elif result["kind"] == "bar_chart":
+        for series in result["series"]:
+            fig.add_trace(go.Bar(
+                x=result["categories"], y=series["values"], name=series["name"],
+                customdata=series["denominators"],
+                hovertemplate="%{x}: %{y:.4g} (n=%{customdata})<extra>%{fullData.name}</extra>",
+            ))
+        fig.update_layout(barmode="group", xaxis_type="category",
+                          xaxis_title=result["xaxis_title"],
+                          yaxis_title=result["statistic"].title())
     elif result["kind"] == "histogram":
         for group in result["groups"]:
             fig.add_trace(go.Bar(
@@ -447,6 +468,14 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                     b=90 if result["kind"] == "distribution" else 60),
     )
     if result["kind"] == "distribution":
-        fig.update_xaxes(automargin=True)
+        # Only atomic and binary parent reductions are discrete. Parent-level
+        # counts, proportions and log-counts are genuinely numerical, and
+        # must retain their metric spacing on the horizontal axis.
+        aggregation = result.get("aggregation")
+        method = aggregation.get("method", "any") if aggregation else "any"
+        if method in ("any", "minimum"):
+            fig.update_xaxes(type="category", automargin=True)
+        else:
+            fig.update_xaxes(type="linear", automargin=True)
         fig.update_yaxes(automargin=True)
     return fig
