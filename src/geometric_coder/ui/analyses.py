@@ -371,7 +371,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 {"label": "Bar chart", "value": "bar_chart"},
                 {"label": "Association heatmap", "value": "heatmap"},
                 
-                {"label": "Scatterplot — two numerical axes", "value": "scatter"},
+                {"label": "Scatterplot", "value": "scatter"},
                 {"label": "Continuous histogram", "value": "histogram"},
                 
                 {"label": "Numerical correlation heatmap", "value": "correlation_heatmap"},
