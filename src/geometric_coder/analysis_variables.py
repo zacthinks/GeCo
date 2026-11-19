@@ -210,7 +210,7 @@ def _metadata_value(raw: Any, descriptor: Mapping[str, Any]) -> tuple[Any, str |
                 return 0.0, None
         return None, "invalid_binary"
     if isinstance(raw, bool):
-        return float(raw), None
+        return None, "invalid_numeric"
     if isinstance(raw, (int, float)):
         try:
             number = float(raw)
