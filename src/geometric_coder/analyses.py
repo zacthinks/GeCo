@@ -151,8 +151,10 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
     normalized = validate_analysis(project, spec)
     if normalized.get("kind") == "bar_chart":
         from geometric_coder.analysis_bars import compute_bar_chart
-        return compute_bar_chart(project, normalized)
-    if normalized["schema_version"] == 2:
+        from geometric_coder.analysis_roles import ensure_role_sources_ready
+        ensure_role_sources_ready(project, normalized)
+        compute_bar_chart(project, normalized)
+    elif normalized["schema_version"] == 2:
         from geometric_coder.analysis_roles import (
             ensure_role_chart_executable, ensure_role_sources_ready,
         )
