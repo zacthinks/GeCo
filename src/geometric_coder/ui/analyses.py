@@ -478,9 +478,11 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                              for key in project.metadata.get("key_columns", [])[:-1]
                          ], value="none"),
             html.Div([
-                html.Label("Aggregate Code values"),
-                dcc.Dropdown(id="analysis-aggregate-method", value="any",
-                             clearable=False, options=_AGGREGATION_OPTIONS),
+                html.Div([
+                    html.Label("Aggregate Code values"),
+                    dcc.Dropdown(id="analysis-aggregate-method", value="any",
+                                 clearable=False, options=_AGGREGATION_OPTIONS),
+                ], id="analysis-code-aggregate-box", style={"display": "none"}),
                 html.Div([
                     html.Label("Positive count threshold (threshold method only)"),
                     dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
@@ -727,6 +729,7 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
 
     @app.callback(
         Output("analysis-aggregation-options", "style"),
+        Output("analysis-code-aggregate-box", "style"),
         Output("analysis-threshold-box", "style"),
         Output("analysis-parent-numeric-box", "style"),
         Input("analysis-aggregate-level", "value"),
@@ -749,10 +752,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         bar_values: Any, bar_group: Any, bar_color: Any, continuous_values: Any,
         x: Any, y: Any, scatter_color: Any, continuous_group: Any,
         rows: Any, columns: Any, configs: dict[str, Any] | None,
-    ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
         visible, hidden = {"display": "block"}, {"display": "none"}
         if not level or level == "none":
-            return hidden, hidden, hidden
+            return hidden, hidden, hidden, hidden
         slots = (
             {"values": bar_values or [], "group": bar_group, "color": bar_color}
             if kind == "bar_chart" else
@@ -763,11 +766,13 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             else {"values": bar_values or []} if kind == "bar" else {}
         )
         numerical = False
+        code_selected = False
         for role, selected in slots.items():
             for raw in (selected if isinstance(selected, list) else [selected]):
                 if not raw:
                     continue
                 family = raw.split(":", 1)[0]
+                code_selected = code_selected or family == "code"
                 config = (configs or {}).get(f"{role}:{raw}", {})
                 interpretation = config.get(
                     "value", "binary" if family == "code" else
@@ -775,11 +780,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 )
                 if family == "scale" or interpretation in ("numeric", "probability"):
                     numerical = True
-                    break
-            if numerical:
-                break
-        return visible, (visible if method == "minimum" else hidden), (
-            visible if numerical else hidden
+        return (
+            visible,
+            visible if code_selected else hidden,
+            visible if code_selected and method == "minimum" else hidden,
+            visible if numerical else hidden,
         )
 
     @app.callback(
