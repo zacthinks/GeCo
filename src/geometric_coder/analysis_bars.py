@@ -211,8 +211,15 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         if transform and transform["kind"] == "calendar":
             return ("calendar", calendar_period(value, transform["unit"]))
         variable = roles[role]["variable"]
+        # Parent reductions can turn binary Code judgments into numeric
+        # positive counts, proportions, or log-counts. Only atomic labels and
+        # binary-valued parent reductions deserve Present/Absent labels.
+        binary_reduction = (
+            not spec.get("aggregation")
+            or spec["aggregation"]["method"] in ("any", "minimum")
+        )
         if (variable["type"] == "code" and variable["value"] == "binary"
-                and value in (0, 1)):
+                and binary_reduction and value in (0, 1)):
             return ("code_label", "Present" if value == 1 else "Absent")
         return _categorical_key(value)
 
