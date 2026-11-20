@@ -123,7 +123,7 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 choose(page.locator("#analysis-select"), "Three-role categorical Count")
                 page.locator("#analysis-edit").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for()
-                page.locator("#analysis-bar-color .Select-clear-zone").click()
+                page.locator("#analysis-bar-color [aria-label='Clear selection']").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for(state="detached")
                 page.locator("#analysis-preview").click()
                 page.wait_for_function(
