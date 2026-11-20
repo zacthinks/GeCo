@@ -407,3 +407,41 @@ def test_toy_fixture_count_17_present_15_absent_per_condition(tmp_path):
     }
     saved_id = project.save_analysis("Observed labels by condition", by_condition)
     assert project.run_analysis(saved_id)["series"] == result["series"]
+
+
+def test_parent_positive_counts_keep_numeric_group_labels(tmp_path):
+    """Parent counts of 0 and 1 are numeric, not atomic Absent/Present labels."""
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "parent-bar.geco",
+        data=pd.DataFrame({
+            "interview": ["A"] * 3 + ["B"] * 3 + ["C"] * 3,
+            "turn": [1, 2, 3] * 3,
+            "text": [f"observation {i}" for i in range(9)],
+        }),
+        keys=["interview", "turn"], text="text", metadata=[], geometries=None,
+    )
+    code = project.create_code("Positive experience")
+    for unit, label in zip(
+        project.database.list_units(),
+        ["negative", "negative", "negative",
+         "positive", "negative", "negative",
+         "positive", "positive", "negative"],
+        strict=True,
+    ):
+        project.annotate(unit["observation_id"], code, label)
+    spec = chart([code_value(code)], group=code_value(code))
+    spec["aggregation"] = {
+        "level": "interview", "method": "count",
+        "threshold": 1, "numeric_method": "mean",
+    }
+    result = compute_analysis(project, spec)
+    assert result["categories"] == ["0.0", "1.0", "2.0"]
+    assert result["series"][0]["values"] == [1, 1, 1]
+    assert "Absent" not in result["categories"]
+    assert "Present" not in result["categories"]
+
+    # Truly binary parent reductions retain the readable labels.
+    spec["aggregation"]["method"] = "any"
+    binary_result = compute_analysis(project, spec)
+    assert binary_result["categories"] == ["Absent", "Present"]
+    assert binary_result["series"][0]["values"] == [1, 2]
