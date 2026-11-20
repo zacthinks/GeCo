@@ -481,13 +481,17 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("Aggregate Code values"),
                 dcc.Dropdown(id="analysis-aggregate-method", value="any",
                              clearable=False, options=_AGGREGATION_OPTIONS),
-                html.Label("Positive count threshold (threshold method only)"),
-                dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
-                          step=1, value=1),
-                html.Label("Parent-grain reduction for numerical values"),
-                dcc.Dropdown(id="analysis-parent-numeric-method",
-                    options=[{"label":"Mean","value":"mean"},{"label":"Median","value":"median"}],
-                    value="mean", clearable=False),
+                html.Div([
+                    html.Label("Positive count threshold (threshold method only)"),
+                    dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
+                              step=1, value=1),
+                ], id="analysis-threshold-box", style={"display": "none"}),
+                html.Div([
+                    html.Label("Parent-grain reduction for numerical values"),
+                    dcc.Dropdown(id="analysis-parent-numeric-method",
+                        options=[{"label":"Mean","value":"mean"},{"label":"Median","value":"median"}],
+                        value="mean", clearable=False),
+                ], id="analysis-parent-numeric-box", style={"display": "none"}),
                 html.P("Binary Codes use the selected count/proportion reduction; numerical values "
                        "use the numerical reduction. Grouping metadata must be constant in each parent."),
 
@@ -721,10 +725,62 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind == "bar_chart" else hidden,
         )
 
-    @app.callback(Output("analysis-aggregation-options", "style"),
-                  Input("analysis-aggregate-level", "value"))
-    def show_aggregation(level: str | None) -> dict[str, str]:
-        return {"display": "block"} if level and level != "none" else {"display": "none"}
+    @app.callback(
+        Output("analysis-aggregation-options", "style"),
+        Output("analysis-threshold-box", "style"),
+        Output("analysis-parent-numeric-box", "style"),
+        Input("analysis-aggregate-level", "value"),
+        Input("analysis-aggregate-method", "value"),
+        Input("analysis-kind", "value"),
+        Input("analysis-role-values", "value"),
+        Input("analysis-role-group", "value"),
+        Input("analysis-bar-color", "value"),
+        Input("analysis-role-continuous-values", "value"),
+        Input("analysis-role-x", "value"),
+        Input("analysis-role-y", "value"),
+        Input("analysis-role-color", "value"),
+        Input("analysis-continuous-group", "value"),
+        Input("analysis-role-rows", "value"),
+        Input("analysis-role-columns", "value"),
+        Input("analysis-role-config", "data"),
+    )
+    def show_aggregation(
+        level: str | None, method: str | None, kind: str,
+        bar_values: Any, bar_group: Any, bar_color: Any, continuous_values: Any,
+        x: Any, y: Any, scatter_color: Any, continuous_group: Any,
+        rows: Any, columns: Any, configs: dict[str, Any] | None,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        visible, hidden = {"display": "block"}, {"display": "none"}
+        if not level or level == "none":
+            return hidden, hidden, hidden
+        slots = (
+            {"values": bar_values or [], "group": bar_group, "color": bar_color}
+            if kind == "bar_chart" else
+            {"x": x, "y": y, "color": scatter_color} if kind == "scatter" else
+            {"values": continuous_values or [], "group": continuous_group,
+             "rows": rows, "columns": columns}
+            if kind in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap")
+            else {"values": bar_values or []} if kind == "bar" else {}
+        )
+        numerical = False
+        for role, selected in slots.items():
+            for raw in (selected if isinstance(selected, list) else [selected]):
+                if not raw:
+                    continue
+                family = raw.split(":", 1)[0]
+                config = (configs or {}).get(f"{role}:{raw}", {})
+                interpretation = config.get(
+                    "value", "binary" if family == "code" else
+                    "categorical" if family == "metadata" else "numeric",
+                )
+                if family == "scale" or interpretation in ("numeric", "probability"):
+                    numerical = True
+                    break
+            if numerical:
+                break
+        return visible, (visible if method == "minimum" else hidden), (
+            visible if numerical else hidden
+        )
 
     @app.callback(
         Output("analysis-aggregate-method", "options"),
