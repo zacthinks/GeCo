@@ -123,8 +123,14 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 choose(page.locator("#analysis-select"), "Three-role categorical Count")
                 page.locator("#analysis-edit").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for()
-                page.locator("#analysis-clear-bar-color").click()
+                page.locator("#analysis-bar-color .Select-clear-zone").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for(state="detached")
+                page.locator("#analysis-preview").click()
+                page.wait_for_function(
+                    "() => { const plot = document.querySelector('#analysis-figure .js-plotly-plot'); "
+                    "return plot?.data?.length === 1 && plot.data[0]?.y?.join(',') === '2,2'; }",
+                    timeout=20000,
+                )
                 page.locator("#analysis-save").click()
                 page.locator("#analysis-editor").wait_for(state="hidden")
                 cleared = project.analysis(categorical_saved["analysis_id"])["spec"]
