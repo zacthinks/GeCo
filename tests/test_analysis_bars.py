@@ -362,3 +362,48 @@ def test_count_allows_mixed_categorical_and_numeric_values(workspace):
     assert by_name["Positive experience"]["values"] == [2, 2]
     assert by_name["condition"]["values"] == [3, 3]
     assert by_name["rating"]["values"] == [2, 2]
+
+
+def test_toy_fixture_count_17_present_15_absent_per_condition(tmp_path):
+    conditions = ["Control", "Dialogue", "Hints"]
+    rows = []
+    labels = []
+    for condition in conditions:
+        for i in range(40):
+            rows.append({"id": len(rows) + 1, "text": f"{condition} {i}",
+                         "condition": condition})
+            labels.append("positive" if i < 17 else "negative" if i < 32
+                          else "unsure" if i < 34 else None)
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "toy-count.geco",
+        data=pd.DataFrame(rows),
+        keys=["id"], text="text", metadata=["condition"], geometries=None,
+    )
+    code = project.create_code("Positive experience")
+    for row, label in zip(project.database.list_units(), labels, strict=True):
+        if label is not None:
+            project.annotate(row["observation_id"], code, label)
+    by_condition = chart([code_value(code)], "count", group=meta("condition"))
+    result = compute_analysis(project, by_condition)
+    assert result["categories"] == conditions
+    assert len(result["series"]) == 1
+    assert result["series"][0]["values"] == [32, 32, 32]
+    assert result["series"][0]["denominators"] == [32, 32, 32]
+    assert result["coverage"]["observed"][0] == 96
+    summed = compute_analysis(
+        project, chart([code_value(code)], "sum", group=meta("condition"))
+    )
+    assert summed["series"][0]["values"] == [17.0, 17.0, 17.0]
+    # Code categories appear only with an explicit Group or Color role.
+    colored = compute_analysis(
+        project, chart([code_value(code)], "count",
+                       group=meta("condition"), color=code_value(code))
+    )
+    assert {s["name"] for s in colored["series"]} == {
+        "Positive experience / Present", "Positive experience / Absent"
+    }
+    assert {tuple(s["values"]) for s in colored["series"]} == {
+        (17, 17, 17), (15, 15, 15)
+    }
+    saved_id = project.save_analysis("Observed labels by condition", by_condition)
+    assert project.run_analysis(saved_id)["series"] == result["series"]
