@@ -57,13 +57,16 @@ def chart(values, statistic="count", group=None, color=None):
 def test_categorical_frequency_with_no_code_required(workspace):
     p, _ = workspace
     result = compute_analysis(p, chart([meta("condition")]))
-    assert result["categories"] == ["A", "B"]
-    assert result["series"][0]["values"] == [3, 3]
+    assert result["categories"] == ["condition"]
+    assert result["series"][0]["values"] == [6]
     assert result["coverage"]["total"] == 6
     assert result["coverage"]["observed"] == [6]
     assert len(analysis_figure(result).data) == 1
-    assert result["xaxis_title"] == "condition"
-    assert analysis_figure(result).layout.xaxis.title.text == "condition"
+    assert result["xaxis_title"] == "Values"
+    assert analysis_figure(result).layout.xaxis.title.text == "Values"
+    grouped = compute_analysis(p, chart([meta("condition")], group=meta("condition")))
+    assert grouped["categories"] == ["A", "B"]
+    assert grouped["series"][0]["values"] == [3, 3]
 
 
 def test_binary_metadata_count_is_category_frequency_with_optional_roles(workspace):
@@ -87,17 +90,21 @@ def test_binary_metadata_count_is_category_frequency_with_optional_roles(workspa
 
     binary = meta("rating", "binary")
     plain = compute_analysis(project, chart([binary], "count"))
-    assert plain["categories"] == ["0.0", "1.0"]
-    assert plain["series"][0]["values"] == [3, 3]
-    assert plain["series"][0]["denominators"] == [3, 3]
+    assert plain["categories"] == ["rating"]
+    assert plain["series"][0]["values"] == [6]
+    assert plain["series"][0]["denominators"] == [6]
+    explicitly_grouped = compute_analysis(project, chart([binary], "count", group=binary))
+    assert explicitly_grouped["categories"] == ["0.0", "1.0"]
+    assert explicitly_grouped["series"][0]["values"] == [3, 3]
 
     grouped = compute_analysis(project, chart(
         [binary], "count", group=meta("condition"), color=meta("site"),
     ))
     assert grouped["categories"] == ["A", "B"]
-    assert len(grouped["series"]) >= 2
-    assert any("0.0" in series["name"] for series in grouped["series"])
-    assert any("1.0" in series["name"] for series in grouped["series"])
+    assert len(grouped["series"]) == 2
+    assert {series["name"] for series in grouped["series"]} == {
+        "rating / North", "rating / South",
+    }
     assert sum(sum(series["values"]) for series in grouped["series"]) == 6
 
     summed = compute_analysis(project, chart([binary], "sum"))
@@ -120,13 +127,21 @@ def test_binary_code_sum_is_positive_count_with_real_denominators(workspace):
 def test_binary_distribution_has_only_discrete_categories(workspace):
     p, code = workspace
     result = compute_analysis(p, chart([code_value(code)]))
-    assert result["categories"] == ["Absent", "Present"]
-    assert result["series"][0]["values"] == [2, 2]
+    assert result["categories"] == ["Positive experience"]
+    assert result["series"][0]["values"] == [4]
+    assert result["series"][0]["denominators"] == [4]
     fig = analysis_figure(result)
     assert fig.layout.xaxis.type == "category"
-    assert fig.layout.xaxis.title.text == "Positive experience"
-    assert list(fig.data[0].x) == ["Absent", "Present"]
-    assert 0.5 not in fig.data[0].x
+    assert fig.layout.xaxis.title.text == "Values"
+    assert list(fig.data[0].x) == ["Positive experience"]
+    grouped = compute_analysis(p, chart([code_value(code)], group=code_value(code)))
+    assert grouped["categories"] == ["Absent", "Present"]
+    assert grouped["series"][0]["values"] == [2, 2]
+    colored = compute_analysis(p, chart([code_value(code)], color=code_value(code)))
+    assert set(s["name"] for s in colored["series"]) == {
+        "Positive experience / Absent", "Positive experience / Present"
+    }
+    assert sum(sum(s["values"]) for s in colored["series"]) == 4
 
 
 def test_numeric_mean_preserves_zero_and_missing(workspace):
@@ -145,9 +160,9 @@ def test_multiple_groupings_form_distinct_series_and_counts(workspace):
         p, chart([meta("condition")], group=meta("site"))
     )
     assert set(result["categories"]) == {"North", "South"}
-    labels = {item["name"] for item in result["series"]}
-    assert any("A" in label for label in labels)
-    assert any("B" in label for label in labels)
+    assert len(result["series"]) == 1
+    assert result["series"][0]["name"] == "condition"
+    assert result["series"][0]["values"] == [4, 2]
     assert sum(sum(s["values"]) for s in result["series"]) == 6
 
 
@@ -256,8 +271,10 @@ def test_variable_identity_distinguishes_prediction_source_and_representation():
 def test_multiple_categorical_values_without_group_have_generic_value_axis(workspace):
     p, code = workspace
     result = compute_analysis(p, chart([code_value(code), meta("condition")]))
-    assert result["xaxis_title"] == "Value"
-    assert analysis_figure(result).layout.xaxis.title.text == "Value"
+    assert result["xaxis_title"] == "Values"
+    assert analysis_figure(result).layout.xaxis.title.text == "Values"
+    assert result["categories"] == ["Positive experience", "condition"]
+    assert [v for series in result["series"] for v in series["values"] if v] == [4, 6]
 
 
 def test_numerical_values_without_group_have_values_axis(workspace):
@@ -274,11 +291,11 @@ def test_categorical_count_with_group_and_color_computes_and_saves(workspace):
     assert computed["categories"] == ["North", "South"]
     by_name = {series["name"]: series for series in computed["series"]}
     assert set(by_name) == {
-        "condition / A / A", "condition / B / B",
+        "condition / A", "condition / B",
     }
-    assert by_name["condition / A / A"]["values"] == [2, 1]
-    assert by_name["condition / B / B"]["values"] == [2, 1]
-    assert by_name["condition / A / A"]["denominators"] == [2, 1]
+    assert by_name["condition / A"]["values"] == [2, 1]
+    assert by_name["condition / B"]["values"] == [2, 1]
+    assert by_name["condition / A"]["denominators"] == [2, 1]
     assert len(analysis_figure(computed).data) == 2
     saved_id = project.save_analysis("Categorical Group and Color", spec)
     assert project.analysis(saved_id)["spec"]["roles"] == validate_analysis(
@@ -318,3 +335,30 @@ def test_sum_missing_cells_remain_null_but_observed_zero_is_zero(workspace):
 
     saved_id = project.save_analysis("Missing-aware Sum", spec)
     assert project.run_analysis(saved_id)["series"] == missing["series"]
+
+
+def test_count_by_condition_is_observed_count_not_implicit_code_labels(workspace):
+    project, code = workspace
+    spec = chart([code_value(code)], "count", group=meta("condition"))
+    result = compute_analysis(project, spec)
+    assert result["categories"] == ["A", "B"]
+    assert len(result["series"]) == 1
+    assert result["series"][0]["values"] == [2, 2]
+    assert result["series"][0]["denominators"] == [2, 2]
+    # An Unsure and an unreviewed Code judgment are not observed.
+    assert result["coverage"]["observed"][0] == 4
+    assert compute_analysis(
+        project, chart([code_value(code)], "sum", group=meta("condition"))
+    )["series"][0]["values"] == [1.0, 1.0]
+
+
+def test_count_allows_mixed_categorical_and_numeric_values(workspace):
+    project, code = workspace
+    result = compute_analysis(project, chart([
+        code_value(code), meta("condition"), meta("rating", "numeric"),
+    ], "count", group=meta("condition")))
+    assert result["categories"] == ["A", "B"]
+    by_name = {row["name"]: row for row in result["series"]}
+    assert by_name["Positive experience"]["values"] == [2, 2]
+    assert by_name["condition"]["values"] == [3, 3]
+    assert by_name["rating"]["values"] == [2, 2]
