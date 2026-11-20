@@ -395,16 +395,15 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                         options=[{"label": label, "value": value} for label, value in
                                  (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
                 ], id="analysis-bar-statistic-box"),
-                html.P("Count summarizes observed values; categorical Count displays category frequencies. "
-                       "Sum of a binary Code counts Present judgments."),
+                html.P("Count totals observed (nonmissing) Values within each explicit Group/Color. "
+                       "Sum of a binary Code counts Present judgments. "
+                       "To split Present versus Absent, select that Code under Group or Color."),
                 html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None, clearable=True),
-                html.Button("Clear Group", id="analysis-clear-bar-group", n_clicks=0, type="button"),
                 html.Div([
                     html.Label("Color (optional)"),
                     dcc.Dropdown(id="analysis-bar-color", options=[], value=None, clearable=True),
-                    html.Button("Clear Color", id="analysis-clear-bar-color", n_clicks=0, type="button"),
-                ], id="analysis-bar-color-box"),
+                    ], id="analysis-bar-color-box"),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -428,7 +427,6 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
                 html.Label("Color (optional)"),
                 dcc.Dropdown(id="analysis-role-color", options=[], clearable=True),
-                html.Button("Clear Color", id="analysis-clear-scatter-color", n_clicks=0, type="button"),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
                 html.Label("Values"),
@@ -457,8 +455,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Div([
                     html.Label("Color (optional)"),
                     dcc.Dropdown(id="analysis-continuous-group", options=[], clearable=True),
-                    html.Button("Clear Color", id="analysis-clear-histogram-color", n_clicks=0, type="button"),
-                ], id="analysis-continuous-group-box"),
+                    ], id="analysis-continuous-group-box"),
                 html.Div([
                     html.Label("Rows"),
                     dcc.Dropdown(id="analysis-role-rows", options=[]),
@@ -756,23 +753,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             return no_update
         compatible = compatible_aggregation_method(kind, measure, method)
         return compatible if compatible != method else no_update
-
-    @app.callback(
-        Output("analysis-role-group", "value", allow_duplicate=True),
-        Output("analysis-bar-color", "value", allow_duplicate=True),
-        Output("analysis-role-color", "value", allow_duplicate=True),
-        Output("analysis-continuous-group", "value", allow_duplicate=True),
-        Input("analysis-clear-bar-group", "n_clicks"),
-        Input("analysis-clear-bar-color", "n_clicks"),
-        Input("analysis-clear-scatter-color", "n_clicks"),
-        Input("analysis-clear-histogram-color", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def clear_optional_roles(*_clicks: int) -> tuple[Any, ...]:
-        names = ("analysis-clear-bar-group", "analysis-clear-bar-color",
-                 "analysis-clear-scatter-color", "analysis-clear-histogram-color")
-        trigger = callback_context.triggered_id
-        return tuple(None if name == trigger else no_update for name in names)
 
     @app.callback(
         Output("analysis-hist-bins-box", "style"),
