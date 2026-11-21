@@ -62,3 +62,50 @@ TeAL imports are optional and only needed for this mode. When no view, topic mod
 - UI pilot: benchmarks/phase2a_runtime_pilot.py tests Dash HTTP/setup but not browser paint.
 
 Future independent measurement lanes: isolated-process cold startup; real process RSS sampling; provider/SQLite I/O; Dash transport payloads; browser click-to-visible acceptance. Backend medians are not end-user UI latencies.
+
+## Controlled pair and no-change variance control
+
+An opt-in workflow at `.github/workflows/tiered-benchmarks-manual.yml` checks out
+a pinned historical base and the current candidate in detached worktrees within
+**one** Linux runner. It installs one shared environment, imports GeCo from the
+appropriate worktree, and executes the **same committed benchmark driver** at
+both revisions. Tier A is executed baseline -> candidate -> candidate-control;
+Tier B is candidate -> baseline -> candidate-control. Each operation uses 20 warm
+samples plus a distinct first-call proxy, with setup explicitly excluded. All
+six raw JSON reports, stdout copies, run metadata, and two comparison JSON reports
+are uploaded as one artifact, even if a subsequent step fails.
+
+The committed runner itself did not exist on older main, so the same independent
+driver is taken from the workflow checkout while `geometric_coder` resolves from
+each pinned revision's `src` directory. The workflow asserts this path. It is
+not a claim that historical code had the new benchmark integrated.
+
+Manual trigger after this workflow is on default: Actions -> Tiered GeCo
+benchmarks (opt-in) -> Run workflow -> choose reference and baseline SHA.
+Before the workflow lands on default, a one-off push of a marker commit on an
+explicit `benchmarks/manual-tiered-run-*` branch executes the same job. Its
+parent commit is treated as the candidate; the extra marker commit only triggers
+Actions and is never included in the candidate measurement. No expensive tests
+are tied to ordinary pull requests or main pushes.
+
+Example local pair from a clean checkout with an already installed compatible
+single environment (for the same interpreter and package versions):
+
+```sh
+git worktree add --detach /tmp/geco-base e5971fe1eb29d98f5f89bdb11bcb5389cab9e063
+git worktree add --detach /tmp/geco-head <candidate-40-character-SHA>
+# Use the driver checkout from PR #85, not two different driver implementations.
+# Run commands in each worktree with PYTHONPATH="<worktree>/src:<driver-checkout>".
+python -m benchmarks.tiered_linked --tier a --seed 1729 --page-size 64 --repeats 20 --output /tmp/a-base.json
+python -m benchmarks.tiered_linked --tier a --seed 1729 --page-size 64 --repeats 20 --output /tmp/a-head.json
+python -m benchmarks.tiered_linked --tier a --seed 1729 --page-size 64 --repeats 20 --output /tmp/a-head-repeat.json
+python -m benchmarks.compare_tiered --baseline /tmp/a-base.json --candidate /tmp/a-head.json --control /tmp/a-head-repeat.json --output /tmp/a-comparison.json
+```
+
+The comparison refuses different revision identities, absent exact SHAs,
+mismatched environment metadata, fixture identity/seed/units/configuration,
+operation availability and reported result shapes. It emits baseline/candidate/
+control p50 and p95 milliseconds, absolute candidate-minus-baseline p50,
+absolute same-revision control difference and separately labeled Python
+allocation peaks. A single no-change control is only a rough indicator of
+variance; it cannot support a confidence interval or a speedup conclusion.
