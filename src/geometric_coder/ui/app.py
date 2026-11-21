@@ -897,6 +897,7 @@ def create_app(
                 html.Div(id="geco-close-status", className="sr-only"),
                 dcc.Store(id="geco-tooltip-prefs", storage_type="local", data={"enabled": True}),
                 dcc.Store(id="focal-unit-store", data=initial_focal_unit_id),
+                dcc.Store(id="context-navigation-request", data=None),
                 dcc.Store(
                     id="explore-focal-unit-store",
                     data=initial_focal_unit_id if initial_workspace == "explore" else None,
@@ -3208,6 +3209,49 @@ def create_app(
         return int(unit_id), updated
 
     @app.callback(
+        Output("focal-unit-store", "data", allow_duplicate=True),
+        Output("navigation-history-store", "data", allow_duplicate=True),
+        Input("context-navigation-request", "data"),
+        State("focal-unit-store", "data"),
+        State("active-session-store", "data"),
+        State("geometry-dropdown", "value"),
+        State("focus-code-dropdown", "value"),
+        State("navigation-history-store", "data"),
+        State("workspace-tabs", "value"),
+        prevent_initial_call=True,
+    )
+    def navigate_from_context(
+        request: dict[str, Any] | None,
+        focal_unit_id: int | None,
+        session_id: int | None,
+        geometry_id: int | None,
+        code_id: int | None,
+        history: dict[str, Any] | None,
+        workspace: str | None,
+    ) -> tuple[Any, Any]:
+        """Use the usual session/history path for an atomic context jump."""
+        if not isinstance(request, dict) or request.get("surface") != workspace:
+            return no_update, no_update
+        if workspace not in {"explore", "focus"} or session_id is None:
+            return no_update, no_update
+        try:
+            unit_id = int(request["unit_id"])
+            project.unit(unit_id)
+        except (KeyError, TypeError, ValueError):
+            return no_update, no_update
+        if focal_unit_id is not None and unit_id == int(focal_unit_id):
+            return no_update, no_update
+        project.record_visit(
+            int(session_id),
+            unit_id,
+            method="context_double_click",
+            source_unit_id=int(focal_unit_id) if focal_unit_id is not None else None,
+            geometry_id=int(geometry_id) if geometry_id is not None else None,
+            active_code_id=int(code_id) if workspace == "focus" and code_id is not None else None,
+        )
+        return unit_id, _append_navigation_history(history, unit_id)
+
+    @app.callback(
         Output("nav-back", "disabled"),
         Output("nav-forward", "disabled"),
         Input("navigation-history-store", "data"),
@@ -3268,6 +3312,7 @@ def create_app(
             selected_unit_ids=selected_unit_ids or [int(focal_unit_id)],
             checkbox_type="explore-span-checkbox",
             span_selection_enabled=True,
+            navigation_surface="explore",
         )
         notice = truncation_notice(html, len(context), truncated, limit)
         if notice is not None:
@@ -7086,6 +7131,7 @@ def create_app(
             selected_unit_ids=selected_unit_ids or [int(focal_unit_id)],
             checkbox_type="focus-span-checkbox",
             span_selection_enabled=True,
+            navigation_surface="focus",
         )
         notice = truncation_notice(html, len(context), truncated, limit)
         if notice is not None:
@@ -12689,12 +12735,14 @@ def _render_context_units(
     selected_unit_ids: list[int] | None = None,
     checkbox_type: str,
     span_selection_enabled: bool = True,
+    navigation_surface: str | None = None,
 ) -> list[Any]:
     """Render context with a focal-anchored contiguous span selector."""
     if not units:
         return []
     parent_columns = key_columns[:-1]
     selected = set(_normalized_span_selection(units, focal_unit_id, selected_unit_ids))
+    eligible = set(_span_eligible_order(units, focal_unit_id))
     children: list[Any] = []
     open_values: list[Any] = []
 
@@ -12736,7 +12784,7 @@ def _render_context_units(
                 {
                     "label": "",
                     "value": unit_id,
-                    "disabled": is_focal or not span_selection_enabled,
+                    "disabled": is_focal or not span_selection_enabled or unit_id not in eligible,
                 }
             ],
             value=[unit_id] if unit_id in selected else [],
@@ -12752,6 +12800,14 @@ def _render_context_units(
                             "context-unit focal-context-unit"
                             if is_focal else "context-unit"
                         ),
+                        **({
+                            "tabIndex": 0,
+                            "role": "button",
+                            "title": "Double-click to read this unit; Enter or Space also navigates.",
+                            "aria-label": f"Navigate to context unit {unit_id}",
+                            "data-geco-context-unit": str(unit_id),
+                            "data-geco-context-surface": navigation_surface,
+                        } if navigation_surface is not None else {}),
                     ),
                 ],
                 className=(
@@ -12771,13 +12827,31 @@ def _render_context_units(
     return children
 
 
+def _span_eligible_order(
+    context_units: list[dict[str, Any]], focal_unit_id: int,
+) -> list[int]:
+    """Canonical ordered siblings inside the focal unit's immediate parent."""
+    focal = next(
+        (unit for unit in context_units if int(unit["unit_id"]) == int(focal_unit_id)),
+        None,
+    )
+    if focal is None:
+        return []
+    parent_keys = list(focal["user_key"])[:-1]
+    parent = tuple(focal["user_key"].get(key) for key in parent_keys)
+    return [
+        int(unit["unit_id"]) for unit in context_units
+        if tuple(unit["user_key"].get(key) for key in parent_keys) == parent
+    ]
+
+
 def _normalized_span_selection(
     context_units: list[dict[str, Any]],
     focal_unit_id: int,
     selected_unit_ids: list[int] | None,
 ) -> list[int]:
     """Return one visible contiguous interval anchored on the focal unit."""
-    order = [int(unit["unit_id"]) for unit in context_units]
+    order = _span_eligible_order(context_units, focal_unit_id)
     if int(focal_unit_id) not in order:
         return [int(focal_unit_id)]
     focal_index = order.index(int(focal_unit_id))
@@ -12798,11 +12872,11 @@ def _update_span_selection(
     checked: bool,
 ) -> list[int]:
     """Move one endpoint of the focal-anchored discrete interval."""
-    order = [int(unit["unit_id"]) for unit in context_units]
+    order = _span_eligible_order(context_units, focal_unit_id)
     focal = int(focal_unit_id)
     clicked = int(clicked_unit_id)
     current = _normalized_span_selection(context_units, focal, current_unit_ids)
-    if clicked not in order or clicked == focal:
+    if focal not in order or clicked not in order or clicked == focal:
         return current
     focal_index = order.index(focal)
     clicked_index = order.index(clicked)
