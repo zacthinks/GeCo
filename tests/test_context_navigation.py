@@ -89,14 +89,15 @@ def test_span_cannot_cross_parent_boundary_and_does_not_persist(tmp_path):
     units[0]["user_key"]["document"] = "previous"
     units[-1]["user_key"]["document"] = "next"
     assert _span_eligible_order(units, 3) == [2, 3, 4]
-    assert _normalized_span_selection(units, 3, [1, 3, 5]) == [2, 3, 4]
+    assert _normalized_span_selection(units, 3, [1, 3, 5]) == [3]
+    assert _normalized_span_selection(units, 3, [2, 3, 4]) == [2, 3, 4]
     assert _update_span_selection(
         units, focal_unit_id=3, current_unit_ids=[3],
         clicked_unit_id=5, checked=True,
     ) == [3]
     output = _render_context_units(
         html, dcc, units, focal_unit_id=3, key_columns=["document", "sentence"],
-        selected_unit_ids=[1, 3, 5], checkbox_type="explore-span-checkbox",
+        selected_unit_ids=[2, 3, 4], checkbox_type="explore-span-checkbox",
         navigation_surface="explore",
     )
     checklists = [part.children[0] for part in output
@@ -248,8 +249,19 @@ def test_live_browser_doubleclick_navigation_preserves_span_and_history(tmp_path
             try:
                 page = browser.new_page(viewport={"width": 1400, "height": 1000})
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
+                # The default context level is atomic (one row). Use the
+                # document level to exercise the bounded 200-unit reader.
+                page.wait_for_function(
+                    "() => !!window.dash_clientside?.set_props && !!document.querySelector('#context-level')"
+                )
+                page.evaluate(
+                    "() => window.dash_clientside.set_props('context-level', {value: 0})"
+                )
                 rows = page.locator("#context-content .context-unit-row")
-                rows.first.wait_for()
+                page.wait_for_function(
+                    "() => document.querySelectorAll('#context-content .context-unit-row').length === 200",
+                    timeout=20000,
+                )
                 assert rows.count() == 200
                 # Only checkboxes, not text click handlers, mutate span selection.
                 selected = page.locator("#context-content .span-unit-checkbox input:checked")
