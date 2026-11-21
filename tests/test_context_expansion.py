@@ -103,7 +103,6 @@ def test_truncation_boundary_and_lookahead_are_bounded(tmp_path, monkeypatch):
 def test_registered_explore_focus_memo_and_scale_expansion_callbacks(tmp_path):
     pytest.importorskip("dash")
     from geometric_coder.ui.app import create_app
-    from geometric_coder.ui.scale_comparisons import _prepare_scale_task
 
     project = _project(tmp_path)
     app = create_app(project)
@@ -119,7 +118,6 @@ def test_registered_explore_focus_memo_and_scale_expansion_callbacks(tmp_path):
         "inspect_scale_prediction_point",
     ):
         assert name in funcs, name
-    from dash import html
     focal = 310
     for name in ("update_reading_panel", "update_focus_reading_panel"):
         label, children, metadata = funcs[name](focal, 0, 1)
