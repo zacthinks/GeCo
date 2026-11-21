@@ -83,7 +83,9 @@ def test_unavailable_or_unsafe_modes_are_reported(tmp_path, monkeypatch):
     outcome = exercise(project, tier="a", page_size=4, repeats=1)
     assert outcome["operations"]["view_coordinate_page"]["status"] == "unavailable"
     assert outcome["operations"]["topic_provider_page"]["status"] == "unavailable"
-    assert outcome["operations"]["context_page"]["status"] == "unavailable"
+    # Bounded GeCo context is now available without an unbounded materialization.
+    assert outcome["operations"]["context_page"]["status"] == "ok"
+    assert outcome["operations"]["context_page"]["result"]["row_count"] <= 4
     assert outcome["operations"]["filtered_sql_page"]["status"] == "unavailable"
 
 
