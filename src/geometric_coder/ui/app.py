@@ -3244,7 +3244,7 @@ def create_app(
         project.record_visit(
             int(session_id),
             unit_id,
-            method="context_double_click",
+            method="context_jump",
             source_unit_id=int(focal_unit_id) if focal_unit_id is not None else None,
             geometry_id=int(geometry_id) if geometry_id is not None else None,
             active_code_id=int(code_id) if workspace == "focus" and code_id is not None else None,
