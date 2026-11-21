@@ -4,15 +4,30 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 ## [Unreleased]
 
+No changes recorded after the proposed v0.14.0 release candidate.
+
+## [0.14.0] - release pending
+
 ### Added
 
-- Optional, default-enabled startup warm-up for common 2D cosine UMAP numerical kernels in standard TeAL-linked workspaces, using only a disposable synthetic matrix. This moves the first-use Numba compilation cost from View creation to startup.
-- `GeometricCoder.launch(warmup=False)` and `geco launch --no-warmup` skip both UMAP and existing semantic-library preparation. No models are downloaded and no project artifacts are modified.
+- **Constructs and continuous Scales** (GeCo #55–#57, #68): define either binary Codes or continuous Scales in Develop; record ordered pairwise judgments (A higher, parity, B higher, Unsure), optionally bootstrap comparisons from an existing Code with an explicit Present > Absent assumption, train and retain a linear Davidson scaler, and inspect reference-centered signed prediction positions and conditional posterior uncertainty. Random and bounded Bayesian expected-information-gain pair recommendations support iterative comparison review. These are exploratory model-based scores—not human numerical ratings, probabilities, or validated population measures.
+- **Visualization-first Analyses** (#81 and its integration phases): choose a chart, then assign typed sources (human or predicted Codes, fitted Scale positions, categorical/numeric/temporal metadata) to independent roles. New continuous and mixed charts include scatterplots, histograms, numerical grouped summaries, pairwise-complete correlation heatmaps, grouped-value heatmaps, and a unified Bar editor with configurable Count/Sum/Mean/Median where valid. Source missingness, model freshness, coverage counts, aggregation choices, and deterministic sampling/approximation warnings are explicit.
+- **Scale modeling and analysis references**: new contributor notes for Davidson fitting, active pair acquisition, Scale comparison UI, typed analytical variables, and numerical chart interpretation. Saved schema-v1 Analyses remain executable alongside newer role-based recipes.
+- **Performance diagnostics**: opt-in 1k/50k/300k tiered benchmarks with reproducible fixtures, paired comparisons and explicit allocation/resource limitations (#85).
+
+### Changed
+
+- **Larger-workspace responsiveness** (#83, #84, #86, #89, #90): bounded SQL context retrieval with visible 200-unit starting window and progressive expansion (up to 5,000 displayed units), compact Develop classifier plot payloads, optional batched TeAL topic artifact reads with legacy provider fallback, adaptive small-group context SQL, and reuse of decoded metadata within a bounded Analyses resolver page. Correctness/output parity and scoped benchmarks were checked; these are not universal browser-rendering speedup claims.
+- **Representation and startup behavior** (#71, #75, #82): newly registered analytic geometries refresh in the interface; creating another geometry remains allowed when spans or teaching examples exist even if that geometry cannot represent them. Standard launch now prewarms common UMAP 2D cosine kernels as well as applicable semantic-search libraries. Opt out using `geco launch --no-warmup` or `GeometricCoder.launch(warmup=False)`; it may increase initial startup time.
+- **Project schema advances to version 21**, adding typed Construct and Scale comparison/fit/acquisition persistence through supported forward migrations from existing schema 18 projects. Existing Code and Analyses v1 research evidence is retained. Earlier GeCo versions may not reopen migrated workspaces; back up research projects before upgrading.
 
 ### Notes
 
-- First launch may take longer; later view fits can be faster because JIT compilation is already complete. The warm-up covers the common cosine/dense 2D path, not all UMAP metrics and input types.
-
+- **GeCo v0.13.0 already provided classifier feature-column normalization**, which is distinct from the new continuous **Scale** Construct functionality. The former transforms classifier input features; the latter models pairwise researcher comparisons.
+- Continuous Scale predictions and learned acquisition are conditional on the chosen representation and model assumptions, not confirmatory measurement or population inference. Analyses remain exploratory and never train models or silently commit evidence.
+- TeAL-linked topic batching uses the optional `read_artifacts` provider capability added in TeAL #79; older providers remain supported with sequential reads. Test against a compatible TeAL version when enabling the new integration.
+- The initial context display cap is expandable, but very long spans may require deliberate navigation; no change is claimed here to disjoint-span selection or double-click-to-focal behavior. Multiple active units-of-analysis within one GeCo workspace are **planned**, not included in this release.
+- **Release pending:** this entry and package version are prepared on a branch. Do not claim v0.14.0 was published until protected-main merge, annotated tag, release workflow, wheel/sdist and release page are verified.
 
 ## [0.13.0] - 2026-11-12
 
