@@ -112,6 +112,69 @@ def test_span_cannot_cross_parent_boundary_and_does_not_persist(tmp_path):
     assert project.span_observation([2, 3]) is None
 
 
+def test_interleaved_parent_rows_cannot_form_a_disconnected_span(tmp_path):
+    """A1, B1, A2 cannot become one persisted span by filtering out B1."""
+    pytest.importorskip("dash")
+    from dash import dcc, html
+
+    units = _rows(7)
+    # Canonical row order: A1, A2, B1, A3, A4, B2, A5.
+    for index in (2, 5):
+        units[index]["user_key"]["document"] = "B"
+    assert _span_eligible_order(units, 2) == [1, 2]
+    assert _span_eligible_order(units, 4) == [4, 5]
+    assert _span_eligible_order(units, 7) == [7]
+    assert _span_eligible_order(units, 3) == [3]
+
+    # Neither normalizing stale selections nor checking a later sibling
+    # should jump over the intervening B row.
+    assert _normalized_span_selection(units, 2, [1, 2, 4, 5, 7]) == [1, 2]
+    assert _update_span_selection(
+        units, focal_unit_id=2, current_unit_ids=[1, 2],
+        clicked_unit_id=4, checked=True,
+    ) == [1, 2]
+    assert _update_span_selection(
+        units, focal_unit_id=4, current_unit_ids=[4],
+        clicked_unit_id=2, checked=True,
+    ) == [4]
+    assert _update_span_selection(
+        units, focal_unit_id=4, current_unit_ids=[4],
+        clicked_unit_id=5, checked=True,
+    ) == [4, 5]
+
+    output = _render_context_units(
+        html, dcc, units, focal_unit_id=2,
+        key_columns=["document", "sentence"],
+        selected_unit_ids=[1, 2, 4],
+        checkbox_type="explore-span-checkbox",
+        navigation_surface="explore",
+    )
+    checklists = [
+        part.children[0] for part in output
+        if getattr(part, "className", "").startswith("context-unit-row")
+    ]
+    assert [check.options[0]["disabled"] for check in checklists] == [
+        False, True, True, True, True, True, True,
+    ]
+    assert [check.value for check in checklists] == [[1], [2], [], [], [], [], []]
+
+    # The persistence layer is authoritative and also forbids the gap.
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "interleaved.geco",
+        data=pd.DataFrame({
+            "document": ["A", "A", "B", "A", "A", "B", "A"],
+            "sentence": [1, 2, 1, 3, 4, 2, 5],
+            "text": [f"Interleaved sentence {i}" for i in range(7)],
+        }),
+        keys=["document", "sentence"], text="text",
+        metadata=[], geometries=None,
+    )
+    with pytest.raises(ValueError, match="contiguous"):
+        project.database.validate_span_members([2, 4])
+    # A valid, consecutive pair in the focal run remains allowable.
+    project.database.validate_span_members([1, 2])
+
+
 def test_explore_focus_checkbox_callback_transitions(tmp_path):
     pytest.importorskip("dash")
     from dash._callback_context import context_value
@@ -215,6 +278,11 @@ def test_context_text_has_keyboard_destination_without_checkbox_bubbling(surface
     text = rows[0].children[1]
     assert text.tabIndex == 0
     assert text.role == "button"
+    # The passage, not a generic navigation label, supplies the button name
+    # to screen readers. The title remains supplemental instruction.
+    assert "aria-label" not in text.__dict__
+    assert "Context observation 1" in str(text.children)
+    assert "Double-click" in text.title
     assert text.__dict__["data-geco-context-unit"] == "1"
     assert text.__dict__["data-geco-context-surface"] == surface
     assert rows[0].children[0].id["unit_id"] == 1
