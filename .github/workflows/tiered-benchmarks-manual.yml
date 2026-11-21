@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   paired-benchmarks:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -90,7 +91,7 @@ jobs:
             (
               cd "$worktree"
               export PYTHONPATH="$worktree/src:$driver"
-              "$py" -c 'import geometric_coder, os, pathlib; expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[1]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve(); assert actual.is_relative_to(expected), (actual, expected); print("GeCo source:", actual)'
+              "$py" -c 'import geometric_coder, os, pathlib; expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[0]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve(); assert actual.is_relative_to(expected), (actual, expected); print("GeCo source:", actual)'
               "$py" -m benchmarks.tiered_linked --tier "$tier" --seed 1729 \
                 --page-size 64 --repeats 20 \
                 --output "$driver/benchmark-results/$tier-$role.json" \
