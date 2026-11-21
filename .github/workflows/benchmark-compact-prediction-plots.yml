@@ -1,0 +1,108 @@
+name: Opt-in Develop prediction plot comparison
+
+# Deliberate benchmark branch pushes only: never runs for ordinary PR events.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - benchmark/pr84-comparison-run
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  paired-revisions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+    steps:
+      - name: Fetch benchmark driver
+        uses: actions/checkout@v4
+        with:
+          path: driver
+
+      - name: Pin actual public PR revision
+        id: pinned
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$(gh api repos/${{ github.repository }}/pulls/84 --jq '.head.sha')"
+          test -n "$candidate"
+          echo "head=$candidate" >> "$GITHUB_OUTPUT"
+          printf 'Baseline: %s\nCandidate: %s\n' \
+            'e5971fe1eb29d98f5f89bdb11bcb5389cab9e063' "$candidate"
+
+      - name: Checkout exact baseline
+        uses: actions/checkout@v4
+        with:
+          ref: e5971fe1eb29d98f5f89bdb11bcb5389cab9e063
+          path: baseline
+
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pinned.outputs.head }}
+          path: candidate
+
+      - name: Validate checked-out commit IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline rev-parse HEAD)" = e5971fe1eb29d98f5f89bdb11bcb5389cab9e063
+          test "$(git -C candidate rev-parse HEAD)" = "${{ steps.pinned.outputs.head }}"
+          mkdir -p comparison/reports
+          {
+            echo "baseline=e5971fe1eb29d98f5f89bdb11bcb5389cab9e063"
+            echo "candidate=${{ steps.pinned.outputs.head }}"
+            echo "driver_revision=${{ github.sha }}"
+            uname -a
+            lscpu
+          } > comparison/reports/machine.txt
+
+      - name: Prepare identical Python environment
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install one shared GeCo dependency environment
+        shell: bash
+        run: |
+          uv sync --project candidate --all-extras --group dev
+          uv pip freeze --python candidate/.venv/bin/python \
+            > comparison/reports/installed-dependencies.txt
+
+      - name: Generate single seeded disposable 5k and 50k fixtures
+        shell: bash
+        run: |
+          candidate/.venv/bin/python driver/benchmarks/compare_prediction_plot_workflow.py \
+            prepare --root comparison | tee comparison/reports/fixture-setup.log
+
+      - name: Compare complete prediction and Plotly paths
+        shell: bash
+        run: |
+          candidate/.venv/bin/python driver/benchmarks/compare_prediction_plot_workflow.py \
+            compare --root comparison --baseline baseline --candidate candidate \
+            --baseline-sha e5971fe1eb29d98f5f89bdb11bcb5389cab9e063 \
+            --candidate-sha "${{ steps.pinned.outputs.head }}" \
+            --rounds 3 --repetitions 7 \
+            | tee comparison/reports/benchmark-stdout.log
+
+      - name: Upload raw run measurements and comparison metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: develop-plot-comparison-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            comparison/reports/
+            comparison/fixtures/*/fixture.json
