@@ -35,7 +35,7 @@ import tracemalloc
 
 BASELINE = "e5971fe1eb29d98f5f89bdb11bcb5389cab9e063"
 # Exact PR #83 implementation head at measurement configuration.
-CANDIDATE = "c1620944cf82fd0fb3c83fab71d19ea68e93bd20"
+CANDIDATE = os.environ.get("GECO_BENCHMARK_CANDIDATE_SHA", "c1620944cf82fd0fb3c83fab71d19ea68e93bd20")
 SEED = 20261121
 CAP = 200
 SCENARIOS = {
