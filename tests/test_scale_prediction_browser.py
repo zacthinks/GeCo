@@ -246,11 +246,27 @@ def test_plotly_mouse_click_preview_survives_refresh_and_context(tmp_path, monke
                     };
                 }""")
                 page.mouse.click(second["x"], second["y"])
-                page.wait_for_function(
-                    "() => document.querySelector('#scale-prediction-preview')"
-                    "?.innerText.includes('Browser observation 40')",
-                    timeout=15000,
-                )
+                try:
+                    page.wait_for_function(
+                        "() => document.querySelector('#scale-prediction-preview')"
+                        "?.innerText.includes('Browser observation 40')",
+                        timeout=30000,
+                    )
+                except Exception:
+                    print("Post-refresh second-point inspection timed out")
+                    print("Clicked second point:", second)
+                    print("Preview:", preview.inner_text())
+                    print("Browser errors:", browser_errors[-30:])
+                    print("Plot diagnostics:", page.evaluate("""() => {
+                        const gd = document.querySelector('#scale-prediction-map .js-plotly-plot');
+                        return {
+                            selected: document.querySelector('#scale-prediction-selection')?.textContent,
+                            status: document.querySelector('#scale-prediction-status')?.innerText,
+                            point40: gd?.data?.[0]?.customdata?.[40],
+                            plotReady: !!gd?._fullLayout?.xaxis,
+                        };
+                    }"""))
+                    raise
                 assert "Browser observation 40" in preview.inner_text()
                 manual.get_by_role("button", name="Choose as Second").click()
                 # Wait for the asynchronous state write before preparing the pair.

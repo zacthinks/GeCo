@@ -42,7 +42,7 @@ jobs:
       - name: Browser-level Scale, legacy and unified Analyses regressions
         run: |
           uv run --with playwright python -c "import shutil; import playwright.sync_api; assert any(shutil.which(name) for name in ('google-chrome', 'chromium', 'chromium-browser')), 'Chrome/Chromium is required for browser regression tests'"
-          uv run --with playwright pytest -q -rs tests/test_scale_prediction_browser.py tests/test_analysis_roles_browser.py tests/test_analysis_continuous_browser.py tests/test_analysis_bar_browser.py tests/test_analysis_parent_numeric_browser.py
+          uv run --with playwright pytest -q -rs tests/test_context_navigation.py tests/test_scale_prediction_browser.py tests/test_analysis_roles_browser.py tests/test_analysis_continuous_browser.py tests/test_analysis_bar_browser.py tests/test_analysis_parent_numeric_browser.py
 
       - name: Upload browser verification screenshots
         if: always()
