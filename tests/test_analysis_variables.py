@@ -561,3 +561,38 @@ def test_binary_metadata_requires_explicit_representation(sample):
     assert raw["kind"] == "categorical"
     assert binary["values"] == [1.0, 0.0, 1.0, 0.0, 1.0, None]
     assert binary["missing_reasons"][-1] == "invalid_binary"
+
+
+def test_multiple_metadata_descriptors_decode_each_observation_only_once(sample, monkeypatch):
+    """Different fields/representations share parsing without merging their values."""
+    import geometric_coder.analysis_variables as variable_module
+
+    project, code, _predictor, _scale, ids = sample
+    requested = [ids[4], ids[1], ids[4], ids[0]]
+    references = [
+        {"type": "metadata", "field": "score", "value": "numeric"},
+        {"type": "metadata", "field": "group", "value": "categorical"},
+        {"type": "metadata", "field": "literal", "value": "categorical"},
+        {"type": "metadata", "field": "score", "value": "numeric"},
+        _code(code),
+    ]
+    original_loads = variable_module.json.loads
+    decoded = []
+
+    def tracked_loads(payload, *args, **kwargs):
+        if (isinstance(payload, str) and payload.lstrip().startswith("{")
+                and '"literal"' in payload and '"group"' in payload):
+            decoded.append(payload)
+        return original_loads(payload, *args, **kwargs)
+
+    monkeypatch.setattr(variable_module.json, "loads", tracked_loads)
+    result = resolve_analytical_variables(project, references, requested)
+    assert len(decoded) == len(set(requested))
+    assert result["observation_ids"] == requested
+    score, group, literal, duplicate_score, human = result["columns"]
+    assert score["values"] == [5.0, 2.0, 5.0, 1.0]
+    assert score == duplicate_score
+    assert group["values"] == ["C", "A", "C", "A"]
+    assert literal["values"] == ["five", "two", "five", "one"]
+    assert human["values"] == [None, None, None, 1.0]
+    assert human["missing_reasons"] == ["unreviewed", "unsure", "unreviewed", None]
