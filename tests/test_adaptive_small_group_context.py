@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pandas as pd
 import pytest
 
@@ -100,14 +98,18 @@ def test_large_context_fetches_at_most_cap_full_rows(tmp_path):
         # Selecting full rows must only happen after bounded positional probes.
         # One can verify this using SQLite's statement trace; the initial
         # membership probe must not load text/metadata from units.
-        queries = []
-        con.set_trace_callback(queries.append)
         # Query-plan check covers the covering membership index used on this path.
         plan = con.execute(
             "EXPLAIN QUERY PLAN SELECT 1 FROM unit_groups "
             "WHERE level_index=0 AND group_id=1 LIMIT 1601"
         ).fetchall()
         assert any("COVERING INDEX unit_groups_group_unit_idx" in row["detail"] for row in plan)
-    assert selected == project.context(count // 2, level=0)[
-        count // 2 - 100 : count // 2 + 100
-    ]
+    full = project.context(count // 2, level=0)
+    focal_position = full[count // 2 - 1]["row_position"]
+    expected = sorted(
+        sorted(full, key=lambda row: (
+            abs(row["row_position"] - focal_position), row["row_position"]
+        ))[:200],
+        key=lambda row: row["row_position"],
+    )
+    assert selected == expected
