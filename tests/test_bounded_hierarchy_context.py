@@ -113,28 +113,35 @@ def test_bounded_path_decodes_only_selected_units(tmp_path, monkeypatch):
 
 
 def test_ui_context_calls_are_bounded_at_every_reader():
-    """Contract-level guard against new unbounded UI context callers."""
+    """Every current UI context reader must use the capped, lookahead helper."""
     from pathlib import Path
     import ast
     import geometric_coder.ui.app as app_module
     import geometric_coder.ui.scale_comparisons as comparison_module
     import geometric_coder.ui.scale_prediction as prediction_module
+    import geometric_coder.ui.context_expansion as expansion_module
 
-    paths = [Path(module.__file__) for module in (
-        app_module, comparison_module, prediction_module,
-    )]
     counts = {}
-    for path in paths:
+    for module in (app_module, comparison_module, prediction_module):
+        path = Path(module.__file__)
         tree = ast.parse(path.read_text(encoding="utf-8"))
         calls = [
             node for node in ast.walk(tree) if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func, ast.Name) and node.func.id == "read_context"
+        ]
+        counts[path.name] = len(calls)
+        assert not any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == "context"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "project"
-        ]
-        counts[path.name] = len(calls)
-        for call in calls:
-            keywords = {keyword.arg for keyword in call.keywords}
-            assert "max_units" in keywords, (path.name, call.lineno)
+            for node in ast.walk(tree)
+        ), path.name
     assert counts == {"app.py": 5, "scale_comparisons.py": 1, "scale_prediction.py": 1}
+    source = ast.parse(Path(expansion_module.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(source) if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute) and node.func.attr == "context"
+    ]
+    assert len(calls) == 1
+    assert "max_units" in {kw.arg for kw in calls[0].keywords}
