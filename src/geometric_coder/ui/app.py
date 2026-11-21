@@ -12883,10 +12883,12 @@ def _update_span_selection(
     current_indices = [order.index(value) for value in current]
     start, end = min(current_indices), max(current_indices)
     if checked:
+        # Re-rendered checklists may emit a value update for an already
+        # selected interior row. Checking never moves an endpoint inward.
         if clicked_index < focal_index:
-            start = clicked_index
+            start = min(start, clicked_index)
         else:
-            end = clicked_index
+            end = max(end, clicked_index)
     elif clicked in current:
         if clicked_index < focal_index:
             start = clicked_index + 1
