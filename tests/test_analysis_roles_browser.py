@@ -373,11 +373,25 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
                     page.locator("#analysis-code-aggregate-box").wait_for(state="visible")
                     page.locator("#analysis-threshold-box").wait_for(state="visible")
                     assert page.locator("#analysis-aggregate-threshold").input_value() == "2"
-                    choose("#analysis-aggregate-method", "Any observed positive (0 or 1)")
-                    page.locator("#analysis-threshold-box").wait_for(state="hidden")
+                    assert page.locator("#analysis-threshold-box").get_by_text(
+                        "Minimum positive count", exact=True
+                    ).is_visible()
+                    # Only one inclusive positive-threshold operation remains.
+                    dropdown = page.locator("#analysis-aggregate-method")
+                    dropdown.click()
+                    page.get_by_text("At least N positive judgments", exact=True).filter(
+                        visible=True
+                    ).last.wait_for()
+                    assert page.get_by_text(
+                        "Any observed positive (0 or 1)", exact=True
+                    ).filter(visible=True).count() == 0
+                    page.keyboard.press("Escape")
+                    page.locator("#analysis-aggregate-threshold").fill("1")
                     page.locator("#analysis-save").click()
                     page.locator("#analysis-editor").wait_for(state="hidden")
-                    assert project.analysis(chart_id)["spec"]["aggregation"]["method"] == "any"
+                    saved = project.analysis(chart_id)["spec"]["aggregation"]
+                    assert saved["method"] == "minimum"
+                    assert saved["threshold"] == 1
             finally:
                 browser.close()
     finally:
