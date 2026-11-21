@@ -12,7 +12,7 @@ from statistics import median
 from typing import Any
 
 from geometric_coder.analysis_continuous import (
-    MAX_CATEGORIES, _bin, _bin_labels, _categorical_key,
+    MAX_CATEGORIES, _numeric_parent_settings, _bin, _bin_labels, _categorical_key,
     _category_labels, _edges, _label, _numeric, _parent_rows, _rank,
     _reservoir, _transform, calendar_period,
 )
@@ -111,20 +111,18 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(agg, Mapping):
             raise ValueError("Observation aggregation must be an object.")
         keys = project.metadata.get("key_columns", [])[:-1]
-        if agg.get("level") not in keys or set(agg) - {"level", "method", "threshold", "numeric_method"}:
+        if agg.get("level") not in keys or set(agg) - {"level", "method", "threshold", "numeric_method", "numeric_percentile", "numeric_bounds"}:
             raise ValueError("Select an existing parent level for observation aggregation.")
         method = agg.get("method", "any")
         if method not in ("any", "count", "minimum", "mean", "log_count"):
             raise ValueError("Unknown binary Code parent reduction.")
-        numeric_method = agg.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median", "sum"):
-            raise ValueError("Choose Mean, Median, or Sum for numerical parent aggregation.")
+        numeric_settings = _numeric_parent_settings(agg)
         threshold = agg.get("threshold", 1)
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
         result["aggregation"] = {
             "level": agg["level"], "method": method, "threshold": float(threshold),
-            "numeric_method": numeric_method,
+            **numeric_settings,
         }
     if set(spec) - {"schema_version", "kind", "roles", "statistic", "aggregation"}:
         raise ValueError("Unrecognized Bar chart settings.")
