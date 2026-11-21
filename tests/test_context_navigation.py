@@ -72,6 +72,13 @@ def test_five_unit_interval_endpoints_are_independent():
         )
         assert current == expected
     assert _normalized_span_selection(units, 3, [1, 3, 5]) == [1, 2, 3, 4, 5]
+    # Dash can report re-rendered, already-checked interior rows. These are
+    # no-ops, not instructions to retract a previously expanded endpoint.
+    for clicked in (2, 4):
+        assert _update_span_selection(
+            units, focal_unit_id=3, current_unit_ids=[1, 2, 3, 4, 5],
+            clicked_unit_id=clicked, checked=True,
+        ) == [1, 2, 3, 4, 5]
 
 
 def test_span_cannot_cross_parent_boundary_and_does_not_persist(tmp_path):
