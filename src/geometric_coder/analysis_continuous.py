@@ -32,6 +32,74 @@ ROLE_LAYOUT = {
 GROUP_ROLES = {"group", "color", "rows", "columns"}
 MAX_CATEGORIES = 100
 MAX_CORRELATION_VARIABLES = 12
+NUMERIC_PARENT_METHODS = frozenset({
+    "mean", "median", "sum", "minimum", "maximum", "count",
+    "standard_deviation", "percentile", "range", "proportion_within_bounds",
+})
+
+
+def _numeric_parent_settings(aggregate: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate method-specific parent settings without changing older recipes."""
+    method = aggregate.get("numeric_method", "mean")
+    if method not in NUMERIC_PARENT_METHODS:
+        raise ValueError("Unknown numerical parent aggregation function.")
+    result = {"numeric_method": method}
+    if method == "percentile":
+        percentile = aggregate.get("numeric_percentile", 50)
+        if (isinstance(percentile, bool) or not isinstance(percentile, (int, float))
+                or not math.isfinite(percentile) or not 0 <= percentile <= 100):
+            raise ValueError("Numerical parent percentile must be between 0 and 100.")
+        result["numeric_percentile"] = float(percentile)
+    elif "numeric_percentile" in aggregate:
+        raise ValueError("Percentile setting requires the Percentile aggregation function.")
+
+    if method == "proportion_within_bounds":
+        raw = aggregate.get("numeric_bounds")
+        if not isinstance(raw, Mapping) or set(raw) - {
+            "lower", "upper", "lower_inclusive", "upper_inclusive",
+        } or not ({"lower", "upper"} & set(raw)):
+            raise ValueError("Proportion within bounds requires at least one numeric bound.")
+        bounds: dict[str, Any] = {}
+        for name in ("lower", "upper"):
+            if name not in raw:
+                continue
+            value = raw[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"Numerical parent {name} bound must be finite.")
+            bounds[name] = float(value)
+            inclusive = raw.get(f"{name}_inclusive", True)
+            if not isinstance(inclusive, bool):
+                raise ValueError(f"Numerical parent {name} inclusion must be boolean.")
+            bounds[f"{name}_inclusive"] = inclusive
+        if any(f"{name}_inclusive" in raw and name not in raw for name in ("lower", "upper")):
+            raise ValueError("An inclusive/exclusive setting needs its corresponding bound.")
+        if "lower" in bounds and "upper" in bounds and bounds["lower"] > bounds["upper"]:
+            raise ValueError("Lower bound cannot exceed upper bound.")
+        result["numeric_bounds"] = bounds
+    elif "numeric_bounds" in aggregate:
+        raise ValueError("Bounds require the Proportion within bounds aggregation function.")
+    return result
+
+
+def _inside_numeric_bounds(value: float, bounds: Mapping[str, Any]) -> bool:
+    if "lower" in bounds and (
+        value < bounds["lower"] or (value == bounds["lower"] and not bounds["lower_inclusive"])
+    ):
+        return False
+    if "upper" in bounds and (
+        value > bounds["upper"] or (value == bounds["upper"] and not bounds["upper_inclusive"])
+    ):
+        return False
+    return True
+
+
+def _sample_percentile(sample: list[tuple[int, float]], percentile: float) -> float:
+    """Linearly interpolate the requested percentile on the deterministic sample."""
+    ordered = sorted(value for _, value in sample)
+    rank = (len(ordered) - 1) * percentile / 100
+    lo = math.floor(rank)
+    hi = math.ceil(rank)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (rank - lo)
 
 
 def _numeric(v: Mapping[str, Any]) -> bool:
@@ -191,7 +259,7 @@ def validate_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[
             raise ValueError("Aggregation must be an object.")
         keys = project.metadata.get("key_columns", [])[:-1]
         if aggregate.get("level") not in keys or set(aggregate) - {
-            "level", "method", "threshold", "numeric_method"
+            "level", "method", "threshold", "numeric_method", "numeric_percentile", "numeric_bounds"
         }:
             raise ValueError("Choose a valid parent-level aggregation key.")
         method = aggregate.get("method", "any")
@@ -200,11 +268,9 @@ def validate_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[
         threshold = aggregate.get("threshold", 1)
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
-        numeric_method = aggregate.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median", "sum"):
-            raise ValueError("Numeric parent aggregation must be mean, median, or sum.")
+        numeric_settings = _numeric_parent_settings(aggregate)
         result["aggregation"] = {"level": aggregate["level"], "method": method,
-                                 "threshold": float(threshold), "numeric_method": numeric_method}
+                                 "threshold": float(threshold), **numeric_settings}
     extra = set(spec) - {"schema_version", "kind", "roles", "binning", "statistic", "max_points", "aggregation"}
     if extra:
         raise ValueError(f"Unknown continuous chart settings: {', '.join(sorted(extra))}.")
@@ -383,7 +449,8 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
     prefix = keys[:keys.index(aggregation["level"]) + 1]
     import json
     # Each source stores [observed n, sum, positives, first category,
-    # median sample, saw missing category]. Missing numeric values are ignored,
+    # bounded sample, saw missing category, running mean, M2, min, max, hits].
+    # Missing numeric values are ignored,
     # but mixing missing and observed grouping metadata within a parent is
     # inconsistent, exactly as for legacy parent-grain analysis.
     parents: dict[tuple[Any, ...], list[list[Any]]] = {}
@@ -403,7 +470,7 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
             parent = parent_for_id[observation_id]
             if parent not in parents and len(parents) >= 100000:
                 raise ValueError("More than 100,000 parent groups; choose a coarser observation level.")
-            state = parents.setdefault(parent, [[0, 0., 0, None, [], False] for _ in descriptors])
+            state = parents.setdefault(parent, [[0, 0., 0, None, [], False, 0., 0., None, None, 0] for _ in descriptors])
             for j, col in enumerate(page["columns"]):
                 value = col["values"][i]
                 cell = state[j]
@@ -422,9 +489,19 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                 if variable["type"] == "code" and variable["value"] == "binary":
                     cell[2] += int(value == 1)
                 elif _numeric(variable):
-                    cell[1] += float(value)
-                    if aggregation["numeric_method"] == "median":
-                        _reservoir(cell[4], 5000, _rank(observation_id), float(value))
+                    number = float(value)
+                    cell[1] += number
+                    # Welford's stable population variance, with constant memory.
+                    delta = number - cell[6]
+                    cell[6] += delta / cell[0]
+                    cell[7] += delta * (number - cell[6])
+                    cell[8] = number if cell[8] is None else min(cell[8], number)
+                    cell[9] = number if cell[9] is None else max(cell[9], number)
+                    numeric_method = aggregation["numeric_method"]
+                    if numeric_method in ("median", "percentile"):
+                        _reservoir(cell[4], 5000, _rank(observation_id), number)
+                    if numeric_method == "proportion_within_bounds":
+                        cell[10] += int(_inside_numeric_bounds(number, aggregation["numeric_bounds"]))
                 else:
                     if cell[0] > 1 and value != cell[3] and not count_only_category:
                         raise ValueError(
@@ -438,7 +515,7 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
         state = parents[parent]
         reduced = []
         for cell, variable in zip(state, descriptors):
-            count, total, positives, first, sample, _missing_category = cell
+            count, total, positives, first, sample, _missing_category, mean_value, m2, low, high, hits = cell
             if not count:
                 reduced.append(None)
             elif variable["type"] == "code" and variable["value"] == "binary":
@@ -454,12 +531,29 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                 else:
                     reduced.append(math.log1p(positives))
             elif _numeric(variable):
-                if aggregation["numeric_method"] == "median":
+                numeric_method = aggregation["numeric_method"]
+                if numeric_method == "median":
                     reduced.append(median(item[1] for item in sample))
                     if count > 5000:
                         warnings.add("Parent-level median uses bounded deterministic 5,000-point samples.")
-                elif aggregation["numeric_method"] == "sum":
+                elif numeric_method == "percentile":
+                    reduced.append(_sample_percentile(sample, aggregation["numeric_percentile"]))
+                    if count > 5000:
+                        warnings.add("Parent-level percentile uses bounded deterministic 5,000-point samples.")
+                elif numeric_method == "sum":
                     reduced.append(total)
+                elif numeric_method == "minimum":
+                    reduced.append(low)
+                elif numeric_method == "maximum":
+                    reduced.append(high)
+                elif numeric_method == "count":
+                    reduced.append(float(count))
+                elif numeric_method == "standard_deviation":
+                    reduced.append(math.sqrt(max(0., m2 / count)))
+                elif numeric_method == "range":
+                    reduced.append(high - low)
+                elif numeric_method == "proportion_within_bounds":
+                    reduced.append(hits / count)
                 else:
                     reduced.append(total / count)
             else:
