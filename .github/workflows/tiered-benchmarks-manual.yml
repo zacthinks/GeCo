@@ -25,7 +25,8 @@ permissions:
 
 jobs:
   paired-benchmarks:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
