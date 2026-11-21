@@ -3222,19 +3222,16 @@ def create_app(
 
     @app.callback(
         Output("explore-context-expansion-store", "data"),
-        Input("explore-focal-unit-store", "data"),
-        Input("context-level", "value"),
-        Input("context-window", "value"),
         Input("explore-context-expand", "n_clicks"),
+        State("explore-focal-unit-store", "data"),
+        State("context-level", "value"),
+        State("context-window", "value"),
         State("explore-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
-    def expand_explore_context(focal, level, window, clicks, state):
+    def expand_explore_context(clicks, focal, level, window, state):
         del clicks
-        return advance_limit(
-            state, context_key(focal, level, window),
-            expand=callback_context.triggered_id == "explore-context-expand",
-        )
+        return advance_limit(state, context_key(focal, level, window), expand=True)
 
     @app.callback(
         Output("focal-key", "children"),
@@ -3972,16 +3969,15 @@ def create_app(
 
     @app.callback(
         Output("memo-context-expansion-store", "data"),
-        Input("memo-presentation-location", "hash"),
         Input("memo-context-expand", "n_clicks"),
+        State("memo-presentation-location", "hash"),
         State("memo-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
-    def expand_memo_context(location_hash, clicks, state):
+    def expand_memo_context(clicks, location_hash, state):
         del clicks
         return advance_limit(
-            state, context_key(_presentation_unit_id(location_hash)),
-            expand=callback_context.triggered_id == "memo-context-expand",
+            state, context_key(_presentation_unit_id(location_hash)), expand=True,
         )
 
     @app.callback(
@@ -7041,19 +7037,16 @@ def create_app(
 
     @app.callback(
         Output("focus-context-expansion-store", "data"),
-        Input("focus-focal-unit-store", "data"),
-        Input("focus-context-level", "value"),
-        Input("focus-context-window", "value"),
         Input("focus-context-expand", "n_clicks"),
+        State("focus-focal-unit-store", "data"),
+        State("focus-context-level", "value"),
+        State("focus-context-window", "value"),
         State("focus-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
-    def expand_focus_context(focal, level, window, clicks, state):
+    def expand_focus_context(clicks, focal, level, window, state):
         del clicks
-        return advance_limit(
-            state, context_key(focal, level, window),
-            expand=callback_context.triggered_id == "focus-context-expand",
-        )
+        return advance_limit(state, context_key(focal, level, window), expand=True)
 
     @app.callback(
         Output("focus-focal-key", "children"),
