@@ -89,7 +89,7 @@ jobs:
             local worktree="$RUNNER_TEMP/geco-revisions/$revision"
             (
               cd "$worktree"
-              export PYTHONPATH="$driver:$worktree/src"
+              export PYTHONPATH="$worktree/src:$driver"
               "$py" -c 'import geometric_coder, os, pathlib; expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[1]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve(); assert actual.is_relative_to(expected), (actual, expected); print("GeCo source:", actual)'
               "$py" -m benchmarks.tiered_linked --tier "$tier" --seed 1729 \
                 --page-size 64 --repeats 20 \
@@ -124,7 +124,7 @@ jobs:
           set -euo pipefail
           worktree="$RUNNER_TEMP/geco-revisions/candidate"
           cd "$worktree"
-          PYTHONPATH="$GITHUB_WORKSPACE:$worktree/src" \
+          PYTHONPATH="$worktree/src:$GITHUB_WORKSPACE" \
             "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.tiered_linked \
             --tier c --seed 1729 --page-size 64 --repeats 20 \
             --output "$GITHUB_WORKSPACE/benchmark-results/c-candidate.json" \
