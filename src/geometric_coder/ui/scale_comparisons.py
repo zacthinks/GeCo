@@ -299,6 +299,7 @@ def comparison_layout(
                 ),
             ], className="pagination-bar scale-prediction-toolbar"),
             html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
+            html.Button("Load 200 more context units", id="scale-prediction-context-expand", n_clicks=0, className="context-expand-button"),
             html.Details([
                 html.Summary("Manual Pairs"),
                 html.P(
@@ -414,7 +415,7 @@ def register_comparison_callbacks(
 ) -> None:
     from dash import Input, Output, State, callback_context, no_update
     from geometric_coder.ui.app import (
-        MAX_READING_CONTEXT_UNITS, _metadata_table, _render_context_units,
+        _metadata_table, _render_context_units,
     )
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
     from geometric_coder.ui.context_expansion import (
