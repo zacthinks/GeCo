@@ -5681,12 +5681,15 @@ class GeometricCoder:
         self,
         *,
         host: str = "127.0.0.1",
-        port: int = 8050,
+        port: int | None = None,
         debug: bool = False,
         use_reloader: bool = False,
         warmup: bool = True,
     ) -> Any:
         """Launch the ordinary local Dash interface.
+
+        An omitted or ``None`` port asks the OS to bind an available port.
+        ``port=0`` also requests automatic binding; a positive port is strict.
 
         ``debug=True`` enables Dash/Flask debug validation and developer tools.
         GeCo deliberately keeps the auto-reloader off by default because the
@@ -5699,7 +5702,7 @@ class GeometricCoder:
         return launch_app(
             self,
             host=host,
-            port=port,
+            port=0 if port is None else port,
             debug=debug,
             use_reloader=use_reloader,
             warmup=warmup,
@@ -5709,7 +5712,7 @@ class GeometricCoder:
         self,
         *,
         host: str = "127.0.0.1",
-        port: int = 8050,
+        port: int | None = None,
         debug: bool = False,
         use_reloader: bool = False,
         session_id: int | None = None,
@@ -5717,6 +5720,9 @@ class GeometricCoder:
         allow_unsure: bool | None = None,
     ) -> Any:
         """Launch Focus Coding over one finite configured session.
+
+        Omit ``port`` for an OS-selected listener; an explicit positive port
+        remains strict. ``port=0`` also requests automatic binding.
 
         ``configure_focus(...)`` is the canonical creation-time API.  For older
         TeAL bridges that know only the historical launcher, this method can
@@ -5775,7 +5781,7 @@ class GeometricCoder:
         return launch_focus_coder(
             self,
             host=host,
-            port=port,
+            port=0 if port is None else port,
             debug=debug,
             use_reloader=use_reloader,
             session_id=int(session_id),

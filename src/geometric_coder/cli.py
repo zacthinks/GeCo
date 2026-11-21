@@ -19,7 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     launch = subparsers.add_parser("launch", help="Launch the local web interface")
     launch.add_argument("project")
     launch.add_argument("--host", default="127.0.0.1")
-    launch.add_argument("--port", default=8050, type=int)
+    launch.add_argument(
+        "--port", type=int, default=None,
+        help="Local port (default: automatic; an explicitly requested port is strict).",
+    )
     launch.add_argument("--debug", action="store_true")
     launch.add_argument(
         "--no-warmup", action="store_true",
