@@ -173,3 +173,156 @@ def test_empty_topic_page_avoids_full_universe(tmp_path, monkeypatch):
     rows = project.topic_model_rows("T", positions=[])
     assert rows.matched_positions == ()
     assert rows.memberships.shape == (0, 2)
+
+
+@pytest.mark.parametrize("as_sparse", [False, True])
+@pytest.mark.parametrize("include_description", [False, True])
+@pytest.mark.parametrize("positions", [[3, 2, 1], [0, 1, 3], []])
+def test_batched_topic_provider_matches_legacy_results(
+    tmp_path, as_sparse, include_description, positions
+):
+    """Both capabilities preserve partial coverage, order, labels and matrix format."""
+    legacy = Provider(as_sparse=as_sparse)
+
+    class BatchedProvider(Provider):
+        def __init__(self):
+            super().__init__(as_sparse=as_sparse)
+            self.batches = []
+
+        def read_artifacts(self, requests):
+            self.batches.append(list(requests))
+            # Invoke inherited implementation without exposing individual
+            # provider calls as an available public operation.
+            return [Provider.read_artifact(self, artifact_id, keys)
+                    for artifact_id, keys in requests]
+
+        def read_artifact(self, artifact_id, requested_keys):
+            raise AssertionError("Single-artifact path used despite batch capability")
+
+    batch = BatchedProvider()
+    expected = make_project(tmp_path / "legacy", legacy).topic_model_rows(
+        "T", positions=positions, include_description=include_description
+    )
+    actual = make_project(tmp_path / "batched", batch).topic_model_rows(
+        "T", positions=positions, include_description=include_description
+    )
+    assert len(batch.batches) == 1
+    keys = [{"interview": "A", "turn": p} for p in positions]
+    assert batch.batches == [[
+        ("membership", keys),
+        ("argmax", keys),
+        *([("description", None)] if include_description else []),
+    ]]
+    assert len(legacy.calls) == (3 if include_description else 2)
+    assert batch.calls == legacy.calls
+    assert actual.topic_model_id == expected.topic_model_id
+    assert actual.topic_ids == expected.topic_ids
+    assert actual.matched_positions == expected.matched_positions
+    assert actual.topic_labels == expected.topic_labels
+    assert sparse.issparse(actual.memberships) is as_sparse
+    if as_sparse:
+        np.testing.assert_array_equal(actual.memberships.toarray(), expected.memberships.toarray())
+    else:
+        np.testing.assert_array_equal(actual.memberships, expected.memberships)
+    pd.testing.assert_frame_equal(actual.dominant, expected.dominant, check_exact=True)
+    if include_description:
+        assert actual.descriptions is not None and expected.descriptions is not None
+        assert actual.descriptions.row_ids == expected.descriptions.row_ids
+        np.testing.assert_array_equal(actual.descriptions.values, expected.descriptions.values)
+    else:
+        assert actual.descriptions is None
+
+
+def test_batch_capability_is_optional_and_errors_do_not_trigger_fallback(tmp_path):
+    class NonCallableBatch(Provider):
+        read_artifacts = None
+
+    old = NonCallableBatch()
+    rows = make_project(tmp_path / "old", old).topic_model_rows("T")
+    assert rows.topic_ids == ("topic_0", "topic_1")
+    assert [call[0] for call in old.calls] == ["membership", "argmax"]
+
+    class BatchOnly(Provider):
+        read_artifact = None
+
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def read_artifacts(self, requests):
+            self.batches.append(requests)
+            return [Provider.read_artifact(self, *request) for request in requests]
+
+    batch_only = BatchOnly()
+    rows = make_project(tmp_path / "batch_only", batch_only).topic_model_rows("T")
+    assert rows.matched_positions == (0, 1, 3)
+    assert len(batch_only.batches) == 1
+
+    class BrokenBatch(Provider):
+        def read_artifacts(self, requests):
+            raise RuntimeError("real provider failure")
+
+    broken = BrokenBatch()
+    with pytest.raises(RuntimeError, match="real provider failure"):
+        make_project(tmp_path / "broken", broken).topic_model_rows("T")
+    assert broken.calls == []
+
+
+@pytest.mark.parametrize("count", [0, 1, 4])
+def test_batch_packet_count_must_match_requested_artifacts(tmp_path, count):
+    class IncorrectBatch(Provider):
+        def read_artifacts(self, requests):
+            return [Provider.read_artifact(self, *request)
+                    for request in requests[:2]][:count] + (
+                        [Provider.read_artifact(self, *requests[0])] * max(0, count - 2)
+                    )
+
+    project = make_project(tmp_path, IncorrectBatch())
+    with pytest.raises(ConfigurationError, match="wrong number of artifacts"):
+        project.topic_model_rows("T", include_description=True)
+
+
+@pytest.mark.parametrize("invalid,phrase", [
+    ("bad_positions", "duplicate key positions|duplicate key"),
+    ("coverage", "coverage do not match"),
+    ("unknown", "unknown topic component"),
+    ("description", "topic IDs do not match"),
+])
+def test_batch_results_preserve_strict_integrity_errors(tmp_path, invalid, phrase):
+    class InvalidBatch(Provider):
+        def read_artifacts(self, requests):
+            return [Provider.read_artifact(self, *request) for request in requests]
+
+    provider = InvalidBatch(invalid=invalid)
+    project = make_project(tmp_path, provider)
+    with pytest.raises(ConfigurationError, match=phrase):
+        project.topic_model_rows("T", include_description=invalid == "description")
+
+
+def test_batched_topic_page_retrieval_does_not_eagerly_load_corpus(tmp_path, monkeypatch):
+    class BatchedProvider(Provider):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def read_artifacts(self, requests):
+            self.batches.append(requests)
+            return [Provider.read_artifact(self, *request) for request in requests]
+
+    provider = BatchedProvider()
+    project = make_project(tmp_path, provider)
+    monkeypatch.setattr(project, "_ordered_user_keys", lambda: (_ for _ in ()).throw(
+        AssertionError("full-corpus key materialization")
+    ))
+    monkeypatch.setattr(project.database, "list_units", lambda: (_ for _ in ()).throw(
+        AssertionError("full-corpus unit materialization")
+    ))
+    result = project.topic_model_rows("T", positions=[3, 1], include_description=True)
+    assert result.matched_positions == (0, 1)
+    assert provider.batches == [[
+        ("membership", [{"interview": "A", "turn": 3},
+                        {"interview": "A", "turn": 1}]),
+        ("argmax", [{"interview": "A", "turn": 3},
+                    {"interview": "A", "turn": 1}]),
+        ("description", None),
+    ]]
