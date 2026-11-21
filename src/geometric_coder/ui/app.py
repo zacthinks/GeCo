@@ -50,6 +50,9 @@ if TYPE_CHECKING:
     from geometric_coder.project import GeometricCoder
 
 
+MAX_READING_CONTEXT_UNITS = 200
+
+
 GECO_DASH_THEME: dict[str, str] = {
     "--Dash-Stroke-Strong": "#65766b",
     "--Dash-Stroke-Weak": "#d7e2da",
@@ -3225,7 +3228,10 @@ def create_app(
             placeholder = "Select a point or use a navigation command to begin reading."
             return "No focal unit", placeholder, ""
         focal = project.unit(int(focal_unit_id))
-        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window))
+        context = project.context(
+            int(focal_unit_id), level=int(level_index), window=int(window),
+            max_units=MAX_READING_CONTEXT_UNITS,
+        )
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         context_children = _render_context_units(
             html,
@@ -3279,7 +3285,8 @@ def create_app(
         if not checked and clicked not in set(current or []):
             return no_update
         context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window)
+            int(focal_unit_id), level=int(level_index), window=int(window),
+            max_units=MAX_READING_CONTEXT_UNITS,
         )
         updated = _update_span_selection(
             context, focal_unit_id=int(focal_unit_id), current_unit_ids=current,
@@ -3952,7 +3959,10 @@ def create_app(
             f"{name}: {value}" for name, value in focal["user_key"].items()
         )
         context_level = int(hierarchy[-1]["level_index"])
-        context = project.context(int(unit_id), level=context_level, window=5)
+        context = project.context(
+            int(unit_id), level=context_level, window=5,
+            max_units=MAX_READING_CONTEXT_UNITS,
+        )
         return (
             key_label,
             _render_readonly_context_units(
@@ -6999,7 +7009,10 @@ def create_app(
                 "",
             )
         focal = project.unit(int(focal_unit_id))
-        context = project.context(int(focal_unit_id), level=int(level_index), window=int(window))
+        context = project.context(
+            int(focal_unit_id), level=int(level_index), window=int(window),
+            max_units=MAX_READING_CONTEXT_UNITS,
+        )
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         children = _render_context_units(
             html,
@@ -7052,7 +7065,8 @@ def create_app(
         if not checked and clicked not in set(current or []):
             return no_update
         context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window)
+            int(focal_unit_id), level=int(level_index), window=int(window),
+            max_units=MAX_READING_CONTEXT_UNITS,
         )
         updated = _update_span_selection(
             context, focal_unit_id=int(focal_unit_id), current_unit_ids=current,
