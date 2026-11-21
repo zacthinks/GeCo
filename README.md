@@ -50,6 +50,8 @@ A fitted **linear Davidson scaler** learns reference-centered, signed positions 
 
 **Scale positions are not calibrated probabilities, Code Present/Absent predictions, or objective measurements of a construct.** Their interpretation depends on the human comparisons, selected numerical representation, and modeling assumptions. Scale predictions can also be explored as numeric variables in **Analyses**, while **Apply & Review remains Code-only**.
 
+Context readers support keyboard-accessible passage navigation: double-click the body of a surrounding observation (or focus it and press Enter/Space) to make it the focal observation and preserve ordinary navigation history. Selecting context units for a temporary span remains a separate checkbox action. GeCo keeps the selection a contiguous, focal-anchored interval of consecutive source rows within the same immediate parent; it does not automatically create a saved span until the researcher codes it.
+
 ### 3. Apply & Review — code broadly, review efficiently
 
 Once a code-specific classifier or committee is useful, use it to generate coding proposals for observations you have not yet reviewed. GeCo's **Apply & Review** workspace puts those proposals in a review table, where you can inspect suggested labels and probabilities, filter the results, accept or revise individual decisions, and take bulk actions when appropriate.
@@ -166,7 +168,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 
 GeCo is an **exploratory** environment. Its maps, classifiers, and proposals support reading, code development, interpretation, and hypothesis generation. They are **not**, on their own, population estimates or a substitute for an inferential research design. Projects that require confirmatory inference should use an appropriate downstream analysis workflow.
 
-**Current status:** GeCo is under active pre-1.0 development (source version 0.14.0, release pending). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
+**Current status:** GeCo is under active pre-1.0 development (source version 0.14.1, release candidate; latest published GitHub Release v0.14.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
 
 ## Development
 
