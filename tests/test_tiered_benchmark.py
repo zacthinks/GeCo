@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pytest
 
 from benchmarks.tiered_linked import (
-    TIERS, SyntheticProvider, exercise, parse_args, synthetic_project,
+    TIERS, SyntheticProvider, exercise, parse_args, run, synthetic_project,
 )
 from benchmarks.tiered_report import _percentile_95, measure, save_report
 
@@ -112,3 +113,30 @@ def test_synthetic_provider_preserves_unsorted_key_alignment():
     expected = np.array([37, 1, 23])
     values = provider.view_coordinates({}, keys)
     np.testing.assert_allclose(values[:, 0], np.sin(expected / 101))
+
+def test_small_report_round_trip_without_real_teal(tmp_path):
+    args = parse_args(["--tier", "a", "--units", "24", "--page-size", "5", "--repeats", "1"])
+    report = run(args)
+    assert report["schema_version"] == 1
+    assert report["fixture"]["actual_units"] == 24
+    assert report["execution"]["operations"]["sqlite_key_page"]["status"] == "ok"
+    assert report["cold_process"]["status"] == "not_measured"
+    saved = save_report(report, tmp_path / "sample.json")
+    assert json.loads(saved) == json.loads((tmp_path / "sample.json").read_text())
+
+
+@pytest.mark.skipif(
+    not (os.environ.get("GECO_BENCH_SNAPSHOT") and os.environ.get("TEAL_BENCH_SNAPSHOT")),
+    reason="opt-in: supply GECO_BENCH_SNAPSHOT and TEAL_BENCH_SNAPSHOT copies",
+)
+def test_optional_real_teal_linked_read_snapshot():
+    """Only execute with disposable project snapshots, never canonical datasets."""
+    args = parse_args([
+        "--tier", "a", "--repeats", "1", "--page-size", "3",
+        "--geco-path", os.environ["GECO_BENCH_SNAPSHOT"],
+        "--teal-path", os.environ["TEAL_BENCH_SNAPSHOT"],
+        "--dataset-id", "linked-opt-in-test",
+    ])
+    report = run(args)
+    assert report["fixture"]["mode"] == "real_teal_linked"
+    assert report["execution"]["operations"]["sqlite_key_page"]["status"] == "ok"
