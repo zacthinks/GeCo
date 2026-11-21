@@ -386,7 +386,19 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
                         "Any observed positive (0 or 1)", exact=True
                     ).filter(visible=True).count() == 0
                     page.keyboard.press("Escape")
-                    page.locator("#analysis-aggregate-threshold").fill("1")
+                    # Dash renders the number input as a controlled React
+                    # component. Commit the edited value and finish its
+                    # callback cycle before Save samples all form States.
+                    threshold = page.locator("#analysis-aggregate-threshold")
+                    threshold.fill("1")
+                    threshold.press("Tab")
+                    page.wait_for_function(
+                        "() => document.querySelector('#analysis-aggregate-threshold')"
+                        "?.value === '1'",
+                        timeout=15000,
+                    )
+                    page.wait_for_load_state("networkidle")
+                    assert threshold.input_value() == "1"
                     page.locator("#analysis-save").click()
                     page.locator("#analysis-editor").wait_for(state="hidden")
                     saved = project.analysis(chart_id)["spec"]["aggregation"]
