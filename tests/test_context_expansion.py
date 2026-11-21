@@ -133,13 +133,14 @@ def test_registered_explore_focus_memo_and_scale_expansion_callbacks(tmp_path):
         assert len(checklist_ids) == 400
         assert 490 in checklist_ids
 
-    # Memo reader is read-only but expands and makes the hidden rows visible.
+    # A leaf-level window of five genuinely contains only five units;
+    # it must not advertise truncation or fabricate an expansion.
     memo = funcs["update_memo_presentation_reader"]
     _, short, _ = memo("#geco-presentation-unit-310")
     assert isinstance(short, list)
-    assert any(getattr(item, "className", None) == "context-truncated" for item in short)
+    assert not any(getattr(item, "className", None) == "context-truncated" for item in short)
     _, longer, _ = memo("#geco-presentation-unit-310", {"key": context_key(310), "limit": 400})
-    assert len(longer) > len(short)
+    assert len(longer) == len(short)
 
 
 def test_explore_and_focus_checkbox_callbacks_select_beyond_initial_cap(tmp_path):
@@ -192,3 +193,30 @@ def test_expansion_callbacks_do_not_fire_on_focal_or_prediction_changes(tmp_path
         if name in expected:
             observed[name] = [entry["id"] for entry in record["inputs"]]
     assert observed == {name: [button] for name, button in expected.items()}
+
+
+def test_memo_presentation_expands_large_single_level_group(tmp_path):
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    count = 650
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "single-level.geco",
+        data=pd.DataFrame({
+            "document": ["shared"] * count,
+            "text": [f"Memo evidence {i}." for i in range(count)],
+        }), keys=["document"], text="text", metadata=[], geometries=None,
+    )
+    app = create_app(project)
+    reader = next(
+        inspect.unwrap(record["callback"])
+        for record in app.callback_map.values() if "callback" in record
+        and inspect.unwrap(record["callback"]).__name__ == "update_memo_presentation_reader"
+    )
+    _, short, _ = reader("#geco-presentation-unit-310")
+    assert sum(getattr(item, "className", None) == "context-truncated" for item in short) == 1
+    _, longer, _ = reader(
+        "#geco-presentation-unit-310", {"key": context_key(310), "limit": 400},
+    )
+    assert len(longer) > len(short)
+    assert sum(getattr(item, "className", None) == "context-truncated" for item in longer) == 1
