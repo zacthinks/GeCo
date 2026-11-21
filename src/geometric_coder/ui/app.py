@@ -3298,12 +3298,14 @@ def create_app(
         State("context-level", "value"),
         State("context-window", "value"),
         State("explore-span-selection-store", "data"),
+        State("explore-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
     def update_explore_span_selection(
         values: list[list[int]], ids: list[dict[str, Any]],
         focal_unit_id: int | None, level_index: int, window: int,
         current: list[int] | None,
+        expansion: Any = None,
     ) -> Any:
         triggered = callback_context.triggered_id
         if focal_unit_id is None or not isinstance(triggered, dict):
@@ -3316,9 +3318,10 @@ def create_app(
         checked = bool(value_by_id.get(clicked))
         if not checked and clicked not in set(current or []):
             return no_update
-        context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window),
-            max_units=MAX_READING_CONTEXT_UNITS,
+        limit = current_limit(expansion, context_key(focal_unit_id, level_index, window))
+        context, _ = read_context(
+            project, int(focal_unit_id), level=int(level_index),
+            window=int(window), limit=limit,
         )
         updated = _update_span_selection(
             context, focal_unit_id=int(focal_unit_id), current_unit_ids=current,
@@ -7117,12 +7120,14 @@ def create_app(
         State("focus-context-level", "value"),
         State("focus-context-window", "value"),
         State("focus-span-selection-store", "data"),
+        State("focus-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
     def update_focus_span_selection(
         values: list[list[int]], ids: list[dict[str, Any]],
         focal_unit_id: int | None, level_index: int, window: int,
         current: list[int] | None,
+        expansion: Any = None,
     ) -> Any:
         triggered = callback_context.triggered_id
         if focal_unit_id is None or not isinstance(triggered, dict):
@@ -7135,9 +7140,10 @@ def create_app(
         checked = bool(value_by_id.get(clicked))
         if not checked and clicked not in set(current or []):
             return no_update
-        context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window),
-            max_units=MAX_READING_CONTEXT_UNITS,
+        limit = current_limit(expansion, context_key(focal_unit_id, level_index, window))
+        context, _ = read_context(
+            project, int(focal_unit_id), level=int(level_index),
+            window=int(window), limit=limit,
         )
         updated = _update_span_selection(
             context, focal_unit_id=int(focal_unit_id), current_unit_ids=current,
