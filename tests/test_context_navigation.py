@@ -231,6 +231,11 @@ def test_live_browser_doubleclick_navigation_preserves_span_and_history(tmp_path
     from geometric_coder.ui.app import create_app
 
     project = _project(tmp_path, 260, focal=110)
+    code_id = project.create_code("Reader navigation")
+    session = int(project.sessions()[0]["session_id"])
+    project.patch_session_state(session, {
+        "focus_construct_id": code_id, "focus_code_id": code_id,
+    })
     app = create_app(project)
     server = make_server("127.0.0.1", 0, app.server, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
