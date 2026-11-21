@@ -76,7 +76,7 @@ def test_context_sibling_window_and_interleaved_source_order(tmp_path):
     full = project.context(5, level=0, window=2)
     assert [row["row_position"] for row in full] == [0, 1, 3, 4, 6, 7, 9, 10]
     bounded = project.context(5, level=0, window=2, max_units=5)
-    assert [row["row_position"] for row in bounded] == [0, 1, 3, 4, 6]
+    assert [row["row_position"] for row in bounded] == [1, 3, 4, 6, 7]
     # A paragraph-level window is restricted to the focal document.
     paragraph = project.context(5, level=1, window=3)
     assert [row["row_position"] for row in paragraph] == [1, 4, 7]
