@@ -28,7 +28,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
@@ -119,18 +119,34 @@ jobs:
             --control benchmark-results/b-control.json \
             --output benchmark-results/b-comparison.json
 
-      - name: Optional Tier C stress (manual workflow dispatch only)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress }}
+      - name: Tier C stress comparison — 300k baseline, candidate and control
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.run_stress) }}
         shell: bash
         run: |
           set -euo pipefail
-          worktree="$RUNNER_TEMP/geco-revisions/candidate"
-          cd "$worktree"
-          PYTHONPATH="$worktree/src:$GITHUB_WORKSPACE" \
-            "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.tiered_linked \
-            --tier c --seed 1729 --page-size 64 --repeats 20 \
-            --output "$GITHUB_WORKSPACE/benchmark-results/c-candidate.json" \
-            > "$GITHUB_WORKSPACE/benchmark-results/c-candidate.stdout.json"
+          driver="$GITHUB_WORKSPACE"
+          py="$driver/.venv/bin/python"
+          run_c() {
+            local role="$1" revision="$2"
+            local worktree="$RUNNER_TEMP/geco-revisions/$revision"
+            (
+              cd "$worktree"
+              export PYTHONPATH="$worktree/src:$driver"
+              /usr/bin/time -v -o "$driver/benchmark-results/c-$role-process-metrics.txt" \
+                "$py" -m benchmarks.tiered_linked --tier c --seed 1729 \
+                --page-size 64 --repeats 20 \
+                --output "$driver/benchmark-results/c-$role.json" \
+                > "$driver/benchmark-results/c-$role.stdout.json"
+            )
+          }
+          run_c baseline baseline
+          run_c candidate candidate
+          run_c control candidate
+          "$py" -m benchmarks.compare_tiered \
+            --baseline benchmark-results/c-baseline.json \
+            --candidate benchmark-results/c-candidate.json \
+            --control benchmark-results/c-control.json \
+            --output benchmark-results/c-comparison.json
 
       - name: Upload raw JSON, comparison reports and machine metadata
         if: always()
@@ -138,5 +154,45 @@ jobs:
         with:
           name: geco-tiered-raw-${{ github.run_id }}-${{ github.run_attempt }}
           path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  specialized-300k:
+    if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Validate 300k Scale candidate sampling and Analyses
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p specialized-results
+          echo "Benchmarked application base (parent of one-off workflow marker): $(git rev-parse HEAD^)" > specialized-results/revisions.txt
+          echo "Runner: $(uname -a); CPUs: $(nproc)" >> specialized-results/revisions.txt
+          /usr/bin/time -v -o specialized-results/scale-process-metrics.txt \
+            .venv/bin/python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000 \
+            > specialized-results/scale-300k.json
+          /usr/bin/time -v -o specialized-results/analyses-process-metrics.txt \
+            .venv/bin/python benchmarks/analyses_300k.py --units 300000 \
+            > specialized-results/analyses-300k.json
+      - name: Upload specialized stress reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geco-specialized-300k-${{ github.run_id }}-${{ github.run_attempt }}
+          path: specialized-results/
           if-no-files-found: warn
           retention-days: 30
