@@ -153,7 +153,11 @@ def test_bar_editor_and_switch_guard(tmp_path):
 
                 # Existing-format Bars expose only supported controls. No
                 # Color/Statistic edit can silently disappear during a save
-                # or bypass the navigation guard.
+                # or bypass the navigation guard. Start this distinct legacy
+                # editing scenario with a fresh page so no callback from the
+                # preceding unified-Bar editor can restore its old Group.
+                page.reload()
+                page.get_by_text("Analyses", exact=True).first.click()
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-edit").click()
                 page.wait_for_function(
