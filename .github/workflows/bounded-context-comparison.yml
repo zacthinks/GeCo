@@ -1,0 +1,85 @@
+name: Opt-in GeCo context comparative benchmark
+
+on:
+  workflow_dispatch:
+  # One-time execution when the dedicated workflow is introduced/edited
+  # on this implementation branch. Later ordinary PR pushes do not rerun it.
+  push:
+    branches:
+      - perf/bounded-context-current-main
+    paths:
+      - .github/workflows/bounded-context-comparison.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+
+    steps:
+      - name: Checkout pinned historical baseline
+        uses: actions/checkout@v4
+        with:
+          ref: e5971fe1eb29d98f5f89bdb11bcb5389cab9e063
+          path: baseline
+          persist-credentials: false
+
+      - name: Checkout executing candidate revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+          enable-cache: true
+
+      - name: Install one pinned dependency environment for both revisions
+        shell: bash
+        run: |
+          uv sync --project candidate --python 3.11 --no-dev
+          candidate/.venv/bin/python -c "import geometric_coder, pandas, dash; print(geometric_coder.__file__)"
+
+      - name: Verify pinned identities and record installed dependencies
+        shell: bash
+        run: |
+          mkdir -p results
+          git -C baseline rev-parse HEAD | tee results/baseline-sha.txt
+          git -C candidate rev-parse HEAD | tee results/candidate-sha.txt
+          test "$(cat results/baseline-sha.txt)" = "e5971fe1eb29d98f5f89bdb11bcb5389cab9e063"
+          test "$(cat results/candidate-sha.txt)" = "${{ github.sha }}"
+          candidate/.venv/bin/python --version | tee results/python-version.txt
+          candidate/.venv/bin/python -m pip freeze > results/packages.txt || uv pip list --python candidate/.venv/bin/python > results/packages.txt
+          uname -a > results/runner.txt
+          lscpu >> results/runner.txt
+
+      - name: Real GeCo baseline vs candidate context benchmark
+        shell: bash
+        env:
+          GECO_BENCHMARK_CANDIDATE_SHA: ${{ github.sha }}
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          PYTHONHASHSEED: '0'
+        run: |
+          candidate/.venv/bin/python candidate/benchmarks/context_comparative.py orchestrate \
+            --baseline-dir baseline \
+            --candidate-dir candidate \
+            --output-dir results \
+            --samples 20 \
+            --rounds 2
+
+      - name: Upload raw measurements, fixture metadata and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gecko-context-comparison-${{ github.sha }}
+          path: results/
+          retention-days: 30
+          if-no-files-found: warn
