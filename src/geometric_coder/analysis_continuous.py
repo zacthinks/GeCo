@@ -201,8 +201,8 @@ def validate_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
         numeric_method = aggregate.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median"):
-            raise ValueError("Numeric parent reduction must be mean or median.")
+        if numeric_method not in ("mean", "median", "sum"):
+            raise ValueError("Numeric parent aggregation must be mean, median, or sum.")
         result["aggregation"] = {"level": aggregate["level"], "method": method,
                                  "threshold": float(threshold), "numeric_method": numeric_method}
     extra = set(spec) - {"schema_version", "kind", "roles", "binning", "statistic", "max_points", "aggregation"}
@@ -458,6 +458,8 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                     reduced.append(median(item[1] for item in sample))
                     if count > 5000:
                         warnings.add("Parent-level median uses bounded deterministic 5,000-point samples.")
+                elif aggregation["numeric_method"] == "sum":
+                    reduced.append(total)
                 else:
                     reduced.append(total / count)
             else:
