@@ -2,7 +2,7 @@
 
 This technical companion to the [README](../README.md) is for contributors and developers integrating with GeCo. GeCo is primarily a **researcher-facing interface** for exploring text, developing codes, and reviewing coding proposals. Researchers should not need to understand the internals to use it.
 
-This describes the proposed GeCo 0.14.0 source release (not yet tagged) and project schema 21. Internal implementation modules are not a stable plugin SDK.
+This describes the proposed GeCo 0.14.1 patch release (not yet tagged) and project schema 21. GeCo v0.14.0 was published on November 21, 2026. Internal implementation modules are not a stable plugin SDK.
 
 ## Project model and persistence
 
@@ -63,6 +63,10 @@ Scale fitting uses a linear **Davidson** comparison model with optional referenc
 Project schema **19** introduced typed Construct and Scale comparison records, **20** introduced persisted scaler fit state, and **21** added bounded Scale recommendation rankings. Migration 18→19 links existing Codes into typed Constructs without rewriting Code decisions; later steps add tables transactionally. Existing older projects are upgraded forward on open; back up workspaces and do not assume old GeCo versions can reopen schema-21 data.
 
 The Develop comparison and prediction UI is described in [Scale Develop walkthrough](scale-develop-ui.md), with mathematical limits in [Davidson scaler](davidson-scaler.md) and [Scale acquisition](scale-active-learning.md). Scales are distinct from v0.13.0 classifier *feature-column normalization*; the latter rescales input features for a binary Code classifier and does not define a continuous Scale Construct.
+
+### Context span interval and passage navigation (v0.14.1)
+
+In the interactive context reader, checkbox selection is a **single focal-anchored interval** of consecutive canonical atomic rows sharing the focal unit's immediate parent. The UI must not silently skip rows from another group and offer a span that the storage contiguity validator would refuse. An unchanged focal row is always selected; a multirow selection is a transient candidate until a coding judgment persists it. Text/body double-click, or keyboard Enter/Space with focus on that passage, navigates through the normal Explore/Develop visit-history path; clicking span checkboxes does not navigate. Navigable passages expose their actual text as the accessible name and preserve visible keyboard focus. No project schema change accompanies this UI correction.
 
 ## Bounded reading and topic-provider efficiency
 

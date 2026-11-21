@@ -1,3 +1,3 @@
 """Package version kept importable without importing the public package surface."""
 
-__version__ = "0.14.0"
+__version__ = "0.14.1"
