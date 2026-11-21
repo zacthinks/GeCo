@@ -206,9 +206,11 @@ def exercise(
             assert list(page) == sorted(set(page))
             assert all(0 <= p < units for p in page)
             assert 0 <= count <= units
-            if synthetic:
-                assert count == (units + 2) // 3
-                assert page == list(range(0, units, 3))[:page_size]
+            if synthetic and filter_field == "category":
+                expected = [p for p in range(units) if
+                            ("A" if p % 3 == 0 else "B") == filter_value]
+                assert count == len(expected)
+                assert page == expected[:page_size]
 
         operations["filtered_sql_page"] = measure(
             "filtered_sql_page",
