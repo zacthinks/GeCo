@@ -1,97 +1,96 @@
-# Visualization-first analysis roles (schema v2)
+# Visualization-first Analyses roles (schema v2)
 
-The Analyses editor now starts with a chart, followed by its actual executable roles:
+**Current for proposed GeCo v0.14.0.** Analyses is a descriptive, chart-first
+workspace. Researchers select a chart, then assign typed variables to its
+independently configured roles. A role is not interchangeable with an
+arbitrary pivot-table axis: executable combinations are validated before save.
 
-| Visualization | Roles | Current computation |
+| Visualization | Main roles | Computation |
 |---|---|---|
-| Bar | Values (one or more binary Codes); optional Group (categorical metadata) | Positive counts and observed denominators |
-| Code-value distribution | Values (one or more binary Codes) | Frequencies of observed 0/1 values, or explicit parent-level Code reductions |
-| Association heatmap | Indicators (two or more binary Codes and/or categorical metadata) | Symmetric co-occurrence, Jaccard or pairwise-complete Pearson correlation |
+| Unified Bar (`bar_chart`) | One or more Values, optional Group and Color | Observed Count, or Sum/Mean/Median where the chosen Value supports it |
+| Code-value distribution / categorical comparisons | Binary Code Values, optional grouping | Observed frequencies and denominators |
+| Association heatmap | Categorical/Code indicators | Co-occurrence, Jaccard, or pairwise-complete correlation where supported |
+| Scatter (`scatter`) | Numeric X and Y, optional categorical Color | Bounded deterministic sample of paired observed values |
+| Histogram (`histogram`) | One numeric Value, optional Group | Full observed frequency counts within explicit bins |
+| Numerical summary bar (`summary_bar`) | One numeric Value and categorical Group | Group mean or median and observed denominator |
+| Correlation heatmap (`correlation_heatmap`) | Two to twelve numeric Values | Pairwise-complete Pearson correlations and pair-specific sample counts |
+| Grouped-value heatmap (`value_heatmap`) | Numeric Value and categorical Rows and Columns | Grouped means/medians and cell counts |
 
-This is **not** a generic pivot chart. There are no arbitrary X/Y axes, general
-histograms, numerical aggregation heatmaps, or time-period grouping in Phase 2.
-The editor exposes Scale fitted positions and metadata numeric/temporal source
-interpretations but rejects unsupported chart assignments before saving or
-executing. Code probabilities are likewise not silently thresholded.
-The existing metadata categorical interpretation is explicit; choosing temporal
-does not automatically turn a date into a category.
+Variable *source* and its *interpretation* are independently specified:
+a Code uses human labels, fitted predictions or a documented hybrid source,
+with a binary or supported probability representation; a Scale supplies
+**fitted signed model positions**, never direct human numerical labels; metadata
+is explicitly categorical, numeric or temporal. Selecting a numerical Code
+probability requires an actual trained classifier/committee. A variable's
+stable source ID and predictor or Scale-fit provenance are retained with the
+analysis; stale, unavailable, or missing predictions are not fabricated.
 
-Schema v2 recipes are executable, versioned, and role-scoped:
+## Role-specific transformations
+
+Grouping roles can explicitly bin numeric metadata (equal-width, quantiles,
+fixed-width with anchor, or declared bin edges) and can group temporal metadata
+by day, ISO week, month, quarter or year. Histogram Values use their own
+explicit binning. Transformations are chart-local: they do not rewrite source
+metadata, construct definitions or saved evidence. Numeric parent aggregation
+has explicit methods and denominators; inconsistent parent-level categorical
+metadata are rejected.
+
+For exact supported role shapes, numerical semantics, cell/cardinality caps,
+missingness treatment, deterministic samples and approximation warnings,
+see [continuous and mixed Analyses](analysis-continuous.md) and
+[typed analytical variables](analysis-variables.md).
+
+## Saving, recomputation and compatibility
+
+Saved role-based recipes use `schema_version: 2` and name stable source
+identities and independently configured role entries. The legacy
+`schema_version: 1` format remains supported and continues to use its
+historical calculation semantics when reopened or edited; no implicit
+conversion or invented new chart role is applied to a saved legacy recipe.
+Both schemas save *definitions*, not immutable numeric results: opening and
+previewing recomputes from current eligible source data and retained model
+state without training models or committing judgments.
+
+Save-time checks validate chart-role combinations, source availability,
+retained classifier/committee fit readiness where needed, category limits,
+parent aggregation and selected data feasibility. A previously saved recipe
+may later show unavailable or stale sources if model state changes.
+No computation silently thresholds probabilities or substitutes zeros for
+unobserved and missing values. Source-level missingness, complete-case
+counts, and fitted-model provenance are exposed as available. Correlations
+are exploratory descriptions, not significance tests.
+
+Example schema-v2 source reference:
 
 ```json
 {
   "schema_version": 2,
-  "kind": "bar",
-  "measure": "count",
+  "kind": "histogram",
   "roles": {
-    "values": [
-      {"variable": {"type": "code", "code_id": 2, "source": "labels", "value": "binary"}}
-    ],
-    "group": {
-      "variable": {"type": "metadata", "field": "category", "value": "categorical"}
+    "values": {
+      "variable": {
+        "type": "metadata",
+        "field": "rating",
+        "value": "numeric"
+      }
     }
+  },
+  "binning": {
+    "kind": "histogram_bins",
+    "method": "equal_width",
+    "bins": 20
   }
 }
 ```
 
-Every role has an independent variable descriptor. There is no implicit
-transformation. A selection key is the pair of role name and stable variable
-identity; changing a different role cannot attach a classifier ID to the wrong
-Code. The legacy SQL chart engine remains authoritative for ordinary classifier
-and human Code sources and their parent-level aggregation. Committee-based
-binary analyses use the Phase 1 typed resolver in batches of at most 2048
-atomic IDs, reducing results server-side to compact chart aggregates. These
-committee recipes currently support unaggregated bar and Code distribution;
-Code-only association matrices also work. Parent-level committee aggregation
-and committee/metadata association are deferred. Analysis never trains
-models or changes research evidence.
+The editor and engine use bounded stable-identity resolution, with per-page
+metadata decoding reused when several selected roles need the same row's
+metadata. Plotly receives reduced chart results, not the complete raw corpus;
+scatterplots show a bounded, reproducibly sampled set of source identities.
+Performance evidence is limited to separately benchmarked backend operations,
+not a guarantee of instantaneous browser rendering on all corpus sizes.
 
-A variable can be selected in distinct roles and retain independent UI
-settings, but the existing chart computations reject using the same variable
-twice in one executable chart. Duplicate roles/representations in numerical
-visualizations are a Phase 3 concern.
-
-Old `schema_version: 1` definitions remain unchanged in storage, and their
-execution retains all original missingness, source precedence, grouping and
-heatmap statistics. Editing one preserves schema v1 and its identity; a user
-cannot upgrade an old recipe to an unsupported v2 representation accidentally.
-New analyses are stored as v2. Both remain live definitions: chart results are
-recomputed from current data and retained model state on preview/open.
-
-Source/value representation is independent of chart transformations:
-`code.source` controls human/prediction/hybrid provenance;
-`code.value` distinguishes binary from probability;
-`metadata.value` distinguishes categorical/numeric/temporal; and a Scale
-always has `value: "position"`. The role contract currently rejects role
-transformation keys rather than pretending to execute unsupported bins.
-Calendar period controls and explicit timezone selection should only be added
-when calendar-period computation exists in Phase 3.
-
-## Validation and performance
-
-`geometric_coder.analyses.validate_analysis` dispatches v2 recipes to
-`analysis_roles.validate_role_analysis`, which enforces role membership,
-variable type, measure, uniqueness and supported computation. v1 dispatch
-stays unchanged. `compute_analysis` uses the corresponding executable path.
-No full-corpus values or texts go to Dash/Plotly: the browser only receives
-the reduced chart result. The server-side committee path pages IDs and uses
-the bounded typed resolver; the legacy engine remains SQL-aggregated.
-
-Regression tests: `tests/test_saved_analyses.py`,
-`tests/test_analysis_roles.py`, and browser interaction tests.
-
-## Save-time source readiness
-
-Before saving a new v2 chart (or updating one), GeCo also runs the existing
-read-only chart feasibility checks whenever metadata expansion or parent-level
-Code-value binning can make a valid role specification unrenderable. This
-rejects grouped bars with over 100 categories, categorical heatmaps exceeding
-24 expanded indicators or 24 categories per metadata field, inconsistent
-parent-level metadata, and aggregated distributions exceeding 100 bins. The
-chart engine returns only compact aggregates, which are discarded by this
-preflight; no models are trained. Legacy v1 saves and the live recomputation
-of existing recipes are unchanged.
-
-New schema-v2 analyses are checked for a retained trained predictor **at save time**. A classifier must have a saved fit; fixed committees must have fitted members and learned committees must have their own saved fit. Selecting an unfitted source produces an actionable validation error without creating a saved analysis, training a predictor, or mutating evidence. This check does not alter v1 validation or execution. A previously saved v2 definition remains live: model status may change after saving, at which point ordinary execution reports unavailable or stale sources according to existing behavior.
-
-The browser regression scenarios reuse a single project, fitted classifier, committee and app. CI runs the browser tests once in a Playwright-enabled step, while redundant same-branch push/PR test jobs are canceled when a newer head arrives.
+Relevant tests include `tests/test_analysis_roles.py`,
+`tests/test_analysis_continuous.py`,
+`tests/test_analysis_variables.py`, `tests/test_analysis_bars.py`,
+`tests/test_analysis_acceptance.py`, and the browser interaction tests.
