@@ -1,0 +1,122 @@
+name: Analyses metadata decoding paired benchmark (opt-in)
+
+on:
+  push:
+    branches:
+      - perf/analyses-300k-diagnosis
+    paths:
+      - '.github/workflows/analyses-paired-metadata.yml'
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+      BASELINE_SHA: '70d3d2678b21ccbb3edd6901c17c4143eb90a583'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Prepare exact revisions and shared dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p paired-results "$RUNNER_TEMP/analyses-revisions"
+          git rev-parse HEAD > paired-results/candidate-sha.txt
+          printf '%s\n' "$BASELINE_SHA" > paired-results/baseline-sha.txt
+          git worktree add --detach "$RUNNER_TEMP/analyses-revisions/baseline" "$BASELINE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/analyses-revisions/candidate" "$(git rev-parse HEAD)"
+          uv sync --all-extras --group dev
+          uv pip freeze --python .venv/bin/python > paired-results/dependencies.txt
+          uname -a > paired-results/uname.txt
+          lscpu > paired-results/cpu.txt
+      - name: Focused analytical resolver tests
+        run: |
+          .venv/bin/python -m pytest -q tests/test_analysis_variables.py tests/test_analysis_continuous.py tests/test_analysis_bars.py
+      - name: Match 50k and 300k untraced reference and candidate performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$GITHUB_WORKSPACE"
+          py="$driver/.venv/bin/python"
+          run_chart() {
+            local role="$1" size="$2" chart="$3"
+            local worktree="$RUNNER_TEMP/analyses-revisions/$role"
+            (
+              cd "$worktree"
+              export PYTHONPATH="$worktree/src:$driver"
+              export SOURCE_SHA="$(git rev-parse HEAD)"
+              "$py" -c 'import geometric_coder, pathlib, os; print(geometric_coder.__file__); assert pathlib.Path(geometric_coder.__file__).resolve().is_relative_to(pathlib.Path(os.environ["PYTHONPATH"].split(":")[0]).resolve())'
+              "$py" "$driver/benchmarks/analyses_latency_diagnosis.py" \
+                --units "$size" --round 1 --mode untraced --repeats 21 \
+                --case "$chart" --output "$driver/paired-results/$size-$chart-$role.json" \
+                > "$driver/paired-results/$size-$chart-$role.log"
+            )
+          }
+          for size in 50000 300000; do
+            for chart in correlation unified_bar scatter summary_mean; do
+              run_chart baseline "$size" "$chart"
+              run_chart candidate "$size" "$chart"
+              # Same-code candidate repeat serves as a no-change variance control.
+              run_chart candidate "$size" "$chart"
+              mv "paired-results/$size-$chart-candidate.json" "paired-results/$size-$chart-control.json"
+              mv "paired-results/$size-$chart-candidate.log" "paired-results/$size-$chart-control.log"
+              run_chart candidate "$size" "$chart"
+            done
+          done
+      - name: Check exact scientific and figure parity and summarize timings
+        shell: bash
+        run: |
+          .venv/bin/python - <<'PY'
+          import glob,json,statistics,os
+          records=[]
+          for base in sorted(glob.glob('paired-results/*-baseline.json')):
+              prefix=base.removesuffix('-baseline.json')
+              baseline=json.load(open(base))
+              candidate=json.load(open(prefix+'-candidate.json'))
+              control=json.load(open(prefix+'-control.json'))
+              for chart, samples in baseline['charts'].items():
+                  b=samples
+                  c=candidate['charts'][chart]
+                  v=control['charts'][chart]
+                  for x in c+v:
+                      assert x['result_sha256']==b[0]['result_sha256'], (prefix,chart,'result')
+                      assert x['figure_sha256']==b[0]['figure_sha256'], (prefix,chart,'figure')
+                      assert x['plotly_bytes']==b[0]['plotly_bytes'], (prefix,chart,'payload')
+                  warm=lambda s: [x['compute_seconds'] for x in s[1:]]
+                  med=lambda s: statistics.median(warm(s))
+                  records.append(dict(
+                      case=prefix,chart=chart,
+                      baseline_cold=b[0]['compute_seconds'],
+                      candidate_cold=c[0]['compute_seconds'],
+                      baseline_warm=warm(b),candidate_warm=warm(c),control_warm=warm(v),
+                      baseline_median=med(b),candidate_median=med(c),
+                      control_median=med(v),
+                      speedup=med(b)/med(c),
+                      control_ratio=med(v)/med(c),
+                      result_sha256=b[0]['result_sha256'],
+                      figure_sha256=b[0]['figure_sha256']))
+          with open('paired-results/comparison.json','w') as f:
+              json.dump(records,f,indent=2)
+          for item in records:
+              print(item['case'], 'baseline',round(item['baseline_median'],4),
+                    'candidate',round(item['candidate_median'],4),
+                    'speedup',round(item['speedup'],3),
+                    'control ratio',round(item['control_ratio'],3))
+          PY
+      - name: Preserve matched raw measurements and run metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyses-paired-metadata-${{ github.run_id }}
+          path: paired-results/
+          retention-days: 30
