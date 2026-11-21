@@ -65,6 +65,7 @@ def truncation_notice(html: Any, rows: int, truncated: bool, limit: int) -> Any:
     )
     return html.P(
         f"Showing {rows:,} nearby units; more context is hidden. {guidance}",
-        className="context-truncated",
+        className=("context-truncated" if limit < EXPANDED_CONTEXT_MAX
+                   else "context-truncated context-at-limit"),
         role="status",
     )
