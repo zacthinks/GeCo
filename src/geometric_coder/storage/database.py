@@ -9,6 +9,7 @@ from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -2370,6 +2371,7 @@ class ProjectDatabase:
         unit_id: int,
         level_index: int,
         window: int = 1,
+        max_units: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return a total window of groups around the focal group.
 
@@ -2379,6 +2381,12 @@ class ProjectDatabase:
         """
         if window < 1:
             raise ValueError("window must be at least 1")
+        if max_units is not None and (
+            isinstance(max_units, bool)
+            or not isinstance(max_units, Integral)
+            or max_units < 1
+        ):
+            raise ValueError("max_units must be a positive integer or None")
         with self.connect() as connection:
             focal = connection.execute(
                 """
@@ -2445,17 +2453,62 @@ class ProjectDatabase:
             if not group_ids:
                 return []
             placeholders = ",".join("?" for _ in group_ids)
-            rows = connection.execute(
-                f"""
-                SELECT DISTINCT u.*
-                FROM units AS u
-                JOIN unit_groups AS ug ON ug.unit_id = u.unit_id
-                WHERE ug.level_index = ?
-                  AND ug.group_id IN ({placeholders})
-                ORDER BY u.row_position
-                """,
-                (level_index, *group_ids),
-            ).fetchall()
+            if max_units is None:
+                # Preserve the existing unlimited public API and row ordering.
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT u.*
+                    FROM units AS u
+                    JOIN unit_groups AS ug ON ug.unit_id = u.unit_id
+                    WHERE ug.level_index = ?
+                      AND ug.group_id IN ({placeholders})
+                    ORDER BY u.row_position
+                    """,
+                    (level_index, *group_ids),
+                ).fetchall()
+            else:
+                focal_position = int(connection.execute(
+                    "SELECT row_position FROM units WHERE unit_id = ?",
+                    (int(unit_id),),
+                ).fetchone()[0])
+                # Probe positions only. The row-position index scans towards
+                # the focal row, and EXISTS tests membership in selected groups.
+                # Text and metadata are never fetched by either probe.
+                candidates: list[int] = []
+                for comparison, direction in (("<=", "DESC"), (">", "ASC")):
+                    nearby = connection.execute(
+                        f"""
+                        SELECT u.row_position
+                        FROM units AS u
+                        WHERE u.row_position {comparison} ?
+                          AND EXISTS (
+                              SELECT 1 FROM unit_groups AS ug
+                              WHERE ug.unit_id = u.unit_id
+                                AND ug.level_index = ?
+                                AND ug.group_id IN ({placeholders})
+                          )
+                        ORDER BY u.row_position {direction}
+                        LIMIT ?
+                        """,
+                        (focal_position, level_index, *group_ids, int(max_units)),
+                    ).fetchall()
+                    candidates.extend(int(row[0]) for row in nearby)
+                # A tie favors the preceding source row. Include the focal row
+                # (always the closest eligible row), then restore source order.
+                positions = sorted(
+                    sorted(candidates, key=lambda pos: (
+                        abs(pos - focal_position), pos,
+                    ))[:int(max_units)]
+                )
+                rows = []
+                for start in range(0, len(positions), 900):
+                    chunk = positions[start:start + 900]
+                    row_placeholders = ",".join("?" for _ in chunk)
+                    rows.extend(connection.execute(
+                        f"SELECT * FROM units WHERE row_position IN ({row_placeholders}) "
+                        "ORDER BY row_position",
+                        chunk,
+                    ).fetchall())
         return [_unit_row(row) for row in rows]
 
     def get_observation(self, observation_id: int) -> dict[str, Any]:
