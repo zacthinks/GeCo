@@ -1,0 +1,144 @@
+name: Integrated GeCo 300k validation (isolated)
+
+on:
+  push:
+    branches:
+      - 'benchmarks/manual-tiered-run-integrated-300k-*'
+
+permissions:
+  contents: read
+
+env:
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  PYTHONHASHSEED: "0"
+
+jobs:
+  tier-c-comparison:
+    name: Tier C 300k paired revisions
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install shared environment
+        run: uv sync --all-extras
+      - name: Run pinned baseline, integrated main, and no-change control
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=e5971fe1eb29d98f5f89bdb11bcb5389cab9e063
+          candidate=70d3d2678b21ccbb3edd6901c17c4143eb90a583
+          mkdir -p benchmark-results "$RUNNER_TEMP/geco-worktrees"
+          git worktree add --detach "$RUNNER_TEMP/geco-worktrees/baseline" "$baseline"
+          git worktree add --detach "$RUNNER_TEMP/geco-worktrees/candidate" "$candidate"
+          printf 'baseline=%s\ncandidate=%s\ndriver=%s\n' "$baseline" "$candidate" "$(git rev-parse HEAD)" > benchmark-results/revisions.txt
+          uname -a >> benchmark-results/revisions.txt
+          nproc >> benchmark-results/revisions.txt
+          py="$GITHUB_WORKSPACE/.venv/bin/python"
+          run_case() {
+            local role="$1" revision="$2"
+            local worktree="$RUNNER_TEMP/geco-worktrees/$revision"
+            (
+              cd "$worktree"
+              export PYTHONPATH="$worktree/src:$GITHUB_WORKSPACE"
+              "$py" -c 'import geometric_coder,os,pathlib;expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[0]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve();assert actual.is_relative_to(expected),(actual,expected)'
+              /usr/bin/time -v -o "$GITHUB_WORKSPACE/benchmark-results/c-$role-process-metrics.txt" \
+                "$py" -m benchmarks.tiered_linked --tier c --seed 1729 --page-size 64 --repeats 20 \
+                  --output "$GITHUB_WORKSPACE/benchmark-results/c-$role.json" \
+                > "$GITHUB_WORKSPACE/benchmark-results/c-$role-stdout.json"
+            )
+          }
+          run_case baseline baseline
+          run_case candidate candidate
+          run_case control candidate
+          "$py" -m benchmarks.compare_tiered \
+            --baseline benchmark-results/c-baseline.json \
+            --candidate benchmark-results/c-candidate.json \
+            --control benchmark-results/c-control.json \
+            --output benchmark-results/c-comparison.json
+      - name: Upload complete report, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrated-tier-c-300k-${{ github.run_id }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  specialized-stress:
+    name: Analyses and Scale 300k
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Stress synthetic Analyses and Scale paths on integrated GeCo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stress-results
+          git rev-parse HEAD > stress-results/driver_commit.txt
+          echo "candidate=70d3d2678b21ccbb3edd6901c17c4143eb90a583" >> stress-results/driver_commit.txt
+          /usr/bin/time -v -o stress-results/scale-process-metrics.txt \
+            .venv/bin/python benchmarks/candidate_sampling_300k.py --units 300000 --budget 1000 \
+            > stress-results/scale-300k.json
+          /usr/bin/time -v -o stress-results/analyses-process-metrics.txt \
+            .venv/bin/python benchmarks/analyses_300k.py --units 300000 \
+            > stress-results/analyses-300k.json
+      - name: Upload specialized stress reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: specialized-300k-${{ github.run_id }}
+          path: stress-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  linked-teal:
+    name: Persisted linked TeAL 300k
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zacthinks/text-analysis-lab
+          path: _teal
+          ref: 1f51eb1ef37de182e4d227f60438ef3cbab6857e
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: |
+          uv sync --all-extras
+          uv pip install --python .venv/bin/python -e ./_teal
+      - name: Measure real linked TeAL provider across 300k rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p linked-results
+          git rev-parse HEAD > linked-results/geco_driver_sha.txt
+          git -C _teal rev-parse HEAD > linked-results/teal_sha.txt
+          /usr/bin/time -v -o linked-results/process-metrics.txt \
+            .venv/bin/python benchmarks/geco_topic_adapter.py \
+            --rows 300000 --repetitions 8 \
+            --project "$RUNNER_TEMP/geco-linked-300k" \
+            --output linked-results/topic-300k.json \
+            > linked-results/stdout.txt
+      - name: Upload linked reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linked-teal-300k-${{ github.run_id }}
+          path: linked-results/
+          if-no-files-found: warn
+          retention-days: 30
