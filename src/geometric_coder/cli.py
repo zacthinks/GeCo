@@ -21,6 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--host", default="127.0.0.1")
     launch.add_argument("--port", default=8050, type=int)
     launch.add_argument("--debug", action="store_true")
+    launch.add_argument(
+        "--no-warmup", action="store_true",
+        help="Skip optional startup semantic and UMAP runtime preparation.",
+    )
     return parser
 
 
@@ -33,7 +37,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{key}: {value}")
         return 0
     if args.command == "launch":
-        server = project.launch(host=args.host, port=args.port, debug=args.debug)
+        server = project.launch(
+            host=args.host, port=args.port, debug=args.debug, warmup=not args.no_warmup,
+        )
         try:
             server.wait()
         except KeyboardInterrupt:
