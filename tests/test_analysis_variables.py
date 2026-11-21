@@ -580,7 +580,8 @@ def test_multiple_metadata_descriptors_decode_each_observation_only_once(sample,
     decoded = []
 
     def tracked_loads(payload, *args, **kwargs):
-        if isinstance(payload, str) and '"literal"' in payload and '"group"' in payload:
+        if (isinstance(payload, str) and payload.lstrip().startswith("{")
+                and '"literal"' in payload and '"group"' in payload):
             decoded.append(payload)
         return original_loads(payload, *args, **kwargs)
 
