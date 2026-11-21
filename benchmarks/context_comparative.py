@@ -337,7 +337,8 @@ def orchestrate(args: argparse.Namespace) -> None:
                 assert old["rendered_digest"] == new["rendered_digest"], (scenario,stage)
                 assert full["returned_rows"] > CAP
                 assert old["decoded_rows"] == full["decoded_rows"]
-                assert new["decoded_rows"] == CAP
+                # The reader stage additionally loads focal unit/key metadata twice.
+                assert new["decoded_rows"] == CAP + (2 if stage == "reader" else 0)
     raw_csv = root / "warm_samples.csv"
     with raw_csv.open("w", newline="") as stream:
         writer = csv.writer(stream)
