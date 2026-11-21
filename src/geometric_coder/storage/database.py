@@ -235,6 +235,7 @@ CREATE TABLE unit_groups (
     group_id INTEGER NOT NULL REFERENCES groups(group_id),
     PRIMARY KEY (unit_id, level_index)
 );
+CREATE INDEX unit_groups_group_unit_idx ON unit_groups(level_index, group_id, unit_id);
 
 CREATE TABLE span_members (
     span_observation_id INTEGER NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
@@ -1081,6 +1082,12 @@ class ProjectDatabase:
         while SQLite builds each B-tree; repeated opens do not rebuild it.
         """
         with self.connect() as connection:
+            # Existing workspaces gain the covering group-membership lookup index
+            # without a schema-version bump. Fresh workspaces create it in _SCHEMA.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS unit_groups_group_unit_idx "
+                "ON unit_groups(level_index, group_id, unit_id)"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS navigation_random_cursor_idx "
                 "ON navigation_events(session_id, active_code_id, event_index DESC) "
@@ -2471,27 +2478,55 @@ class ProjectDatabase:
                     "SELECT row_position FROM units WHERE unit_id = ?",
                     (int(unit_id),),
                 ).fetchone()[0])
-                # Probe positions only. The row-position index scans towards
-                # the focal row, and EXISTS tests membership in selected groups.
-                # Text and metadata are never fetched by either probe.
+                # A capped covering-index probe chooses the efficient plan without
+                # counting or loading the full group. For modest groups, sorting
+                # eligible positions is cheaper than scanning the rest of a large
+                # corpus when either side has fewer than max_units members.
+                # Large groups keep the existing row-position probes, preserving
+                # bounded reads and their fast central-neighbor performance.
+                group_probe_limit = 8 * int(max_units)
+                probe = connection.execute(
+                    f"""
+                    SELECT 1 FROM unit_groups AS ug
+                    WHERE ug.level_index = ?
+                      AND ug.group_id IN ({placeholders})
+                    LIMIT ?
+                    """,
+                    (level_index, *group_ids, group_probe_limit + 1),
+                ).fetchall()
+                use_group_index = len(probe) <= group_probe_limit
                 candidates: list[int] = []
                 for comparison, direction in (("<=", "DESC"), (">", "ASC")):
-                    nearby = connection.execute(
-                        f"""
-                        SELECT u.row_position
-                        FROM units AS u
-                        WHERE u.row_position {comparison} ?
-                          AND EXISTS (
-                              SELECT 1 FROM unit_groups AS ug
-                              WHERE ug.unit_id = u.unit_id
-                                AND ug.level_index = ?
-                                AND ug.group_id IN ({placeholders})
-                          )
-                        ORDER BY u.row_position {direction}
-                        LIMIT ?
-                        """,
-                        (focal_position, level_index, *group_ids, int(max_units)),
-                    ).fetchall()
+                    if use_group_index:
+                        # Only positions enter SQLite's bounded-size sort; text
+                        # and metadata are fetched after selecting final positions.
+                        sql = f"""
+                            SELECT u.row_position
+                            FROM unit_groups AS ug
+                            JOIN units AS u ON u.unit_id = ug.unit_id
+                            WHERE ug.level_index = ?
+                              AND ug.group_id IN ({placeholders})
+                              AND u.row_position {comparison} ?
+                            ORDER BY u.row_position {direction}
+                            LIMIT ?
+                        """
+                        params = (level_index, *group_ids, focal_position, int(max_units))
+                    else:
+                        sql = f"""
+                            SELECT u.row_position
+                            FROM units AS u
+                            WHERE u.row_position {comparison} ?
+                              AND EXISTS (
+                                  SELECT 1 FROM unit_groups AS ug
+                                  WHERE ug.unit_id = u.unit_id
+                                    AND ug.level_index = ?
+                                    AND ug.group_id IN ({placeholders})
+                              )
+                            ORDER BY u.row_position {direction}
+                            LIMIT ?
+                        """
+                        params = (focal_position, level_index, *group_ids, int(max_units))
+                    nearby = connection.execute(sql, params).fetchall()
                     candidates.extend(int(row[0]) for row in nearby)
                 # A tie favors the preceding source row. Include the focal row
                 # (always the closest eligible row), then restore source order.
