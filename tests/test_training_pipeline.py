@@ -1487,3 +1487,111 @@ def test_prediction_geometry_rejects_missing_native_scores(tmp_path: Path) -> No
             code_id=code_id, classifier_fit_ids=[int(fit["classifier_fit_id"])],
             score_type="decision_score",
         )
+
+
+@pytest.mark.parametrize("fit_count", [1, 2, 3])
+def test_compact_prediction_geometry_preserves_projection_and_observation_identity(
+    tmp_path: Path, monkeypatch, fit_count: int,
+) -> None:
+    from copy import deepcopy
+
+    from geometric_coder.ui.app import (
+        _build_prediction_geometry_figure, _compact_prediction_geometry,
+        _prediction_geometry_page_index, _prediction_geometry_visible_points,
+    )
+
+    project = _project(tmp_path)
+    code_id = project.create_code("compact prediction")
+    atomic = project.database.list_observations()
+    project.annotate(int(atomic[0]["observation_id"]), code_id, "positive")
+    project.annotate(int(atomic[3]["observation_id"]), code_id, "negative")
+    first = int(atomic[1]["unit_id"])
+    second = int(atomic[2]["unit_id"])
+    span_id, _ = project.annotate_span([first, second], code_id, "unsure")
+    example_id = project.create_teaching_example(
+        code_id=code_id, text="Standalone teaching text", label="positive",
+    )
+    deleted_id = project.create_teaching_example(
+        code_id=code_id, text="Deleted teaching text", label="negative",
+    )
+    project.set_teaching_example_status(deleted_id, "deleted")
+    observations = project.database.list_observations()
+    assert {int(row["observation_id"]) for row in observations}.isdisjoint({deleted_id})
+
+    fits = list(range(901, 901 + fit_count))
+    fit_specs = {fit_id: fit_id + 1000 for fit_id in fits}
+    scores = {
+        fit_id: [
+            {
+                "observation_id": int(row["observation_id"]),
+                "probability": (index + 1 + column) / (len(observations) + fit_count + 2),
+                "decision_score": (index + 1) * (column + 1) / 7,
+            }
+            for index, row in enumerate(observations)
+        ]
+        for column, fit_id in enumerate(fits)
+    }
+    monkeypatch.setattr(
+        project.database, "get_classifier_fit",
+        lambda fit_id: {"code_id": code_id, "classifier_spec_id": fit_specs[fit_id]},
+    )
+    monkeypatch.setattr(
+        project.database, "get_classifier_spec",
+        lambda spec_id: {"name": f"Classifier {spec_id}"},
+    )
+    monkeypatch.setattr(
+        project.database, "classifier_predictions",
+        lambda fit_id: scores[fit_id],
+    )
+
+    for score_type in ("probability", "decision_score"):
+        full = project.classifier_prediction_geometry(
+            code_id=code_id, classifier_fit_ids=fits, score_type=score_type,
+        )
+        compact = project.classifier_prediction_geometry(
+            code_id=code_id, classifier_fit_ids=fits, score_type=score_type,
+            compact_for_ui=True,
+        )
+        assert full.keys() == compact.keys()
+        assert {key: value for key, value in full.items() if key != "points"} == {
+            key: value for key, value in compact.items() if key != "points"
+        }
+        assert _compact_prediction_geometry(deepcopy(full)) == compact
+        assert [point["observation_id"] for point in compact["points"]] == [
+            row["observation_id"] for row in observations
+        ]
+        assert any(point["observation_id"] == span_id and point["kind"] == "span"
+                   for point in compact["points"])
+        assert any(point["observation_id"] == example_id
+                   and point["display_key"] == "Teaching example"
+                   for point in compact["points"])
+        assert all(point["observation_id"] != deleted_id for point in compact["points"])
+        for options in ([], ["spans"], ["teaching"], ["spans", "teaching"]):
+            visible = _prediction_geometry_visible_points(compact, options)
+            full_visible = _prediction_geometry_visible_points(full, options)
+            assert visible == _compact_prediction_geometry(
+                {"points": deepcopy(full_visible)}
+            )["points"]
+            if visible:
+                figure = _build_prediction_geometry_figure(
+                    geometry=compact, points=visible, page_index=0,
+                )
+                full_figure = _build_prediction_geometry_figure(
+                    geometry=full, points=full_visible, page_index=0,
+                )
+                assert figure.to_plotly_json() == full_figure.to_plotly_json()
+                assert set(_prediction_geometry_page_index(figure)) == {
+                    point["observation_id"] for point in visible
+                }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Compact plot decoded a full observation or unit")
+
+    monkeypatch.setattr(project.database, "list_observations", forbidden)
+    monkeypatch.setattr(project.database, "get_observation", forbidden)
+    monkeypatch.setattr(project.database, "get_unit", forbidden)
+    compact = project.classifier_prediction_geometry(
+        code_id=code_id, classifier_fit_ids=fits, compact_for_ui=True,
+    )
+    assert compact["points"]
+    assert all("text" not in point and "scores" not in point for point in compact["points"])
