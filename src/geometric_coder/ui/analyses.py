@@ -131,20 +131,21 @@ def _preserve_hidden_bin_settings(current: dict[str, Any], previous: Any) -> dic
 
 def compatible_aggregation_method(kind: str, measure: str, method: str | None) -> str:
     """Reset incompatible Code reductions without discarding valid settings."""
-    selected = method or "any"
+    # "any" remains executable in saved recipes; the editor presents the
+    # equivalent inclusive threshold method with threshold=1.
+    selected = "minimum" if method in (None, "any") else method
     if selected in {"count", "mean", "log_count"} and not (
         kind in {"scatter", "histogram", "summary_bar", "bar_chart", "correlation_heatmap", "value_heatmap"}
         or kind == "distribution"
         or (kind == "heatmap" and measure == "correlation")
     ):
-        return "any"
+        return "minimum"
     return selected
 
 
 _AGGREGATION_OPTIONS = [
-    {"label": "Any observed positive (0 or 1)", "value": "any"},
+    {"label": "At least N positive judgments", "value": "minimum"},
     {"label": "Number of positive units per group", "value": "count"},
-    {"label": "Positive count at least threshold", "value": "minimum"},
     {"label": "Proportion positive among observed units", "value": "mean"},
     {"label": "Natural log(1 + positive count)", "value": "log_count"},
 ]
@@ -158,6 +159,9 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   continuous_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct one recipe from role identities and role-scoped source choices."""
     from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, ROLE_LAYOUT
+    # Do not expose duplicate "any" and threshold=1 operations in new edits.
+    # Existing stored "any" recipes remain valid in their original engines.
+    aggregate_method = "minimum" if aggregate_method in (None, "any") else aggregate_method
     if kind == "bar_chart":
         selections = {**slots, **(extra_slots or {})}
         roles = {"values": [
@@ -480,11 +484,11 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
             html.Div([
                 html.Div([
                     html.Label("Aggregate Code values"),
-                    dcc.Dropdown(id="analysis-aggregate-method", value="any",
+                    dcc.Dropdown(id="analysis-aggregate-method", value="minimum",
                                  clearable=False, options=_AGGREGATION_OPTIONS),
                 ], id="analysis-code-aggregate-box", style={"display": "none"}),
                 html.Div([
-                    html.Label("Positive count threshold (threshold method only)"),
+                    html.Label("Minimum positive count"),
                     dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
                               step=1, value=1),
                 ], id="analysis-threshold-box", style={"display": "none"}),
@@ -630,10 +634,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                    "roles": {"values": []}, "statistic": "count"},
                   "initial_name": ""},
                  "New analysis", "", "bar_chart", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
+                 "none", "minimum", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar_chart", "count", [],
-                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None,
+                    None, [], [], {}, "none", "minimum", 1, "", None, None, None, [], None, None,
                     "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-new":
             return empty
@@ -658,7 +662,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("values", []) if spec["kind"] == "distribution" else [],
             slots.get("indicators", []) if spec["kind"] == "heatmap" else [],
             _initial_config(spec), aggregate.get("level", "none"),
-            aggregate.get("method", "any"), aggregate.get("threshold", 1), "",
+            ("minimum" if aggregate.get("method", "minimum") == "any"
+             else aggregate.get("method", "minimum")),
+            (1 if aggregate.get("method") == "any" else aggregate.get("threshold", 1)), "",
             slots.get("x"), slots.get("y"), slots.get("color"),
             (slots.get("values", []) if isinstance(slots.get("values", []), list) else [slots["values"]]) if spec["kind"] in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else [],
             slots.get("rows"), slots.get("columns"),
@@ -1440,6 +1446,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             if editing.get("original_spec"):
                 current = validate_analysis(project, current)
                 initial = validate_analysis(project, initial)
+                # Opening an old "any" recipe in the threshold-only editor
+                # must not itself trigger the unsaved-changes confirmation.
+                def canonical_any(recipe: dict[str, Any]) -> dict[str, Any]:
+                    aggregation = recipe.get("aggregation") or {}
+                    if aggregation.get("method") != "any":
+                        return recipe
+                    return {**recipe, "aggregation": {
+                        **aggregation, "method": "minimum", "threshold": 1,
+                    }}
+                current, initial = canonical_any(current), canonical_any(initial)
             dirty = current != initial or (name or "") != editing.get(
                 "initial_name", editing.get("original_name", "")
             )
