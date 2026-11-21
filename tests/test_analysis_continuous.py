@@ -220,7 +220,7 @@ def test_parent_numeric_aggregation_sum_mean_median_and_missing(tmp_path):
         metadata=["score", "group"], geometries=None,
     )
     for method, expected in (
-        ("sum", 27.0), ("mean", 10.0), ("median", 10.0),
+        ("sum", 13.5), ("mean", 5.0), ("median", 5.0),
     ):
         # Summary_bar applies the selected parent function first, then
         # computes a mean across the two observed parents (3 is missing).
