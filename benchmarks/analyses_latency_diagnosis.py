@@ -62,7 +62,7 @@ def run(args):
         for name in selected:
             spec = cases()[name]
             samples = []
-            repeats = 2 if args.mode == "untraced" and not args.profile else 1
+            repeats = args.repeats if args.mode == "untraced" and not args.profile else 1
             for rep in range(repeats):
                 rss_before = rss_mib()
                 if args.mode == "traced":
@@ -139,8 +139,9 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["untraced", "traced"], required=True)
     parser.add_argument("--case", choices=list(cases()))
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--output", type=Path, required=True)
     opts = parser.parse_args()
-    assert opts.units > 0
+    assert opts.units > 0 and opts.repeats > 0
     opts.output.parent.mkdir(parents=True, exist_ok=True)
     run(opts)
