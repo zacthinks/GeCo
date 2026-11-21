@@ -295,8 +295,14 @@ def test_live_browser_doubleclick_navigation_preserves_span_and_history(tmp_path
                 )
                 # Focus uses the same reading navigation gesture.
                 page.get_by_text("Develop", exact=True).first.click()
+                page.evaluate(
+                    "() => window.dash_clientside.set_props('focus-context-level', {value: 0})"
+                )
                 focus_text = page.locator("#focus-context-content p.context-unit")
-                focus_text.first.wait_for()
+                page.wait_for_function(
+                    "() => document.querySelectorAll('#focus-context-content p.context-unit').length > 1",
+                    timeout=15000,
+                )
                 focus_text.first.press("Enter")
                 page.wait_for_function(
                     "() => !document.querySelector('#focus-focal-key')?.innerText.includes('sentence: 110')",
