@@ -56,6 +56,12 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page = browser.new_page(viewport={"width": 1400, "height": 1000})
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+                requests = []
+                page.on("request", lambda request: requests.append(
+                    request.post_data_json
+                ) if request.method == "POST" and request.url.endswith(
+                    "/_dash-update-component"
+                ) else None)
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
                 page.get_by_text("Analyses", exact=True).first.click()
 
@@ -202,6 +208,15 @@ def test_bar_editor_and_switch_guard(tmp_path):
                         "dropdown=" + repr(page.locator("#analysis-role-group").inner_text())
                         + "; roles=" + repr(page.locator("#analysis-role-settings").inner_text())
                         + "; editor=" + repr(page.locator("#analysis-editor").inner_text()[:300])
+                        + "; recent group requests=" + repr([
+                            (x.get("output"), next((
+                                y.get("value") for y in x.get("inputs", [])
+                                if y.get("id") == "analysis-role-group"
+                            ), None), next((
+                                y.get("value") for y in x.get("state", [])
+                                if y.get("id") == "analysis-select"
+                            ), None)) for x in requests[-15:]
+                        ])
                     ) from exc
                 choose(page.locator("#analysis-select"), "Unified bars")
                 page.locator("#analysis-nav-dialog").wait_for(state="visible")
