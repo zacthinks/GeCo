@@ -4,9 +4,22 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 ## [Unreleased]
 
-No changes recorded after the proposed v0.14.0 release candidate.
+No changes recorded after the proposed v0.14.1 release candidate.
 
-## [0.14.0] - release pending
+## [0.14.1] - 2026-11-21
+
+### Fixed
+
+- **Context span selection and parent boundaries** (GeCo #92): keep one focal-anchored, contiguous interval even with redundant checkbox events. Only canonical consecutive source rows within the focal unit's immediate parent can be selected together; interleaved groups cannot create a span the persistence validator rejects.
+- **Context reader navigation** (GeCo #92): double-click a passage to navigate directly to that observation in Explore or Develop, with existing visit provenance and Back history. Enter and Space provide keyboard navigation. Interactive checkboxes retain their separate single-click semantics; the passage text remains the accessible name for screen readers.
+- **Scale prediction browser-test stability** (GeCo #92): extend only the post-refresh second-point inspection wait from 15 to 30 seconds, retaining correct-point checks and adding diagnostic output for persistent failures.
+
+### Notes
+
+- This is a **patch release** on top of v0.14.0, with no new project schema, numerical representation compatibility contract, model fitting behavior, or TeAL-linked API requirement.
+- This entry describes the proposed release candidate. Verify the tagged commit, tests, build artifacts, and GitHub Release before declaring v0.14.1 published.
+
+## [0.14.0] - 2026-11-21
 
 ### Added
 
@@ -26,8 +39,8 @@ No changes recorded after the proposed v0.14.0 release candidate.
 - **GeCo v0.13.0 already provided classifier feature-column normalization**, which is distinct from the new continuous **Scale** Construct functionality. The former transforms classifier input features; the latter models pairwise researcher comparisons.
 - Continuous Scale predictions and learned acquisition are conditional on the chosen representation and model assumptions, not confirmatory measurement or population inference. Analyses remain exploratory and never train models or silently commit evidence.
 - TeAL-linked topic batching uses the optional `read_artifacts` provider capability added in TeAL #79; older providers remain supported with sequential reads. Test against a compatible TeAL version when enabling the new integration.
-- The initial context display cap is expandable, but very long spans may require deliberate navigation; no change is claimed here to disjoint-span selection or double-click-to-focal behavior. Multiple active units-of-analysis within one GeCo workspace are **planned**, not included in this release.
-- **Release pending:** this entry and package version are prepared on a branch. Do not claim v0.14.0 was published until protected-main merge, annotated tag, release workflow, wheel/sdist and release page are verified.
+- The initial context display cap is expandable, but very long spans may require deliberate navigation. Contiguous span interval corrections and double-click-to-focal behavior were subsequently introduced in v0.14.1. Multiple active units of analysis within one GeCo workspace were not included in v0.14.0 and remain outside the current product scope.
+- **Published November 21, 2026:** v0.14.0 is available as a tagged GitHub Release with wheel and source distribution.
 
 ## [0.13.0] - 2026-11-12
 
