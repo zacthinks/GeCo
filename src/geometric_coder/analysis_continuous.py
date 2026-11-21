@@ -41,7 +41,7 @@ NUMERIC_PARENT_METHODS = frozenset({
 def _numeric_parent_settings(aggregate: Mapping[str, Any]) -> dict[str, Any]:
     """Validate method-specific parent settings without changing older recipes."""
     method = aggregate.get("numeric_method", "mean")
-    if method not in NUMERIC_PARENT_METHODS:
+    if not isinstance(method, str) or method not in NUMERIC_PARENT_METHODS:
         raise ValueError("Unknown numerical parent aggregation function.")
     result = {"numeric_method": method}
     if method == "percentile":
