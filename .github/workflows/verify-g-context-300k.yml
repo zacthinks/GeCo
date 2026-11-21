@@ -1,0 +1,73 @@
+name: Validate adaptive context against 300k GeCo API (isolated)
+
+on:
+  push:
+    branches:
+      - 'benchmarks/verify-g-context-300k-*'
+
+permissions:
+  contents: read
+
+env:
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  PYTHONHASHSEED: "0"
+
+jobs:
+  paired-context-300k:
+    name: Paired 300k API baseline vs adaptive G
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install shared dependencies
+        run: uv sync --all-extras
+      - name: Run Tier C 300k on baseline, candidate, and same-revision control
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=70d3d2678b21ccbb3edd6901c17c4143eb90a583
+          candidate=1ce5c7c6f8b88e9295d097b261f274f9817d129a
+          mkdir -p benchmark-results "$RUNNER_TEMP/geco-worktrees"
+          git worktree add --detach "$RUNNER_TEMP/geco-worktrees/baseline" "$baseline"
+          git worktree add --detach "$RUNNER_TEMP/geco-worktrees/candidate" "$candidate"
+          printf 'baseline=%s\ncandidate=%s\ndriver=%s\n' "$baseline" "$candidate" "$(git rev-parse HEAD)" > benchmark-results/revisions.txt
+          uname -a >> benchmark-results/revisions.txt
+          nproc >> benchmark-results/revisions.txt
+          py="$GITHUB_WORKSPACE/.venv/bin/python"
+          run_case() {
+            local role="$1" revision="$2"
+            local worktree="$RUNNER_TEMP/geco-worktrees/$revision"
+            (
+              cd "$worktree"
+              export PYTHONPATH="$worktree/src:$GITHUB_WORKSPACE"
+              "$py" -c 'import geometric_coder,os,pathlib;expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[0]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve();assert actual.is_relative_to(expected),(actual,expected)'
+              /usr/bin/time -v -o "$GITHUB_WORKSPACE/benchmark-results/$role-process.txt" \
+                "$py" -m benchmarks.tiered_linked --tier c --seed 1729 --page-size 64 --repeats 20 \
+                  --output "$GITHUB_WORKSPACE/benchmark-results/$role.json" \
+                > "$GITHUB_WORKSPACE/benchmark-results/$role-stdout.json"
+            )
+          }
+          run_case baseline baseline
+          run_case candidate candidate
+          run_case control candidate
+          "$py" -m benchmarks.compare_tiered \
+            --baseline benchmark-results/baseline.json \
+            --candidate benchmark-results/candidate.json \
+            --control benchmark-results/control.json \
+            --output benchmark-results/comparison.json
+      - name: Upload raw reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g-context-300k-${{ github.run_id }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
