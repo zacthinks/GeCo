@@ -230,6 +230,7 @@ def comparison_layout(
                 ], className="window-stepper"),
             ], className="context-control"),
         ], className="context-controls scale-context-controls"),
+        html.Button("Load 200 more context units in both readings", id="scale-context-expand", n_clicks=0, className="context-expand-button"),
 
         html.Div([
             html.Div(id="scale-reading-first", className="scale-reading-card"),
@@ -298,6 +299,7 @@ def comparison_layout(
                 ),
             ], className="pagination-bar scale-prediction-toolbar"),
             html.Div(id="scale-prediction-preview", className="memo-preview scale-prediction-preview"),
+            html.Button("Load 200 more context units", id="scale-prediction-context-expand", n_clicks=0, className="context-expand-button"),
             html.Details([
                 html.Summary("Manual Pairs"),
                 html.P(
@@ -412,8 +414,13 @@ def register_comparison_callbacks(
     html: Any, dcc: Any,
 ) -> None:
     from dash import Input, Output, State, callback_context, no_update
-    from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from geometric_coder.ui.app import (
+        _metadata_table, _render_context_units,
+    )
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
+    from geometric_coder.ui.context_expansion import (
+        advance_limit, context_key, current_limit, read_context, truncation_notice,
+    )
     register_scale_prediction_callbacks(app, project)
 
     def active_scale_id(construct_id: int | None) -> int | None:
@@ -1104,6 +1111,26 @@ def register_comparison_callbacks(
         return task, "", []
 
     @app.callback(
+        Output("scale-context-expansion-store", "data"),
+        Input("scale-context-expand", "n_clicks"),
+        State("scale-task-store", "data"),
+        State("scale-context-level", "value"),
+        State("scale-context-window", "value"),
+        State("scale-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_scale_context(clicks, task, level, window, state):
+        del clicks
+        key = context_key(
+            task.get("first") if isinstance(task, dict) else None,
+            task.get("second") if isinstance(task, dict) else None,
+            level, window,
+        )
+        return advance_limit(
+            state, key, expand=True,
+        )
+
+    @app.callback(
         Output("scale-selection-summary", "children"),
         Output("scale-reading-first", "children"),
         Output("scale-reading-second", "children"),
@@ -1124,11 +1151,13 @@ def register_comparison_callbacks(
         Input("focus-refresh-store", "data"),
         Input("scale-context-level", "value"),
         Input("scale-context-window", "value"),
+        Input("scale-context-expansion-store", "data"),
     )
     def display_scale_task(
         task: dict[str, Any] | None, repeat_ack: list[str] | None,
         construct_id: int | None, refresh: int | None,
         context_level: int | None = None, context_window: Any = 1,
+        expansion: Any = None,
     ) -> tuple[Any, ...]:
         del refresh
         base_classes = ("judgment-button scale-judgment-button",) * 4
@@ -1156,9 +1185,11 @@ def register_comparison_callbacks(
             unit_id = int(item["unit_id"])
             # Use the same bounded, hierarchy-aware reader as Code Develop.
             # Context selection affects presentation only, never evidence.
-            context = project.context(
-                unit_id, level=int(context_level if context_level is not None else 0),
+            limit = current_limit(expansion, context_key(first, second, context_level, context_window))
+            context, truncated = read_context(
+                project, unit_id, level=int(context_level if context_level is not None else 0),
                 window=max(1, min(100, int(context_window or 1))) if str(context_window or "1").isdigit() else 1,
+                limit=limit,
             )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
@@ -1169,7 +1200,7 @@ def register_comparison_callbacks(
             return html.Div([
                 html.H4(f"Observation {letter}"),
                 html.P(key_label(observation_id), className="focal-key"),
-                html.Div(children, className="context-content focus-context-content"),
+                html.Div([*([truncation_notice(html, len(context), truncated, limit)] if truncated else []), *children], className="context-content focus-context-content"),
                 html.Details([
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),

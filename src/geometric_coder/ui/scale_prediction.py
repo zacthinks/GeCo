@@ -211,10 +211,15 @@ def _validated_prediction_observation(
 def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     """Wire bounded Scale scoring and point inspection into the Develop tab."""
     from dash import Input, Output, State, callback_context, no_update
-    from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from geometric_coder.ui.app import (
+        _metadata_table, _render_context_units,
+    )
     from dash import html, dcc
     import plotly.graph_objects as go
     import uuid
+    from geometric_coder.ui.context_expansion import (
+        advance_limit, context_key, current_limit, read_context, truncation_notice,
+    )
 
     @app.callback(
         Output("scale-prediction-page", "value", allow_duplicate=True),
@@ -347,17 +352,35 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         return no_update
 
     @app.callback(
+        Output("scale-prediction-context-expansion-store", "data"),
+        Input("scale-prediction-context-expand", "n_clicks"),
+        State("scale-prediction-selection", "data"),
+        State("scale-context-level", "value"),
+        State("scale-context-window", "value"),
+        State("scale-prediction-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_scale_prediction_context(clicks, selection, level, window, state):
+        del clicks
+        focal = selection.get("unit_id") if isinstance(selection, dict) else None
+        return advance_limit(
+            state, context_key(focal, level, window),
+            expand=True,
+        )
+
+    @app.callback(
         Output("scale-prediction-preview", "children"),
         Input("scale-prediction-selection", "data"),
         Input("scale-prediction-page-state", "data"),
         Input("focus-construct-dropdown", "value"),
         Input("scale-context-level", "value"),
         Input("scale-context-window", "value"),
+        Input("scale-prediction-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
     def inspect_scale_prediction_point(
         selection: Any, page_state: Any, construct_id: Any,
-        level: Any, window: Any,
+        level: Any, window: Any, expansion: Any = None,
     ) -> Any:
         empty = html.P("Select a plotted observation to inspect it.")
         if page_state is None and isinstance(selection, dict):
@@ -385,10 +408,12 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
         try:
             observation_id = int(selection["observation_id"])
             unit_id = int(selection["unit_id"])
-            context = project.context(
-                unit_id,
+            limit = current_limit(expansion, context_key(unit_id, level, window))
+            context, truncated = read_context(
+                project, unit_id,
                 level=int(level if level is not None else 0),
                 window=max(1, min(100, int(window or 1))) if str(window or "1").isdigit() else 1,
+                limit=limit,
             )
             reading = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
@@ -401,7 +426,7 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 html.H4("Selected observation"),
                 html.Strong(label or f"Observation {observation_id}"),
                 html.P(str(observation["text"])),
-                html.Details([html.Summary("Context"), html.Div(reading)]),
+                html.Details([html.Summary("Context"), html.Div([*([truncation_notice(html, len(context), truncated, limit)] if truncated else []), *reading])]),
                 html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
             ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
