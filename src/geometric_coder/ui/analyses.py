@@ -143,6 +143,33 @@ def compatible_aggregation_method(kind: str, measure: str, method: str | None) -
     return selected
 
 
+_NUMERIC_PARENT_OPTIONS = [
+    {"label": label, "value": value} for label, value in (
+        ("Mean", "mean"), ("Median", "median"), ("Sum", "sum"),
+        ("Minimum", "minimum"), ("Maximum", "maximum"),
+        ("Count observed", "count"), ("Standard deviation", "standard_deviation"),
+        ("Percentile", "percentile"), ("Range", "range"),
+        ("Proportion within bounds", "proportion_within_bounds"),
+    )
+]
+
+
+def _numeric_parent_options(options: dict[str, Any]) -> dict[str, Any]:
+    method = options.get("numeric_method") or "mean"
+    result = {"numeric_method": method}
+    if method == "percentile":
+        result["numeric_percentile"] = options.get("numeric_percentile", 50)
+    if method == "proportion_within_bounds":
+        bounds = {}
+        for name in ("lower", "upper"):
+            value = options.get(f"numeric_{name}")
+            if value is not None and str(value).strip() != "":
+                bounds[name] = value
+                bounds[f"{name}_inclusive"] = bool(options.get(f"numeric_{name}_inclusive", True))
+        result["numeric_bounds"] = bounds
+    return result
+
+
 _AGGREGATION_OPTIONS = [
     {"label": "At least N positive judgments", "value": "minimum"},
     {"label": "Number of positive units per group", "value": "count"},
@@ -182,7 +209,7 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
             result["aggregation"] = {
                 "level": aggregate_level, "method": aggregate_method,
                 "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
-                "numeric_method": options.get("numeric_method", "mean"),
+                **_numeric_parent_options(options),
             }
         return result
     if kind == "bar" and (
@@ -228,7 +255,7 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
             recipe["aggregation"] = {
                 "level": aggregate_level, "method": aggregate_method,
                 "threshold": 1 if aggregate_threshold is None else aggregate_threshold,
-                "numeric_method": options.get("numeric_method", "mean"),
+                **_numeric_parent_options(options),
             }
         return recipe
     raw_roles = {
@@ -495,10 +522,25 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Div([
                     html.Label("Aggregation function"),
                     dcc.Dropdown(id="analysis-parent-numeric-method",
-                        options=[{"label":"Mean","value":"mean"},
-                                 {"label":"Median","value":"median"},
-                                 {"label":"Sum","value":"sum"}],
-                        value="mean", clearable=False),
+                                 options=_NUMERIC_PARENT_OPTIONS,
+                                 value="mean", clearable=False),
+                    html.Div([
+                        html.Label("Percentile (0–100)"),
+                        dcc.Input(id="analysis-parent-percentile", type="number",
+                                  min=0, max=100, step="any", value=50),
+                    ], id="analysis-parent-percentile-box", style={"display": "none"}),
+                    html.Div([
+                        html.Label("Lower bound (optional)"),
+                        dcc.Input(id="analysis-parent-lower-bound", type="number", step="any"),
+                        dcc.Checklist(id="analysis-parent-lower-inclusive",
+                                      options=[{"label": "Inclusive", "value": "inclusive"}],
+                                      value=["inclusive"]),
+                        html.Label("Upper bound (optional)"),
+                        dcc.Input(id="analysis-parent-upper-bound", type="number", step="any"),
+                        dcc.Checklist(id="analysis-parent-upper-inclusive",
+                                      options=[{"label": "Inclusive", "value": "inclusive"}],
+                                      value=["inclusive"]),
+                    ], id="analysis-parent-bounds-box", style={"display": "none"}),
                 ], id="analysis-parent-numeric-box", style={"display": "none"}),
                 html.P("Binary Codes use the selected count/proportion reduction; numerical values "
                        "use the numerical reduction. Grouping metadata must be constant in each parent."),
@@ -621,6 +663,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Output("analysis-hist-edges", "value"),
         Output("analysis-bar-color", "value"),
         Output("analysis-bar-statistic", "value"),
+        Output("analysis-parent-percentile", "value"),
+        Output("analysis-parent-lower-bound", "value"),
+        Output("analysis-parent-upper-bound", "value"),
+        Output("analysis-parent-lower-inclusive", "value"),
+        Output("analysis-parent-upper-inclusive", "value"),
         Input("analysis-new", "n_clicks"),
         Input("analysis-edit", "n_clicks"),
         Input("analysis-duplicate", "n_clicks"),
@@ -636,15 +683,15 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                    "roles": {"values": []}, "statistic": "count"},
                   "initial_name": ""},
                  "New analysis", "", "bar_chart", "count", [], None, [], [], {},
-                 "none", "minimum", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
+                 "none", "minimum", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count", 50, None, None, ["inclusive"], ["inclusive"])
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar_chart", "count", [],
                     None, [], [], {}, "none", "minimum", 1, "", None, None, None, [], None, None,
-                    "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
+                    "mean", "equal_width", 20, 1, None, "mean", "", None, "count", 50, None, None, ["inclusive"], ["inclusive"])
         if trigger == "analysis-new":
             return empty
         if selected is None:
-            return (no_update,) * 30
+            return (no_update,) * 35
         record = project.analysis(int(selected))
         spec = record["spec"]
         slots = _slots(spec)
@@ -677,6 +724,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             ", ".join(str(v) for v in spec.get("binning", {}).get("edges", [])),
             slots.get("color") if spec["kind"] == "bar_chart" else None,
             spec.get("statistic", "count") if spec["kind"] == "bar_chart" else "count",
+            aggregate.get("numeric_percentile", 50),
+            aggregate.get("numeric_bounds", {}).get("lower"),
+            aggregate.get("numeric_bounds", {}).get("upper"),
+            ["inclusive"] if aggregate.get("numeric_bounds", {}).get("lower_inclusive", True) else [],
+            ["inclusive"] if aggregate.get("numeric_bounds", {}).get("upper_inclusive", True) else [],
         )
 
     @app.callback(
@@ -734,6 +786,19 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind == "bar_chart" else hidden,
             visible if kind == "bar_chart" else hidden,
         )
+
+    @app.callback(
+        Output("analysis-parent-percentile-box", "style"),
+        Output("analysis-parent-bounds-box", "style"),
+        Input("analysis-parent-numeric-method", "value"),
+        Input("analysis-aggregate-level", "value"),
+    )
+    def show_numeric_method_settings(method: str | None, level: str | None):
+        hidden = {"display": "none"}
+        if not level or level == "none":
+            return hidden, hidden
+        visible = {"display": "block"}
+        return visible if method == "percentile" else hidden, visible if method == "proportion_within_bounds" else hidden
 
     @app.callback(
         Output("analysis-aggregation-options", "style"),
@@ -1116,7 +1181,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                    live_transforms: Any, live_transform_ids: Any,
                    live_bins: Any, live_bin_ids: Any,
                    live_widths: Any, live_width_ids: Any,
-                   live_edges: Any, live_edge_ids: Any) -> dict[str, Any]:
+                   live_edges: Any, live_edge_ids: Any,
+                   numeric_percentile: Any = 50, numeric_lower: Any = None,
+                   numeric_upper: Any = None, numeric_lower_inclusive: Any = None,
+                   numeric_upper_inclusive: Any = None) -> dict[str, Any]:
         legacy = editing.get("schema_version", 2) == 1
         if kind in ("histogram", "summary_bar", "value_heatmap") and len(continuous_values or []) != 1:
             raise ValueError("Choose exactly one numeric Values variable for this visualization.")
@@ -1208,6 +1276,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             extra_slots=all_slots,
             continuous_options={"statistic": statistic or "mean", "bar_statistic": bar_statistic or "count", "binning": bins,
                                 "numeric_method": parent_numeric_method or "mean",
+                                "numeric_percentile": numeric_percentile,
+                                "numeric_lower": numeric_lower, "numeric_upper": numeric_upper,
+                                "numeric_lower_inclusive": "inclusive" in (numeric_lower_inclusive or []),
+                                "numeric_upper_inclusive": "inclusive" in (numeric_upper_inclusive or []),
                                 "max_points": original.get("max_points", 2000)},
         )
         if legacy:
@@ -1265,6 +1337,11 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         State({"type":"analysis-role-width","index":ALL}, "id"),
         State({"type":"analysis-role-edges","index":ALL}, "value"),
         State({"type":"analysis-role-edges","index":ALL}, "id"),
+        State("analysis-parent-percentile", "value"),
+        State("analysis-parent-lower-bound", "value"),
+        State("analysis-parent-upper-bound", "value"),
+        State("analysis-parent-lower-inclusive", "value"),
+        State("analysis-parent-upper-inclusive", "value"),
     ]
 
     @app.callback(
@@ -1293,6 +1370,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
              live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
              live_widths: Any, live_width_ids: Any, live_edges: Any,
              live_edge_ids: Any,
+             numeric_percentile: Any, numeric_lower: Any, numeric_upper: Any,
+             numeric_lower_inclusive: Any, numeric_upper_inclusive: Any,
              revision: int | None) -> tuple[Any, ...]:
         if editing is None:
             return (no_update,) * 6
@@ -1304,7 +1383,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
-                              live_width_ids, live_edges, live_edge_ids)
+                              live_width_ids, live_edges, live_edge_ids,
+                               numeric_percentile, numeric_lower, numeric_upper,
+                               numeric_lower_inclusive, numeric_upper_inclusive)
             analysis_id = project.save_analysis(name or "", spec, analysis_id=editing.get("id"))
         except (ValueError, KeyError) as exc:
             return no_update, no_update, no_update, str(exc), no_update, no_update
@@ -1333,7 +1414,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                 live_values: Any, live_value_ids: Any, live_transforms: Any,
                 live_transform_ids: Any, live_bins: Any, live_bin_ids: Any,
                 live_widths: Any, live_width_ids: Any, live_edges: Any,
-                live_edge_ids: Any) -> tuple[Any, str]:
+                live_edge_ids: Any,
+                numeric_percentile: Any, numeric_lower: Any, numeric_upper: Any,
+                numeric_lower_inclusive: Any, numeric_upper_inclusive: Any) -> tuple[Any, str]:
         if editing is None:
             return no_update, no_update, ""
         try:
@@ -1344,7 +1427,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                               hist_edges, bar_color, bar_statistic, live_sources, live_source_ids, live_predictors,
                               live_predictor_ids, live_values, live_value_ids, live_transforms,
                               live_transform_ids, live_bins, live_bin_ids, live_widths,
-                              live_width_ids, live_edges, live_edge_ids)
+                              live_width_ids, live_edges, live_edge_ids,
+                               numeric_percentile, numeric_lower, numeric_upper,
+                               numeric_lower_inclusive, numeric_upper_inclusive)
             result = compute_analysis(project, spec)
             fig = analysis_figure(result)
             if result.get("warnings"):

@@ -251,7 +251,7 @@ def test_parent_numeric_aggregation_sum_mean_median_and_missing(tmp_path):
     # must remain missing rather than becoming zero.
     invalid = recipe("summary_bar", values=meta("score", "numeric"),
                      group=meta("group", "categorical"))
-    invalid["aggregation"] = {"level": "parent", "numeric_method": "maximum"}
+    invalid["aggregation"] = {"level": "parent", "numeric_method": "not_a_method"}
     with pytest.raises(ValueError, match="aggregation"):
         validate_analysis(p, invalid)
 
