@@ -350,6 +350,12 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
             )
             try:
                 page = browser.new_page(viewport={"width": 1400, "height": 1000})
+                requests = []
+                page.on("request", lambda request: requests.append(
+                    request.post_data_json
+                ) if request.method == "POST" and request.url.endswith(
+                    "/_dash-update-component"
+                ) else None)
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
                 page.get_by_text("Analyses", exact=True).first.click()
 
@@ -403,7 +409,13 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
                     page.locator("#analysis-editor").wait_for(state="hidden")
                     saved = project.analysis(chart_id)["spec"]["aggregation"]
                     assert saved["method"] == "minimum"
-                    assert saved["threshold"] == 1
+                    assert saved["threshold"] == 1, (
+                        name, saved,
+                        [(x.get("output"), next((
+                            y.get("value") for y in x.get("state", [])
+                            if y.get("id") == "analysis-aggregate-threshold"
+                        ), None)) for x in requests[-12:]]
+                    )
             finally:
                 browser.close()
     finally:
