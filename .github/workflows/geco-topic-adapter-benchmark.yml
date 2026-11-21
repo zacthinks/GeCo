@@ -1,0 +1,64 @@
+name: Linked TeAL topic adapter benchmark
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/geometric_coder/project.py'
+      - 'tests/test_topic_artifact_retrieval.py'
+      - 'benchmarks/geco_topic_adapter.py'
+      - '.github/workflows/geco-topic-adapter-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linked-topic-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Check out GeCo
+        uses: actions/checkout@v7
+      - name: Check out merged TeAL main
+        uses: actions/checkout@v7
+        with:
+          repository: zacthinks/text-analysis-lab
+          path: _teal
+          ref: main
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install GeCo and TeAL
+        run: |
+          uv sync --all-extras
+          uv pip install --python .venv/bin/python -e ./_teal
+      - name: Run focused provider compatibility tests
+        run: uv run --no-sync pytest -q tests/test_topic_artifact_retrieval.py
+      - name: Record linked revisions and environment
+        run: |
+          mkdir -p benchmark-results
+          git rev-parse HEAD > benchmark-results/geco_sha.txt
+          git -C _teal rev-parse HEAD > benchmark-results/teal_sha.txt
+          uv run --no-sync python -m pip --version || true
+      - name: Benchmark same 50k-row persisted linked workspace
+        run: |
+          uv run --no-sync python benchmarks/geco_topic_adapter.py \
+            --rows 50000 --repetitions 8 \
+            --project "${RUNNER_TEMP}/geco-topic-benchmark" \
+            --output benchmark-results/linked-topic-adapter-50k.json
+      - name: Upload raw paired measurements and revisions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linked-teal-topic-adapter-${{ github.run_id }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30

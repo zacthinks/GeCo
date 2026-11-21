@@ -1201,7 +1201,8 @@ class GeometricCoder:
         model = self.topic_model(topic_model)
         provider = self._require_external_provider()
         reader = getattr(provider, "read_artifact", None)
-        if not callable(reader):
+        batch_reader = getattr(provider, "read_artifacts", None)
+        if not callable(reader) and not callable(batch_reader):
             raise ConfigurationError(
                 "This external provider does not support reading keyed Topic Model artifacts."
             )
@@ -1229,13 +1230,29 @@ class GeometricCoder:
                 [int(index) for index in indices]
             )
 
-        membership: ArtifactRows = reader(model["membership_artifact_id"], requested)
-        dominant: ArtifactRows = reader(model["dominant_artifact_id"], requested)
-        description: ArtifactRows | None = (
-            reader(model["description_artifact_id"], None)
-            if include_description and model["description_artifact_id"] is not None
-            else None
-        )
+        # An optional provider batch preserves each artifact's own key request:
+        # descriptions are independent of the current observation/page keys.
+        requests = [
+            (str(model["membership_artifact_id"]), requested),
+            (str(model["dominant_artifact_id"]), requested),
+        ]
+        if include_description and model["description_artifact_id"] is not None:
+            requests.append((str(model["description_artifact_id"]), None))
+
+        if callable(batch_reader):
+            # A declared batch method failing is a genuine provider failure, not
+            # a signal to retry and silently conceal it through single reads.
+            packets = list(batch_reader(requests))
+            if len(packets) != len(requests):
+                raise ConfigurationError(
+                    "External Topic Model provider returned the wrong number of artifacts."
+                )
+        else:
+            packets = [reader(artifact_id, keys) for artifact_id, keys in requests]
+
+        membership: ArtifactRows = packets[0]
+        dominant: ArtifactRows = packets[1]
+        description: ArtifactRows | None = packets[2] if len(packets) > 2 else None
         return validate_topic_model_rows(
             model, membership, dominant, requested_count=len(requested),
             description=description,
