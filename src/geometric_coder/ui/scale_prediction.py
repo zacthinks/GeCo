@@ -211,7 +211,9 @@ def _validated_prediction_observation(
 def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     """Wire bounded Scale scoring and point inspection into the Develop tab."""
     from dash import Input, Output, State, callback_context, no_update
-    from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from geometric_coder.ui.app import (
+        MAX_READING_CONTEXT_UNITS, _metadata_table, _render_context_units,
+    )
     from dash import html, dcc
     import plotly.graph_objects as go
     import uuid
@@ -389,6 +391,7 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 unit_id,
                 level=int(level if level is not None else 0),
                 window=max(1, min(100, int(window or 1))) if str(window or "1").isdigit() else 1,
+                max_units=MAX_READING_CONTEXT_UNITS,
             )
             reading = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
