@@ -168,3 +168,27 @@ def test_explore_and_focus_checkbox_callbacks_select_beyond_initial_cap(tmp_path
         finally:
             context_value.reset(token)
         assert selected == list(range(310, 491)), prefix
+
+
+def test_expansion_callbacks_do_not_fire_on_focal_or_prediction_changes(tmp_path):
+    """Only deliberate load-more clicks can write expansion state."""
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    app = create_app(project)
+    expected = {
+        "expand_explore_context": "explore-context-expand",
+        "expand_focus_context": "focus-context-expand",
+        "expand_memo_context": "memo-context-expand",
+        "expand_scale_context": "scale-context-expand",
+        "expand_scale_prediction_context": "scale-prediction-context-expand",
+    }
+    observed = {}
+    for record in app.callback_map.values():
+        if "callback" not in record:
+            continue
+        name = inspect.unwrap(record["callback"]).__name__
+        if name in expected:
+            observed[name] = [entry["id"] for entry in record["inputs"]]
+    assert observed == {name: [button] for name, button in expected.items()}
