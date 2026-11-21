@@ -108,11 +108,68 @@ def test_launch_warms_before_server_start_only_when_relevant(monkeypatch):
         app_module, "_warm_semantic_runtime_libraries",
         lambda: events.append("warm") or True,
     )
+    monkeypatch.setattr(app_module, "_warm_umap_runtime_libraries",
+                        lambda: events.append("umap") or True)
     monkeypatch.setattr(app_module, "_display_local_browser_url", lambda *args: None)
     app_module.launch_app(_Project(), host="127.0.0.1", port=8050, debug=False)
-    assert events == ["warm", "server init", "server start"]
+    assert events == ["warm", "umap", "server init", "server start"]
+    events.clear()
+    app_module.launch_app(
+        _Project(queryable=False), host="127.0.0.1", port=8050, debug=False
+    )
+    assert events == ["umap", "server init", "server start"]
+    events.clear()
+    app_module.launch_app(
+        _Project(), host="127.0.0.1", port=8050, debug=False, warmup=False
+    )
+    assert events == ["server init", "server start"]
     events.clear()
     app_module.launch_app(
         _Project(external=False), host="127.0.0.1", port=8050, debug=False
     )
     assert events == ["server init", "server start"]
+    events.clear()
+    app_module.launch_app(
+        _Project(), host="127.0.0.1", port=8050, debug=False, mode="focus"
+    )
+    assert events == ["server init", "server start"]
+
+
+def test_umap_warmup_uses_disposable_data_and_only_runs_once(monkeypatch):
+    import numpy as np
+    import sys
+
+    observed = []
+
+    class FakeUMAP:
+        def __init__(self, **kwargs):
+            observed.append(("params", kwargs))
+
+        def fit_transform(self, data):
+            assert data.shape == (64, 16)
+            assert data.dtype == np.float32
+            assert np.isfinite(data).all()
+            observed.append(("fit", data.copy()))
+            return np.zeros((64, 2), dtype=np.float32)
+
+    monkeypatch.setitem(sys.modules, "umap", SimpleNamespace(UMAP=FakeUMAP))
+    monkeypatch.setattr(app_module, "_UMAP_RUNTIME_WARMED", False)
+    assert app_module._warm_umap_runtime_libraries()
+    assert app_module._warm_umap_runtime_libraries()
+    assert len(observed) == 2
+    assert observed[0][1]["metric"] == "cosine"
+    assert observed[0][1]["n_neighbors"] == 8
+    assert observed[0][1]["random_state"] == 42
+
+
+def test_umap_warmup_failure_does_not_mark_runtime_ready(monkeypatch):
+    import sys
+
+    class BrokenUMAP:
+        def __init__(self, **_kwargs):
+            raise RuntimeError("backend unavailable")
+
+    monkeypatch.setitem(sys.modules, "umap", SimpleNamespace(UMAP=BrokenUMAP))
+    monkeypatch.setattr(app_module, "_UMAP_RUNTIME_WARMED", False)
+    assert app_module._warm_umap_runtime_libraries() is False
+    assert app_module._UMAP_RUNTIME_WARMED is False
