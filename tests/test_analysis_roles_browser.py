@@ -299,3 +299,87 @@ def test_analysis_role_editor_preview_save_edit_and_incompatible_chart(tmp_path)
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_path):
+    """Editing saved parent charts must expose Code reductions and thresholds."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    chrome = next((path for exe in ("google-chrome", "chromium", "chromium-browser")
+                   if (path := shutil.which(exe)) is not None), None)
+    if chrome is None:
+        pytest.skip("Chrome/Chromium unavailable")
+    from geometric_coder.ui.app import create_app
+
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "legacy-parent-ui.geco",
+        data=pd.DataFrame({
+            "interview": [1, 1, 2, 2],
+            "turn": [1, 2, 1, 2],
+            "text": ["good", "bad", "great", "poor"],
+        }),
+        keys=["interview", "turn"], text="text", metadata=[], geometries=None,
+    )
+    code = project.create_code("Theme")
+    other = project.create_code("Other")
+    for unit, label in zip(project.database.list_units(),
+                           ["positive", "negative", "positive", "negative"], strict=True):
+        project.annotate(unit["observation_id"], code, label)
+    for unit, label in zip(project.database.list_units(),
+                           ["negative", "positive", "negative", "positive"], strict=True):
+        project.annotate(unit["observation_id"], other, label)
+    references = [
+        {"type": "code", "code_id": identifier, "source": "labels", "value": "binary"}
+        for identifier in (code, other)
+    ]
+    distribution_id = project.save_analysis("Parent distribution", {
+        "kind": "distribution", "measure": "count", "variables": references[:1],
+        "aggregation": {"level": "interview", "method": "minimum", "threshold": 2},
+    })
+    heatmap_id = project.save_analysis("Parent heatmap", {
+        "kind": "heatmap", "measure": "jaccard", "variables": references,
+        "aggregation": {"level": "interview", "method": "minimum", "threshold": 2},
+    })
+    app = create_app(project)
+    server = make_server("127.0.0.1", 0, app.server, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as runner:
+            browser = runner.chromium.launch(
+                executable_path=chrome, headless=True, args=["--no-sandbox"],
+            )
+            try:
+                page = browser.new_page(viewport={"width": 1400, "height": 1000})
+                page.goto(f"http://127.0.0.1:{server.server_port}/")
+                page.get_by_text("Analyses", exact=True).first.click()
+
+                def choose(selector, label):
+                    dropdown = page.locator(selector)
+                    dropdown.click()
+                    page.get_by_text(label, exact=True).filter(visible=True).last.click()
+
+                for name, chart_id in (
+                    ("Parent distribution", distribution_id),
+                    ("Parent heatmap", heatmap_id),
+                ):
+                    choose("#analysis-select", name)
+                    page.locator("#analysis-edit").click()
+                    page.wait_for_function(
+                        "(expected) => document.querySelector('#analysis-name')"
+                        "?.value === expected && document.querySelector('#analysis-aggregate-level')"
+                        "?.textContent.includes('interview')",
+                        arg=name, timeout=15000,
+                    )
+                    page.locator("#analysis-code-aggregate-box").wait_for(state="visible")
+                    page.locator("#analysis-threshold-box").wait_for(state="visible")
+                    assert page.locator("#analysis-aggregate-threshold").input_value() == "2"
+                    choose("#analysis-aggregate-method", "Any observed positive (0 or 1)")
+                    page.locator("#analysis-threshold-box").wait_for(state="hidden")
+                    page.locator("#analysis-save").click()
+                    page.locator("#analysis-editor").wait_for(state="hidden")
+                    assert project.analysis(chart_id)["spec"]["aggregation"]["method"] == "any"
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
