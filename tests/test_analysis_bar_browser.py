@@ -164,6 +164,18 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 ).wait_for(state="visible", timeout=15000)
                 assert page.locator("#analysis-bar-color").is_hidden()
                 assert page.locator("#analysis-bar-statistic").is_hidden()
+                # The saved legacy chart has no Group. Wait until the previous
+                # chart's stale Site selection has been cleared, not merely
+                # until the new Values heading is visible. Otherwise an
+                # outstanding editor-restore response can overwrite a click.
+                page.wait_for_function(
+                    "() => { const group = document.querySelector('#analysis-role-group'); "
+                    "return group && !group.textContent.includes('Metadata: site') "
+                    "&& !group.textContent.includes('Metadata: condition') "
+                    "&& !document.querySelector('#analysis-role-settings')"
+                    "?.textContent.includes('Group: site (Metadata)'); }",
+                    timeout=15000,
+                )
                 # A supported legacy Group change must be tracked and saved,
                 # preserving legacy count semantics and the original ID.
                 choose(page.locator("#analysis-role-group"), "Metadata: condition")
