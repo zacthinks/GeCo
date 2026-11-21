@@ -1,0 +1,1 @@
+Opt-in run for PR #84. Workflow pins baseline and resolves the open PR head at execution.
