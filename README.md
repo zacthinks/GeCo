@@ -42,6 +42,14 @@ For supported regularized logistic and linear-SVM classifiers, **Feature scaling
 
 **Committees** combine classifiers built on different geometries without concatenating their feature matrices. Fixed aggregations combine member probabilities directly. The learned logistic committee fits its stacking weights from **out-of-fold (OOF)** member probabilities: temporary member models predict held-out examples, and the final committee uses retained full-data member models for corpus-wide scoring. OOF training requires at least two jointly represented Present and two Absent examples; older learned committees need retraining after upgrading. This reduces in-sample stacking overfit but does not replace independent evaluation.
 
+### Continuous Scales — develop rankings from pairwise judgments
+
+GeCo also supports **continuous Scale Constructs** alongside binary Codes. In **Develop**, define a Scale, choose an analytic geometry, and compare two observations: **A higher**, **parity**, **B higher**, or **Unsure**. The judgments remain researcher evidence rather than direct numeric scores. You can explicitly bootstrap directional comparisons from an existing Code if you accept the Present > Absent ordering assumption.
+
+A fitted **linear Davidson scaler** learns reference-centered, signed positions in the selected geometry. GeCo displays these predicted positions, exposes model-conditional uncertainty where available, and can recommend another pair through bounded random sampling or Bayesian expected information gain. Comparisons, fitted state, freshness, and prediction inspection remain reviewable; selecting **Next pair** does not itself create a judgment.
+
+**Scale positions are not calibrated probabilities, Code Present/Absent predictions, or objective measurements of a construct.** Their interpretation depends on the human comparisons, selected numerical representation, and modeling assumptions. Scale predictions can also be explored as numeric variables in **Analyses**, while **Apply & Review remains Code-only**.
+
 ### 3. Apply & Review — code broadly, review efficiently
 
 Once a code-specific classifier or committee is useful, use it to generate coding proposals for observations you have not yet reviewed. GeCo's **Apply & Review** workspace puts those proposals in a review table, where you can inspect suggested labels and probabilities, filter the results, accept or revise individual decisions, and take bulk actions when appropriate.
@@ -148,7 +156,9 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 | **Geometry** | A representation used to examine relationships among observations, including distances and neighborhoods. |
 | **View** | A one- or two-dimensional representation of a geometry used for visualization, usually a lower-dimensional projection. |
 | **Topic model** | An exploratory representation of recurring themes or groupings in a corpus, with memberships that can be inspected alongside the original text. |
+| **Construct** | A researcher-defined target: a binary Code or a continuous Scale. |
 | **Code** | A researcher-defined concept with an evolving description and explicit Present, Absent, or Unsure assignments. |
+| **Scale** | A construct learned from ordered human comparisons; its fitted model assigns signed, reference-centered positions rather than direct human scores. |
 | **Classifier** | A code-specific model trained from human judgments in a chosen geometry; it supports active learning and generates proposals for review. |
 | **Memo** | A versioned interpretive note that can link back to supporting observations. |
 
@@ -156,7 +166,7 @@ Pass this mapping as `geometries=geometries` when creating the project. The sema
 
 GeCo is an **exploratory** environment. Its maps, classifiers, and proposals support reading, code development, interpretation, and hypothesis generation. They are **not**, on their own, population estimates or a substitute for an inferential research design. Projects that require confirmatory inference should use an appropriate downstream analysis workflow.
 
-**Current status:** GeCo is under active pre-1.0 development (package version 0.13.0). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
+**Current status:** GeCo is under active pre-1.0 development (source version 0.14.0, release pending). Interfaces, APIs, and project schemas may change; compatibility with older project directories is not guaranteed. The current interface supports text, not image coding.
 
 ## Development
 

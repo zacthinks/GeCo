@@ -12,10 +12,9 @@ Do **not** run development builds against an irreplaceable research project.
 Copy your `.geco` directory before testing; schema upgrades and new judgments
 modify the opened project.
 
-From the Phase 4 feature checkout:
+From an installed GeCo v0.14.0 release candidate or its reviewed source checkout:
 
 ```bash
-git checkout feature/scale-ui-finalization
 uv sync --dev
 uv run geco launch /path/to/your-project-copy.geco
 ```
@@ -27,7 +26,7 @@ Open the localhost URL printed by `geco launch`, then select **Develop**.
 1. Select a **Scale** Construct, or create one through **New Construct**.
    When using Code-to-Scale bootstrap, confirm the explicit Present > Absent
    assumption and check the full comparison-count preview.
-2. With no Scale fit, expand **Scale prediction positions** (initially open).
+2. With no Scale fit, inspect **Scale prediction positions** (shown below the comparisons, not a collapsible panel).
    The view should explain that training is needed; it must not fabricate a
    plot of learned scores.
 3. Check that the default comparison interface presents observations A and B
@@ -35,7 +34,7 @@ Open the localhost URL printed by `geco launch`, then select **Develop**.
    higher, and unsure/skip; verify saved history. **Next pair** must advance
    without creating a judgment.
 4. Select an analytic geometry and **Train** after enough directional evidence.
-   Expand **Scale prediction positions**: x-axis is signed, centered model
+   In **Scale prediction positions**: x-axis is signed, centered model
    position; y-axis is posterior positional standard deviation where available.
    If the posterior is unavailable, the y-axis clearly says *page order
    (not uncertainty)*, retaining clickable observations.
