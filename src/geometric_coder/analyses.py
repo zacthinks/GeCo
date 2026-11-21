@@ -12,7 +12,7 @@ from typing import Any, Mapping
 import plotly.graph_objects as go
 
 _ALLOWED_KINDS = {"bar", "heatmap", "distribution"}
-_ALLOWED_SOURCES = {"labels", "predictions", "hybrid"}
+_ALLOWED_SOURCES = {"labels", "predictions", "hybrid", "hybrid_unsure"}
 _ALLOWED_MEASURES = {"count", "jaccard", "correlation"}
 _AGGREGATE_METHODS = {"any", "minimum", "count", "mean", "log_count"}
 _ALLOWED_VALUES = {"binary", "probability"}
@@ -22,6 +22,14 @@ def validate_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize and validate an analysis definition; reject dangling references."""
     if not isinstance(spec, Mapping):
         raise ValueError("Analysis settings must be an object.")
+    if spec.get("schema_version", 1) == 2 and spec.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import validate_bar_chart
+        return validate_bar_chart(project, spec)
+    if spec.get("schema_version", 1) == 2:
+        from geometric_coder.analysis_roles import validate_role_analysis
+        return validate_role_analysis(project, spec)
+    if spec.get("schema_version", 1) != 1:
+        raise ValueError("Unsupported saved-analysis schema version.")
     kind = str(spec.get("kind", ""))
     if kind not in _ALLOWED_KINDS:
         raise ValueError("Unsupported analysis visualization.")
@@ -141,6 +149,17 @@ def save_analysis(project: Any, name: str, spec: Mapping[str, Any],
     if not clean or len(clean) > 160:
         raise ValueError("Analysis name must contain 1–160 characters.")
     normalized = validate_analysis(project, spec)
+    if normalized.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import compute_bar_chart
+        from geometric_coder.analysis_roles import ensure_role_sources_ready
+        ensure_role_sources_ready(project, normalized)
+        compute_bar_chart(project, normalized)
+    elif normalized["schema_version"] == 2:
+        from geometric_coder.analysis_roles import (
+            ensure_role_chart_executable, ensure_role_sources_ready,
+        )
+        ensure_role_sources_ready(project, normalized)
+        ensure_role_chart_executable(project, normalized)
     payload = json.dumps(normalized, sort_keys=True)
     try:
         with project.database.connect() as conn:
@@ -231,6 +250,12 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
         return " ".join(joins), prediction, args
     if variable["value"] == "probability":
         human = f"CASE {a}.value WHEN 'positive' THEN 1.0 WHEN 'negative' THEN 0.0 ELSE NULL END"
+    if variable["source"] == "hybrid_unsure":
+        return " ".join(joins), (
+            f"CASE WHEN {a}.value IN ('positive', 'negative') THEN {human} "
+            f"WHEN {a}.observation_id IS NULL OR {a}.value = 'unsure' "
+            f"THEN {prediction} ELSE NULL END"
+        ), args
     return " ".join(joins), (
         f"CASE WHEN {a}.observation_id IS NOT NULL THEN {human} "
         f"ELSE {prediction} END"
@@ -240,6 +265,12 @@ def _code_join(variable: dict[str, Any], index: int) -> tuple[str, str, list[Any
 def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
     """Execute a live, bounded aggregation; all sample counts remain explicit."""
     normalized = validate_analysis(project, spec)
+    if normalized.get("kind") == "bar_chart":
+        from geometric_coder.analysis_bars import compute_bar_chart
+        return compute_bar_chart(project, normalized)
+    if normalized["schema_version"] == 2:
+        from geometric_coder.analysis_roles import compute_role_analysis
+        return compute_role_analysis(project, normalized)
     variables, warnings = _resolve_variables(project, normalized)
     # All Jaccard heatmaps use the same pairwise-complete calculations,
     # regardless of whether categorical metadata are also selected.
@@ -315,7 +346,61 @@ def compute_analysis(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
 def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
     """Convert the compact aggregate into an interactive Plotly figure."""
     fig = go.Figure()
-    if result["kind"] == "distribution":
+    if result["kind"] == "scatter":
+        points = result["points"]
+        categories = sorted({item["color"] for item in points}, key=lambda x: str(x))
+        for category in categories:
+            selected = [p for p in points if p["color"] == category]
+            fig.add_trace(go.Scattergl(
+                x=[p["x"] for p in selected], y=[p["y"] for p in selected],
+                mode="markers", name=str(category) if category is not None else "Observations",
+                customdata=[p["id"] for p in selected],
+                hovertemplate="x=%{x:.4g}, y=%{y:.4g}<extra>Observation %{customdata}</extra>",
+            ))
+        fig.update_layout(
+            xaxis_title=result["names"][0], yaxis_title=result["names"][1],
+            title=f"Scatterplot — {result['sampled']:,} of {result['eligible']:,} eligible observations",
+        )
+    elif result["kind"] == "bar_chart":
+        for series in result["series"]:
+            fig.add_trace(go.Bar(
+                x=result["categories"], y=series["values"], name=series["name"],
+                customdata=series["denominators"],
+                hovertemplate="%{x}: %{y:.4g} (n=%{customdata})<extra>%{fullData.name}</extra>",
+            ))
+        fig.update_layout(barmode="group", xaxis_type="category",
+                          xaxis_title=result["xaxis_title"],
+                          yaxis_title=result["statistic"].title())
+    elif result["kind"] == "histogram":
+        for group in result["groups"]:
+            fig.add_trace(go.Bar(
+                x=result["bins"], y=result["counts"][group], name=str(group),
+                customdata=[result["denominators"][group]] * len(result["bins"]),
+                hovertemplate="%{x}: %{y} (n=%{customdata} in range)<extra>%{fullData.name}</extra>",
+            ))
+        fig.update_layout(barmode="group", xaxis_title=result["names"][0],
+                          yaxis_title="Observed frequency")
+    elif result["kind"] == "summary_bar":
+        fig.add_trace(go.Bar(
+            x=result["categories"], y=result["values"],
+            customdata=result["denominators"],
+            hovertemplate="%{x}: %{y:.4g} (n=%{customdata})<extra></extra>",
+        ))
+        fig.update_layout(xaxis_title="Group", yaxis_title=result["statistic"].title())
+    elif result["kind"] in ("correlation_heatmap", "value_heatmap"):
+        correlation = result["kind"] == "correlation_heatmap"
+        fig.add_trace(go.Heatmap(
+            x=result["names"] if correlation else result["columns"],
+            y=result["names"] if correlation else result["rows"],
+            z=result["values"], customdata=result["samples"],
+            colorscale="RdBu" if correlation else "Greens",
+            reversescale=correlation,
+            zmin=-1 if correlation else None, zmax=1 if correlation else None,
+            hovertemplate="%{y} × %{x}: %{z:.4g} (n=%{customdata})<extra></extra>",
+        ))
+        fig.update_layout(title="Pairwise-complete Pearson correlation" if correlation
+                          else f"Grouped {result['statistic']} values")
+    elif result["kind"] == "distribution":
         # Explain both the observational grain and the reduction. Without a
         # parent aggregation this is a binary frequency plot, not a histogram
         # of an unnamed 'aggregated code value'.
@@ -389,6 +474,14 @@ def analysis_figure(result: Mapping[str, Any]) -> go.Figure:
                     b=90 if result["kind"] == "distribution" else 60),
     )
     if result["kind"] == "distribution":
-        fig.update_xaxes(automargin=True)
+        # Only atomic and binary parent reductions are discrete. Parent-level
+        # counts, proportions and log-counts are genuinely numerical, and
+        # must retain their metric spacing on the horizontal axis.
+        aggregation = result.get("aggregation")
+        method = aggregation.get("method", "any") if aggregation else "any"
+        if method in ("any", "minimum"):
+            fig.update_xaxes(type="category", automargin=True)
+        else:
+            fig.update_xaxes(type="linear", automargin=True)
         fig.update_yaxes(automargin=True)
     return fig
