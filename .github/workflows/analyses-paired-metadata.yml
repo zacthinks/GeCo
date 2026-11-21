@@ -6,6 +6,9 @@ on:
       - perf/analyses-300k-diagnosis
     paths:
       - '.github/workflows/analyses-paired-metadata.yml'
+      - 'tests/test_analysis_variables.py'
+      - 'src/geometric_coder/analysis_variables.py'
+      - 'benchmarks/analyses_latency_diagnosis.py'
 permissions:
   contents: read
 jobs:
