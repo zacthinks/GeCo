@@ -12804,7 +12804,6 @@ def _render_context_units(
                             "tabIndex": 0,
                             "role": "button",
                             "title": "Double-click to read this unit; Enter or Space also navigates.",
-                            "aria-label": f"Navigate to context unit {unit_id}",
                             "data-geco-context-unit": str(unit_id),
                             "data-geco-context-surface": navigation_surface,
                         } if navigation_surface is not None else {}),
@@ -12830,7 +12829,7 @@ def _render_context_units(
 def _span_eligible_order(
     context_units: list[dict[str, Any]], focal_unit_id: int,
 ) -> list[int]:
-    """Canonical ordered siblings inside the focal unit's immediate parent."""
+    """Consecutive canonical source rows sharing the focal unit's immediate parent."""
     focal = next(
         (unit for unit in context_units if int(unit["unit_id"]) == int(focal_unit_id)),
         None,
@@ -12839,10 +12838,25 @@ def _span_eligible_order(
         return []
     parent_keys = list(focal["user_key"])[:-1]
     parent = tuple(focal["user_key"].get(key) for key in parent_keys)
-    return [
-        int(unit["unit_id"]) for unit in context_units
-        if tuple(unit["user_key"].get(key) for key in parent_keys) == parent
-    ]
+    by_position = {int(unit["row_position"]): unit for unit in context_units}
+    focal_position = int(focal["row_position"])
+
+    def same_parent(position: int) -> bool:
+        unit = by_position.get(position)
+        return (
+            unit is not None
+            and tuple(unit["user_key"].get(key) for key in parent_keys) == parent
+        )
+
+    # Match the storage validator's canonical-row contiguity requirement,
+    # not merely adjacency after filtering out other parent groups.
+    first = focal_position
+    while same_parent(first - 1):
+        first -= 1
+    last = focal_position
+    while same_parent(last + 1):
+        last += 1
+    return [int(by_position[position]["unit_id"]) for position in range(first, last + 1)]
 
 
 def _normalized_span_selection(
