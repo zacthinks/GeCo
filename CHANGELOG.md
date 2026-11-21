@@ -4,7 +4,15 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 ## [Unreleased]
 
-_No changes recorded yet._
+### Added
+
+- Optional, default-enabled startup warm-up for common 2D cosine UMAP numerical kernels in standard TeAL-linked workspaces, using only a disposable synthetic matrix. This moves the first-use Numba compilation cost from View creation to startup.
+- `GeometricCoder.launch(warmup=False)` and `geco launch --no-warmup` skip both UMAP and existing semantic-library preparation. No models are downloaded and no project artifacts are modified.
+
+### Notes
+
+- First launch may take longer; later view fits can be faster because JIT compilation is already complete. The warm-up covers the common cosine/dense 2D path, not all UMAP metrics and input types.
+
 
 ## [0.13.0] - 2026-11-12
 

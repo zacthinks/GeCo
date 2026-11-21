@@ -5651,6 +5651,7 @@ class GeometricCoder:
         port: int = 8050,
         debug: bool = False,
         use_reloader: bool = False,
+        warmup: bool = True,
     ) -> Any:
         """Launch the ordinary local Dash interface.
 
@@ -5668,6 +5669,7 @@ class GeometricCoder:
             port=port,
             debug=debug,
             use_reloader=use_reloader,
+            warmup=warmup,
         )
 
     def launch_focus_coder(

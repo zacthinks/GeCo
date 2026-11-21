@@ -84,13 +84,14 @@ def test_public_debug_launch_disables_auto_reloader_by_default(monkeypatch) -> N
 
     captured: dict[str, object] = {}
 
-    def fake_launch_app(project, *, host, port, debug, use_reloader=False):
+    def fake_launch_app(project, *, host, port, debug, use_reloader=False, warmup=True):
         captured.update(
             project=project,
             host=host,
             port=port,
             debug=debug,
             use_reloader=use_reloader,
+            warmup=warmup,
         )
 
     monkeypatch.setattr(ui, "launch_app", fake_launch_app)
@@ -99,6 +100,7 @@ def test_public_debug_launch_disables_auto_reloader_by_default(monkeypatch) -> N
 
     assert captured["debug"] is True
     assert captured["use_reloader"] is False
+    assert captured["warmup"] is True
 
 
 def test_public_launch_allows_explicit_reloader_opt_in(monkeypatch) -> None:
@@ -107,13 +109,16 @@ def test_public_launch_allows_explicit_reloader_opt_in(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_launch_app(project, *, host, port, debug, use_reloader=False):
+    def fake_launch_app(project, *, host, port, debug, use_reloader=False, warmup=True):
         captured["use_reloader"] = use_reloader
+        captured["warmup"] = warmup
 
     monkeypatch.setattr(ui, "launch_app", fake_launch_app)
     project = object.__new__(GeometricCoder)
     project.launch(debug=True, use_reloader=True)
     assert captured["use_reloader"] is True
+    project.launch(warmup=False)
+    assert captured["warmup"] is False
 
 
 def test_package_version_matches_project_metadata() -> None:

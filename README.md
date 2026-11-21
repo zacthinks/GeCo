@@ -121,6 +121,9 @@ geco launch responses.geco
 
 Open the local URL shown in the terminal. You can also launch directly from a Python or Jupyter session with `server = project.launch()` and close it later with `server.close()`.
 
+For standard TeAL-linked workspaces, GeCo prepares UMAP's common 2D cosine numerical kernels during startup, before opening the browser interface. This moves the first-use compilation delay from **Create View** to application startup; the first launch may therefore take longer. Compatible semantic-search runtimes are also prepared when relevant. Preparation uses disposable synthetic inputs, not project data, and doesn't create saved artifacts. Launch preparation is enabled by default; to skip it, use `geco launch responses.geco --no-warmup`, or `project.launch(warmup=False)` from Python. In TeAL's linked-workspace CLI, use `teal geco <project> [workspace] --no-warmup` (with a compatible TeAL version). Other UMAP metrics or input formats may still incur first-use compilation.
+
+
 ### 4. Try another perspective
 
 GeCo is designed for comparing representations, not committing to a single one. To create a new project with both lexical and semantic geometries, use:
