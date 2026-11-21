@@ -3274,7 +3274,7 @@ def create_app(
         )
         notice = truncation_notice(html, len(context), truncated, limit)
         if notice is not None:
-            context_children.append(notice)
+            context_children.insert(0, notice)
         metadata_children = _metadata_table(html, focal["metadata"])
         return key_label, context_children, metadata_children
 
@@ -4016,12 +4016,11 @@ def create_app(
         )
         return (
             key_label,
-            [*_render_readonly_context_units(
-                html,
-                context,
-                focal_unit_id=int(unit_id),
-                key_columns=list(metadata["key_columns"]),
-            ), *([truncation_notice(html, len(context), truncated, limit)] if truncated else [])],
+            [*([truncation_notice(html, len(context), truncated, limit)] if truncated else []),
+             *_render_readonly_context_units(
+                 html, context, focal_unit_id=int(unit_id),
+                 key_columns=list(metadata["key_columns"]),
+             )],
             _metadata_table(html, focal["metadata"]),
         )
 
@@ -7097,7 +7096,7 @@ def create_app(
         )
         notice = truncation_notice(html, len(context), truncated, limit)
         if notice is not None:
-            children.append(notice)
+            children.insert(0, notice)
         return key_label, children, _metadata_table(html, focal["metadata"])
 
     @app.callback(
