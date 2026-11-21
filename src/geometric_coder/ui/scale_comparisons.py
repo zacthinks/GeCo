@@ -1112,14 +1112,14 @@ def register_comparison_callbacks(
 
     @app.callback(
         Output("scale-context-expansion-store", "data"),
-        Input("scale-task-store", "data"),
-        Input("scale-context-level", "value"),
-        Input("scale-context-window", "value"),
         Input("scale-context-expand", "n_clicks"),
+        State("scale-task-store", "data"),
+        State("scale-context-level", "value"),
+        State("scale-context-window", "value"),
         State("scale-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
-    def expand_scale_context(task, level, window, clicks, state):
+    def expand_scale_context(clicks, task, level, window, state):
         del clicks
         key = context_key(
             task.get("first") if isinstance(task, dict) else None,
@@ -1127,7 +1127,7 @@ def register_comparison_callbacks(
             level, window,
         )
         return advance_limit(
-            state, key, expand=callback_context.triggered_id == "scale-context-expand",
+            state, key, expand=True,
         )
 
     @app.callback(
