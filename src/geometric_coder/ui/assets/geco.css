@@ -1668,11 +1668,11 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
   border-left: 3px solid var(--Dash-Stroke-Strong, #65766b);
   font-size: 0.88rem;
 }
-body:has(#context-content .context-truncated) #explore-context-expand,
-body:has(#focus-context-content .context-truncated) #focus-context-expand,
-body:has(#memo-presentation-text .context-truncated) #memo-context-expand,
-body:has(#scale-reading-first .context-truncated) #scale-context-expand,
-body:has(#scale-reading-second .context-truncated) #scale-context-expand,
-body:has(#scale-prediction-preview .context-truncated) #scale-prediction-context-expand {
+body:has(#context-content .context-truncated:not(.context-at-limit)) #explore-context-expand,
+body:has(#focus-context-content .context-truncated:not(.context-at-limit)) #focus-context-expand,
+body:has(#memo-presentation-text .context-truncated:not(.context-at-limit)) #memo-context-expand,
+body:has(#scale-reading-first .context-truncated:not(.context-at-limit)) #scale-context-expand,
+body:has(#scale-reading-second .context-truncated:not(.context-at-limit)) #scale-context-expand,
+body:has(#scale-prediction-preview .context-truncated:not(.context-at-limit)) #scale-prediction-context-expand {
   display: inline-flex;
 }
