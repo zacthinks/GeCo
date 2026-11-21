@@ -11,7 +11,7 @@ def launch_focus_coder(
     project: Any,
     *,
     host: str = "127.0.0.1",
-    port: int = 8050,
+    port: int | None = None,
     debug: bool = False,
     use_reloader: bool = False,
     session_id: int | None = None,
@@ -20,7 +20,7 @@ def launch_focus_coder(
     return launch_app(
         project,
         host=host,
-        port=port,
+        port=0 if port is None else port,
         debug=debug,
         use_reloader=use_reloader,
         mode="focus",
