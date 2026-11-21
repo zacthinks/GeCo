@@ -144,6 +144,12 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     n_values = len(roles["values"])
     value_names = _series_labels(descriptors, names, n_values)
     stat = spec["statistic"]
+    # Categorical Count Values need only contribute an observed parent value;
+    # explicit grouping roles retain their ordinary parent consistency rules.
+    categorical_count_values = frozenset(
+        i for i in range(n_values)
+        if stat == "count" and not _numeric(descriptors[i])
+    )
     role_indices = {role: n_values + i for i, role in enumerate(
         role for role in ("group", "color") if role in roles
     )}
@@ -159,7 +165,10 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     timezones = {role: set() for role in role_indices
                  if roles[role].get("transform", {}).get("kind") == "calendar"}
 
-    for identity, values, issues in _parent_rows(project, descriptors, spec, source_info=source_info):
+    for identity, values, issues in _parent_rows(
+        project, descriptors, spec, source_info=source_info,
+        categorical_count_values=categorical_count_values,
+    ):
         warnings.update(issues)
         coverage["total"] += 1
         coverage["complete"] += int(all(v is not None for v in values))
@@ -226,7 +235,8 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     # (x category, series category) -> exact observed count, sum, bounded median sample.
     cells: dict[tuple[tuple[str, Any], tuple[str, Any]], list[Any]] = {}
     for identity, values, issues in _parent_rows(
-        project, descriptors, spec, source_info=source_info, count_missing=False
+        project, descriptors, spec, source_info=source_info, count_missing=False,
+        categorical_count_values=categorical_count_values,
     ):
         warnings.update(issues)
         group_key = category("group", values[role_indices["group"]]) if "group" in roles else None
