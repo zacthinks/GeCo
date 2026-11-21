@@ -3221,25 +3221,45 @@ def create_app(
         return index <= 0, index < 0 or index >= len(items) - 1
 
     @app.callback(
+        Output("explore-context-expansion-store", "data"),
+        Input("explore-focal-unit-store", "data"),
+        Input("context-level", "value"),
+        Input("context-window", "value"),
+        Input("explore-context-expand", "n_clicks"),
+        State("explore-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_explore_context(focal, level, window, clicks, state):
+        del clicks
+        return advance_limit(
+            state, context_key(focal, level, window),
+            expand=callback_context.triggered_id == "explore-context-expand",
+        )
+
+    @app.callback(
         Output("focal-key", "children"),
         Output("context-content", "children"),
         Output("metadata-content", "children"),
         Input("explore-focal-unit-store", "data"),
         Input("context-level", "value"),
         Input("context-window", "value"),
+        Input("explore-context-expansion-store", "data"),
+        Input("explore-span-selection-store", "data"),
     )
     def update_reading_panel(
         focal_unit_id: int | None,
         level_index: int,
         window: int,
+        expansion: Any = None,
+        selected_unit_ids: list[int] | None = None,
     ) -> tuple[Any, Any, Any]:
         if focal_unit_id is None:
             placeholder = "Select a point or use a navigation command to begin reading."
             return "No focal unit", placeholder, ""
         focal = project.unit(int(focal_unit_id))
-        context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window),
-            max_units=MAX_READING_CONTEXT_UNITS,
+        limit = current_limit(expansion, context_key(focal_unit_id, level_index, window))
+        context, truncated = read_context(
+            project, int(focal_unit_id), level=int(level_index), window=int(window), limit=limit,
         )
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         context_children = _render_context_units(
@@ -3248,10 +3268,13 @@ def create_app(
             context,
             focal_unit_id=int(focal_unit_id),
             key_columns=list(metadata["key_columns"]),
-            selected_unit_ids=[int(focal_unit_id)],
+            selected_unit_ids=selected_unit_ids or [int(focal_unit_id)],
             checkbox_type="explore-span-checkbox",
             span_selection_enabled=True,
         )
+        notice = truncation_notice(html, len(context), truncated, limit)
+        if notice is not None:
+            context_children.append(notice)
         metadata_children = _metadata_table(html, focal["metadata"])
         return key_label, context_children, metadata_children
 
@@ -3945,13 +3968,29 @@ def create_app(
         return f"#geco-presentation-unit-{int(unit_id)}"
 
     @app.callback(
+        Output("memo-context-expansion-store", "data"),
+        Input("memo-presentation-location", "hash"),
+        Input("memo-context-expand", "n_clicks"),
+        State("memo-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_memo_context(location_hash, clicks, state):
+        del clicks
+        return advance_limit(
+            state, context_key(_presentation_unit_id(location_hash)),
+            expand=callback_context.triggered_id == "memo-context-expand",
+        )
+
+    @app.callback(
         Output("memo-presentation-focal-key", "children"),
         Output("memo-presentation-text", "children"),
         Output("memo-presentation-metadata", "children"),
         Input("memo-presentation-location", "hash"),
+        Input("memo-context-expansion-store", "data"),
     )
     def update_memo_presentation_reader(
         location_hash: str | None,
+        expansion: Any = None,
     ) -> tuple[Any, Any, Any]:
         unit_id = _presentation_unit_id(location_hash)
         if unit_id is None:
@@ -3968,18 +4007,18 @@ def create_app(
             f"{name}: {value}" for name, value in focal["user_key"].items()
         )
         context_level = int(hierarchy[-1]["level_index"])
-        context = project.context(
-            int(unit_id), level=context_level, window=5,
-            max_units=MAX_READING_CONTEXT_UNITS,
+        limit = current_limit(expansion, context_key(unit_id))
+        context, truncated = read_context(
+            project, int(unit_id), level=context_level, window=5, limit=limit,
         )
         return (
             key_label,
-            _render_readonly_context_units(
+            [*_render_readonly_context_units(
                 html,
                 context,
                 focal_unit_id=int(unit_id),
                 key_columns=list(metadata["key_columns"]),
-            ),
+            ), *([truncation_notice(html, len(context), truncated, limit)] if truncated else [])],
             _metadata_table(html, focal["metadata"]),
         )
 
@@ -6999,17 +7038,37 @@ def create_app(
         return disabled, disabled, disabled, *classes
 
     @app.callback(
+        Output("focus-context-expansion-store", "data"),
+        Input("focus-focal-unit-store", "data"),
+        Input("focus-context-level", "value"),
+        Input("focus-context-window", "value"),
+        Input("focus-context-expand", "n_clicks"),
+        State("focus-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_focus_context(focal, level, window, clicks, state):
+        del clicks
+        return advance_limit(
+            state, context_key(focal, level, window),
+            expand=callback_context.triggered_id == "focus-context-expand",
+        )
+
+    @app.callback(
         Output("focus-focal-key", "children"),
         Output("focus-context-content", "children"),
         Output("focus-metadata-content", "children"),
         Input("focus-focal-unit-store", "data"),
         Input("focus-context-level", "value"),
         Input("focus-context-window", "value"),
+        Input("focus-context-expansion-store", "data"),
+        Input("focus-span-selection-store", "data"),
     )
     def update_focus_reading_panel(
         focal_unit_id: int | None,
         level_index: int,
         window: int,
+        expansion: Any = None,
+        selected_unit_ids: list[int] | None = None,
     ) -> tuple[Any, Any, Any]:
         if focal_unit_id is None:
             return (
@@ -7018,9 +7077,9 @@ def create_app(
                 "",
             )
         focal = project.unit(int(focal_unit_id))
-        context = project.context(
-            int(focal_unit_id), level=int(level_index), window=int(window),
-            max_units=MAX_READING_CONTEXT_UNITS,
+        limit = current_limit(expansion, context_key(focal_unit_id, level_index, window))
+        context, truncated = read_context(
+            project, int(focal_unit_id), level=int(level_index), window=int(window), limit=limit,
         )
         key_label = " › ".join(f"{name}: {value}" for name, value in focal["user_key"].items())
         children = _render_context_units(
@@ -7029,10 +7088,13 @@ def create_app(
             context,
             focal_unit_id=int(focal_unit_id),
             key_columns=list(metadata["key_columns"]),
-            selected_unit_ids=[int(focal_unit_id)],
+            selected_unit_ids=selected_unit_ids or [int(focal_unit_id)],
             checkbox_type="focus-span-checkbox",
             span_selection_enabled=True,
         )
+        notice = truncation_notice(html, len(context), truncated, limit)
+        if notice is not None:
+            children.append(notice)
         return key_label, children, _metadata_table(html, focal["metadata"])
 
     @app.callback(
