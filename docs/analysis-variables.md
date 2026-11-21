@@ -218,5 +218,9 @@ operation; saved recipes containing `method:"any"` remain executable and
 reopen in the editor as the equivalent `method:"minimum", threshold:1`
 selection. New edits use `minimum` without rewriting stored recipes merely
 when opening them. Other numerical reductions (positive count, proportion,
-log-count) retain distinct meaning; mean/median of numerical sources uses
-the separate numerical parent reduction control.
+log-count) retain distinct meaning; mean/median/sum of numerical sources uses
+the separate **Aggregation function** control, shown only when a numerical
+role is selected. Sum ignores missing observations and leaves an entirely
+missing parent unobserved rather than treating it as zero. This parent-level
+function is applied before the chart's own statistic (such as Mean across
+parents), which remains an independent choice.
