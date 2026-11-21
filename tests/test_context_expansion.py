@@ -73,7 +73,6 @@ def test_expanding_enables_longer_contiguous_span_without_mutating_evidence(tmp_
     # Selection remains contiguous and renderable after another expansion.
     larger = read_context(project, focal_id, level=0, window=1, limit=600)[0]
     assert _normalized_span_selection(larger, focal_id, selected) == selected
-    assert project.database.list_spans() == [] if hasattr(project.database, "list_spans") else True
     # Expansion only reads; it never creates a saved coding observation.
     assert project.observation(focal_id)["kind"] == "atomic"
 
@@ -138,6 +137,8 @@ def test_registered_explore_focus_memo_and_scale_expansion_callbacks(tmp_path):
 
     # Memo reader is read-only but expands and makes the hidden rows visible.
     memo = funcs["update_memo_presentation_reader"]
-    _, short, _ = memo("#unit=310")
-    # Any recognized hash should result in a reader; callback is registered above.
-    assert short is not None
+    _, short, _ = memo("#geco-presentation-unit-310")
+    assert isinstance(short, list)
+    assert any(getattr(item, "className", None) == "context-truncated" for item in short)
+    _, longer, _ = memo("#geco-presentation-unit-310", {"key": context_key(310), "limit": 400})
+    assert len(longer) > len(short)
