@@ -13248,6 +13248,40 @@ def _warm_semantic_runtime_libraries() -> bool:
     return True
 
 
+
+_UMAP_RUNTIME_WARMED = False
+
+
+def _warm_umap_runtime_libraries() -> bool:
+    """Warm the common 2D cosine UMAP JIT path on synthetic in-memory data.
+
+    No project matrices, persisted models or scientific artifacts are touched.
+    Different metrics or sparse paths may require additional first-use compilation.
+    """
+    global _UMAP_RUNTIME_WARMED
+    if _UMAP_RUNTIME_WARMED:
+        return True
+    from time import perf_counter
+
+    start = perf_counter()
+    print("GeCo: preparing UMAP numerical kernels (first launch may take a while)...", flush=True)
+    try:
+        import umap
+
+        sample = np.random.default_rng(42).standard_normal((64, 16)).astype(np.float32)
+        estimator = umap.UMAP(
+            n_components=2, n_neighbors=8, min_dist=0.1, metric="cosine",
+            random_state=42, transform_seed=42, n_epochs=30,
+        )
+        estimator.fit_transform(sample)
+    except Exception as error:
+        print(f"GeCo: UMAP warm-up skipped ({error}).", flush=True)
+        return False
+    _UMAP_RUNTIME_WARMED = True
+    print(f"GeCo: UMAP numerical kernels ready ({perf_counter() - start:.1f}s).", flush=True)
+    return True
+
+
 def launch_app(
     project: GeometricCoder,
     *,
@@ -13257,6 +13291,7 @@ def launch_app(
     use_reloader: bool = False,
     mode: str = "standard",
     focus_session_id: int | None = None,
+    warmup: bool = True,
 ) -> Any:
     """Start one closeable Dash server and return its notebook-friendly handle."""
     if use_reloader:
@@ -13264,8 +13299,11 @@ def launch_app(
     from geometric_coder.ui.server import GeCoServer
 
     app = create_app(project, mode=mode, focus_session_id=focus_session_id)
-    if _should_warm_semantic_runtime(project, mode=mode):
-        _warm_semantic_runtime_libraries()
+    if warmup:
+        if _should_warm_semantic_runtime(project, mode=mode):
+            _warm_semantic_runtime_libraries()
+        if mode == "standard" and getattr(project, "is_external_backed", False):
+            _warm_umap_runtime_libraries()
     server = GeCoServer(app, host=host, port=port)
     server.start()
     _display_local_browser_url(host, server.port)
