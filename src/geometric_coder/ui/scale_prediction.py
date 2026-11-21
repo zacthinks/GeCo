@@ -353,19 +353,19 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
 
     @app.callback(
         Output("scale-prediction-context-expansion-store", "data"),
-        Input("scale-prediction-selection", "data"),
-        Input("scale-context-level", "value"),
-        Input("scale-context-window", "value"),
         Input("scale-prediction-context-expand", "n_clicks"),
+        State("scale-prediction-selection", "data"),
+        State("scale-context-level", "value"),
+        State("scale-context-window", "value"),
         State("scale-prediction-context-expansion-store", "data"),
         prevent_initial_call=True,
     )
-    def expand_scale_prediction_context(selection, level, window, clicks, state):
+    def expand_scale_prediction_context(clicks, selection, level, window, state):
         del clicks
         focal = selection.get("unit_id") if isinstance(selection, dict) else None
         return advance_limit(
             state, context_key(focal, level, window),
-            expand=callback_context.triggered_id == "scale-prediction-context-expand",
+            expand=True,
         )
 
     @app.callback(
