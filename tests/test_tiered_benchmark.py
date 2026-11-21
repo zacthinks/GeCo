@@ -3,9 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
+
+# The benchmark directory is intentionally not an installed application package.
+# pytest's console entrypoint does not always add the checkout root to sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.tiered_linked import (
     TIERS, SyntheticProvider, exercise, parse_args, run, synthetic_project,
