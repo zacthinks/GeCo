@@ -25,6 +25,10 @@ from geometric_coder.classifiers import (
     hyperparameter_summary,
 )
 from geometric_coder.exceptions import ConfigurationError
+from geometric_coder.ui.context_expansion import (
+    INITIAL_CONTEXT_UNITS, EXPANDED_CONTEXT_MAX, advance_limit,
+    context_key, current_limit, read_context, truncation_notice,
+)
 from geometric_coder.ui.topic_explore import (load_topic_page_colors, normalize_color_mode, topic_legend_content)
 from geometric_coder.explore import (
     InvalidRegexError,
@@ -50,7 +54,7 @@ if TYPE_CHECKING:
     from geometric_coder.project import GeometricCoder
 
 
-MAX_READING_CONTEXT_UNITS = 200
+MAX_READING_CONTEXT_UNITS = INITIAL_CONTEXT_UNITS
 
 
 GECO_DASH_THEME: dict[str, str] = {
@@ -971,6 +975,11 @@ def create_app(
                         else []
                     ),
                 ),
+                dcc.Store(id="explore-context-expansion-store", data=None),
+                dcc.Store(id="focus-context-expansion-store", data=None),
+                dcc.Store(id="memo-context-expansion-store", data=None),
+                dcc.Store(id="scale-context-expansion-store", data=None),
+                dcc.Store(id="scale-prediction-context-expansion-store", data=None),
                 dcc.Store(id="teaching-example-refresh-store", data=0),
                 dcc.Store(id="teaching-example-code-store", data=None),
                 dcc.Store(id="code-modal-target-store", data=None),
@@ -8686,6 +8695,7 @@ def _explore_layout(
                             html.Div(
                                 [
                                     html.Div(id="context-content", className="context-content"),
+                                    html.Button("Load 200 more context units", id="explore-context-expand", n_clicks=0, className="context-expand-button"),
                                     html.Details(
                                         [
                                             html.Summary("Metadata"),
@@ -9074,6 +9084,7 @@ def _memo_presentation_layout(
                                                 className="context-content memo-presentation-text",
                                                 children="Select a linked observation in the memo or click a point on the map.",
                                             ),
+                                            html.Button("Load 200 more context units", id="memo-context-expand", n_clicks=0, className="context-expand-button"),
                                             html.Details(
                                                 [
                                                     html.Summary("Metadata"),
@@ -10721,6 +10732,7 @@ def _focus_layout(
                                                         id="focus-context-content",
                                                         className="context-content focus-context-content",
                                                     ),
+                                                    html.Button("Load 200 more context units", id="focus-context-expand", n_clicks=0, className="context-expand-button"),
                                                     html.Details(
                                                         [
                                                             html.Summary("Metadata"),
