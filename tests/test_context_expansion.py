@@ -142,3 +142,31 @@ def test_registered_explore_focus_memo_and_scale_expansion_callbacks(tmp_path):
     assert any(getattr(item, "className", None) == "context-truncated" for item in short)
     _, longer, _ = memo("#geco-presentation-unit-310", {"key": context_key(310), "limit": 400})
     assert len(longer) > len(short)
+
+
+def test_explore_and_focus_checkbox_callbacks_select_beyond_initial_cap(tmp_path):
+    pytest.importorskip("dash")
+    import json
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from geometric_coder.ui.app import create_app
+
+    project = _project(tmp_path)
+    app = create_app(project)
+    funcs = {
+        inspect.unwrap(item["callback"]).__name__: inspect.unwrap(item["callback"])
+        for item in app.callback_map.values() if "callback" in item
+    }
+    expanded = {"key": context_key(310, 0, 1), "limit": 400}
+    for prefix in ("explore", "focus"):
+        clicked = {"type": f"{prefix}-span-checkbox", "unit_id": 490}
+        token = context_value.set(AttributeDict(
+            triggered_inputs=[{"prop_id": json.dumps(clicked) + ".value", "value": [490]}],
+        ))
+        try:
+            selected = funcs[f"update_{prefix}_span_selection"](
+                [[490]], [clicked], 310, 0, 1, [310], expanded,
+            )
+        finally:
+            context_value.reset(token)
+        assert selected == list(range(310, 491)), prefix
