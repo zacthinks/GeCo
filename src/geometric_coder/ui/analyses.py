@@ -736,6 +736,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
         Input("analysis-aggregate-method", "value"),
         Input("analysis-kind", "value"),
         Input("analysis-role-values", "value"),
+        Input("analysis-role-distribution", "value"),
+        Input("analysis-role-indicators", "value"),
         Input("analysis-role-group", "value"),
         Input("analysis-bar-color", "value"),
         Input("analysis-role-continuous-values", "value"),
@@ -749,7 +751,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
     )
     def show_aggregation(
         level: str | None, method: str | None, kind: str,
-        bar_values: Any, bar_group: Any, bar_color: Any, continuous_values: Any,
+        bar_values: Any, distribution: Any, indicators: Any,
+        bar_group: Any, bar_color: Any, continuous_values: Any,
         x: Any, y: Any, scatter_color: Any, continuous_group: Any,
         rows: Any, columns: Any, configs: dict[str, Any] | None,
     ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
@@ -763,7 +766,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             {"values": continuous_values or [], "group": continuous_group,
              "rows": rows, "columns": columns}
             if kind in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap")
-            else {"values": bar_values or []} if kind == "bar" else {}
+            else {"values": bar_values or []} if kind == "bar" else
+            {"values": distribution or []} if kind == "distribution" else
+            {"indicators": indicators or []} if kind == "heatmap" else {}
         )
         numerical = False
         code_selected = False
@@ -778,7 +783,8 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                     "value", "binary" if family == "code" else
                     "categorical" if family == "metadata" else "numeric",
                 )
-                if family == "scale" or interpretation in ("numeric", "probability"):
+                if (family == "scale" or interpretation in ("numeric", "probability")
+                        or (family == "metadata" and interpretation == "binary")):
                     numerical = True
         return (
             visible,
