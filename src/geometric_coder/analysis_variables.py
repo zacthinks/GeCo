@@ -488,6 +488,17 @@ def resolve_analytical_variables(
             missing = [value for value in selected if value not in rows_by_id]
             raise ValueError(f"Unknown or non-atomic observation IDs: {missing}")
 
+    # Decode each selected observation's metadata at most once per bounded
+    # resolver page, even when multiple chart roles request metadata fields.
+    # This mapping is call-local: no cross-chart cache or invalidation state.
+    metadata_by_id = (
+        {
+            observation_id: json.loads(rows_by_id[observation_id]["metadata_json"])
+            for observation_id in selected
+        }
+        if any(descriptor["type"] == "metadata" for descriptor in descriptors)
+        else None
+    )
     columns: list[dict[str, Any]] = []
     code_index = 0
     for descriptor in descriptors:
@@ -597,8 +608,8 @@ def resolve_analytical_variables(
             provenance = {"field": name, "representation": descriptor["value"],
                           "numeric_strings": descriptor["numeric_strings"]}
             for observation_id in requested:
-                metadata = json.loads(rows_by_id[observation_id]["metadata_json"])
-                raw = metadata.get(name)
+                assert metadata_by_id is not None
+                raw = metadata_by_id[observation_id].get(name)
                 value, reason = _metadata_value(raw, descriptor)
                 values.append(value)
                 missing_reasons.append(reason)
