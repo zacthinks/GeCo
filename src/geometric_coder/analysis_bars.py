@@ -117,8 +117,8 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         if method not in ("any", "count", "minimum", "mean", "log_count"):
             raise ValueError("Unknown binary Code parent reduction.")
         numeric_method = agg.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median"):
-            raise ValueError("Choose Mean or Median for numerical parent reduction.")
+        if numeric_method not in ("mean", "median", "sum"):
+            raise ValueError("Choose Mean, Median, or Sum for numerical parent aggregation.")
         threshold = agg.get("threshold", 1)
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
