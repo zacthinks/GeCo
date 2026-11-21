@@ -2,7 +2,7 @@ name: Opt-in GeCo context comparative benchmark
 
 on:
   workflow_dispatch:
-  # One-time execution when the dedicated workflow is introduced/edited
+  # One-time execution when this benchmark workflow is introduced/edited
   # on this implementation branch. Later ordinary PR pushes do not rerun it.
   push:
     branches:
