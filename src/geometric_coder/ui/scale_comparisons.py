@@ -412,7 +412,9 @@ def register_comparison_callbacks(
     html: Any, dcc: Any,
 ) -> None:
     from dash import Input, Output, State, callback_context, no_update
-    from geometric_coder.ui.app import _metadata_table, _render_context_units
+    from geometric_coder.ui.app import (
+        MAX_READING_CONTEXT_UNITS, _metadata_table, _render_context_units,
+    )
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
     register_scale_prediction_callbacks(app, project)
 
@@ -1159,6 +1161,7 @@ def register_comparison_callbacks(
             context = project.context(
                 unit_id, level=int(context_level if context_level is not None else 0),
                 window=max(1, min(100, int(context_window or 1))) if str(context_window or "1").isdigit() else 1,
+                max_units=MAX_READING_CONTEXT_UNITS,
             )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
