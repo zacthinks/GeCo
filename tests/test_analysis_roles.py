@@ -146,11 +146,11 @@ def test_legacy_restoration_and_role_config_isolation(project):
         ("distribution", "count", "count", "count"),
         ("distribution", "count", "mean", "mean"),
         ("heatmap", "correlation", "mean", "mean"),
-        ("heatmap", "jaccard", "mean", "any"),
-        ("heatmap", "count", "log_count", "any"),
-        ("bar", "count", "count", "any"),
+        ("heatmap", "jaccard", "mean", "minimum"),
+        ("heatmap", "count", "log_count", "minimum"),
+        ("bar", "count", "count", "minimum"),
         ("bar", "count", "minimum", "minimum"),
-        ("bar", "count", "any", "any"),
+        ("bar", "count", "any", "minimum"),
         ("scatter", "count", "count", "count"),
         ("histogram", "count", "log_count", "log_count"),
         ("summary_bar", "count", "mean", "mean"),
@@ -182,9 +182,9 @@ def test_chart_switch_normalizes_only_incompatible_aggregations(tmp_path):
     codes = [f"code:{a}", f"code:{b}"]
     for kind, measure, slots, expected in (
         ("distribution", "count", {"values": codes}, "count"),
-        ("bar", "count", {"values": codes}, "any"),
+        ("bar", "count", {"values": codes}, "minimum"),
         ("heatmap", "correlation", {"indicators": codes}, "count"),
-        ("heatmap", "jaccard", {"indicators": codes}, "any"),
+        ("heatmap", "jaccard", {"indicators": codes}, "minimum"),
     ):
         recipe = editor_recipe(kind, measure, slots, {}, "group", "count", 1)
         assert recipe["aggregation"]["method"] == expected
@@ -205,6 +205,40 @@ def test_chart_switch_normalizes_only_incompatible_aggregations(tmp_path):
     assert compute_analysis(p, edited) == compute_analysis(p, existing)
     assert edited["aggregation"]["method"] == "minimum"
     assert edited["aggregation"]["threshold"] == 2
+
+
+def test_any_and_inclusive_threshold_one_are_equivalent_for_legacy_and_v2(tmp_path):
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "any-threshold.geco",
+        data=pd.DataFrame({
+            "parent": ["A", "A", "B", "B", "C", "C"],
+            "id": [1, 2, 1, 2, 1, 2],
+            "text": ["a", "b", "c", "d", "e", "f"],
+        }),
+        keys=["parent", "id"], text="text", geometries=None,
+    )
+    a = p.create_code("First")
+    for row, label in zip(p.database.list_units(), [
+        "positive", "negative", "negative", "negative", "unsure", None,
+    ], strict=True):
+        if label is not None:
+            p.annotate(row["observation_id"], a, label)
+    legacy = {
+        "kind": "distribution", "measure": "count",
+        "variables": [code(a)],
+        "aggregation": {"level": "parent", "method": "any"},
+    }
+    threshold = {**legacy, "aggregation": {
+        "level": "parent", "method": "minimum", "threshold": 1,
+    }}
+    any_result, minimum_result = compute_analysis(p, legacy), compute_analysis(p, threshold)
+    assert any_result["histograms"] == minimum_result["histograms"]
+    assert any_result["histograms"][0] == {"values": [0.0, 1.0], "counts": [1, 1]}
+    assert editor_recipe(
+        "distribution", "count", {"values": [f"code:{a}"]},
+        {f"values:code:{a}": code(a)}, "parent", "any", 1,
+        legacy=True,
+    )["aggregation"] == {"level": "parent", "method": "minimum", "threshold": 1}
 
 
 def test_v1_id_rename_duplicate_and_outputs_remain_unchanged(project):

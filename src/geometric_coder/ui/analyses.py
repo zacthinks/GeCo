@@ -131,20 +131,21 @@ def _preserve_hidden_bin_settings(current: dict[str, Any], previous: Any) -> dic
 
 def compatible_aggregation_method(kind: str, measure: str, method: str | None) -> str:
     """Reset incompatible Code reductions without discarding valid settings."""
-    selected = method or "any"
+    # "any" remains executable in saved recipes; the editor presents the
+    # equivalent inclusive threshold method with threshold=1.
+    selected = "minimum" if method in (None, "any") else method
     if selected in {"count", "mean", "log_count"} and not (
         kind in {"scatter", "histogram", "summary_bar", "bar_chart", "correlation_heatmap", "value_heatmap"}
         or kind == "distribution"
         or (kind == "heatmap" and measure == "correlation")
     ):
-        return "any"
+        return "minimum"
     return selected
 
 
 _AGGREGATION_OPTIONS = [
-    {"label": "Any observed positive (0 or 1)", "value": "any"},
+    {"label": "At least N positive judgments", "value": "minimum"},
     {"label": "Number of positive units per group", "value": "count"},
-    {"label": "Positive count at least threshold", "value": "minimum"},
     {"label": "Proportion positive among observed units", "value": "mean"},
     {"label": "Natural log(1 + positive count)", "value": "log_count"},
 ]
@@ -158,6 +159,9 @@ def editor_recipe(kind: str, measure: str, slots: dict[str, Any],
                   continuous_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct one recipe from role identities and role-scoped source choices."""
     from geometric_coder.analysis_continuous import CONTINUOUS_KINDS, ROLE_LAYOUT
+    # Do not expose duplicate "any" and threshold=1 operations in new edits.
+    # Existing stored "any" recipes remain valid in their original engines.
+    aggregate_method = "minimum" if aggregate_method in (None, "any") else aggregate_method
     if kind == "bar_chart":
         selections = {**slots, **(extra_slots or {})}
         roles = {"values": [
@@ -395,16 +399,15 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                         options=[{"label": label, "value": value} for label, value in
                                  (("Count", "count"), ("Sum", "sum"), ("Mean", "mean"), ("Median", "median"))]),
                 ], id="analysis-bar-statistic-box"),
-                html.P("Count summarizes observed values; categorical Count displays category frequencies. "
-                       "Sum of a binary Code counts Present judgments."),
+                html.P("Count totals observed (nonmissing) Values within each explicit Group/Color. "
+                       "Sum of a binary Code counts Present judgments. "
+                       "To split Present versus Absent, select that Code under Group or Color."),
                 html.Label("Group (optional)"),
                 dcc.Dropdown(id="analysis-role-group", options=[], value=None, clearable=True),
-                html.Button("Clear Group", id="analysis-clear-bar-group", n_clicks=0, type="button"),
                 html.Div([
                     html.Label("Color (optional)"),
                     dcc.Dropdown(id="analysis-bar-color", options=[], value=None, clearable=True),
-                    html.Button("Clear Color", id="analysis-clear-bar-color", n_clicks=0, type="button"),
-                ], id="analysis-bar-color-box"),
+                    ], id="analysis-bar-color-box"),
             ], id="analysis-bar-roles"),
             html.Div([
                 html.Label("Values"),
@@ -428,7 +431,6 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Label("Y"), dcc.Dropdown(id="analysis-role-y", options=[]),
                 html.Label("Color (optional)"),
                 dcc.Dropdown(id="analysis-role-color", options=[], clearable=True),
-                html.Button("Clear Color", id="analysis-clear-scatter-color", n_clicks=0, type="button"),
             ], id="analysis-scatter-roles", style={"display": "none"}),
             html.Div([
                 html.Label("Values"),
@@ -457,8 +459,7 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                 html.Div([
                     html.Label("Color (optional)"),
                     dcc.Dropdown(id="analysis-continuous-group", options=[], clearable=True),
-                    html.Button("Clear Color", id="analysis-clear-histogram-color", n_clicks=0, type="button"),
-                ], id="analysis-continuous-group-box"),
+                    ], id="analysis-continuous-group-box"),
                 html.Div([
                     html.Label("Rows"),
                     dcc.Dropdown(id="analysis-role-rows", options=[]),
@@ -481,16 +482,24 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                              for key in project.metadata.get("key_columns", [])[:-1]
                          ], value="none"),
             html.Div([
-                html.Label("Aggregate Code values"),
-                dcc.Dropdown(id="analysis-aggregate-method", value="any",
-                             clearable=False, options=_AGGREGATION_OPTIONS),
-                html.Label("Positive count threshold (threshold method only)"),
-                dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
-                          step=1, value=1),
-                html.Label("Parent-grain reduction for numerical values"),
-                dcc.Dropdown(id="analysis-parent-numeric-method",
-                    options=[{"label":"Mean","value":"mean"},{"label":"Median","value":"median"}],
-                    value="mean", clearable=False),
+                html.Div([
+                    html.Label("Aggregate Code values"),
+                    dcc.Dropdown(id="analysis-aggregate-method", value="minimum",
+                                 clearable=False, options=_AGGREGATION_OPTIONS),
+                ], id="analysis-code-aggregate-box", style={"display": "none"}),
+                html.Div([
+                    html.Label("Minimum positive count"),
+                    dcc.Input(id="analysis-aggregate-threshold", type="number", min=0,
+                              step=1, value=1),
+                ], id="analysis-threshold-box", style={"display": "none"}),
+                html.Div([
+                    html.Label("Aggregation function"),
+                    dcc.Dropdown(id="analysis-parent-numeric-method",
+                        options=[{"label":"Mean","value":"mean"},
+                                 {"label":"Median","value":"median"},
+                                 {"label":"Sum","value":"sum"}],
+                        value="mean", clearable=False),
+                ], id="analysis-parent-numeric-box", style={"display": "none"}),
                 html.P("Binary Codes use the selected count/proportion reduction; numerical values "
                        "use the numerical reduction. Grouping metadata must be constant in each parent."),
 
@@ -627,10 +636,10 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
                                    "roles": {"values": []}, "statistic": "count"},
                   "initial_name": ""},
                  "New analysis", "", "bar_chart", "count", [], None, [], [], {},
-                 "none", "any", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
+                 "none", "minimum", 1, "", None, None, None, [], None, None, "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-cancel":
             return ({"display": "none"}, None, "", "", "bar_chart", "count", [],
-                    None, [], [], {}, "none", "any", 1, "", None, None, None, [], None, None,
+                    None, [], [], {}, "none", "minimum", 1, "", None, None, None, [], None, None,
                     "mean", "equal_width", 20, 1, None, "mean", "", None, "count")
         if trigger == "analysis-new":
             return empty
@@ -655,7 +664,9 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             slots.get("values", []) if spec["kind"] == "distribution" else [],
             slots.get("indicators", []) if spec["kind"] == "heatmap" else [],
             _initial_config(spec), aggregate.get("level", "none"),
-            aggregate.get("method", "any"), aggregate.get("threshold", 1), "",
+            ("minimum" if aggregate.get("method", "minimum") == "any"
+             else aggregate.get("method", "minimum")),
+            (1 if aggregate.get("method") == "any" else aggregate.get("threshold", 1)), "",
             slots.get("x"), slots.get("y"), slots.get("color"),
             (slots.get("values", []) if isinstance(slots.get("values", []), list) else [slots["values"]]) if spec["kind"] in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap") else [],
             slots.get("rows"), slots.get("columns"),
@@ -724,10 +735,71 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             visible if kind == "bar_chart" else hidden,
         )
 
-    @app.callback(Output("analysis-aggregation-options", "style"),
-                  Input("analysis-aggregate-level", "value"))
-    def show_aggregation(level: str | None) -> dict[str, str]:
-        return {"display": "block"} if level and level != "none" else {"display": "none"}
+    @app.callback(
+        Output("analysis-aggregation-options", "style"),
+        Output("analysis-code-aggregate-box", "style"),
+        Output("analysis-threshold-box", "style"),
+        Output("analysis-parent-numeric-box", "style"),
+        Input("analysis-aggregate-level", "value"),
+        Input("analysis-aggregate-method", "value"),
+        Input("analysis-kind", "value"),
+        Input("analysis-role-values", "value"),
+        Input("analysis-role-distribution", "value"),
+        Input("analysis-role-indicators", "value"),
+        Input("analysis-role-group", "value"),
+        Input("analysis-bar-color", "value"),
+        Input("analysis-role-continuous-values", "value"),
+        Input("analysis-role-x", "value"),
+        Input("analysis-role-y", "value"),
+        Input("analysis-role-color", "value"),
+        Input("analysis-continuous-group", "value"),
+        Input("analysis-role-rows", "value"),
+        Input("analysis-role-columns", "value"),
+        Input("analysis-role-config", "data"),
+    )
+    def show_aggregation(
+        level: str | None, method: str | None, kind: str,
+        bar_values: Any, distribution: Any, indicators: Any,
+        bar_group: Any, bar_color: Any, continuous_values: Any,
+        x: Any, y: Any, scatter_color: Any, continuous_group: Any,
+        rows: Any, columns: Any, configs: dict[str, Any] | None,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+        visible, hidden = {"display": "block"}, {"display": "none"}
+        if not level or level == "none":
+            return hidden, hidden, hidden, hidden
+        slots = (
+            {"values": bar_values or [], "group": bar_group, "color": bar_color}
+            if kind == "bar_chart" else
+            {"x": x, "y": y, "color": scatter_color} if kind == "scatter" else
+            {"values": continuous_values or [], "group": continuous_group,
+             "rows": rows, "columns": columns}
+            if kind in ("histogram", "summary_bar", "correlation_heatmap", "value_heatmap")
+            else {"values": bar_values or []} if kind == "bar" else
+            {"values": distribution or []} if kind == "distribution" else
+            {"indicators": indicators or []} if kind == "heatmap" else {}
+        )
+        numerical = False
+        code_selected = False
+        for role, selected in slots.items():
+            for raw in (selected if isinstance(selected, list) else [selected]):
+                if not raw:
+                    continue
+                family = raw.split(":", 1)[0]
+                code_selected = code_selected or family == "code"
+                config = (configs or {}).get(f"{role}:{raw}", {})
+                interpretation = config.get(
+                    "value", "binary" if family == "code" else
+                    "categorical" if family == "metadata" else "numeric",
+                )
+                if (family == "scale" or interpretation in ("numeric", "probability")
+                        or (family == "metadata" and interpretation == "binary")):
+                    numerical = True
+        return (
+            visible,
+            visible if code_selected else hidden,
+            visible if code_selected and method == "minimum" else hidden,
+            visible if numerical else hidden,
+        )
 
     @app.callback(
         Output("analysis-aggregate-method", "options"),
@@ -756,23 +828,6 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             return no_update
         compatible = compatible_aggregation_method(kind, measure, method)
         return compatible if compatible != method else no_update
-
-    @app.callback(
-        Output("analysis-role-group", "value", allow_duplicate=True),
-        Output("analysis-bar-color", "value", allow_duplicate=True),
-        Output("analysis-role-color", "value", allow_duplicate=True),
-        Output("analysis-continuous-group", "value", allow_duplicate=True),
-        Input("analysis-clear-bar-group", "n_clicks"),
-        Input("analysis-clear-bar-color", "n_clicks"),
-        Input("analysis-clear-scatter-color", "n_clicks"),
-        Input("analysis-clear-histogram-color", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def clear_optional_roles(*_clicks: int) -> tuple[Any, ...]:
-        names = ("analysis-clear-bar-group", "analysis-clear-bar-color",
-                 "analysis-clear-scatter-color", "analysis-clear-histogram-color")
-        trigger = callback_context.triggered_id
-        return tuple(None if name == trigger else no_update for name in names)
 
     @app.callback(
         Output("analysis-hist-bins-box", "style"),
@@ -1393,6 +1448,16 @@ def register_analysis_callbacks(app: Any, project: Any) -> None:
             if editing.get("original_spec"):
                 current = validate_analysis(project, current)
                 initial = validate_analysis(project, initial)
+                # Opening an old "any" recipe in the threshold-only editor
+                # must not itself trigger the unsaved-changes confirmation.
+                def canonical_any(recipe: dict[str, Any]) -> dict[str, Any]:
+                    aggregation = recipe.get("aggregation") or {}
+                    if aggregation.get("method") != "any":
+                        return recipe
+                    return {**recipe, "aggregation": {
+                        **aggregation, "method": "minimum", "threshold": 1,
+                    }}
+                current, initial = canonical_any(current), canonical_any(initial)
             dirty = current != initial or (name or "") != editing.get(
                 "initial_name", editing.get("original_name", "")
             )

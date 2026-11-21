@@ -193,7 +193,7 @@ def test_continuous_editor_scatter_histogram_and_restore(tmp_path):
                     "Equal-width numeric bins", exact=True
                 ).filter(visible=True).count() == 0
                 page.keyboard.press("Escape")
-                page.locator("#analysis-clear-histogram-color").click()
+                page.locator("#analysis-continuous-group [aria-label='Clear selection']").click()
                 page.get_by_text("Color: date (Metadata)", exact=True).wait_for(state="detached")
                 page.locator("#analysis-save").click()
                 page.locator("#analysis-editor").wait_for(state="hidden")

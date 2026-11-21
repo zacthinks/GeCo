@@ -123,24 +123,41 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 choose(page.locator("#analysis-select"), "Three-role categorical Count")
                 page.locator("#analysis-edit").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for()
-                page.locator("#analysis-clear-bar-color").click()
+                page.locator("#analysis-bar-color [aria-label='Clear selection']").click()
                 page.get_by_text("Color: cohort (Metadata)", exact=True).wait_for(state="detached")
+                page.locator("#analysis-preview").click()
+                page.wait_for_function(
+                    "() => { const plot = document.querySelector('#analysis-figure .js-plotly-plot'); "
+                    "return plot?.data?.length === 1 && plot.data[0]?.y?.join(',') === '2,2'; }",
+                    timeout=20000,
+                )
                 page.locator("#analysis-save").click()
                 page.locator("#analysis-editor").wait_for(state="hidden")
                 cleared = project.analysis(categorical_saved["analysis_id"])["spec"]
                 assert "color" not in cleared["roles"]
                 choose(page.locator("#analysis-select"), "Three-role categorical Count")
                 page.locator("#analysis-edit").click()
+                page.locator("#analysis-editor").wait_for(state="visible")
+                page.get_by_text("Group: site (Metadata)", exact=True).wait_for(
+                    state="visible", timeout=15000,
+                )
+                # A visible role summary may still be from the previous editor.
+                # Finish the edit response before allowing Cancel to race it.
+                page.wait_for_load_state("networkidle")
                 assert not page.get_by_text("Color: cohort (Metadata)", exact=True).count()
                 page.locator("#analysis-cancel").click()
-                # Finish the asynchronous close before selecting and editing
-                # a different saved analysis; otherwise a late Cancel callback
-                # can clear the next editor's restored state.
                 page.locator("#analysis-editor").wait_for(state="hidden")
+                # Drain the Cancel response, not only its initial DOM update,
+                # before selecting an unrelated saved analysis.
+                page.wait_for_load_state("networkidle")
 
                 # Existing-format Bars expose only supported controls. No
                 # Color/Statistic edit can silently disappear during a save
-                # or bypass the navigation guard.
+                # or bypass the navigation guard. Start this distinct legacy
+                # editing scenario with a fresh page so no callback from the
+                # preceding unified-Bar editor can restore its old Group.
+                page.reload()
+                page.get_by_text("Analyses", exact=True).first.click()
                 choose(page.locator("#analysis-select"), "Other saved analysis")
                 page.locator("#analysis-edit").click()
                 page.wait_for_function(
@@ -156,8 +173,24 @@ def test_bar_editor_and_switch_guard(tmp_path):
                 page.get_by_text(
                     "Values: Positive experience (Code)", exact=True
                 ).wait_for(state="visible", timeout=15000)
+                # The backend restores the saved legacy recipe in an async
+                # multi-output callback. Await that response before changing
+                # a role, rather than using a transient blank Group as a signal.
+                page.wait_for_load_state("networkidle")
                 assert page.locator("#analysis-bar-color").is_hidden()
                 assert page.locator("#analysis-bar-statistic").is_hidden()
+                # The saved legacy chart has no Group. Wait until the previous
+                # chart's stale Site selection has been cleared, not merely
+                # until the new Values heading is visible. Otherwise an
+                # outstanding editor-restore response can overwrite a click.
+                page.wait_for_function(
+                    "() => { const group = document.querySelector('#analysis-role-group'); "
+                    "return group && !group.textContent.includes('Metadata: site') "
+                    "&& !group.textContent.includes('Metadata: condition') "
+                    "&& !document.querySelector('#analysis-role-settings')"
+                    "?.textContent.includes('Group: site (Metadata)'); }",
+                    timeout=15000,
+                )
                 # A supported legacy Group change must be tracked and saved,
                 # preserving legacy count semantics and the original ID.
                 choose(page.locator("#analysis-role-group"), "Metadata: condition")

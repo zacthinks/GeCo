@@ -201,8 +201,8 @@ def validate_continuous_analysis(project: Any, spec: Mapping[str, Any]) -> dict[
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
         numeric_method = aggregate.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median"):
-            raise ValueError("Numeric parent reduction must be mean or median.")
+        if numeric_method not in ("mean", "median", "sum"):
+            raise ValueError("Numeric parent aggregation must be mean, median, or sum.")
         result["aggregation"] = {"level": aggregate["level"], "method": method,
                                  "threshold": float(threshold), "numeric_method": numeric_method}
     extra = set(spec) - {"schema_version", "kind", "roles", "binning", "statistic", "max_points", "aggregation"}
@@ -351,7 +351,8 @@ def _categories(rows: list[tuple[Any, ...]], index: int, spec: Mapping[str, Any]
 
 def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[str, Any], *,
                  source_info: dict[str, Any] | None = None,
-                 count_missing: bool = True):
+                 count_missing: bool = True,
+                 categorical_count_values: frozenset[int] = frozenset()):
     """Yield atomic rows or bounded-memory parent-grain reductions by stable keys.
 
     No raw observations are sent to the browser. Parent states retain only
@@ -408,13 +409,14 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                 cell = state[j]
                 variable = descriptors[j]
                 is_category = not _numeric(variable)
+                count_only_category = is_category and j in categorical_count_values
                 if value is None:
-                    if is_category:
+                    if is_category and not count_only_category:
                         if cell[0]:
                             raise ValueError("Selected grouping metadata varies within a parent group.")
                         cell[5] = True
                     continue
-                if is_category and cell[5]:
+                if is_category and cell[5] and not count_only_category:
                     raise ValueError("Selected grouping metadata varies within a parent group.")
                 cell[0] += 1
                 if variable["type"] == "code" and variable["value"] == "binary":
@@ -424,11 +426,14 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                     if aggregation["numeric_method"] == "median":
                         _reservoir(cell[4], 5000, _rank(observation_id), float(value))
                 else:
-                    if cell[0] > 1 and value != cell[3]:
+                    if cell[0] > 1 and value != cell[3] and not count_only_category:
                         raise ValueError(
                             "Selected grouping metadata varies within a parent group."
                         )
-                    cell[3] = value
+                    # For Count Values the concrete category is irrelevant;
+                    # retain any observed category to mark parent presence.
+                    if cell[0] == 1 or not count_only_category:
+                        cell[3] = value
     for parent in sorted(parents, key=lambda p: tuple(str(v) for v in p)):
         state = parents[parent]
         reduced = []
@@ -453,6 +458,8 @@ def _parent_rows(project: Any, descriptors: list[dict[str, Any]], spec: Mapping[
                     reduced.append(median(item[1] for item in sample))
                     if count > 5000:
                         warnings.add("Parent-level median uses bounded deterministic 5,000-point samples.")
+                elif aggregation["numeric_method"] == "sum":
+                    reduced.append(total)
                 else:
                     reduced.append(total / count)
             else:

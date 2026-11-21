@@ -203,6 +203,59 @@ def test_parent_code_reductions_in_continuous_summary(tmp_path):
         assert result["denominators"] == [1, 1]
 
 
+def test_parent_numeric_aggregation_sum_mean_median_and_missing(tmp_path):
+    """Numerical parent Sum must not become mean or count missing observations."""
+    from geometric_coder.ui.analyses import editor_recipe
+
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "parent-numeric-sum.geco",
+        data=pd.DataFrame({
+            "parent": [1, 1, 1, 2, 2, 2, 3, 3],
+            "turn": [1, 2, 3, 1, 2, 3, 1, 2],
+            "text": [f"unit {i}" for i in range(8)],
+            "score": [2.0, 4.0, None, 5.0, 7.0, 9.0, None, None],
+            "group": ["A"] * 8,
+        }),
+        keys=["parent", "turn"], text="text",
+        metadata=["score", "group"], geometries=None,
+    )
+    for method, expected in (
+        ("sum", 13.5), ("mean", 5.0), ("median", 5.0),
+    ):
+        # Summary_bar applies the selected parent function first, then
+        # computes a mean across the two observed parents (3 is missing).
+        spec = recipe("summary_bar", values=meta("score", "numeric"),
+                      group=meta("group", "categorical"))
+        spec["aggregation"] = {"level": "parent", "numeric_method": method}
+        result = compute_analysis(p, spec)
+        assert result["categories"] == ["A"]
+        assert result["values"] == pytest.approx([expected])
+        assert result["denominators"] == [2]
+        assert p.analysis(p.save_analysis(f"Parent {method}", spec))["spec"][
+            "aggregation"]["numeric_method"] == method
+
+        restored = p.analysis(next(row["analysis_id"] for row in p.analyses()
+                                   if row["name"] == f"Parent {method}"))["spec"]
+        edited = editor_recipe(
+            "summary_bar", "count",
+            {"values": "metadata:score", "group": "metadata:group"},
+            {"values:metadata:score": {"value": "numeric"},
+             "group:metadata:group": {"value": "categorical"}},
+            "parent", "minimum", 1,
+            continuous_options={"numeric_method": method, "statistic": "mean"},
+        )
+        assert edited["aggregation"]["numeric_method"] == restored["aggregation"]["numeric_method"]
+
+    # Sum is a parent aggregation operation, independent of the final
+    # displayed Bar statistic; a raw numeric Sum with no observations
+    # must remain missing rather than becoming zero.
+    invalid = recipe("summary_bar", values=meta("score", "numeric"),
+                     group=meta("group", "categorical"))
+    invalid["aggregation"] = {"level": "parent", "numeric_method": "maximum"}
+    with pytest.raises(ValueError, match="aggregation"):
+        validate_analysis(p, invalid)
+
+
 def test_hidden_numerical_options_survive_editor_round_trips(workspace):
     """Edit/duplicate reconstruction must retain meaningful non-UI options."""
     from geometric_coder.ui.analyses import (

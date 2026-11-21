@@ -188,3 +188,39 @@ probability representations use the same source-choice semantics.
 The editor presents the histogram grouping series as **Color**, but
 existing `histogram.roles.group` recipe keys are preserved on disk.
 Legacy saved definitions are not silently migrated.
+
+
+## Unified Bar Count semantics
+
+New `schema_version:2` / `kind:"bar_chart"` recipes use **Count** to
+count observed, nonmissing Values in each explicitly selected Group/Color
+partition. The Values' own categorical levels are **not** an implicit axis
+or series split. Without a Group, a single Value generates a single
+aggregate bar; without Color, it generates a single series. For example,
+a binary human Code with 17 Present, 15 Absent, 2 Unsure and 6 unreviewed
+judgments has Count = **32**, but Sum = **17**. To display Present/Absent
+separately, explicitly assign that Code to Group or Color.
+
+For Code Values, Count is not the total size of the input universe when
+there are Unsure/unreviewed judgments: those remain missing, not zero or
+negative. Existing saved legacy `bar` definitions keep their prior
+positive-count meaning. The researcher-approved change applies to unified
+`bar_chart` Count recipes without changing their persisted role schema.
+
+## Parent Code aggregation selector
+
+The editor offers a single inclusive binary reduction, **At least N positive
+judgments**, with **Minimum positive count** defaulting to 1. In each parent,
+the reduced value is 1 when the number of observed positives is greater than
+or equal to N, otherwise 0. Parents with no observed binary Code judgments
+remain missing. N=1 is exactly the historical **Any observed positive**
+operation; saved recipes containing `method:"any"` remain executable and
+reopen in the editor as the equivalent `method:"minimum", threshold:1`
+selection. New edits use `minimum` without rewriting stored recipes merely
+when opening them. Other numerical reductions (positive count, proportion,
+log-count) retain distinct meaning; mean/median/sum of numerical sources uses
+the separate **Aggregation function** control, shown only when a numerical
+role is selected. Sum ignores missing observations and leaves an entirely
+missing parent unobserved rather than treating it as zero. This parent-level
+function is applied before the chart's own statistic (such as Mean across
+parents), which remains an independent choice.

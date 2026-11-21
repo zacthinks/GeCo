@@ -105,12 +105,6 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
             f"Bar chart selects {descriptor_count} analytical variables across Values, "
             "Group, and Color; the maximum is 20 in total."
         )
-    if stat == "count":
-        categorical = [v["variable"]["type"] == "code" and v["variable"]["value"] == "binary"
-                       or v["variable"]["type"] == "metadata" and v["variable"]["value"] in ("categorical", "binary")
-                       for v in normalized["values"]]
-        if any(categorical) and not all(categorical):
-            raise ValueError("Count cannot mix categorical and numerical Values in one bar chart.")
     result = {"schema_version": 2, "kind": "bar_chart", "roles": normalized, "statistic": stat}
     if "aggregation" in spec:
         agg = spec["aggregation"]
@@ -123,8 +117,8 @@ def validate_bar_chart(project: Any, spec: Mapping[str, Any]) -> dict[str, Any]:
         if method not in ("any", "count", "minimum", "mean", "log_count"):
             raise ValueError("Unknown binary Code parent reduction.")
         numeric_method = agg.get("numeric_method", "mean")
-        if numeric_method not in ("mean", "median"):
-            raise ValueError("Choose Mean or Median for numerical parent reduction.")
+        if numeric_method not in ("mean", "median", "sum"):
+            raise ValueError("Choose Mean, Median, or Sum for numerical parent aggregation.")
         threshold = agg.get("threshold", 1)
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("Invalid Code threshold.")
@@ -150,9 +144,11 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     n_values = len(roles["values"])
     value_names = _series_labels(descriptors, names, n_values)
     stat = spec["statistic"]
-    categorical_count = stat == "count" and (
-        descriptors[0]["type"] == "code" and descriptors[0]["value"] == "binary"
-        or descriptors[0]["type"] == "metadata" and descriptors[0]["value"] in ("categorical", "binary")
+    # Categorical Count Values need only contribute an observed parent value;
+    # explicit grouping roles retain their ordinary parent consistency rules.
+    categorical_count_values = frozenset(
+        i for i in range(n_values)
+        if stat == "count" and not _numeric(descriptors[i])
     )
     role_indices = {role: n_values + i for i, role in enumerate(
         role for role in ("group", "color") if role in roles
@@ -169,7 +165,10 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
     timezones = {role: set() for role in role_indices
                  if roles[role].get("transform", {}).get("kind") == "calendar"}
 
-    for identity, values, issues in _parent_rows(project, descriptors, spec, source_info=source_info):
+    for identity, values, issues in _parent_rows(
+        project, descriptors, spec, source_info=source_info,
+        categorical_count_values=categorical_count_values,
+    ):
         warnings.update(issues)
         coverage["total"] += 1
         coverage["complete"] += int(all(v is not None for v in values))
@@ -220,12 +219,24 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
             return ("bin", index)
         if transform and transform["kind"] == "calendar":
             return ("calendar", calendar_period(value, transform["unit"]))
+        variable = roles[role]["variable"]
+        # Parent reductions can turn binary Code judgments into numeric
+        # positive counts, proportions, or log-counts. Only atomic labels and
+        # binary-valued parent reductions deserve Present/Absent labels.
+        binary_reduction = (
+            not spec.get("aggregation")
+            or spec["aggregation"]["method"] in ("any", "minimum")
+        )
+        if (variable["type"] == "code" and variable["value"] == "binary"
+                and binary_reduction and value in (0, 1)):
+            return ("code_label", "Present" if value == 1 else "Absent")
         return _categorical_key(value)
 
     # (x category, series category) -> exact observed count, sum, bounded median sample.
     cells: dict[tuple[tuple[str, Any], tuple[str, Any]], list[Any]] = {}
     for identity, values, issues in _parent_rows(
-        project, descriptors, spec, source_info=source_info, count_missing=False
+        project, descriptors, spec, source_info=source_info, count_missing=False,
+        categorical_count_values=categorical_count_values,
     ):
         warnings.update(issues)
         group_key = category("group", values[role_indices["group"]]) if "group" in roles else None
@@ -237,19 +248,11 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
             if value is None:
                 continue
             value_identity = _variable_identity(descriptors[index])
-            if categorical_count:
-                binary = descriptors[index]["type"] == "code" and descriptors[index]["value"] == "binary"
-                is_reduced_numeric = bool(spec.get("aggregation")) and (
-                    spec["aggregation"]["method"] in ("count", "mean", "log_count")
-                )
-                val_key = (("binary", "Absent" if value == 0 else "Present")
-                           if binary and not is_reduced_numeric and value in (0, 1)
-                           else _categorical_key(value))
-                x = group_key if group_key is not None else val_key
-                series = ("series", value_identity) if group_key is None else ("series", value_identity, val_key)
-            else:
-                x = group_key if group_key is not None else ("series", value_identity)
-                series = ("series", value_identity)
+            # Values identify the measured variable, not an implicit grouping.
+            # Count means observed/nonmissing Values within the explicit
+            # Group and Color partitions; no categorical Value splitting.
+            x = group_key if group_key is not None else ("series", value_identity)
+            series = ("series", value_identity)
             if color_key is not None:
                 series = ("colored", series, color_key)
             key = (x, series)
@@ -273,27 +276,15 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         raise ValueError("Bar chart exceeds 100 categories or series.")
     # Series keys retain canonical variable identities. Format those identities
     # only after aggregation, so same-named Codes and metadata never merge.
-    if not categorical_count and "group" not in roles:
+    if "group" not in roles:
         x_labels = {key: value_names[key[1]] for key in x_keys}
     else:
-        x_labels = _category_labels(x_keys, "group" if "group" in roles else "values", labels)
+        x_labels = _category_labels(x_keys, "group", labels)
     color_keys = sorted({s[2] for s in s_keys if s[0] == "colored"}, key=str)
     color_labels = (_category_labels(color_keys, "color", labels) if color_keys else {})
-    # Color wraps the original series key; categorical Values labels must
-    # be discovered from the canonical inner series, not only from top-level
-    # keys. Keep the typed variable identity intact for later naming.
-    inner_series = [s[1] if s[0] == "colored" else s for s in s_keys]
-    value_keys = sorted(
-        {s[2] for s in inner_series if s[0] == "series" and len(s) > 2},
-        key=str,
-    )
-    value_labels = _category_labels(value_keys, "values", labels) if value_keys else {}
-
     def series_name(key: tuple[str, Any]) -> str:
         if key[0] == "colored":
             return series_name(key[1]) + " / " + color_labels[key[2]]
-        if len(key) > 2:
-            return value_names[key[1]] + " / " + value_labels[key[2]]
         return value_names[key[1]]
 
     result_series = []
@@ -319,9 +310,7 @@ def compute_bar_chart(project: Any, raw_spec: Mapping[str, Any]) -> dict[str, An
         "kind": "bar_chart", "statistic": stat,
         "categories": [x_labels[key] for key in x_keys],
         "series": result_series, "names": names,
-        "xaxis_title": (names[n_values] if "group" in roles else
-                        names[0] if categorical_count and n_values == 1 else
-                        "Value" if categorical_count else "Values"),
+        "xaxis_title": (names[n_values] if "group" in roles else "Values"),
         "coverage": {"total": coverage["total"], "complete": coverage["complete"], "observed": observed},
         "sources": [
             {"descriptor": variable,
