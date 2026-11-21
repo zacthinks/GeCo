@@ -212,7 +212,7 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
     """Wire bounded Scale scoring and point inspection into the Develop tab."""
     from dash import Input, Output, State, callback_context, no_update
     from geometric_coder.ui.app import (
-        MAX_READING_CONTEXT_UNITS, _metadata_table, _render_context_units,
+        _metadata_table, _render_context_units,
     )
     from dash import html, dcc
     import plotly.graph_objects as go
