@@ -350,12 +350,6 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
             )
             try:
                 page = browser.new_page(viewport={"width": 1400, "height": 1000})
-                requests = []
-                page.on("request", lambda request: requests.append(
-                    request.post_data_json
-                ) if request.method == "POST" and request.url.endswith(
-                    "/_dash-update-component"
-                ) else None)
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
                 page.get_by_text("Analyses", exact=True).first.click()
 
@@ -368,6 +362,11 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
                     ("Parent distribution", distribution_id),
                     ("Parent heatmap", heatmap_id),
                 ):
+                    # Each case verifies an independent saved editor. A new
+                    # page load prevents callbacks from the previous editor's
+                    # Save/close transition from restoring its stale inputs.
+                    page.reload()
+                    page.get_by_text("Analyses", exact=True).first.click()
                     choose("#analysis-select", name)
                     page.locator("#analysis-edit").click()
                     page.wait_for_function(
@@ -409,13 +408,7 @@ def test_parent_aggregation_controls_for_legacy_distribution_and_heatmap(tmp_pat
                     page.locator("#analysis-editor").wait_for(state="hidden")
                     saved = project.analysis(chart_id)["spec"]["aggregation"]
                     assert saved["method"] == "minimum"
-                    assert saved["threshold"] == 1, (
-                        name, saved,
-                        [(x.get("output"), next((
-                            y.get("value") for y in x.get("state", [])
-                            if y.get("id") == "analysis-aggregate-threshold"
-                        ), None)) for x in requests[-12:]]
-                    )
+                    assert saved["threshold"] == 1, (name, saved)
             finally:
                 browser.close()
     finally:
