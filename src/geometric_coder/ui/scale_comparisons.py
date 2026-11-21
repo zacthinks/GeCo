@@ -230,6 +230,7 @@ def comparison_layout(
                 ], className="window-stepper"),
             ], className="context-control"),
         ], className="context-controls scale-context-controls"),
+        html.Button("Load 200 more context units in both readings", id="scale-context-expand", n_clicks=0, className="context-expand-button"),
 
         html.Div([
             html.Div(id="scale-reading-first", className="scale-reading-card"),
@@ -416,6 +417,9 @@ def register_comparison_callbacks(
         MAX_READING_CONTEXT_UNITS, _metadata_table, _render_context_units,
     )
     from geometric_coder.ui.scale_prediction import register_scale_prediction_callbacks
+    from geometric_coder.ui.context_expansion import (
+        advance_limit, context_key, current_limit, read_context, truncation_notice,
+    )
     register_scale_prediction_callbacks(app, project)
 
     def active_scale_id(construct_id: int | None) -> int | None:
@@ -1106,6 +1110,26 @@ def register_comparison_callbacks(
         return task, "", []
 
     @app.callback(
+        Output("scale-context-expansion-store", "data"),
+        Input("scale-task-store", "data"),
+        Input("scale-context-level", "value"),
+        Input("scale-context-window", "value"),
+        Input("scale-context-expand", "n_clicks"),
+        State("scale-context-expansion-store", "data"),
+        prevent_initial_call=True,
+    )
+    def expand_scale_context(task, level, window, clicks, state):
+        del clicks
+        key = context_key(
+            task.get("first") if isinstance(task, dict) else None,
+            task.get("second") if isinstance(task, dict) else None,
+            level, window,
+        )
+        return advance_limit(
+            state, key, expand=callback_context.triggered_id == "scale-context-expand",
+        )
+
+    @app.callback(
         Output("scale-selection-summary", "children"),
         Output("scale-reading-first", "children"),
         Output("scale-reading-second", "children"),
@@ -1126,11 +1150,13 @@ def register_comparison_callbacks(
         Input("focus-refresh-store", "data"),
         Input("scale-context-level", "value"),
         Input("scale-context-window", "value"),
+        Input("scale-context-expansion-store", "data"),
     )
     def display_scale_task(
         task: dict[str, Any] | None, repeat_ack: list[str] | None,
         construct_id: int | None, refresh: int | None,
         context_level: int | None = None, context_window: Any = 1,
+        expansion: Any = None,
     ) -> tuple[Any, ...]:
         del refresh
         base_classes = ("judgment-button scale-judgment-button",) * 4
@@ -1158,10 +1184,11 @@ def register_comparison_callbacks(
             unit_id = int(item["unit_id"])
             # Use the same bounded, hierarchy-aware reader as Code Develop.
             # Context selection affects presentation only, never evidence.
-            context = project.context(
-                unit_id, level=int(context_level if context_level is not None else 0),
+            limit = current_limit(expansion, context_key(first, second, context_level, context_window))
+            context, truncated = read_context(
+                project, unit_id, level=int(context_level if context_level is not None else 0),
                 window=max(1, min(100, int(context_window or 1))) if str(context_window or "1").isdigit() else 1,
-                max_units=MAX_READING_CONTEXT_UNITS,
+                limit=limit,
             )
             children = _render_context_units(
                 html, dcc, context, focal_unit_id=unit_id,
@@ -1172,7 +1199,7 @@ def register_comparison_callbacks(
             return html.Div([
                 html.H4(f"Observation {letter}"),
                 html.P(key_label(observation_id), className="focal-key"),
-                html.Div(children, className="context-content focus-context-content"),
+                html.Div([*children, *([truncation_notice(html, len(context), truncated, limit)] if truncated else [])], className="context-content focus-context-content"),
                 html.Details([
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),
