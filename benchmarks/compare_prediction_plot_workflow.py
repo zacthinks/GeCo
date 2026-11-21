@@ -24,8 +24,6 @@ import math
 import os
 from pathlib import Path
 import platform
-import random
-import sqlite3
 import statistics
 import subprocess
 import sys
@@ -79,7 +77,6 @@ def prepare(root: Path, n: int) -> dict[str, Any]:
         metadata_columns=["region", "wave", "note"],
     )
     stamp = "2026-11-21T00:00:00Z"
-    rng = random.Random(SEED + n)
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO codes(code_id,name,definition,created_at) VALUES(1,?,?,?)",
