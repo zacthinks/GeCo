@@ -426,7 +426,7 @@ def register_scale_prediction_callbacks(app: Any, project: Any) -> None:
                 html.H4("Selected observation"),
                 html.Strong(label or f"Observation {observation_id}"),
                 html.P(str(observation["text"])),
-                html.Details([html.Summary("Context"), html.Div([*reading, *([truncation_notice(html, len(context), truncated, limit)] if truncated else [])])]),
+                html.Details([html.Summary("Context"), html.Div([*([truncation_notice(html, len(context), truncated, limit)] if truncated else []), *reading])]),
                 html.Details([html.Summary("Metadata"), _metadata_table(html, observation["metadata"])]),
             ])
         except (KeyError, IndexError, TypeError, ValueError, OSError):
