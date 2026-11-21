@@ -1,0 +1,142 @@
+name: Tiered GeCo benchmarks (opt-in)
+
+# No ordinary PR/push benchmark runs. Before merge, an explicit push to a
+# benchmarks/manual-tiered-run-* branch is an opt-in execution trigger;
+# after landing, workflow_dispatch can also be used.
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: "Exact baseline commit SHA"
+        required: true
+        default: "e5971fe1eb29d98f5f89bdb11bcb5389cab9e063"
+        type: string
+      run_stress:
+        description: "Also run Tier C 300k (not part of the default comparison)"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - 'benchmarks/manual-tiered-run-*'
+
+permissions:
+  contents: read
+
+jobs:
+  paired-benchmarks:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: explicitly trigger isolated A/B benchmark run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Pin both revisions and create clean worktrees
+        shell: bash
+        env:
+          BASELINE_INPUT: ${{ inputs.baseline_sha || 'e5971fe1eb29d98f5f89bdb11bcb5389cab9e063' }}
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-results "$RUNNER_TEMP/geco-revisions"
+          baseline="$BASELINE_INPUT"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # The manually-created trigger branch adds exactly one marker commit
+            # on top of the PR head, so its parent is the pinned candidate.
+            candidate="$(git rev-parse HEAD^)"
+          else
+            candidate="$(git rev-parse HEAD)"
+          fi
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid baseline SHA"; exit 1; }
+          [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid candidate SHA"; exit 1; }
+          echo "BASELINE_SHA=$baseline" >> "$GITHUB_ENV"
+          echo "CANDIDATE_SHA=$candidate" >> "$GITHUB_ENV"
+          git worktree add --detach "$RUNNER_TEMP/geco-revisions/baseline" "$baseline"
+          git worktree add --detach "$RUNNER_TEMP/geco-revisions/candidate" "$candidate"
+          echo "Baseline: $baseline"
+          echo "Candidate: $candidate"
+          cat > benchmark-results/run-metadata.txt <<EOF
+          Baseline: $baseline
+          Candidate: $candidate
+          Driver checkout: $(git rev-parse HEAD)
+          Runner: $RUNNER_NAME
+          Machine: $(uname -a)
+          CPU: $(nproc)
+          Environment: OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONHASHSEED=0
+          EOF
+
+      - name: Install pinned benchmark environment once
+        run: uv sync --all-extras
+
+      - name: Execute Tier A and B baseline, candidate and no-change control
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$GITHUB_WORKSPACE"
+          py="$driver/.venv/bin/python"
+          run_case() {
+            local role="$1" revision="$2" tier="$3"
+            local worktree="$RUNNER_TEMP/geco-revisions/$revision"
+            (
+              cd "$worktree"
+              export PYTHONPATH="$worktree/src:$driver"
+              "$py" -c 'import geometric_coder, os, pathlib; expected=pathlib.Path(os.environ["PYTHONPATH"].split(":")[0]).resolve(); actual=pathlib.Path(geometric_coder.__file__).resolve(); assert actual.is_relative_to(expected), (actual, expected); print("GeCo source:", actual)'
+              "$py" -m benchmarks.tiered_linked --tier "$tier" --seed 1729 \
+                --page-size 64 --repeats 20 \
+                --output "$driver/benchmark-results/$tier-$role.json" \
+                > "$driver/benchmark-results/$tier-$role.stdout.json"
+            )
+          }
+          # Each case is an independent process and deterministic fresh fixture.
+          # Alternate revision order across tiers to expose order effects.
+          run_case baseline baseline a
+          run_case candidate candidate a
+          run_case control candidate a
+          run_case candidate candidate b
+          run_case baseline baseline b
+          run_case control candidate b
+
+          "$py" -m benchmarks.compare_tiered \
+            --baseline benchmark-results/a-baseline.json \
+            --candidate benchmark-results/a-candidate.json \
+            --control benchmark-results/a-control.json \
+            --output benchmark-results/a-comparison.json
+          "$py" -m benchmarks.compare_tiered \
+            --baseline benchmark-results/b-baseline.json \
+            --candidate benchmark-results/b-candidate.json \
+            --control benchmark-results/b-control.json \
+            --output benchmark-results/b-comparison.json
+
+      - name: Optional Tier C stress (manual workflow dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$RUNNER_TEMP/geco-revisions/candidate"
+          cd "$worktree"
+          PYTHONPATH="$worktree/src:$GITHUB_WORKSPACE" \
+            "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.tiered_linked \
+            --tier c --seed 1729 --page-size 64 --repeats 20 \
+            --output "$GITHUB_WORKSPACE/benchmark-results/c-candidate.json" \
+            > "$GITHUB_WORKSPACE/benchmark-results/c-candidate.stdout.json"
+
+      - name: Upload raw JSON, comparison reports and machine metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geco-tiered-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30

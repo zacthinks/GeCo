@@ -2541,6 +2541,86 @@ class ProjectDatabase:
                 ]
             return result
 
+    def list_plot_observations(self) -> list[dict[str, Any]]:
+        """Enumerate plot identities and labels without fetching text or metadata.
+
+        The order and deleted-teaching-example exclusion match list_observations.
+        Span display labels use only the first/last member source keys, avoiding
+        per-span get_observation/get_unit calls (which also decode full text).
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.observation_id, o.kind, u.unit_id, u.user_key_json
+                FROM observations AS o
+                LEFT JOIN units AS u ON u.observation_id = o.observation_id
+                LEFT JOIN teaching_examples AS te ON te.observation_id = o.observation_id
+                WHERE o.kind != 'teaching_example' OR te.status != 'deleted'
+                ORDER BY CASE o.kind
+                           WHEN 'atomic' THEN 0 WHEN 'span' THEN 1 ELSE 2 END,
+                         COALESCE(u.row_position, o.observation_id), o.observation_id
+                """
+            ).fetchall()
+            bounds = connection.execute(
+                """
+                SELECT edges.span_observation_id,
+                       first_u.user_key_json AS first_key_json,
+                       last_u.user_key_json AS last_key_json
+                FROM (
+                    SELECT span_observation_id,
+                           MIN(member_order) AS first_order,
+                           MAX(member_order) AS last_order
+                    FROM span_members
+                    GROUP BY span_observation_id
+                ) AS edges
+                JOIN span_members AS first_m
+                  ON first_m.span_observation_id = edges.span_observation_id
+                 AND first_m.member_order = edges.first_order
+                JOIN span_members AS last_m
+                  ON last_m.span_observation_id = edges.span_observation_id
+                 AND last_m.member_order = edges.last_order
+                JOIN units AS first_u ON first_u.unit_id = first_m.unit_id
+                JOIN units AS last_u ON last_u.unit_id = last_m.unit_id
+                """
+            ).fetchall()
+
+        span_labels: dict[int, str] = {}
+        for bound in bounds:
+            first = list(json.loads(bound["first_key_json"]).items())
+            last = json.loads(bound["last_key_json"])
+            if not first:
+                label = "Span"
+            else:
+                parent = " · ".join(f"{name}: {value}" for name, value in first[:-1])
+                name, start = first[-1]
+                stop = last.get(name, start)
+                interval = f"{name}: {start}" if start == stop else f"{name}: {start}–{stop}"
+                label = f"{parent} · {interval}" if parent else interval
+            span_labels[int(bound["span_observation_id"])] = label
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            kind = str(row["kind"])
+            observation_id = int(row["observation_id"])
+            user_key = (
+                json.loads(row["user_key_json"])
+                if row["user_key_json"] is not None else {}
+            )
+            if kind == "atomic":
+                display_key = " · ".join(f"{key}: {value}" for key, value in user_key.items())
+            elif kind == "span":
+                display_key = span_labels.get(observation_id, "Span")
+            else:
+                display_key = "Teaching example"
+            result.append({
+                "observation_id": observation_id,
+                "kind": kind,
+                "unit_id": int(row["unit_id"]) if row["unit_id"] is not None else None,
+                "user_key": user_key,
+                "display_key": display_key,
+            })
+        return result
+
     def list_observations(
         self,
         *,
