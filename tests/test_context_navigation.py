@@ -241,6 +241,19 @@ def test_context_jump_records_one_visit_and_history(tmp_path):
     )
     assert focal == 5
     assert focus_history["items"] == [3, 1, 5]
+    # Both the double-click and Enter/Space handlers submit a context jump.
+    # Persist the interaction's shared semantic meaning, not a false mouse
+    # gesture attribution when the request came from the keyboard.
+    with project.database.connect() as connection:
+        methods = [
+            str(row["navigation_method"])
+            for row in connection.execute(
+                "SELECT navigation_method FROM navigation_events "
+                "WHERE session_id = ? ORDER BY event_index",
+                (session,),
+            ).fetchall()
+        ]
+    assert methods == ["context_jump", "context_jump"]
 
 
 def test_200_unit_interval_expands_contiguously(tmp_path):
