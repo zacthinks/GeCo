@@ -40,6 +40,9 @@ def _absolute_positions(keys: list[dict[str, Any]]) -> np.ndarray:
 class SyntheticProvider:
     """Keyed in-memory math, never an approximation of TeAL artifact I/O."""
 
+    def geometry_matrix(self, external_ref: Any, keys: list[dict[str, Any]]) -> np.ndarray:
+        return self.view_coordinates(external_ref, keys)
+
     def view_coordinates(self, external_ref: Any, keys: list[dict[str, Any]]) -> np.ndarray:
         positions = _absolute_positions(keys)
         return np.column_stack((np.sin(positions / 101), np.cos(positions / 127)))
