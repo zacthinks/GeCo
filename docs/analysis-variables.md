@@ -206,3 +206,17 @@ there are Unsure/unreviewed judgments: those remain missing, not zero or
 negative. Existing saved legacy `bar` definitions keep their prior
 positive-count meaning. The researcher-approved change applies to unified
 `bar_chart` Count recipes without changing their persisted role schema.
+
+## Parent Code aggregation selector
+
+The editor offers a single inclusive binary reduction, **At least N positive
+judgments**, with **Minimum positive count** defaulting to 1. In each parent,
+the reduced value is 1 when the number of observed positives is greater than
+or equal to N, otherwise 0. Parents with no observed binary Code judgments
+remain missing. N=1 is exactly the historical **Any observed positive**
+operation; saved recipes containing `method:"any"` remain executable and
+reopen in the editor as the equivalent `method:"minimum", threshold:1`
+selection. New edits use `minimum` without rewriting stored recipes merely
+when opening them. Other numerical reductions (positive count, proportion,
+log-count) retain distinct meaning; mean/median of numerical sources uses
+the separate numerical parent reduction control.
