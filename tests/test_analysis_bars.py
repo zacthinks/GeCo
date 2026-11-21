@@ -445,3 +445,40 @@ def test_parent_positive_counts_keep_numeric_group_labels(tmp_path):
     binary_result = compute_analysis(project, spec)
     assert binary_result["categories"] == ["Absent", "Present"]
     assert binary_result["series"][0]["values"] == [1, 2]
+
+
+def test_parent_categorical_count_values_need_presence_not_constant_category(tmp_path):
+    """Count Values may vary within a parent; grouping metadata may not."""
+    project = GeometricCoder.create(
+        project_dir=tmp_path / "categorical-parents.geco",
+        data=pd.DataFrame({
+            "interview": ["A"] * 3 + ["B"] * 3 + ["C"] * 3,
+            "turn": [1, 2, 3] * 3,
+            "text": [f"observation {i}" for i in range(9)],
+            "topic": ["helpful", None, "difficult", None, None, None,
+                      "difficult", "helpful", None],
+            "condition": ["Control"] * 6 + ["Treatment"] * 3,
+        }),
+        keys=["interview", "turn"], text="text",
+        metadata=["topic", "condition"], geometries=None,
+    )
+    spec = chart([meta("topic")], group=meta("condition"))
+    spec["aggregation"] = {
+        "level": "interview", "method": "any",
+        "threshold": 1, "numeric_method": "mean",
+    }
+    result = compute_analysis(project, spec)
+    assert result["categories"] == ["Control", "Treatment"]
+    # A and C each have observed topics, B is wholly missing.
+    assert result["series"][0]["values"] == [1, 1]
+    assert result["series"][0]["denominators"] == [1, 1]
+
+    # Removing Group should count exactly the two observed parents.
+    del spec["roles"]["group"]
+    ungrouped = compute_analysis(project, spec)
+    assert ungrouped["series"][0]["values"] == [2]
+
+    # The Group role still enforces a stable category inside each parent.
+    spec["roles"]["group"] = {"variable": meta("topic")}
+    with pytest.raises(ValueError, match="grouping metadata varies within a parent"):
+        compute_analysis(project, spec)
