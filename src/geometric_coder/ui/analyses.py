@@ -493,9 +493,11 @@ def analysis_tab(*, dcc: Any, html: Any, project: Any) -> Any:
                               step=1, value=1),
                 ], id="analysis-threshold-box", style={"display": "none"}),
                 html.Div([
-                    html.Label("Parent-grain reduction for numerical values"),
+                    html.Label("Aggregation function"),
                     dcc.Dropdown(id="analysis-parent-numeric-method",
-                        options=[{"label":"Mean","value":"mean"},{"label":"Median","value":"median"}],
+                        options=[{"label":"Mean","value":"mean"},
+                                 {"label":"Median","value":"median"},
+                                 {"label":"Sum","value":"sum"}],
                         value="mean", clearable=False),
                 ], id="analysis-parent-numeric-box", style={"display": "none"}),
                 html.P("Binary Codes use the selected count/proportion reduction; numerical values "
