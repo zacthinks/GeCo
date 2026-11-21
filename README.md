@@ -131,6 +131,8 @@ geco launch responses.geco
 
 Open the local URL shown in the terminal. You can also launch directly from a Python or Jupyter session with `server = project.launch()` and close it later with `server.close()`.
 
+By default, GeCo asks the operating system to choose an available local port, so you can launch multiple independent sessions without managing port numbers. The URL printed in the terminal (or shown in Jupyter) uses the port actually bound. Specify `geco launch responses.geco --port 8050` or `project.launch(port=8050)` to require that exact port; an occupied requested port reports an error instead of switching silently. `port=None` (the default) and `port=0` both request automatic selection. The same rules apply to Focus Coding.
+
 For standard TeAL-linked workspaces, GeCo prepares UMAP's common 2D cosine numerical kernels during startup, before opening the browser interface. This moves the first-use compilation delay from **Create View** to application startup; the first launch may therefore take longer. Compatible semantic-search runtimes are also prepared when relevant. Preparation uses disposable synthetic inputs, not project data, and doesn't create saved artifacts. Launch preparation is enabled by default; to skip it, use `geco launch responses.geco --no-warmup`, or `project.launch(warmup=False)` from Python. In TeAL's linked-workspace CLI, use `teal geco <project> [workspace] --no-warmup` (with a compatible TeAL version). Other UMAP metrics or input formats may still incur first-use compilation.
 
 
