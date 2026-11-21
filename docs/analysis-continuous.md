@@ -66,8 +66,7 @@ source/value descriptor. A saved histogram with explicit edges may look like:
 Without `aggregation`, each atomic unit contributes once. Parent-grain analyses
 first group by the declared prefix of key columns; binary Codes then use observed
 positive count, any, threshold, proportion, or log-count according to the
-explicit method, while numeric Codes/Scale/metadata are reduced to a mean or
-median using `numeric_method`. A parent with zero observed values remains
+explicit method, while numeric Codes/Scale/metadata use the selected `numeric_method`: mean, median, sum, minimum, maximum, observed count, population standard deviation, percentile, range, or proportion within bounds. Percentile uses a specified value from 0 to 100. Proportion within bounds accepts optional inclusive/exclusive lower and upper limits, requires at least one limit, and divides the number meeting the limits by the observed nonmissing count. A parent with zero observed values remains
 missing; categorical/temporal values must be constant within a parent, including missingness (a parent cannot mix missing and nonmissing categories).
 Correlation always uses the pairwise-complete set for *each variable pair*,
 with separate `samples` counts. Constant or insufficiently observed variables
@@ -93,8 +92,7 @@ Raw observation-level points are never transferred to Dash except for at most
 one for extrema and deterministic sampled quantile boundaries, then one for
 full-population exact bin counts. Summaries stream mean/count aggregates;
 medians use exact group values up to 5,000, then bounded deterministic
-5,000-observation samples with visible warnings. Parent-level medians follow
-the same threshold. Analysis status/provenance is cached only within a single
+5,000-observation samples with visible warnings. Parent-level medians and percentiles follow the same threshold, with deterministic 5,000-value samples and explicit warnings above that limit. Other numerical parent reductions use bounded exact accumulators. Analysis status/provenance is cached only within a single
 paged resolver scan (never globally). Parent-group states are bounded to
 100,000 distinct groups, numerical summary cells to 2,500, and category
 cardinalities to 100 (including scatterplot Color categories, checked over
