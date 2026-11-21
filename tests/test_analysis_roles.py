@@ -207,22 +207,38 @@ def test_chart_switch_normalizes_only_incompatible_aggregations(tmp_path):
     assert edited["aggregation"]["threshold"] == 2
 
 
-def test_any_and_inclusive_threshold_one_are_equivalent_for_legacy_and_v2(project):
-    p, a, _, _ = project
+def test_any_and_inclusive_threshold_one_are_equivalent_for_legacy_and_v2(tmp_path):
+    p = GeometricCoder.create(
+        project_dir=tmp_path / "any-threshold.geco",
+        data=pd.DataFrame({
+            "parent": ["A", "A", "B", "B", "C", "C"],
+            "id": [1, 2, 1, 2, 1, 2],
+            "text": ["a", "b", "c", "d", "e", "f"],
+        }),
+        keys=["parent", "id"], text="text", geometries=None,
+    )
+    a = p.create_code("First")
+    for row, label in zip(p.database.list_units(), [
+        "positive", "negative", "negative", "negative", "unsure", None,
+    ], strict=True):
+        if label is not None:
+            p.annotate(row["observation_id"], a, label)
     legacy = {
-        "kind": "bar", "measure": "count",
+        "kind": "distribution", "measure": "count",
         "variables": [code(a)],
-        "aggregation": {"level": "group", "method": "any"},
+        "aggregation": {"level": "parent", "method": "any"},
     }
     threshold = {**legacy, "aggregation": {
-        "level": "group", "method": "minimum", "threshold": 1,
+        "level": "parent", "method": "minimum", "threshold": 1,
     }}
-    assert compute_analysis(p, legacy) == compute_analysis(p, threshold)
+    any_result, minimum_result = compute_analysis(p, legacy), compute_analysis(p, threshold)
+    assert any_result["histograms"] == minimum_result["histograms"]
+    assert any_result["histograms"][0] == {"values": [0.0, 1.0], "counts": [1, 1]}
     assert editor_recipe(
-        "bar", "count", {"values": [f"code:{a}"]},
-        {f"values:code:{a}": code(a)}, "group", "any", 1,
+        "distribution", "count", {"values": [f"code:{a}"]},
+        {f"values:code:{a}": code(a)}, "parent", "any", 1,
         legacy=True,
-    )["aggregation"]["method"] == "minimum"
+    )["aggregation"] == {"level": "parent", "method": "minimum", "threshold": 1}
 
 
 def test_v1_id_rename_duplicate_and_outputs_remain_unchanged(project):
