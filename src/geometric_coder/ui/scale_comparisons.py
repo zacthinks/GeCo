@@ -1200,7 +1200,7 @@ def register_comparison_callbacks(
             return html.Div([
                 html.H4(f"Observation {letter}"),
                 html.P(key_label(observation_id), className="focal-key"),
-                html.Div([*children, *([truncation_notice(html, len(context), truncated, limit)] if truncated else [])], className="context-content focus-context-content"),
+                html.Div([*([truncation_notice(html, len(context), truncated, limit)] if truncated else []), *children], className="context-content focus-context-content"),
                 html.Details([
                     html.Summary("Metadata"),
                     _metadata_table(html, item["metadata"]),
