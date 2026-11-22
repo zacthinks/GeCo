@@ -268,3 +268,44 @@ def test_native_encoder_loads_selected_session_device_without_reusing_other_mode
     assert gpu.transform_texts(["b"]).shape == (1, 2)
     assert cpu.transform_query("c").shape == (1, 2)
     assert created == [("fake/model", "cpu"), ("fake/model", "cuda:1")]
+
+
+def test_real_project_query_forwards_cpu_to_device_capable_provider(tmp_path):
+    """GeCo's query API, not just its helper, reaches the device-aware provider."""
+    calls = []
+    class Provider:
+        def geometry_matrix(self, ref, keys):
+            return np.asarray([[1., 0.], [0., 1.]], dtype=np.float32)
+        def view_coordinates(self, ref, keys):
+            return np.asarray([[0., 0.], [1., 1.]], dtype=np.float32)
+        def transform_query(self, ref, text, *, device=None):
+            calls.append((ref, text, device))
+            return np.asarray([[1., 0.]], dtype=np.float32)
+    provider = Provider()
+    project = GeometricCoder.create_external(
+        project_dir=tmp_path / "provider.geco",
+        data=pd.DataFrame({"id": [1, 2], "text": ["one", "two"]}),
+        keys=["id"], text="text", external_provider=provider,
+    )
+    project.register_external_geometry(
+        name="ext", external_ref={"id": "x"}, supports_query=True,
+    )
+    with device_scope("cpu"):
+        assert project.transform_query("ext", "hello").shape == (1, 2)
+        assert project.semantic_search("hello", geometry_names=["ext"])["ext"]
+    assert calls == [
+        ({"id": "x"}, "hello", "cpu"),
+        ({"id": "x"}, "hello", "cpu"),
+    ]
+
+
+def test_resolver_has_no_persistent_project_side_effects(tmp_path, monkeypatch):
+    project = _project(tmp_path)
+    before = sorted(str(p.relative_to(project.project_dir))
+                    for p in project.project_dir.rglob("*") if p.is_file())
+    with device_scope("cpu"):
+        assert current_device() == "cpu"
+        assert project.runtime_geometries()
+    after = sorted(str(p.relative_to(project.project_dir))
+                   for p in project.project_dir.rglob("*") if p.is_file())
+    assert before == after
