@@ -27,7 +27,7 @@ from geometric_coder.classifiers import (
 from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.runtime_device import (
     acceleration_status, bind_device, current_device, device_scope,
-    resolve_device, unbind_device,
+    frozen_teal_device_conflict, resolve_device, unbind_device,
 )
 from geometric_coder.ui.context_expansion import (
     INITIAL_CONTEXT_UNITS, EXPANDED_CONTEXT_MAX, advance_limit,
@@ -1268,8 +1268,9 @@ def create_app(
                                 className="control-status",
                             ),
                             html.Small(
-                                "Selected for this launch. Close and relaunch GeCo to change "
-                                "the execution device; CPU-only operations remain on CPU."
+                                "GPU is preferred for compatible models; others continue on CPU. "
+                                "A CPU launch is CPU-only. Close and relaunch GeCo to change "
+                                "the selected device."
                             ),
                             html.H3("Classifier training"),
                             html.Label("Cross-validation folds", htmlFor="geco-settings-cv-folds"),
@@ -2232,6 +2233,12 @@ def create_app(
             except (ValueError, KeyError, ConfigurationError, OSError) as error:
                 return {"query": clean, "geometry_id": geometry_id, "scores": {},
                         "status": f"Semantic search unavailable: {error}", "range": None}
+            except RuntimeError as error:
+                detail = frozen_teal_device_conflict(error)
+                if detail is None:
+                    raise
+                return {"query": clean, "geometry_id": geometry_id, "scores": {},
+                        "status": f"Semantic search unavailable: {detail}", "range": None}
             current_range = None
         else:
             scores = cached["scores"]
