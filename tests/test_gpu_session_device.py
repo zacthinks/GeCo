@@ -207,23 +207,64 @@ def test_flask_request_binding_is_isolated_between_apps(tmp_path):
     assert current_device() is None
 
 
-def test_native_geometry_cache_is_device_separated_and_legacy_conflict(tmp_path, monkeypatch):
-    from geometric_coder.geometry import SentenceTransformerGeometry
-    project = _project(tmp_path)
-    # Attach a synthetic persisted native encoder without loading a real model.
-    record = project.database.list_geometries(public_only=False)[0]
-    from types import SimpleNamespace
-    fake = SimpleNamespace(
-        __getitem__=None,
+def test_native_geometry_cache_is_device_separated_and_legacy_conflict(tmp_path):
+    from threading import RLock
+    import geometric_coder.geometry.embedding as embeddings
+    # Use a restored, never-downloaded native encoder and immutable saved config.
+    config = {"type": "sentence_transformer", "model": "fake/model",
+              "device": None, "normalize_embeddings": True}
+    rows = [{"name": "sentence", "storage_kind": "local",
+             "config": config, "dependency_names": [],
+             "matrix_path": "matrix.npy", "matrix_sparse": False,
+             "state_path": "state.joblib"}]
+    coder = GeometricCoder.__new__(GeometricCoder)
+    coder.project_dir = tmp_path
+    coder.database = SimpleNamespace(list_geometries=lambda **kwargs: rows)
+    coder.artifacts = SimpleNamespace(
+        load_matrix=lambda *args: np.zeros((3, 2), dtype=np.float32),
+        load_geometry_state=lambda *args: {},
     )
-    # Device partition is verified using a fresh mocked model through the
-    # geometry cache; the project remains unmodified.
-    encoder = SentenceTransformerGeometry("dummy")
-    loads = []
-    def load():
-        selected = encoder.options.device
-        loads.append(selected)
-        return SimpleNamespace(encode=lambda texts, **kw: np.ones((len(texts), 2)))
-    monkeypatch.setattr(encoder, "_load_model", load)
-    assert encoder.transform_texts(["a"]).shape == (1, 2)
-    assert loads == [None]
+    from threading import RLock
+    coder._runtime_geometries = None
+    coder._session_runtime_geometries = {}
+    coder._runtime_geometry_lock = RLock()
+
+    with device_scope("cpu"):
+        cpu = coder.runtime_geometries()["sentence"]
+        assert cpu.options.device == "cpu"
+        assert coder.runtime_geometries()["sentence"] is cpu
+    with device_scope("cuda:0"):
+        gpu = coder.runtime_geometries()["sentence"]
+        assert gpu.options.device == "cuda:0"
+        assert gpu is not cpu
+    with device_scope("cpu"):
+        assert coder.runtime_geometries()["sentence"] is cpu
+    assert config["device"] is None  # Never changed saved config.
+
+    config["device"] = "cuda:1"
+    coder._session_runtime_geometries.clear()
+    with device_scope("cpu"):
+        with pytest.raises(ConfigurationError, match="incompatible"):
+            coder.runtime_geometries()
+    assert config["device"] == "cuda:1"
+
+
+def test_native_encoder_loads_selected_session_device_without_reusing_other_model(monkeypatch):
+    import sys
+    from geometric_coder.geometry import SentenceTransformerGeometry
+    created = []
+    class FakeModel:
+        def __init__(self, name, *, device):
+            created.append((name, device))
+        def encode(self, texts, **kwargs):
+            return np.ones((len(texts), 2), dtype=np.float32)
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeModel),
+    )
+    cpu = SentenceTransformerGeometry("fake/model", device="cpu")
+    gpu = SentenceTransformerGeometry("fake/model", device="cuda:1")
+    assert cpu.transform_texts(["a"]).shape == (1, 2)
+    assert gpu.transform_texts(["b"]).shape == (1, 2)
+    assert cpu.transform_query("c").shape == (1, 2)
+    assert created == [("fake/model", "cpu"), ("fake/model", "cuda:1")]
