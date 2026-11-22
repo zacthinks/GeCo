@@ -211,7 +211,11 @@ def test_spacy_source_text_dtm_registers_with_original_keys(tmp_path: Path) -> N
         assert "apple" in vector.get_data_columns()
         assert coder.geometry_matrix(result.geometry_id).shape[0] == documents.n_rows
         assert result.replayable
-        query = coder.transform_query(result.geometry_id, "apple")
+        # This TeAL pipeline consists of CPU-only spaCy/vectorizer stages.
+        # A GPU-preferred GeCo session must still allow those stages on CPU.
+        from geometric_coder.runtime_device import device_scope
+        with device_scope("cuda:0"):
+            query = coder.transform_query(result.geometry_id, "apple")
         assert query.shape == (1, len(vector.get_data_columns()))
         assert query.toarray()[0, vector.get_data_columns().index("apple")] == 1
         assert len(coder.semantic_search(
