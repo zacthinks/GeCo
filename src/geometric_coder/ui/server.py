@@ -25,6 +25,7 @@ class GeCoServer:
                 "The port may already be in use."
             ) from exc
         self._host = host
+        self._execution_device = getattr(app, "_geco_execution_device", None)
         self._thread = threading.Thread(
             target=self._http.serve_forever,
             name=f"geco-server-{self._http.server_port}",
@@ -40,6 +41,11 @@ class GeCoServer:
 
             self.request_close()
             return jsonify({"status": "closing"})
+
+    @property
+    def execution_device(self) -> str | None:
+        """Resolved immutable device chosen when this listener was created."""
+        return self._execution_device
 
     @property
     def port(self) -> int:

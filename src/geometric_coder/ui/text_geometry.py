@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from geometric_coder.exceptions import ConfigurationError
+from geometric_coder.runtime_device import current_device
 from geometric_coder.ui.topic_creation import teal_linked_project
 
 # Boolean attributes emitted by TeAL's SpacyTranslator, not arbitrary Python
@@ -226,6 +227,7 @@ def create_text_geometry(
                         truncation=truncation, trust_remote_code=False,
                     ),
                     source, workers=1,
+                    **({"device": current_device()} if current_device() is not None else {}),
                     memo=f"GeCo source-text Sentence Transformer geometry {clean!r}.",
                 )["output"]
             else:

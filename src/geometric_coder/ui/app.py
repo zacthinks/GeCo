@@ -25,6 +25,10 @@ from geometric_coder.classifiers import (
     hyperparameter_summary,
 )
 from geometric_coder.exceptions import ConfigurationError
+from geometric_coder.runtime_device import (
+    acceleration_status, bind_device, current_device, device_scope,
+    resolve_device, unbind_device,
+)
 from geometric_coder.ui.context_expansion import (
     INITIAL_CONTEXT_UNITS, EXPANDED_CONTEXT_MAX, advance_limit,
     context_key, current_limit, read_context, truncation_notice,
@@ -651,6 +655,7 @@ def create_app(
     *,
     mode: str = "standard",
     focus_session_id: int | None = None,
+    device: str | None = None,
 ) -> Any:
     """Create the local GeCo Dash application.
 
@@ -820,6 +825,21 @@ def create_app(
         suppress_callback_exceptions=True,
     )
     app.index_string = _geco_index_string()
+    app._geco_execution_device = device
+    if device is not None:
+        # Werkzeug serves Dash callbacks in independent request threads.
+        # Bind this app's selected device for precisely the request lifetime.
+        from flask import g
+
+        @app.server.before_request
+        def _bind_launch_device() -> None:
+            g._geco_device_token = bind_device(device)
+
+        @app.server.teardown_request
+        def _unbind_launch_device(_error: BaseException | None) -> None:
+            token = getattr(g, "_geco_device_token", None)
+            if token is not None:
+                unbind_device(token)
     app.clientside_callback(
         """function(clicks) {
             if (!clicks) return window.dash_clientside.no_update;
@@ -1239,6 +1259,17 @@ def create_app(
                                 id="geco-settings-tooltips",
                                 options=[{"label": "Show explanatory tooltips", "value": "enabled"}],
                                 value=["enabled"],
+                            ),
+                            html.H3("Acceleration"),
+                            html.Div(
+                                acceleration_status(device or "cpu"),
+                                id="geco-settings-acceleration-status",
+                                role="status",
+                                className="control-status",
+                            ),
+                            html.Small(
+                                "Selected for this launch. Close and relaunch GeCo to change "
+                                "the execution device; CPU-only operations remain on CPU."
                             ),
                             html.H3("Classifier training"),
                             html.Label("Cross-validation folds", htmlFor="geco-settings-cv-folds"),
@@ -13413,7 +13444,9 @@ def _warm_semantic_runtime_libraries() -> bool:
         # A minimal disposable similarity computation initializes the shared
         # PyTorch CPU backend without consuming RNG state or using a model.
         with torch.inference_mode():
-            query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+            selected = current_device()
+            placement = {"device": selected} if selected not in (None, "cpu") else {}
+            query = torch.tensor([[1.0, 0.0]], dtype=torch.float32, **placement)
             _ = torch.matmul(query, query.T)
     except Exception as error:
         # Optional transformer resources must never prevent unrelated GeCo
@@ -13469,18 +13502,23 @@ def launch_app(
     mode: str = "standard",
     focus_session_id: int | None = None,
     warmup: bool = True,
+    device: str | None = None,
 ) -> Any:
     """Start one closeable Dash server and return its notebook-friendly handle."""
     if use_reloader:
         raise ValueError("The closeable GeCo server does not support use_reloader=True.")
     from geometric_coder.ui.server import GeCoServer
 
-    app = create_app(project, mode=mode, focus_session_id=focus_session_id)
-    if warmup:
-        if _should_warm_semantic_runtime(project, mode=mode):
-            _warm_semantic_runtime_libraries()
-        if mode == "standard" and getattr(project, "is_external_backed", False):
-            _warm_umap_runtime_libraries()
+    resolved = resolve_device(device)
+    with device_scope(resolved):
+        app = create_app(
+            project, mode=mode, focus_session_id=focus_session_id, device=resolved,
+        )
+        if warmup:
+            if _should_warm_semantic_runtime(project, mode=mode):
+                _warm_semantic_runtime_libraries()
+            if mode == "standard" and getattr(project, "is_external_backed", False):
+                _warm_umap_runtime_libraries()
     server = GeCoServer(app, host=host, port=port)
     server.start()
     _display_local_browser_url(host, server.port)
