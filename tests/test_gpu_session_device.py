@@ -318,3 +318,42 @@ def test_resolver_has_no_persistent_project_side_effects(tmp_path, monkeypatch):
     after = sorted(str(p.relative_to(project.project_dir))
                    for p in project.project_dir.rglob("*") if p.is_file())
     assert before == after
+
+
+def test_teal_frozen_device_conflict_is_unwrapped_without_hiding_other_failures():
+    """Recognize a genuine TeAL operator lock, not every provider RuntimeError."""
+    errors = pytest.importorskip("text_analysis_lab.core.errors")
+    from geometric_coder.runtime_device import frozen_teal_device_conflict
+
+    def wrapped(reason):
+        try:
+            raise errors.OperatorError(reason)
+        except errors.OperatorError as original:
+            try:
+                raise RuntimeError("TeAL could not transform query") from original
+            except RuntimeError as provider_error:
+                return provider_error
+
+    cpu_lock = frozen_teal_device_conflict(
+        wrapped("Frozen device lock requires 'cpu', not 'cuda:0'.")
+    )
+    assert cpu_lock is not None
+    assert "requires 'cpu', not 'cuda:0'" in cpu_lock
+    assert "relaunch GeCo" in cpu_lock
+
+    gpu_lock = frozen_teal_device_conflict(
+        wrapped("Frozen device lock requires 'cuda', not 'cpu'.")
+    )
+    assert gpu_lock is not None
+    assert "requires 'cuda', not 'cpu'" in gpu_lock
+
+    legacy = frozen_teal_device_conflict(
+        wrapped("Legacy frozen operator requests 'cuda:0' (currently resolves to "
+                "'cuda:0'); an explicit 'cpu' override would change its saved "
+                "device behavior.")
+    )
+    assert legacy is not None
+    assert "Legacy frozen operator" in legacy
+
+    assert frozen_teal_device_conflict(RuntimeError("ordinary provider failure")) is None
+    assert frozen_teal_device_conflict(wrapped("unrelated operator error")) is None
