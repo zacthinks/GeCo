@@ -29,3 +29,24 @@ def test_geco_cli_launch_warmup_defaults_on_and_can_be_disabled(monkeypatch):
     assert cli.main(["launch", "/some/project", "--no-warmup"]) == 0
     assert launches[0]["warmup"] is False
     assert launches[1:] == ["wait", "close"]
+
+
+def test_geco_cli_device_passes_through_unchanged(monkeypatch):
+    selected = []
+
+    class Server:
+        def wait(self):
+            pass
+        def close(self):
+            pass
+
+    class Project:
+        def launch(self, **kwargs):
+            selected.append(kwargs["device"])
+            return Server()
+
+    monkeypatch.setattr(cli.GeometricCoder, "open", lambda path: Project())
+    for args in ([], ["--device", "cpu"], ["--device", "cuda:1"],
+                 ["--device", "mps"], ["--device", "auto"]):
+        assert cli.main(["launch", "/some/project", *args]) == 0
+    assert selected == [None, "cpu", "cuda:1", "mps", "auto"]

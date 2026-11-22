@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from geometric_coder.exceptions import MissingOptionalDependencyError
+from geometric_coder.exceptions import ConfigurationError, MissingOptionalDependencyError
 from geometric_coder.geometry.base import Geometry, Matrix, ViewSpec
 
 
@@ -40,6 +40,8 @@ class SentenceTransformerGeometry(Geometry):
         super().__init__()
         self.options = EmbeddingOptions(model=model, **kwargs)
         self._model: Any | None = None
+        # Only set on a per-session restored geometry. Never serialized.
+        self._session_device_conflict: str | None = None
 
     @property
     def supports_query(self) -> bool:
@@ -50,6 +52,10 @@ class SentenceTransformerGeometry(Geometry):
         return self._model is not None
 
     def _load_model(self) -> Any:
+        # Reject only when this geometry is actually used, not while an
+        # unrelated compatible geometry is being restored or queried.
+        if self._session_device_conflict is not None:
+            raise ConfigurationError(self._session_device_conflict)
         if self._model is not None:
             return self._model
         try:

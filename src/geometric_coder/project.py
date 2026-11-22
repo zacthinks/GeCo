@@ -31,6 +31,7 @@ from geometric_coder.classifiers import (
     tuning_candidates,
 )
 from geometric_coder.external import ExternalDataProvider
+from geometric_coder.runtime_device import current_device, provider_transform
 from geometric_coder.topic_artifacts import ArtifactRows, TopicModelRows, validate_topic_model_rows
 from geometric_coder.exceptions import (
     ConfigurationError,
@@ -82,6 +83,8 @@ class GeometricCoder:
         self.artifacts = ArtifactStore(project_dir / self.ARTIFACT_DIRECTORY)
         self.external_provider = external_provider
         self._runtime_geometries: dict[str, Geometry] | None = None
+        self._session_runtime_geometries: dict[str, dict[str, Geometry]] = {}
+        self._runtime_geometry_lock = RLock()
         # Serialize first-use materialization within this project instance.
         # The database publishes the completed ranking in one transaction.
         self._committee_ranking_lock = RLock()
@@ -1487,7 +1490,11 @@ class GeometricCoder:
         for record in geometry_records:
             geometry_id = int(record["geometry_id"])
             runtime[str(record["name"])].restore_matrix(combined_by_geometry[geometry_id])
-        self._runtime_geometries = runtime
+        selected = current_device()
+        self._runtime_geometries = runtime if selected is None else None
+        self._session_runtime_geometries.clear()
+        if selected is not None:
+            self._session_runtime_geometries[selected] = runtime
         active_paths = {
             path for path, _ in geometry_artifacts.values()
         } | set(view_artifacts.values())
@@ -1654,9 +1661,19 @@ class GeometricCoder:
 
     def runtime_geometries(self) -> dict[str, Geometry]:
         """Restore fitted geometry pipelines for query transformation."""
-        if self._runtime_geometries is not None:
-            return dict(self._runtime_geometries)
+        selected = current_device()
+        with self._runtime_geometry_lock:
+            cached = (
+                self._runtime_geometries
+                if selected is None
+                else self._session_runtime_geometries.get(selected)
+            )
+            if cached is not None:
+                return dict(cached)
+            return self._restore_runtime_geometries(selected)
 
+    def _restore_runtime_geometries(self, selected: str | None) -> dict[str, Geometry]:
+        """Rehydrate per-device models without rewriting saved configurations."""
         restored: dict[str, Geometry] = {}
         for record in self.database.list_geometries(public_only=False):
             if str(record.get("storage_kind", "local")) == "external":
@@ -1668,7 +1685,29 @@ class GeometricCoder:
                 geometry: Geometry = CountGeometry(**config)
             elif geometry_type == "sentence_transformer":
                 model = str(config.pop("model"))
+                if selected is not None:
+                    historical = str(config.get("device") or "auto").strip().lower()
+                    compatible = (
+                        historical in {"", "auto", selected}
+                        or (historical == "cuda" and selected.startswith("cuda:"))
+                    )
+                    # GPU is a preference for supported work, not a demand
+                    # that all models run on it. Preserve a historical native
+                    # CPU-only configuration under a GPU-preferred launch.
+                    cpu_fallback = selected != "cpu" and historical == "cpu"
+                    conflict = None
+                    if not compatible and not cpu_fallback:
+                        conflict = (
+                            f"Native geometry {record['name']!r} records device "
+                            f"{historical!r}, incompatible with this GeCo session's "
+                            f"{selected!r}. Relaunch with a compatible device or "
+                            "create a portable geometry; saved research state was not changed."
+                        )
+                    if not cpu_fallback and conflict is None:
+                        config["device"] = selected
                 geometry = SentenceTransformerGeometry(model, **config)
+                if selected is not None:
+                    geometry._session_device_conflict = conflict
             elif geometry_type == "svd":
                 if len(dependency_names) != 1:
                     raise ConfigurationError(
@@ -1703,7 +1742,10 @@ class GeometricCoder:
             geometry.restore_matrix(matrix)
             restored[record["name"]] = geometry
 
-        self._runtime_geometries = restored
+        if selected is None:
+            self._runtime_geometries = restored
+        else:
+            self._session_runtime_geometries[selected] = restored
         return dict(restored)
 
     def transform_query(
@@ -1740,7 +1782,7 @@ class GeometricCoder:
                     f"External geometry {name!r} supports semantic queries, but the "
                     "connected provider does not implement transform_query()."
                 )
-            query_vector = transform(record["external_ref"], clean_query)
+            query_vector = provider_transform(provider, "transform_query", record["external_ref"], clean_query)
         else:
             runtime = self.runtime_geometries()
             query_vector = runtime[name].transform_query(clean_query)
@@ -1974,7 +2016,7 @@ class GeometricCoder:
             texts = [str(row["text"]) for row in missing]
             if str(geometry.get("storage_kind", "local")) == "external":
                 provider = self._require_external_provider()
-                transformed = provider.transform_texts(geometry["external_ref"], texts)
+                transformed = provider_transform(provider, "transform_texts", geometry["external_ref"], texts)
             else:
                 transformed = self.runtime_geometries()[str(geometry["name"])].transform_texts(texts)
             matrix: Matrix = (
@@ -5685,6 +5727,7 @@ class GeometricCoder:
         debug: bool = False,
         use_reloader: bool = False,
         warmup: bool = True,
+        device: str | None = None,
     ) -> Any:
         """Launch the ordinary local Dash interface.
 
@@ -5706,6 +5749,7 @@ class GeometricCoder:
             debug=debug,
             use_reloader=use_reloader,
             warmup=warmup,
+            device=device,
         )
 
     def launch_focus_coder(

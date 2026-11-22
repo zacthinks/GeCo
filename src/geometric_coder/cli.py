@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local port (default: automatic; an explicitly requested port is strict).",
     )
     launch.add_argument("--debug", action="store_true")
+    launch.add_argument("--device", default=None, help="Execution device: auto, cpu, cuda, cuda:N, or mps.")
     launch.add_argument(
         "--no-warmup", action="store_true",
         help="Skip optional startup semantic and UMAP runtime preparation.",
@@ -42,6 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "launch":
         server = project.launch(
             host=args.host, port=args.port, debug=args.debug, warmup=not args.no_warmup,
+            device=args.device,
         )
         try:
             server.wait()
