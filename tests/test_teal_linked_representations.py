@@ -529,7 +529,8 @@ def test_cpu_locked_teal_geometry_reports_conflict_in_semantic_ui(
             callback = next(
                 inspect.unwrap(spec["callback"])
                 for spec in app.callback_map.values()
-                if inspect.unwrap(spec["callback"]).__name__ == "display_active_semantic"
+                if callable(spec.get("callback"))
+                and inspect.unwrap(spec["callback"]).__name__ == "display_active_semantic"
             )
             # Simulate the real request-scoped CUDA preference. TeAL must
             # reject the conflicting freeze lock without needing GPU hardware.
