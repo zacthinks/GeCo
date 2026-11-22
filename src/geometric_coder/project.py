@@ -1695,16 +1695,19 @@ class GeometricCoder:
                     # that all models run on it. Preserve a historical native
                     # CPU-only configuration under a GPU-preferred launch.
                     cpu_fallback = selected != "cpu" and historical == "cpu"
+                    conflict = None
                     if not compatible and not cpu_fallback:
-                        raise ConfigurationError(
+                        conflict = (
                             f"Native geometry {record['name']!r} records device "
                             f"{historical!r}, incompatible with this GeCo session's "
                             f"{selected!r}. Relaunch with a compatible device or "
                             "create a portable geometry; saved research state was not changed."
                         )
-                    if not cpu_fallback:
+                    if not cpu_fallback and conflict is None:
                         config["device"] = selected
                 geometry = SentenceTransformerGeometry(model, **config)
+                if selected is not None:
+                    geometry._session_device_conflict = conflict
             elif geometry_type == "svd":
                 if len(dependency_names) != 1:
                     raise ConfigurationError(
