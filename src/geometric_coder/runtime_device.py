@@ -100,6 +100,38 @@ def acceleration_status(device: str) -> str:
     return f"GPU acceleration enabled — {device.upper()}"
 
 
+def frozen_teal_device_conflict(error: BaseException) -> str | None:
+    """Expose TeAL's frozen-device conflict through a wrapped provider failure.
+
+    TeAL is optional. Import its error class only on this failure path, and
+    inspect only an explicitly recognized frozen-device rejection. Other
+    provider runtime failures must not be reported as harmless UI statuses.
+    """
+    try:
+        from text_analysis_lab.core.errors import OperatorError
+    except ImportError:
+        return None
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OperatorError):
+            detail = str(current)
+            if detail.startswith((
+                "Frozen device lock requires ",
+                "Legacy frozen operator requests ",
+            )):
+                return (
+                    "This geometry's frozen TeAL model has an incompatible "
+                    f"execution-device requirement. {detail} "
+                    "Close and relaunch GeCo with a compatible device, or "
+                    "create a device-portable frozen model."
+                )
+        current = current.__cause__
+    return None
+
+
 def _accepts_device(fn: Any) -> bool:
     try:
         parameters = inspect.signature(fn).parameters
