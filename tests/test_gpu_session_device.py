@@ -16,7 +16,7 @@ from geometric_coder import GeometricCoder
 from geometric_coder.exceptions import ConfigurationError
 from geometric_coder.runtime_device import (
     acceleration_status, current_device, device_scope, provider_transform,
-    resolve_device,
+    frozen_teal_device_conflict, resolve_device,
 )
 
 
@@ -241,6 +241,15 @@ def test_native_geometry_cache_is_device_separated_and_legacy_conflict(tmp_path)
         assert coder.runtime_geometries()["sentence"] is cpu
     assert config["device"] is None  # Never changed saved config.
 
+    # A GPU-preferred session may use a historical CPU-only native model.
+    config["device"] = "cpu"
+    coder._session_runtime_geometries.clear()
+    with device_scope("cuda:0"):
+        cpu_fallback = coder.runtime_geometries()["sentence"]
+        assert cpu_fallback.options.device == "cpu"
+    assert config["device"] == "cpu"
+
+    # Conversely, an explicit CPU launch must never run an archived CUDA model.
     config["device"] = "cuda:1"
     coder._session_runtime_geometries.clear()
     with device_scope("cpu"):
