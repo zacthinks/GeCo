@@ -292,7 +292,7 @@ def test_real_project_query_forwards_cpu_to_device_capable_provider(tmp_path):
     )
     with device_scope("cpu"):
         assert project.transform_query("ext", "hello").shape == (1, 2)
-        assert project.semantic_search("hello", geometry_names=["ext"])["ext"]
+        assert len(project.semantic_search("hello", geometry_names=["ext"])["ext"]) == 2
     assert calls == [
         ({"id": "x"}, "hello", "cpu"),
         ({"id": "x"}, "hello", "cpu"),
