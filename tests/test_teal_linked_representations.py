@@ -480,3 +480,71 @@ def test_reuse_sibling_spacy_tokens_from_document_sentences(
         linked.close()
     finally:
         project.close()
+
+
+
+def test_cpu_locked_teal_geometry_reports_conflict_in_semantic_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use a real TeAL frozen operator and provider, but no GPU or model download."""
+    import inspect
+    from text_analysis_lab.translators.sentence_transformer_encoder import (
+        SentenceTransformerEncoder,
+    )
+    from geometric_coder.runtime_device import device_scope
+
+    def fake_runtime(self, *, device):
+        self.resolved_revision = "a" * 40
+        return object()
+
+    def fake_translation(self, texts, *, device, model_batch_size,
+                         context_examples=None):
+        batch = [texts] if isinstance(texts, str) else list(texts)
+        values = np.array(
+            [[float(len(str(item))), float(len(str(item).split()))] for item in batch],
+            dtype=np.float32,
+        )
+        return values, [2] * len(batch), 256
+
+    monkeypatch.setattr(SentenceTransformerEncoder, "_runtime_component", fake_runtime)
+    monkeypatch.setattr(SentenceTransformerEncoder, "_translate_texts", fake_translation)
+
+    project = teal.Project.create(tmp_path / "cpu_locked_project", name="cpu_locked")
+    try:
+        documents = _seed_documents(project)
+        encoder = SentenceTransformerEncoder(
+            "example/sbert", revision="a" * 40, text_field="text",
+        )
+        locked = project.translate(
+            encoder, documents, device="cpu", freeze_device=True, workers=1,
+        )["output"]
+        with project.geco.create(
+            "cpu_locked", documents=documents, text_field="text", geometry=locked,
+        ) as linked:
+            coder = linked.coder
+            geometry_id = int(coder.geometries(public_only=True)[0]["geometry_id"])
+            query = "apple banana"
+            coder.saved_semantic_searches.register(query)
+            app = create_app(coder, device="cuda:0")
+            callback = next(
+                inspect.unwrap(spec["callback"])
+                for spec in app.callback_map.values()
+                if inspect.unwrap(spec["callback"]).__name__ == "display_active_semantic"
+            )
+            # Simulate the real request-scoped CUDA preference. TeAL must
+            # reject the conflicting freeze lock without needing GPU hardware.
+            with device_scope("cuda:0"):
+                candidate = callback(query, geometry_id)
+            assert candidate["scores"] == {}
+            assert candidate["range"] is None
+            assert "Frozen device lock requires 'cpu', not 'cuda:0'" in candidate["status"]
+            assert "relaunch GeCo" in candidate["status"]
+            assert coder.saved_semantic_searches.find(query, geometry_id) is None
+
+            # A matching CPU launch retains the original science and succeeds.
+            with device_scope("cpu"):
+                allowed = callback(query, geometry_id)
+            assert allowed["status"] == ""
+            assert allowed["token"]
+    finally:
+        project.close()
