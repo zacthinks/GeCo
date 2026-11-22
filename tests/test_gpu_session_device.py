@@ -253,8 +253,12 @@ def test_native_geometry_cache_is_device_separated_and_legacy_conflict(tmp_path)
     config["device"] = "cuda:1"
     coder._session_runtime_geometries.clear()
     with device_scope("cpu"):
+        blocked = coder.runtime_geometries()["sentence"]
+        assert blocked.options.device == "cuda:1"
         with pytest.raises(ConfigurationError, match="incompatible"):
-            coder.runtime_geometries()
+            blocked.transform_query("test")
+        with pytest.raises(ConfigurationError, match="incompatible"):
+            blocked.transform_texts(["test"])
     assert config["device"] == "cuda:1"
 
 
@@ -357,3 +361,50 @@ def test_teal_frozen_device_conflict_is_unwrapped_without_hiding_other_failures(
 
     assert frozen_teal_device_conflict(RuntimeError("ordinary provider failure")) is None
     assert frozen_teal_device_conflict(wrapped("unrelated operator error")) is None
+
+
+
+def test_cpu_lexical_search_ignores_unrelated_cuda_native_geometry(tmp_path, monkeypatch):
+    """A mixed persisted project never initializes an incompatible encoder for lexical search."""
+    import sys
+    project = _project(tmp_path)
+    lexical = project.database.get_geometry_by_name("lex")
+    # Register a historical CUDA-only native geometry with an existing matrix
+    # sidecar. No neural model is downloaded or loaded during the test.
+    project.database.register_geometry(
+        name="embeddings",
+        class_name="SentenceTransformerGeometry",
+        modality="text",
+        public=True,
+        config={"type": "sentence_transformer", "model": "fake/legacy",
+                "device": "cuda:0"},
+        dependency_names=[],
+        matrix_path=lexical["matrix_path"],
+        matrix_sparse=lexical["matrix_sparse"],
+        state_path=None,
+        supports_query=True,
+        supports_text_transform=True,
+    )
+    def forbidden_constructor(*args, **kwargs):
+        raise AssertionError("Incompatible CUDA encoder must not be initialized")
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=forbidden_constructor),
+    )
+
+    with device_scope("cpu"):
+        restored = project.runtime_geometries()
+        assert set(restored) == {"lex", "embeddings"}
+        assert restored["embeddings"].options.device == "cuda:0"
+        assert restored["embeddings"]._model is None
+        # This goes through the actual semantic-search / transform_query path.
+        scores = project.semantic_search("alpha", geometry_names=["lex"])
+        assert len(scores["lex"]) == 3
+        assert len(project.transform_query("lex", "beta").shape) == 2
+        with pytest.raises(ConfigurationError, match="Native geometry 'embeddings'.*incompatible"):
+            project.semantic_search("alpha", geometry_names=["embeddings"])
+        with pytest.raises(ConfigurationError, match="Native geometry 'embeddings'.*incompatible"):
+            project.runtime_geometries()["embeddings"].transform_texts(["new text"])
+        # Failure of embeddings must not poison the lexical cache.
+        assert len(project.semantic_search("gamma", geometry_names=["lex"])["lex"]) == 3
+    assert project.database.get_geometry_by_name("embeddings")["config"]["device"] == "cuda:0"
