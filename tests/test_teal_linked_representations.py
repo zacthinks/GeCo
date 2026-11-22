@@ -239,7 +239,10 @@ def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
     )
     from geometric_coder.ui.text_geometry import create_text_geometry
 
+    seen_devices = []
+
     def fake_runtime(self, *, device):
+        seen_devices.append(device)
         self.resolved_revision = "a" * 40
         return object()
 
@@ -263,11 +266,14 @@ def test_sentence_transformer_source_text_uses_teal_encoder_without_download(
         linked = project.geco.create(
             "source_text", documents=documents, text_field="text", geometry=baseline,
         )
-        created = create_text_geometry(
-            linked.coder, name="test_embeddings", method="sentence_transformer",
-            model="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
-            revision="a" * 40, normalize=True, truncation="error",
-        )
+        from geometric_coder.runtime_device import device_scope
+        with device_scope("cpu"):
+            created = create_text_geometry(
+                linked.coder, name="test_embeddings", method="sentence_transformer",
+                model="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+                revision="a" * 40, normalize=True, truncation="error",
+            )
+        assert seen_devices and all(device == "cpu" for device in seen_devices)
         assert created.replayable
         matrix = project.get_artifact(created.artifact_id)
         assert matrix.primary_key == documents.primary_key
