@@ -1691,14 +1691,19 @@ class GeometricCoder:
                         historical in {"", "auto", selected}
                         or (historical == "cuda" and selected.startswith("cuda:"))
                     )
-                    if not compatible:
+                    # GPU is a preference for supported work, not a demand
+                    # that all models run on it. Preserve a historical native
+                    # CPU-only configuration under a GPU-preferred launch.
+                    cpu_fallback = selected != "cpu" and historical == "cpu"
+                    if not compatible and not cpu_fallback:
                         raise ConfigurationError(
                             f"Native geometry {record['name']!r} records device "
                             f"{historical!r}, incompatible with this GeCo session's "
                             f"{selected!r}. Relaunch with a compatible device or "
                             "create a portable geometry; saved research state was not changed."
                         )
-                    config["device"] = selected
+                    if not cpu_fallback:
+                        config["device"] = selected
                 geometry = SentenceTransformerGeometry(model, **config)
             elif geometry_type == "svd":
                 if len(dependency_names) != 1:
