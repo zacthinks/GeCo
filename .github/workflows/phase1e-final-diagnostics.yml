@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-      - run: uv sync --all-extras
+      - run: uv sync
       - name: Benchmark fresh and near-exhausted session selection
         run: uv run python benchmarks/phase1e_diagnostics.py --sizes 200 1000 --repeats 10
       - uses: actions/upload-artifact@v4

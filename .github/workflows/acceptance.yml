@@ -29,7 +29,7 @@ jobs:
           enable-cache: true
 
       - name: Install GeCo and all dependencies
-        run: uv sync --all-extras
+        run: uv sync
 
       - name: Run acceptance tests
         run: uv run pytest --acceptance -m acceptance -q -rs

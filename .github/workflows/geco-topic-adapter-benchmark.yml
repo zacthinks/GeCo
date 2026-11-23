@@ -38,7 +38,7 @@ jobs:
           enable-cache: true
       - name: Install GeCo and TeAL
         run: |
-          uv sync --all-extras
+          uv sync
           uv pip install --python .venv/bin/python -e ./_teal
       - name: Run focused provider compatibility tests
         run: uv run --no-sync pytest -q tests/test_topic_artifact_retrieval.py

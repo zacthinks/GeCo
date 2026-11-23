@@ -21,7 +21,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install GeCo
-        run: uv sync --all-extras
+        run: uv sync
       - name: Run matched Focus benchmark
         run: uv run python benchmarks/phase2b_focus_factors.py --repeats 20 --output phase2b-focus-factors.json
       - name: Upload non-gating evidence
