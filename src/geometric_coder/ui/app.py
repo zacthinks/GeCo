@@ -1261,16 +1261,15 @@ def create_app(
                                 value=["enabled"],
                             ),
                             html.H3("Acceleration"),
-                            html.Div(
+                            html.Span(
                                 acceleration_status(device or "cpu"),
                                 id="geco-settings-acceleration-status",
                                 role="status",
-                                className="control-status",
-                            ),
-                            html.Small(
-                                "GPU is preferred for compatible models; others continue on CPU. "
-                                "A CPU launch is CPU-only. Close and relaunch GeCo to change "
-                                "the selected device."
+                                className=(
+                                    "geco-acceleration-badge status-current"
+                                    if (device or "cpu") != "cpu"
+                                    else "geco-acceleration-badge status-not-trained"
+                                ),
                             ),
                             html.H3("Classifier training"),
                             html.Label("Cross-validation folds", htmlFor="geco-settings-cv-folds"),

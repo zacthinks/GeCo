@@ -896,7 +896,8 @@ label { display: block; margin-bottom: 0.34rem; font-size: 0.82rem; font-weight:
 .active-classifier-heading > label { margin: 0; }
 /* Separate the two controls without a heading divider. */
 .active-committee-heading { margin-top: 1.1rem; }
-.classifier-status-badge {
+.classifier-status-badge,
+.geco-acceleration-badge {
   display: inline-flex;
   align-items: center;
   min-height: 1.55rem;
