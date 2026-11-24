@@ -127,6 +127,19 @@ Open the local URL shown in the terminal. You can also launch directly from a Py
 
 By default, GeCo asks the operating system to choose an available local port, so you can launch multiple independent sessions without managing port numbers. The URL printed in the terminal (or shown in Jupyter) uses the port actually bound. Specify `geco launch responses.geco --port 8050` or `project.launch(port=8050)` to require that exact port; an occupied requested port reports an error instead of switching silently. `port=None` (the default) and `port=0` both request automatic selection. The same rules apply to Focus Coding.
 
+#### Choose a CPU or GPU session
+
+GeCo selects an execution device **once per launch**. The default (`device=None` or `auto`) prefers a usable NVIDIA CUDA GPU, then Apple Silicon MPS, and otherwise CPU. Set `cpu` to use CPU for supported model operations; explicitly requesting `cuda`, `cuda:N`, or `mps` requires that backend to be available and fails clearly if it is not. Hardware support is checked at launch, but not every operation is GPU-accelerated: CPU-only stages continue on CPU.
+
+```bash
+geco launch responses.geco                     # automatic selection
+geco launch responses.geco --device cpu        # explicit CPU
+geco launch responses.geco --device mps        # Apple Silicon with working MPS
+geco launch responses.geco --device cuda:0     # first CUDA GPU
+```
+
+From Python or Jupyter, use `server = project.launch(device="auto")` (or `"cpu"`, `"mps"`, `"cuda"`, `"cuda:0"`). The Settings dialog displays the resolved session backend as a read-only CPU/GPU status; switching devices requires closing and relaunching the server. Launch device selection does **not** persist a preference, change saved TeAL operator freezes, or override existing device-locked model requirements. Incompatible saved geometries report a failure when used; unrelated compatible geometries remain available.
+
 For standard TeAL-linked workspaces, GeCo prepares UMAP's common 2D cosine numerical kernels during startup, before opening the browser interface. This moves the first-use compilation delay from **Create View** to application startup; the first launch may therefore take longer. Compatible semantic-search runtimes are also prepared when relevant. Preparation uses disposable synthetic inputs, not project data, and doesn't create saved artifacts. Launch preparation is enabled by default; to skip it, use `geco launch responses.geco --no-warmup`, or `project.launch(warmup=False)` from Python. In TeAL's linked-workspace CLI, use `teal geco <project> [workspace] --no-warmup` (with a compatible TeAL version). Other UMAP metrics or input formats may still incur first-use compilation.
 
 

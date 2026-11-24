@@ -4,7 +4,29 @@ Notable user-facing changes to GeCo are recorded here. GeCo follows pre-1.0 vers
 
 ## [Unreleased]
 
-No changes recorded after the proposed v0.14.1 release candidate.
+No changes recorded after this release candidate.
+
+## [0.15.0] - Unreleased (preparing)
+
+### Added
+
+- **Automatic local port selection** (GeCo #94): ordinary and Focus launches use an OS-allocated available port by default. An explicitly requested positive port remains strict and fails if occupied.
+- **Launch-scoped execution device** (GeCo #95): `GeometricCoder.launch(device=...)` and `geco launch --device` accept `auto`, `cpu`, `cuda`, `cuda:N`, and `mps`. Auto prefers an available CUDA device, then Apple MPS, otherwise CPU. Explicitly unavailable accelerators fail rather than silently falling back.
+
+### Changed
+
+- **Standard embedding support** (GeCo #96): Sentence Transformers are now a normal dependency of `geometric-coder`. The former `embeddings` and `all` extras are removed; model weights are still fetched on demand.
+- **Session device visibility** (GeCo #95–#96): Settings shows a concise, read-only CPU or GPU backend status for the resolved launch session. No device preference is persisted and there is no live backend toggle.
+- **Development installation** (GeCo #96): workflows use plain `uv sync` rather than removed extras.
+
+### Compatibility and limits
+
+- GPU selection applies only where GeCo/TeAL support accelerated execution; CPU-only stages remain on CPU. Frozen scientific device constraints remain authoritative, and an incompatible geometry fails when that geometry is used, without blocking unrelated compatible geometry operations.
+- This is a minor pre-1.0 release. GeCo's project schema, saved scientific models, and TeAL provider contracts are not rewritten by device selection or port binding.
+
+### Release notes
+
+- Preparation only: verify exact-head CI, acceptance tests, a clean wheel install, build artifacts and the GitHub Release before publishing the `v0.15.0` tag.
 
 ## [0.14.1] - 2026-11-21
 
@@ -17,7 +39,7 @@ No changes recorded after the proposed v0.14.1 release candidate.
 ### Notes
 
 - This is a **patch release** on top of v0.14.0, with no new project schema, numerical representation compatibility contract, model fitting behavior, or TeAL-linked API requirement.
-- This entry describes the proposed release candidate. Verify the tagged commit, tests, build artifacts, and GitHub Release before declaring v0.14.1 published.
+- The v0.14.1 tag predates the automatic-port and session-device changes included in v0.15.0.
 
 ## [0.14.0] - 2026-11-21
 
