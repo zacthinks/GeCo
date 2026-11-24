@@ -80,19 +80,13 @@ GeCo currently supports **text projects** and requires **Python 3.11 or newer** 
 
 ### 1. Install
 
-Install the current source version from GitHub:
+Install GeCo with all its functionality, including sentence-transformer support:
 
 ```bash
-python -m pip install "git+https://github.com/zacthinks/GeCo.git"
+uv pip install geometric-coder
 ```
 
-This includes GeCo's local interface and the built-in lexical geometry tools. To use sentence-transformer embeddings, install the optional dependencies instead:
-
-```bash
-python -m pip install "geometric-coder[embeddings] @ git+https://github.com/zacthinks/GeCo.git"
-```
-
-The chosen embedding model is downloaded the first time it is used.
+To install the latest unreleased source version instead, use `uv pip install "git+https://github.com/zacthinks/GeCo.git"`. No extras are needed. Pretrained model weights are not downloaded during installation; the chosen embedding model is downloaded on demand when first used.
 
 ### 2. Create a project
 

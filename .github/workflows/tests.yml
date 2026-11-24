@@ -36,8 +36,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install GeCo and all dependencies
-        run: uv sync --all-extras
+      - name: Install GeCo with standard dependencies
+        run: uv sync
 
       - name: Browser-level Scale, legacy and unified Analyses regressions
         run: |

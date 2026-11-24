@@ -159,34 +159,62 @@ def test_launch_resolves_before_app_and_remains_fixed(monkeypatch, tmp_path):
     assert current_device() is None
 
 
+def _find_component(component, name):
+    if getattr(component, "id", None) == name:
+        return component
+    children = getattr(component, "children", None)
+    for child in (children if isinstance(children, (list, tuple)) else [children]):
+        if child is not None and not isinstance(child, (str, int, float, bool)):
+            result = _find_component(child, name)
+            if result is not None:
+                return result
+    return None
+
+
 def test_ui_status_is_read_only_and_never_persisted(tmp_path):
     pytest.importorskip("dash")
     from geometric_coder.ui.app import create_app
     project = _project(tmp_path)
 
-    def find(component, name):
-        if getattr(component, "id", None) == name:
-            return component
-        children = getattr(component, "children", None)
-        for child in (children if isinstance(children, (list, tuple)) else [children]):
-            if child is not None and not isinstance(child, (str, int, float, bool)):
-                result = find(child, name)
-                if result is not None:
-                    return result
-        return None
+    for device, label, style in [
+        ("cpu", "CPU", "status-not-trained"),
+        ("cuda:0", "GPU · CUDA:0", "status-current"),
+        ("cuda:1", "GPU · CUDA:1", "status-current"),
+        ("mps", "GPU · MPS", "status-current"),
+    ]:
+        app = create_app(project, device=device)
+        badge = _find_component(app.layout, "geco-settings-acceleration-status")
+        assert badge.children == label
+        assert badge.role == "status"
+        assert badge.className == f"geco-acceleration-badge {style}"
+        assert "GPU is preferred" not in str(
+            _find_component(app.layout, "geco-settings-modal")
+        )
+        assert not any("geco-settings-acceleration-status" in key for key in app.callback_map)
 
-    cpu = create_app(project, device="cpu")
-    gpu = create_app(project, device="cuda:0")
-    assert find(cpu.layout, "geco-settings-acceleration-status").children == (
-        "GPU acceleration disabled — CPU"
-    )
-    assert find(gpu.layout, "geco-settings-acceleration-status").children == (
-        "GPU acceleration enabled — CUDA:0"
-    )
-    assert find(gpu.layout, "geco-settings-acceleration-status").role == "status"
     assert not (project.project_dir / "ui_settings.json").exists()
-    assert acceleration_status("mps") == "GPU acceleration enabled — MPS"
-    assert not any("geco-settings-acceleration-status" in key for key in cpu.callback_map)
+    assert acceleration_status("cpu") == "CPU"
+    assert acceleration_status("mps") == "GPU · MPS"
+
+
+def test_gpu_available_but_cpu_selected_badge_is_gray(tmp_path, monkeypatch):
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app
+
+    real_import = importlib.import_module
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            importlib, "import_module",
+            lambda name: _torch(cuda=2, mps=True) if name == "torch" else real_import(name),
+        )
+        assert resolve_device("auto") == "cuda:0"
+        selected_device = resolve_device("cpu")
+
+    app = create_app(_project(tmp_path), device=selected_device)
+    badge = _find_component(app.layout, "geco-settings-acceleration-status")
+    assert selected_device == "cpu"
+    assert badge.children == "CPU"
+    assert badge.className == "geco-acceleration-badge status-not-trained"
 
 
 def test_flask_request_binding_is_isolated_between_apps(tmp_path):

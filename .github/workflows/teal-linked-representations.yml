@@ -31,7 +31,7 @@ jobs:
 
       - name: Install GeCo and TeAL
         run: |
-          uv sync --all-extras
+          uv sync
           uv pip install --python .venv/bin/python -e ./_teal
 
       - name: Run persisted TeAL-GeCo integration

@@ -95,9 +95,10 @@ def resolve_device(requested: str | None = None) -> str:
 
 
 def acceleration_status(device: str) -> str:
+    """Concise Settings label for the session's resolved execution device."""
     if device == "cpu":
-        return "GPU acceleration disabled — CPU"
-    return f"GPU acceleration enabled — {device.upper()}"
+        return "CPU"
+    return f"GPU · {device.upper()}"
 
 
 def frozen_teal_device_conflict(error: BaseException) -> str | None:
