@@ -90,6 +90,12 @@ Existing integration entry points include project creation/opening, representati
 
 A current fitted classifier or committee can be exported through the predictors() / export_predictor(ref) interface as a frozen multi-source predictor, with ordered member estimators and source routing preserved. The bridge to TeAL's GeCoPredictor executes the models over independently supplied, key-aligned TeAL geometry artifacts and supports persistence/reopening. A metadata-augmented member may therefore be combined with members trained on lexical or embedding geometries without concatenating those geometries in GeCo. Older in-sample stackers are marked stale for OOF retraining; historic Apply predictions remain recorded. Frozen predictions can support separate confirmatory workflows in TeAL, but GeCo does not carry out audit sampling or generalized-difference estimation.
 
+## Launch-scoped execution device and server lifecycle
+
+The launch API resolves `device=None|"auto"|"cpu"|"cuda"|"cuda:N"|"mps"` once for a server, and makes the effective selection available to supported native geometries and cooperating external providers without mutating saved scientific representations. CPU-only workflows remain CPU-bound even in a GPU-preferred session. Explicit unavailable backends fail at launch; frozen device locks remain authoritative during model use. An incompatible saved geometry cannot disable a different, compatible geometry. Settings reports the effective backend read-only, with no persistent device preference or live toggle.
+
+Omitted or `None` ports use an OS-allocated available local listener; explicitly selected positive ports must bind exactly or fail. The CLI, Python launcher and Focus Coding share these rules. Launch preparation of eligible UMAP and semantic-search kernels is optional via `warmup=False` or `--no-warmup`, uses disposable inputs, and does not change project artifacts.
+
 ## Future extensions
 
 GeCo is intended to stay a focused **research interface** rather than accumulate every specialized analytical feature. A future plugin system could allow trusted, separately installed Python libraries to contribute actions, small configuration workflows, keyed derived results, or exports. For example, an interview-analysis library such as LIPE might supply protocol-specific analyses without requiring GeCo's core application to implement those algorithms.
