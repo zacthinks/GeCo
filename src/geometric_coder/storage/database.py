@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 FIXED_COMMITTEE_AGGREGATIONS = {
     "mean",
@@ -501,7 +501,8 @@ CREATE TABLE classifier_committees (
     committee_id INTEGER PRIMARY KEY,
     code_id INTEGER NOT NULL REFERENCES codes(code_id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    aggregation TEXT NOT NULL CHECK (aggregation IN ('mean', 'median', 'minimum', 'maximum', 'harmonic_mean', 'geometric_mean', 'logistic_stack')),
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
+    aggregation_hyperparameters_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deleted')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -522,7 +523,7 @@ CREATE TABLE classifier_committee_fits (
     committee_fit_id INTEGER PRIMARY KEY,
     committee_id INTEGER NOT NULL REFERENCES classifier_committees(committee_id),
     code_id INTEGER NOT NULL REFERENCES codes(code_id),
-    aggregation TEXT NOT NULL CHECK (aggregation IN ('logistic_stack')),
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
     member_fit_ids_json TEXT NOT NULL,
     training_snapshot_json TEXT NOT NULL,
     artifact_path TEXT NOT NULL,
@@ -620,7 +621,7 @@ ON classifier_tuning_runs(code_id, classifier_spec_id, tuning_run_id);
 CREATE TABLE apply_runs (
     apply_run_id INTEGER PRIMARY KEY,
     code_id INTEGER NOT NULL REFERENCES codes(code_id),
-    aggregation TEXT NOT NULL CHECK (aggregation IN ('mean', 'median', 'minimum', 'maximum', 'harmonic_mean', 'geometric_mean', 'logistic_stack')),
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
     source_kind TEXT NOT NULL CHECK (source_kind IN ('classifier', 'committee')),
     source_id INTEGER NOT NULL,
     committee_fit_id INTEGER REFERENCES classifier_committee_fits(committee_fit_id),
@@ -925,6 +926,62 @@ def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
         raise RuntimeError("Existing Code identity conflicts with a Construct.")
 
 
+_AGGREGATION_V22_TABLES = {
+    "classifier_committees": """CREATE TABLE classifier_committees (
+    committee_id INTEGER PRIMARY KEY,
+    code_id INTEGER NOT NULL REFERENCES codes(code_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
+    aggregation_hyperparameters_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deleted')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(code_id, name)
+)""",
+    "classifier_committee_fits": """CREATE TABLE classifier_committee_fits (
+    committee_fit_id INTEGER PRIMARY KEY,
+    committee_id INTEGER NOT NULL REFERENCES classifier_committees(committee_id),
+    code_id INTEGER NOT NULL REFERENCES codes(code_id),
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
+    member_fit_ids_json TEXT NOT NULL,
+    training_snapshot_json TEXT NOT NULL,
+    artifact_path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)""",
+    "apply_runs": """CREATE TABLE apply_runs (
+    apply_run_id INTEGER PRIMARY KEY,
+    code_id INTEGER NOT NULL REFERENCES codes(code_id),
+    aggregation TEXT NOT NULL CHECK (length(trim(aggregation)) > 0),
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('classifier', 'committee')),
+    source_id INTEGER NOT NULL,
+    committee_fit_id INTEGER REFERENCES classifier_committee_fits(committee_fit_id),
+    threshold REAL NOT NULL CHECK (threshold >= 0.0 AND threshold <= 1.0),
+    eligibility TEXT NOT NULL CHECK (eligibility IN ('unreviewed')),
+    status TEXT NOT NULL CHECK (status IN ('draft', 'committed', 'discarded')),
+    created_at TEXT NOT NULL,
+    committed_at TEXT,
+    discarded_at TEXT
+)""",
+}
+
+
+def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
+    """Rebuild aggregation parents without cascading deletion of children."""
+    for table, ddl in _AGGREGATION_V22_TABLES.items():
+        temporary = f"{table}_v22"
+        connection.execute(ddl.replace(f"CREATE TABLE {table} (",
+                                       f"CREATE TABLE {temporary} (", 1))
+        columns = ", ".join(row["name"] for row in
+                            connection.execute(f"PRAGMA table_info({table})"))
+        connection.execute(f"INSERT INTO {temporary} ({columns}) SELECT {columns} FROM {table}")
+        connection.execute(f"DROP TABLE {table}")
+        connection.execute(f"ALTER TABLE {temporary} RENAME TO {table}")
+    connection.execute(
+        "CREATE INDEX classifier_committee_fits_committee_code_idx "
+        "ON classifier_committee_fits(committee_id, code_id, committee_fit_id)"
+    )
+
+
 # Each forward step is a fixed historical change, not a rewrite of old schemas.
 # Add a new entry whenever SCHEMA_VERSION increases.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -936,6 +993,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     18: _migrate_18_to_19,
     19: _migrate_19_to_20,
     20: _migrate_20_to_21,
+    21: _migrate_21_to_22,
 }
 
 
@@ -1041,37 +1099,52 @@ class ProjectDatabase:
                     "compatible newer GeCo version."
                 )
 
-            connection.execute("BEGIN IMMEDIATE")
-            # A concurrent opener may already have upgraded while we waited.
-            row = connection.execute(
-                "SELECT schema_version FROM project WHERE project_id = 1"
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("Project metadata is missing.")
-            version = int(row["schema_version"])
-            while version < SCHEMA_VERSION:
-                upgrade = _MIGRATIONS.get(version)
-                if upgrade is None:
-                    raise RuntimeError(
-                        f"No supported GeCo schema migration from version {version} "
-                        f"to {SCHEMA_VERSION}. The workspace was not modified."
+            # Foreign key enforcement must be changed outside the transaction.
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                # A concurrent opener may already have upgraded while we waited.
+                row = connection.execute(
+                    "SELECT schema_version FROM project WHERE project_id = 1"
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Project metadata is missing.")
+                version = int(row["schema_version"])
+                while version < SCHEMA_VERSION:
+                    upgrade = _MIGRATIONS.get(version)
+                    if upgrade is None:
+                        raise RuntimeError(
+                            f"No supported GeCo schema migration from version {version} "
+                            f"to {SCHEMA_VERSION}. The workspace was not modified."
+                        )
+                    upgrade(connection)
+                    updated = connection.execute(
+                        """
+                        UPDATE project SET schema_version = ?
+                        WHERE project_id = 1 AND schema_version = ?
+                        """,
+                        (version + 1, version),
                     )
-                upgrade(connection)
-                updated = connection.execute(
-                    """
-                    UPDATE project SET schema_version = ?
-                    WHERE project_id = 1 AND schema_version = ?
-                    """,
-                    (version + 1, version),
-                )
-                if updated.rowcount != 1:
-                    raise RuntimeError("Project schema version changed during migration.")
-                version += 1
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"This GeCo build supports schema {SCHEMA_VERSION}, "
-                    f"but the workspace uses newer schema {version}."
-                )
+                    if updated.rowcount != 1:
+                        raise RuntimeError("Project schema version changed during migration.")
+                    version += 1
+                if version > SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"This GeCo build supports schema {SCHEMA_VERSION}, "
+                        f"but the workspace uses newer schema {version}."
+                    )
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise RuntimeError(f"Foreign key violations during migration: {violations!r}")
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.execute("PRAGMA foreign_keys = ON")
+                if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                    raise RuntimeError("Could not restore foreign key enforcement.")
+
 
     def ensure_recommendation_indexes(self) -> None:
         """Install additive ranking indexes in already supported schema-13 databases.
