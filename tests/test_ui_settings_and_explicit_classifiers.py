@@ -427,3 +427,96 @@ def test_full_corpus_code_budget_reuses_indexed_rankings(
         source="classifier", source_id=classifier_fit, code_id=code,
         session_id=session, strategy="likely_positive", budget=budget,
     ) == after_label
+
+
+def test_forest_creation_controls_and_feature_parser(tmp_path):
+    import inspect
+    pytest.importorskip("dash")
+    from geometric_coder.ui.app import create_app, _forest_feature_input
+
+    app = create_app(_project(tmp_path))
+
+    def find(component, component_id):
+        if getattr(component, "id", None) == component_id:
+            return component
+        children = getattr(component, "children", None)
+        for child in children if isinstance(children, (list, tuple)) else [children]:
+            if child is not None:
+                match = find(child, component_id)
+                if match is not None:
+                    return match
+
+    assert "random_forest" in {
+        option["value"] for option in find(app.layout, "classifier-spec-algorithm").options
+    }
+    for suffix, value in (
+        ("trees", 100), ("depth", 8), ("leaf", 1), ("features", "sqrt"),
+        ("weight", "balanced"), ("seed", 0), ("threshold", 0.5),
+    ):
+        assert find(app.layout, "classifier-spec-forest-" + suffix).value == value
+    callback = next(
+        inspect.unwrap(spec["callback"]) for key, spec in app.callback_map.items()
+        if "classifier-spec-forest-options.style" in key
+    )
+    assert callback("random_forest") == ({}, {"display": "none"})
+    assert callback("logistic_l2") == ({"display": "none"}, {})
+    assert _forest_feature_input("all") is None
+    assert type(_forest_feature_input("1")) is int
+    assert type(_forest_feature_input("1.0")) is float
+    with pytest.raises(ValueError):
+        _forest_feature_input("invalid")
+
+
+def test_forest_training_cv_reuse_and_reopen(tmp_path, monkeypatch):
+    import numpy as np
+    import geometric_coder.project as module
+    project = _project(tmp_path)
+    code = project.create_code("forest quality")
+    geometry = int(project.geometries(public_only=True)[0]["geometry_id"])
+    spec = project.create_classifier_spec(
+        code_id=code, name="forest", geometry_id=geometry,
+        algorithm="random_forest", hyperparameters={"n_estimators": 9, "max_features": 0.5},
+    )
+    units = project.units()
+    for index in (0, 1, 3):
+        project.annotate(int(units[index]["observation_id"]), code,
+                         "positive" if index < 3 else "negative")
+    first = project.train_classifier(code_id=code, classifier_spec_id=spec, tune=True)
+    assert first["training_selection"]["reason"] == "insufficient_cv_data"
+    project.annotate(int(units[4]["observation_id"]), code, "negative")
+    calls = []
+    original = module.fit_classifier
+
+    def record(**kwargs):
+        calls.append((kwargs["training_matrix"].shape[0], kwargs["scoring_matrix"].shape[0]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, "fit_classifier", record)
+    fit = project.train_classifier(code_id=code, classifier_spec_id=spec, tune=True, folds=2)
+    selection = fit["training_selection"]
+    assert selection["tuned"]
+    assert selection["folds"] == 2
+    assert len(calls) == 2 * len(selection["results"]) + 1
+    assert all(pair == (2, 2) for pair in calls[:-1])
+    assert calls[-1] == (4, len(units))
+    assert selection["results"][0]["hyperparameters"]["max_features"] == 0.5
+    assert all(row["hyperparameters"]["n_estimators"] == 9 for row in selection["results"])
+    calls.clear()
+    reopened = GeometricCoder.open(project.project_dir)
+    retained = reopened.train_classifier(code_id=code, classifier_spec_id=spec)
+    assert retained["classifier_fit_id"] == fit["classifier_fit_id"]
+    assert calls == []
+    exported = reopened.export_classifier("forest")
+    matrix = reopened.geometry_matrix(geometry)
+    np.testing.assert_allclose(exported.predict_proba([matrix]), [
+        row["probability"] for row in reopened.database.classifier_predictions(
+            int(fit["classifier_fit_id"]), atomic_only=True,
+        )
+    ])
+    session = reopened.create_session("Forest")
+    assert reopened.focus_recommendation(
+        code_id=code, session_id=session, strategy="likely_positive",
+        active_classifier_spec_id=spec,
+    ) is not None
+    reopened.create_apply_run(code_id=code, source_kind="classifier", source_id=spec)
+    assert calls == []
