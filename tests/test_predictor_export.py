@@ -129,7 +129,7 @@ def test_classifier_and_committee_names_share_one_project_wide_active_namespace(
             code_id=code_b,
             name="shared predictor name",
             geometry_id=int(classifier_b["geometry_id"]),
-            algorithm="decision_tree",
+            algorithm=member_algorithm,
         )
 
     with pytest.raises(
@@ -190,13 +190,19 @@ def test_predictor_discovery_rejects_legacy_active_name_collision(tmp_path: Path
     with pytest.raises(ValueError, match="Active predictor names must be unique project-wide"):
         project.predictors()
 
-def test_single_classifier_export_reproduces_retained_predictions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("algorithm", ["logistic_l2", "random_forest"])
+def test_single_classifier_export_reproduces_retained_predictions(tmp_path: Path, algorithm: str) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
     project.ensure_default_classifier_specs(code_id=code_id)
     _label_training_examples(project, code_id)
     classifier = project.classifier_specs(code_id=code_id)[0]
     classifier_id = int(classifier["classifier_spec_id"])
+    if algorithm == "random_forest":
+        classifier_id = project.create_classifier_spec(
+            code_id=code_id, name="forest", geometry_id=int(classifier["geometry_id"]),
+            algorithm=algorithm, hyperparameters={"n_estimators": 17, "threshold": 0.7},
+        )
     fit = project.train_classifier(code_id=code_id, classifier_spec_id=classifier_id)
 
     exported = project.export_predictor(_classifier_ref(project, classifier_id))
@@ -237,7 +243,8 @@ def test_export_rejects_stale_by_default_and_allows_explicit_freeze(tmp_path: Pa
     assert exported.provenance["classifier_fit_id"] == exported.members[0].classifier_fit_id
 
 
-def test_fixed_committee_deduplicates_shared_geometry_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize("member_algorithm", ["decision_tree", "random_forest"])
+def test_fixed_committee_deduplicates_shared_geometry_source(tmp_path: Path, member_algorithm: str) -> None:
     project = _project(tmp_path)
     code_id = project.create_code("quality")
     project.ensure_default_classifier_specs(code_id=code_id)
@@ -279,8 +286,9 @@ def test_fixed_committee_deduplicates_shared_geometry_source(tmp_path: Path) -> 
     np.testing.assert_allclose(exported.predict_proba([matrix]), expected)
 
 
+@pytest.mark.parametrize("member_algorithm", ["logistic_l2", "random_forest"])
 def test_learned_committee_export_uses_separate_sparse_dense_sources_and_matches_geco(
-    tmp_path: Path,
+    tmp_path: Path, member_algorithm: str,
 ) -> None:
     project = _project(tmp_path, multi_geometry=True)
     code_id = project.create_code("quality")
@@ -289,6 +297,11 @@ def test_learned_committee_export_uses_separate_sparse_dense_sources_and_matches
     specs = {str(row["geometry_name"]): row for row in project.classifier_specs(code_id=code_id)}
     lexical_id = int(specs["lexical"]["classifier_spec_id"])
     svd_id = int(specs["svd"]["classifier_spec_id"])
+    if member_algorithm == "random_forest":
+        svd_id = project.create_classifier_spec(
+            code_id=code_id, name="dense forest", geometry_id=int(specs["svd"]["geometry_id"]),
+            algorithm=member_algorithm, hyperparameters={"n_estimators": 17},
+        )
     project.train_classifiers(code_id=code_id, classifier_spec_ids=[lexical_id, svd_id])
     committee_id = project.create_classifier_committee(
         code_id=code_id,
