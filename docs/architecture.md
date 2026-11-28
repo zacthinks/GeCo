@@ -103,3 +103,10 @@ GeCo is intended to stay a focused **research interface** rather than accumulate
 The intended division of responsibility is GeCo for the research interface and mutable coding state, an appropriate analytic engine such as TeAL for immutable derived artifacts, and domain-specific extensions for specialist methods or outputs.
 
 **A general plugin API does not exist yet.** Registration, compatibility, permissions, execution, and UI integration remain design work. Installed Python plugins would run trusted local code, not sandboxed scripts.
+
+
+### Random forest classifiers
+
+Random forest is an individual classifier family for signed or nonnegative sparse and dense geometries. It uses scikit-learn on CPU with one estimator worker, 100 trees, depth 8, minimum leaf size 1, square-root feature sampling, balanced class weights, seed 0 and threshold 0.5 by default. The creation dialog accepts an unlimited depth, a positive feature count, a feature fraction in (0, 1], sqrt, log2 or all features, and optional unweighted fitting. Feature-column normalization and native decision margins are not supported. Native probabilities are exploratory estimates, not evidence of population calibration.
+
+Optional cross-validation retains the saved configuration as the first candidate and evaluates at most eight additional joint depth/leaf/feature settings, with tree count, seed, weight and threshold fixed. At five feasible folds this is at most 45 CV fits and one final fit; validation scores use held-out labeled rows rather than the corpus. Larger forests, unrestricted depth and all-feature splits can be expensive, particularly for wide sparse geometries. The ordinary classifier lifecycle, probability threshold, frozen export and compatible committee membership are unchanged.
