@@ -10,6 +10,8 @@ from geometric_coder.classifiers import (
     classifier_capabilities,
     default_hyperparameters,
     fit_classifier,
+    normalize_hyperparameters,
+    score_classifier,
     tuning_candidates,
 )
 
@@ -186,3 +188,98 @@ def test_svm_explicit_probability_false_retains_native_margin() -> None:
     )
     assert fit.outputs.probabilities is None
     assert fit.outputs.decision_scores is not None
+
+
+@pytest.mark.parametrize("as_sparse", [False, True])
+def test_random_forest_nonlinear_deterministic_threshold(as_sparse):
+    # Signed XOR quadrants with repeated observations, not linearly separable.
+    rng = np.random.default_rng(12)
+    centers = np.repeat([[-2., -2.], [-2., 2.], [2., -2.], [2., 2.]], 40, axis=0)
+    x = centers + rng.normal(0, 0.1, centers.shape)
+    y = np.repeat([0, 1, 1, 0], 40)
+    matrix = sparse.csr_matrix(x) if as_sparse else x
+    params = {"threshold": 0.8}
+    first = fit_classifier(algorithm="random_forest", hyperparameters=params,
+                           training_matrix=matrix, labels=y, scoring_matrix=matrix)
+    second = fit_classifier(algorithm="random_forest", hyperparameters=params,
+                            training_matrix=matrix, labels=y, scoring_matrix=matrix)
+    outputs = first.outputs
+    p = outputs.probabilities
+    assert np.all(np.isfinite(p))
+    assert np.all((0 <= p) & (p <= 1))
+    np.testing.assert_array_equal(p, second.outputs.probabilities)
+    np.testing.assert_array_equal(p, first.estimator.predict_proba(matrix)[:, 1])
+    np.testing.assert_array_equal(outputs.predicted_labels, p >= 0.8)
+    np.testing.assert_allclose(outputs.uncertainty, 1 - 2 * np.abs(p - 0.5))
+    assert np.mean((p >= 0.5) == y) > 0.95
+    assert outputs.score_kind == "probability"
+    assert outputs.decision_scores is None
+    assert first.estimator.n_jobs == 1
+    assert classifier_capabilities("random_forest").supports_dense
+    assert not classifier_capabilities("random_forest").decision_score_output
+
+
+@pytest.mark.parametrize("field,value", [
+    ("n_estimators", 0), ("n_estimators", 1.5), ("n_estimators", True),
+    ("max_depth", 0), ("max_depth", 2.5), ("min_samples_leaf", 0),
+    ("min_samples_leaf", False), ("max_features", 0),
+    ("max_features", 1.5), ("max_features", float("nan")),
+    ("max_features", "auto"), ("max_features", True),
+    ("class_weight", "uniform"), ("random_state", -1),
+    ("random_state", 2**32), ("threshold", 1.1),
+    ("feature_scaling", "fixed"), ("feature_scaling", "tune"),
+])
+def test_random_forest_invalid_configuration(field, value):
+    with pytest.raises(ValueError):
+        normalize_hyperparameters("random_forest", {field: value})
+
+
+@pytest.mark.parametrize("features", ["sqrt", "log2", None, 2, 0.5, 1.0])
+def test_random_forest_supported_feature_settings(features):
+    p = normalize_hyperparameters("random_forest", {
+        "max_features": features, "max_depth": None, "class_weight": None,
+    })
+    assert p["max_features"] == features
+    assert type(p["max_features"]) is type(features)
+    assert p["max_depth"] is None
+    assert p["class_weight"] is None
+
+
+def test_random_forest_joint_search_keeps_saved_anchor():
+    base = normalize_hyperparameters("random_forest", {
+        "n_estimators": 17, "max_depth": 11, "min_samples_leaf": 3,
+        "max_features": 0.8, "class_weight": None, "random_state": 7,
+        "threshold": 0.7,
+    })
+    candidates = tuning_candidates("random_forest", base)
+    assert candidates == tuning_candidates("random_forest", base)
+    assert candidates[0] == base
+    assert len(candidates) == 9
+    assert {p["max_depth"] for p in candidates[1:]} == {4, 8, 16, None}
+    assert {p["min_samples_leaf"] for p in candidates[1:]} == {1, 2, 4}
+    assert {p["max_features"] for p in candidates[1:]} == {"sqrt", "log2", 0.5, None}
+    for p in candidates:
+        for key in ("n_estimators", "class_weight", "random_state", "threshold"):
+            assert p[key] == base[key]
+
+
+def test_random_forest_small_minority_and_positive_class_selection():
+    matrix = sparse.csr_matrix([[0.], [0.1], [0.2], [3.]])
+    fitted = fit_classifier(
+        algorithm="random_forest", hyperparameters=None, training_matrix=matrix,
+        labels=[0, 0, 0, 1], scoring_matrix=matrix,
+    )
+    assert np.all(np.isfinite(fitted.outputs.probabilities))
+
+    class Reordered:
+        classes_ = np.array([1, 0])
+
+        def predict_proba(self, matrix):
+            return np.tile([0.7, 0.3], (matrix.shape[0], 1))
+
+    outputs = score_classifier(
+        estimator=Reordered(), algorithm="random_forest",
+        hyperparameters={"threshold": 0.8}, matrix=matrix,
+    )
+    np.testing.assert_allclose(outputs.probabilities, 0.7)
+    np.testing.assert_array_equal(outputs.predicted_labels, np.zeros(4))
