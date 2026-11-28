@@ -5949,6 +5949,18 @@ def create_app(
 
 
     @app.callback(
+        Output("classifier-spec-forest-options", "style"),
+        Output("classifier-spec-scaling-container", "style"),
+        Input("classifier-spec-algorithm", "value"),
+    )
+    def classifier_creation_options(algorithm: str) -> tuple[dict, dict]:
+        return (
+            {} if algorithm == "random_forest" else {"display": "none"},
+            {} if algorithm in {"logistic_l1", "logistic_l2", "logistic_elasticnet", "linear_svm"}
+            else {"display": "none"},
+        )
+
+    @app.callback(
         Output("classifier-spec-modal", "style"),
         Output("classifier-spec-status", "children"),
         Input("focus-new-classifier-button", "n_clicks"),
@@ -5958,6 +5970,13 @@ def create_app(
         State("classifier-spec-geometry", "value"),
         State("classifier-spec-algorithm", "value"),
         State("classifier-spec-scaling", "value"),
+        State("classifier-spec-forest-trees", "value"),
+        State("classifier-spec-forest-depth", "value"),
+        State("classifier-spec-forest-leaf", "value"),
+        State("classifier-spec-forest-features", "value"),
+        State("classifier-spec-forest-weight", "value"),
+        State("classifier-spec-forest-seed", "value"),
+        State("classifier-spec-forest-threshold", "value"),
         State("focus-code-dropdown", "value"),
         prevent_initial_call=True,
     )
@@ -5969,6 +5988,13 @@ def create_app(
         geometry_id: int | None,
         algorithm: str | None,
         feature_scaling: str | None,
+        forest_trees: int | None,
+        forest_depth: int | None,
+        forest_leaf: int | None,
+        forest_features: str | None,
+        forest_weight: str | None,
+        forest_seed: int | None,
+        forest_threshold: float | None,
         code_id: int | None,
     ) -> tuple[dict[str, str], str]:
         del open_clicks, close_clicks, save_clicks
@@ -5996,7 +6022,21 @@ def create_app(
                 name=clean_name,
                 geometry_id=int(geometry_id),
                 algorithm=selected_algorithm,
-                hyperparameters={"feature_scaling": str(feature_scaling or "off")},
+                hyperparameters=(
+                    {
+                        "n_estimators": forest_trees,
+                        "max_depth": forest_depth,
+                        "min_samples_leaf": forest_leaf,
+                        "max_features": _forest_feature_input(forest_features),
+                        "class_weight": None if forest_weight == "none" else forest_weight,
+                        "random_state": forest_seed,
+                        "threshold": forest_threshold,
+                    }
+                    if selected_algorithm == "random_forest"
+                    else {"feature_scaling": str(feature_scaling or "off")
+                          if selected_algorithm in {"logistic_l1", "logistic_l2", "logistic_elasticnet", "linear_svm"}
+                          else "off"}
+                ),
             )
         except (KeyError, ValueError) as error:
             return {"display": "flex"}, str(error)
@@ -9633,6 +9673,21 @@ def _teaching_example_modal(*, dcc: Any, html: Any, dash_table: Any) -> Any:
 
 
 
+def _forest_feature_input(value: str | None) -> str | int | float | None:
+    """Parse explicit feature count versus fractional sampling from text."""
+    if value is None:
+        raise ValueError("Enter sqrt, log2, all, a feature count, or a fraction.")
+    value = str(value).strip().lower()
+    if value in {"sqrt", "log2"}:
+        return value
+    if value == "all":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return float(value)
+
+
 def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, Any]]) -> Any:
     """Return the classifier-specification creation modal."""
     return html.Div(
@@ -9686,6 +9741,28 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         value="logistic_l2",
                         clearable=False,
                     ),
+                    html.Div([
+                        html.Label("Number of trees"),
+                        dcc.Input(id="classifier-spec-forest-trees", type="number", min=1, step=1, value=100),
+                        html.Label("Maximum depth (blank = unlimited)"),
+                        dcc.Input(id="classifier-spec-forest-depth", type="number", min=1, step=1, value=8),
+                        html.Label("Minimum samples per leaf"),
+                        dcc.Input(id="classifier-spec-forest-leaf", type="number", min=1, step=1, value=1),
+                        html.Label("Features per split (sqrt, log2, all, count, or fraction)"),
+                        dcc.Input(id="classifier-spec-forest-features", type="text", value="sqrt"),
+                        html.Label("Class weighting"),
+                        dcc.Dropdown(id="classifier-spec-forest-weight", options=[
+                            {"label": "Balanced", "value": "balanced"},
+                            {"label": "None", "value": "none"},
+                        ], value="balanced", clearable=False),
+                        html.Label("Random seed"),
+                        dcc.Input(id="classifier-spec-forest-seed", type="number", min=0, max=2**32-1, step=1, value=0),
+                        html.Label("Probability threshold"),
+                        dcc.Input(id="classifier-spec-forest-threshold", type="number", min=0, max=1, step=0.01, value=0.5),
+                        html.Small("Forest probabilities are exploratory estimates, not validated calibration.",
+                                   className="focus-help"),
+                    ], id="classifier-spec-forest-options", style={"display": "none"}),
+                    html.Div([
                     html.Label("Feature-column normalization"),
                     dcc.Dropdown(
                         id="classifier-spec-scaling",
@@ -9702,6 +9779,7 @@ def _classifier_spec_modal(*, dcc: Any, html: Any, geometries: list[dict[str, An
                         "Tune compares γ=0, 0.5, 1 alongside the existing regularization search.",
                         className="focus-help",
                     ),
+                    ], id="classifier-spec-scaling-container"),
                     html.Small(
                         "New classifiers start with family defaults. In Develop, optionally "
                         "enable Tune hyperparameters with cross-validation before Train when "
