@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
+from numbers import Integral, Real
 from typing import Any, Literal, Protocol
 
 import numpy as np
@@ -13,6 +14,7 @@ from sklearn.base import clone
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import StratifiedKFold
 from sklearn import __version__ as sklearn_version
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import ComplementNB
 from sklearn.neighbors import KNeighborsClassifier
@@ -31,6 +33,7 @@ ClassifierAlgorithm = Literal[
     "linear_svm",
     "rbf_svm",
     "decision_tree",
+    "random_forest",
     "knn",
 ]
 
@@ -46,6 +49,7 @@ SUPPORTED_CLASSIFIER_ALGORITHMS: tuple[ClassifierAlgorithm, ...] = (
     "linear_svm",
     "rbf_svm",
     "decision_tree",
+    "random_forest",
     "knn",
 )
 
@@ -70,6 +74,7 @@ CLASSIFIER_ALGORITHM_LABELS: dict[str, str] = {
     "linear_svm": "Linear SVM",
     "rbf_svm": "RBF-kernel SVM",
     "decision_tree": "Decision tree",
+    "random_forest": "Random forest",
     "knn": "k-nearest neighbors",
 }
 
@@ -130,6 +135,10 @@ _CLASSIFIER_CAPABILITIES: dict[str, ClassifierCapabilities] = {
         False,
         "probability_distance",
         ("max_depth", "min_samples_leaf"),
+    ),
+    "random_forest": ClassifierCapabilities(
+        True, True, False, True, False, "probability_distance",
+        ("max_depth", "min_samples_leaf", "max_features"),
     ),
     "knn": ClassifierCapabilities(
         True,
@@ -212,6 +221,16 @@ def default_hyperparameters(algorithm: str) -> dict[str, Any]:
             "random_state": 0,
             "threshold": 0.5,
         }
+    if algorithm == "random_forest":
+        return {
+            "n_estimators": 100,
+            "max_depth": 8,
+            "min_samples_leaf": 1,
+            "max_features": "sqrt",
+            "class_weight": "balanced",
+            "random_state": 0,
+            "threshold": 0.5,
+        }
     if algorithm == "knn":
         return {
             "n_neighbors": 1,
@@ -220,6 +239,15 @@ def default_hyperparameters(algorithm: str) -> dict[str, Any]:
             "threshold": 0.5,
         }
     raise ValueError(f"Unsupported classifier algorithm: {algorithm!r}")
+
+
+def _forest_integer(value: Any, *, name: str, minimum: int) -> int:
+    """Reject fractional values and booleans rather than silently truncating."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+    if int(value) < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+    return int(value)
 
 
 def normalize_hyperparameters(
@@ -319,6 +347,42 @@ def normalize_hyperparameters(
                 "class_weight": class_weight,
                 "random_state": int(values.get("random_state", 0)),
             }
+        )
+        return values
+
+    if algorithm == "random_forest":
+        depth = values["max_depth"]
+        if depth is not None:
+            depth = _forest_integer(depth, name="max_depth", minimum=1)
+        features = values["max_features"]
+        if features is None or (
+            isinstance(features, str) and features in {"sqrt", "log2"}
+        ):
+            pass
+        elif isinstance(features, (bool, np.bool_)):
+            raise ValueError("max_features must not be a boolean.")
+        elif isinstance(features, Integral):
+            features = _forest_integer(features, name="max_features", minimum=1)
+        elif isinstance(features, Real) and np.isfinite(features) and 0 < features <= 1:
+            features = float(features)
+        else:
+            raise ValueError(
+                "max_features must be sqrt, log2, null, a positive integer, "
+                "or a fraction in (0, 1]."
+            )
+        class_weight = values["class_weight"]
+        if class_weight is not None and class_weight != "balanced":
+            raise ValueError("class_weight must be 'balanced' or null")
+        seed = _forest_integer(values["random_state"], name="random_state", minimum=0)
+        if seed >= 2**32:
+            raise ValueError("random_state must be less than 2**32.")
+        values.update(
+            n_estimators=_forest_integer(values["n_estimators"], name="n_estimators", minimum=1),
+            max_depth=depth,
+            min_samples_leaf=_forest_integer(values["min_samples_leaf"], name="min_samples_leaf", minimum=1),
+            max_features=features,
+            class_weight=class_weight,
+            random_state=seed,
         )
         return values
 
@@ -448,6 +512,33 @@ def tuning_candidates(
             )
             for depth, leaf in product((2, 3, 4, 6, None), (1, 2, 4))
         ]
+    if algorithm == "random_forest":
+        # A compact, deterministic joint design, not a Cartesian product.
+        # Include both regularized and flexible trees, with each of the four
+        # feature sampling choices represented at two depths/leaf settings.
+        candidates = [base]
+        for depth, leaf, features in (
+            (4, 1, "sqrt"),
+            (4, 4, 0.5),
+            (8, 2, "log2"),
+            (8, 4, None),
+            (16, 1, 0.5),
+            (16, 2, "sqrt"),
+            (None, 1, None),
+            (None, 4, "log2"),
+        ):
+            candidate = normalize_hyperparameters(
+                algorithm, {**base, "max_depth": depth,
+                            "min_samples_leaf": leaf, "max_features": features}
+            )
+            # Integer 1 and float 1.0 represent different sklearn semantics.
+            if not any(
+                candidate == previous
+                and type(candidate["max_features"]) is type(previous["max_features"])
+                for previous in candidates
+            ):
+                candidates.append(candidate)
+        return candidates
     if algorithm == "knn":
         maximum = max(1, int(max_neighbors or 1))
         neighbor_values = [value for value in (1, 3, 5, 7, 11) if value <= maximum]
@@ -489,6 +580,15 @@ def hyperparameter_summary(algorithm: str, hyperparameters: dict[str, Any] | Non
     if algorithm == "decision_tree":
         depth = values["max_depth"]
         return f"depth={'unlimited' if depth is None else depth} · leaf≥{values['min_samples_leaf']}"
+    if algorithm == "random_forest":
+        depth = values["max_depth"]
+        features = values["max_features"]
+        weight = values["class_weight"] or "none"
+        return (
+            f"trees={values['n_estimators']} · depth={'unlimited' if depth is None else depth}"
+            f" · leaf≥{values['min_samples_leaf']} · features={'all' if features is None else features}"
+            f" · weight={weight} · seed={values['random_state']} · threshold={values['threshold']:g}"
+        )
     if algorithm == "knn":
         return f"k={values['n_neighbors']} · {values['weights']} · {values['metric']}"
     return ""
@@ -558,6 +658,16 @@ def _build_estimator(
             min_samples_leaf=int(parameters["min_samples_leaf"]),
             class_weight=parameters["class_weight"],
             random_state=int(parameters["random_state"]),
+        )
+    if algorithm == "random_forest":
+        return RandomForestClassifier(
+            n_estimators=parameters["n_estimators"],
+            max_depth=parameters["max_depth"],
+            min_samples_leaf=parameters["min_samples_leaf"],
+            max_features=parameters["max_features"],
+            class_weight=parameters["class_weight"],
+            random_state=parameters["random_state"],
+            n_jobs=1,
         )
     if algorithm == "knn":
         return KNeighborsClassifier(
